@@ -1,0 +1,2 @@
+- [v10 platform spec](v10-platform-spec.md) — master prompt lives in attached_assets; build milestone-by-milestone, never all at once
+- [v10 architecture decisions](v10-architecture.md) — DI container, settings, logging, exception hierarchy, model design choices

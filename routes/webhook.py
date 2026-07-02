@@ -1,0 +1,205 @@
+"""
+Facebook webhook handlers v8.0 — Rate-Limited & Persistent
+- Rate limiting enforced
+- Analytics tracking
+- UTC timezone
+- Verbose logging for debugging
+"""
+
+import json
+import logging
+import threading
+import time as time_module
+from datetime import datetime, timezone
+from flask import request, jsonify
+
+from config.settings import settings
+from services.facebook import facebook
+from services.gemini import gemini
+from core.memory import memory
+from core.language import detect_language
+from core.sentiment import detect_sentiment
+from core.humanizer import Humanizer
+from analytics.tracker import analytics
+from routes.owner import owner_commands
+from utils.security import verify_facebook_signature, sanitize_message, detect_abuse
+from utils.rate_limiter import rate_limiter
+
+logger = logging.getLogger("kanyoza.routes.webhook")
+
+_humanizer = Humanizer()
+
+
+def calculate_typing_delay(msg, length):
+    return _humanizer.pick_response_delay(len(msg))
+
+
+def should_split_message(msg):
+    return len(msg) > 400
+
+
+def register_webhook_routes(app):
+    """Register webhook routes."""
+
+    @app.route("/webhook", methods=["GET"])
+    def verify_webhook():
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == settings.verify_token:
+            return challenge, 200
+        return "Verification failed", 403
+
+    @app.route("/webhook", methods=["POST"])
+    def receive_message():
+        if not verify_facebook_signature(request.data, request.headers.get('X-Hub-Signature-256', ''), settings.app_secret):
+            return "Invalid signature", 403
+
+        data = request.get_json()
+        try:
+            for entry in data.get("entry", []):
+                for event in entry.get("messaging", []):
+                    threading.Thread(target=_handle_event, args=(event,), daemon=True).start()
+        except Exception as e:
+            logger.error(f"Webhook dispatch error: {e}")
+        return "EVENT_RECEIVED", 200
+
+
+def _handle_event(event: dict):
+    try:
+        sender_id = event.get("sender", {}).get("id")
+        message = event.get("message", {})
+        if not sender_id:
+            return
+        if "text" in message:
+            _handle_text_message(sender_id, message["text"].strip())
+        elif "attachments" in message:
+            _handle_attachments(sender_id, message["attachments"])
+        elif "postback" in event:
+            _handle_postback(sender_id, event["postback"])
+    except Exception as e:
+        logger.error(f"Event handling error: {e}")
+
+
+def _handle_text_message(sender_id: str, text: str):
+    logger.info(f"📩 Message from {sender_id}: '{text[:80]}'")
+
+    text = sanitize_message(text)
+    if not text:
+        logger.warning(f"Empty after sanitize for {sender_id}")
+        return
+
+    if not rate_limiter.is_allowed(sender_id, 'message_per_user'):
+        logger.warning(f"Rate limited: {sender_id}")
+        facebook.send_message(sender_id, "You're sending messages too quickly. Please wait a moment.")
+        return
+
+    if detect_abuse(text):
+        logger.warning(f"Abuse detected: {sender_id}")
+        facebook.send_message(sender_id, "I don't respond to that kind of message.")
+        return
+
+    analytics.record_message_received(sender_id)
+
+    if sender_id == settings.owner_psid and owner_commands.handle_command(sender_id, text):
+        logger.info(f"Owner command handled for {sender_id}")
+        return
+
+    logger.info(f"Starting async processing for {sender_id}")
+    facebook.send_mark_seen(sender_id)
+    threading.Thread(target=_process_message_async, args=(sender_id, text), daemon=True).start()
+
+
+def _process_message_async(sender_id: str, text: str):
+    logger.info(f"⚙️ Processing message from {sender_id}: '{text[:50]}'")
+    start_time = time_module.time()
+
+    try:
+        language = detect_language(text)
+        logger.info(f"Language: {language}")
+
+        memory.update_user_profile(sender_id, {'communication_style': language})
+        sentiment = detect_sentiment(text)
+        logger.info(f"Sentiment: {sentiment}")
+
+        memory.extract_and_save_facts(sender_id, text)
+
+        delay = calculate_typing_delay(text, min(len(text.split()) * 2, 200))
+        logger.info(f"Waiting {delay:.1f}s before replying")
+        time_module.sleep(delay)
+
+        facebook.send_typing_on(sender_id)
+        logger.info("Calling Gemini for response...")
+        reply = gemini.generate_chat_response(sender_id, text, language, sentiment)
+        logger.info(f"Gemini replied: '{reply[:80]}...'")
+        facebook.send_typing_off(sender_id)
+
+        memory.add_message(sender_id, "user", text)
+        memory.add_message(sender_id, "assistant", reply)
+        memory.increment_message_count(sender_id)
+
+        response_time = time_module.time() - start_time
+        analytics.record_message_sent(sender_id, response_time)
+
+        if should_split_message(reply):
+            parts = _split_reply_naturally(reply)
+            if len(parts) == 2:
+                facebook.send_message(sender_id, parts[0])
+                time_module.sleep(3)
+                facebook.send_typing_on(sender_id)
+                time_module.sleep(2)
+                facebook.send_typing_off(sender_id)
+                facebook.send_message(sender_id, parts[1])
+                logger.info(f"✅ Split reply sent to {sender_id}")
+                return
+
+        facebook.send_message(sender_id, reply)
+        logger.info(f"✅ Reply sent to {sender_id} ({response_time:.1f}s)")
+
+    except Exception as e:
+        logger.error(f"❌ Message processing failed: {type(e).__name__}: {e}")
+        analytics.record_message_failed(sender_id, str(e))
+        try:
+            facebook.send_typing_off(sender_id)
+            facebook.send_message(sender_id, "Ah, my connection is acting up. Give me a sec to retry?")
+        except Exception:
+            pass
+
+
+def _split_reply_naturally(reply: str) -> list:
+    if '\n\n' in reply:
+        parts = reply.split('\n\n', 1)
+        if len(parts[0]) > 50 and len(parts[1]) > 50:
+            return parts
+    sentences = reply.replace('\n', ' ').split('. ')
+    if len(sentences) >= 3:
+        mid = len(sentences) // 2
+        part1 = '. '.join(sentences[:mid]) + '.'
+        part2 = '. '.join(sentences[mid:])
+        if len(part1) > 50 and len(part2) > 50:
+            return [part1, part2]
+    return [reply]
+
+
+def _handle_attachments(sender_id: str, attachments: list):
+    for att in attachments:
+        att_type = att.get("type")
+        if att_type == "image":
+            facebook.send_message(sender_id, "I see the image! What would you like to know about it?")
+        elif att_type == "audio":
+            facebook.send_message(sender_id, "I received your voice message. Please type your message and I'll respond right away!")
+        elif att_type == "video":
+            facebook.send_message(sender_id, "I see you sent a video! Feel free to describe what's in it.")
+        else:
+            facebook.send_message(sender_id, "I received your attachment! What would you like to discuss?")
+
+
+def _handle_postback(sender_id: str, postback: dict):
+    payload = postback.get("payload", "")
+    if payload == "get_started":
+        greeting = (
+            "👋 Hello! I'm a software engineer and entrepreneur from Malawi.\n\n"
+            "Ask me about tech, software development, business, or just say hi. "
+            "I'm here to chat, not to automate.\n\nWhat's on your mind?"
+        )
+        facebook.send_message(sender_id, greeting)

@@ -1,0 +1,42 @@
+VERDICT: REJECTED
+The diff is not ready to mark complete because it introduces a critical webhook authentication regression in production.
+
+Critical findings / analysis:
+- `config/settings.py` no longer treats `APP_SECRET` as required (`REQUIRED_VARS` omits it), so production startup can proceed without Facebook signing secret configured.
+- `utils/security.py::verify_facebook_signature()` now returns `True` when `app_secret` is empty. Combined with the above, `/webhook` POST requests can be accepted without signature verification, allowing forged inbound events.
+- This is a concrete behavioral/security regression from the previous logic (which rejected when secret missing) and is blocking for a Messenger bot foundation milestone.
+- The broader foundation work (app factory/bootstrap/DI/models/lifecycle) is substantial and generally coherent, but the auth regression must be fixed before approval.
+
+Security:
+- Serious violation observed: webhook request authenticity can be bypassed when `APP_SECRET` is unset in production.
+
+Next actions:
+1) Restore strict production enforcement for `APP_SECRET` (include it in required settings validation for prod).
+2) Change `verify_facebook_signature()` so missing/empty `app_secret` returns `False` (or raises) outside explicitly test-only paths; never allow implicit pass-through.
+3) Add a small test covering: (a) missing secret in production fails startup, and (b) webhook POST with missing/invalid signature is rejected.
+
+Memory note: `.agents/memory/v10-architecture.md` stores mostly code-derivable implementation specifics (module/function names) rather than durable cross-session lessons.
+Memory note: `.agents/memory/v10-platform-spec.md` contains conversation-local rationale (“user uploaded it twice”) that is ephemeral; keep durable product decisions only.
+
+VERDICT: REJECTED
+VERDICT: REJECTED
+The diff is not ready to mark complete because it introduces a critical webhook authentication regression in production.
+
+Critical findings / analysis:
+- `config/settings.py` no longer treats `APP_SECRET` as required (`REQUIRED_VARS` omits it), so production startup can proceed without Facebook signing secret configured.
+- `utils/security.py::verify_facebook_signature()` now returns `True` when `app_secret` is empty. Combined with the above, `/webhook` POST requests can be accepted without signature verification, allowing forged inbound events.
+- This is a concrete behavioral/security regression from the previous logic (which rejected when secret missing) and is blocking for a Messenger bot foundation milestone.
+- The broader foundation work (app factory/bootstrap/DI/models/lifecycle) is substantial and generally coherent, but the auth regression must be fixed before approval.
+
+Security:
+- Serious violation observed: webhook request authenticity can be bypassed when `APP_SECRET` is unset in production.
+
+Next actions:
+1) Restore strict production enforcement for `APP_SECRET` (include it in required settings validation for prod).
+2) Change `verify_facebook_signature()` so missing/empty `app_secret` returns `False` (or raises) outside explicitly test-only paths; never allow implicit pass-through.
+3) Add a small test covering: (a) missing secret in production fails startup, and (b) webhook POST with missing/invalid signature is rejected.
+
+Memory note: `.agents/memory/v10-architecture.md` stores mostly code-derivable implementation specifics (module/function names) rather than durable cross-session lessons.
+Memory note: `.agents/memory/v10-platform-spec.md` contains conversation-local rationale (“user uploaded it twice”) that is ephemeral; keep durable product decisions only.
+
+VERDICT: REJECTED

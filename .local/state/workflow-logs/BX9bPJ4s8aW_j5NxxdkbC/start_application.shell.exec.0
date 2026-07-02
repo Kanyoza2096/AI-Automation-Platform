@@ -1,0 +1,32 @@
+[2026-07-02 10:23:52 +0000] [2373] [INFO] Starting gunicorn 23.0.0
+[2026-07-02 10:23:52 +0000] [2373] [INFO] Listening at: http://0.0.0.0:5000 (2373)
+[2026-07-02 10:23:52 +0000] [2373] [INFO] Using worker: sync
+[2026-07-02 10:23:52 +0000] [2383] [INFO] Booting worker with pid: 2383
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: ============================================================
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Kanyoza Systems AI Platform v10  —  starting up
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: ============================================================
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Environment : development
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Log level   : INFO
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Validating configuration...
+[33m[10:23:53] WARNING [0m [2mkanyoza.config[0m: ⚠️  Missing environment variables: GEMINI_KEY, PAGE_ACCESS_TOKEN, PAGE_ID, VERIFY_TOKEN — running in DEGRADED mode (set ENVIRONMENT=production to enforce strict validation).
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Config OK  (gemini=False  facebook=False  supabase=False)
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Building service container...
+[32m[10:23:53] INFO    [0m [2mkanyoza.registry[0m: Supabase not configured — persistence layer disabled.
+[32m[10:23:53] INFO    [0m [2mkanyoza.registry[0m: Service container built — 1 bindings registered.
+[32m[10:23:53] INFO    [0m [2mkanyoza.bootstrap[0m: Creating Flask application...
+[33m[10:23:54] WARNING [0m [2mkanyoza.factory[0m: v9 route registration skipped: cannot import name 'verify_facebook_signature' from 'utils.security' (/home/runner/workspace/utils/security.py)
+[32m[10:23:54] INFO    [0m [2mkanyoza.factory[0m: Flask application created (env=development)
+[32m[10:23:54] INFO    [0m [2mkanyoza.bootstrap[0m: Registering lifecycle hooks...
+[32m[10:23:54] INFO    [0m [2mkanyoza.scheduler[0m: Scheduler started. Content: [4, 7, 10, 14, 17, 19] UTC
+[32m[10:23:54] INFO    [0m [2mkanyoza.lifecycle[0m: v9 post scheduler started.
+[32m[10:23:54] INFO    [0m [2mkanyoza.lifecycle[0m: Code Guardian disabled (not configured).
+[32m[10:23:54] INFO    [0m [2mkanyoza.lifecycle[0m: Lifecycle hooks registered.
+[32m[10:23:54] INFO    [0m [2mkanyoza.bootstrap[0m: Bootstrap complete — application ready.
+[32m[10:24:24] INFO    [0m [2mkanyoza.services.content_engine[0m: Generating: topic='Local AI vs Cloud AI for businesses', template='quick_tip'
+[33m[10:24:24] WARNING [0m [2mkanyoza.services.content_engine[0m: Gemini failed, using fallback
+[2026-07-02 10:26:43 +0000] [2373] [INFO] Handling signal: term
+[32m[10:26:43] INFO    [0m [2mkanyoza.lifecycle[0m [2m[105c1572][0m: Shutdown signal received (15) — stopping services...
+[32m[10:26:44] INFO    [0m [2mkanyoza.lifecycle[0m [2m[105c1572][0m: Post scheduler stopped.
+[32m[10:26:44] INFO    [0m [2mkanyoza.lifecycle[0m [2m[105c1572][0m: Graceful shutdown complete.
+[2026-07-02 10:26:44 +0000] [2383] [INFO] Worker exiting (pid: 2383)
+[2026-07-02 10:26:44 +0000] [2373] [INFO] Shutting down: Master
