@@ -6,8 +6,8 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
     background: #0F172A;
-    width: 1200px;
-    height: 630px;
+    width: 1080px;
+    height: 1080px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -16,115 +16,78 @@ body {
 }
 .card {
     background: #1E293B;
-    width: 1140px;
-    height: 590px;
-    border-radius: 24px;
-    padding: 40px 48px;
+    width: 1020px;
+    height: 1020px;
+    border-radius: 28px;
+    padding: 48px 52px 40px 52px;
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
     border: 1px solid #334155;
-    box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+    box-shadow: 0 32px 80px rgba(0,0,0,0.65);
 }
+.header { flex-shrink: 0; margin-bottom: 20px; }
 .badge {
     background: linear-gradient(135deg, #059669, #10B981);
     color: #fff;
-    padding: 6px 16px;
+    padding: 6px 18px;
     border-radius: 20px;
     font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
     display: inline-block;
 }
 h1 {
     color: #F1F5F9;
-    font-size: 32px;
+    font-size: 36px;
     font-weight: 800;
-    margin-top: 12px;
+    margin-top: 14px;
     line-height: 1.2;
 }
-.subtitle {
-    color: #94A3B8;
-    font-size: 16px;
-    margin-top: 8px;
-}
-.steps {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+.chart {
     flex: 1;
-    margin: 20px 0;
-}
-.step {
-    display: flex;
-    align-items: flex-start;
-    gap: 16px;
-    background: #0F172A;
-    border-radius: 12px;
-    padding: 14px 18px;
-    border-left: 3px solid #10B981;
-}
-.step-num {
-    background: linear-gradient(135deg, #059669, #10B981);
-    color: #fff;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
+    min-height: 0;
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    font-weight: 700;
-    flex-shrink: 0;
 }
-.step-text {
-    color: #CBD5E1;
-    font-size: 15px;
-    line-height: 1.5;
-    padding-top: 3px;
-}
-.tip-box {
-    background: rgba(16, 185, 129, 0.1);
-    border: 1px solid rgba(16, 185, 129, 0.3);
-    border-radius: 10px;
-    padding: 12px 18px;
-    color: #6EE7B7;
-    font-size: 14px;
+.chart svg {
+    width: 100%;
+    height: auto;
+    max-height: 660px;
 }
 .footer {
+    flex-shrink: 0;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding-top: 14px;
+    margin-top: 20px;
+    padding-top: 16px;
     border-top: 1px solid #334155;
 }
-.brand { color: #64748B; font-size: 14px; font-weight: 600; }
-.tagline { color: #10B981; font-size: 13px; font-weight: 600; }
+.brand { color: #64748B; font-size: 15px; font-weight: 600; }
+.tagline { color: #10B981; font-size: 14px; font-weight: 600; }
+.hashtags {
+    color: #475569;
+    font-size: 12px;
+    margin-top: 6px;
+    line-height: 1.4;
+}
 </style>
 </head>
 <body>
 <div class="card">
-    <div>
-        <span class="badge">Tutorial</span>
+    <div class="header">
+        <span class="badge">{{ theme_label }}</span>
         <h1>{{ title }}</h1>
-        {% if caption %}
-        <p class="subtitle">{{ caption[:120] }}</p>
-        {% endif %}
     </div>
-    <div class="steps">
-        {% for point in points_a[:4] %}
-        <div class="step">
-            <div class="step-num">{{ loop.index }}</div>
-            <div class="step-text">{{ point }}</div>
-        </div>
-        {% endfor %}
-    </div>
-    {% if winner %}
-    <div class="tip-box">💡 Pro tip: {{ winner }}</div>
-    {% endif %}
+    <div class="chart">{{ svg_chart | safe }}</div>
     <div class="footer">
-        <span class="brand">Kanyoza Systems</span>
+        <div>
+            <div class="brand">Kanyoza Systems</div>
+            {% if hashtags %}
+            <div class="hashtags">{% for tag in hashtags[:5] %}#{{ tag }} {% endfor %}</div>
+            {% endif %}
+        </div>
         <span class="tagline">Daily Tech Insights</span>
     </div>
 </div>

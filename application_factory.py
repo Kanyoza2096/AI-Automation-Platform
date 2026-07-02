@@ -218,6 +218,105 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             "config": settings.to_safe_dict(),
         })
 
+    @app.route("/api/v1/health/deep")
+    def health_deep():
+        """
+        Live connectivity probe for every external dependency.
+
+        Returns per-service status:
+          ok      — configured and reachable
+          error   — configured but unreachable / auth failure
+          skip    — not configured (degraded-mode expected)
+        """
+        import time
+
+        results = {}
+        overall = "ok"
+
+        # ── Gemini ─────────────────────────────────────────────────────────────
+        gemini_key = getattr(settings, "gemini_key", "") or ""
+        if not gemini_key:
+            results["gemini"] = {"status": "skip", "reason": "GEMINI_KEY not set"}
+        else:
+            try:
+                from services.gemini import gemini as gemini_svc
+                t0 = time.monotonic()
+                reply = gemini_svc._call(
+                    prompt="Reply with exactly one word: ok",
+                    temperature=0.0,
+                    max_tokens=8,
+                )
+                ms = round((time.monotonic() - t0) * 1000)
+                if reply and reply.strip():
+                    results["gemini"] = {"status": "ok", "latency_ms": ms}
+                else:
+                    results["gemini"] = {"status": "error", "reason": "empty response"}
+                    overall = "degraded"
+            except Exception as exc:
+                results["gemini"] = {"status": "error", "reason": str(exc)[:120]}
+                overall = "degraded"
+
+        # ── Facebook Graph API ──────────────────────────────────────────────────
+        fb_token = getattr(settings, "page_access_token", "") or ""
+        if not fb_token:
+            results["facebook"] = {"status": "skip", "reason": "PAGE_ACCESS_TOKEN not set"}
+        else:
+            try:
+                import requests as _req
+                t0 = time.monotonic()
+                r = _req.get(
+                    "https://graph.facebook.com/me",
+                    params={"fields": "id,name", "access_token": fb_token},
+                    timeout=8,
+                )
+                ms = round((time.monotonic() - t0) * 1000)
+                if r.status_code == 200:
+                    data = r.json()
+                    results["facebook"] = {
+                        "status": "ok",
+                        "latency_ms": ms,
+                        "page_id": data.get("id"),
+                        "page_name": data.get("name"),
+                    }
+                else:
+                    results["facebook"] = {
+                        "status": "error",
+                        "http": r.status_code,
+                        "reason": r.json().get("error", {}).get("message", "unknown")[:120],
+                    }
+                    overall = "degraded"
+            except Exception as exc:
+                results["facebook"] = {"status": "error", "reason": str(exc)[:120]}
+                overall = "degraded"
+
+        # ── Supabase ────────────────────────────────────────────────────────────
+        if not settings.supabase_enabled:
+            results["supabase"] = {"status": "skip", "reason": "Supabase not configured"}
+        else:
+            try:
+                from supabase import create_client
+                sb_url = getattr(settings, "supabase_url", "") or ""
+                sb_key = getattr(settings, "supabase_key", "") or ""
+                t0 = time.monotonic()
+                client = create_client(sb_url, sb_key)
+                client.table("__health_check__").select("1").limit(1).execute()
+                ms = round((time.monotonic() - t0) * 1000)
+                results["supabase"] = {"status": "ok", "latency_ms": ms}
+            except Exception as exc:
+                msg = str(exc)[:120]
+                if "does not exist" in msg or "relation" in msg:
+                    ms = round((time.monotonic() - t0) * 1000)
+                    results["supabase"] = {"status": "ok", "latency_ms": ms, "note": "connected"}
+                else:
+                    results["supabase"] = {"status": "error", "reason": msg}
+                    overall = "degraded"
+
+        return jsonify({
+            "status": overall,
+            "version": "10.0",
+            "services": results,
+        })
+
 
 # ---------------------------------------------------------------------------
 # v9 route compatibility shim

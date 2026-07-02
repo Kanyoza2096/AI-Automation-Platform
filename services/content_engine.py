@@ -1,9 +1,35 @@
 """
-Content Engine v10.0 — Structured Single-Call Pipeline
-- One Gemini call returns full structured JSON → parsed into TechPost model
-- 10 topic categories, 70+ topics
-- Jinja2 card renderer with graceful image fallback
-- Thread-safe topic rotation
+Content Engine v10.0 — Canonical Image Post Pipeline
+
+Pipeline (matches architecture diagram exactly):
+
+    Scheduler
+        │
+        ▼
+    ContentEngine.generate_post()
+        │
+        ▼
+    Gemini (ONE API CALL)
+        │
+        ▼
+    TechPost (dataclass)
+    ┌───────────────┼────────────────┐
+    ▼               ▼                ▼
+Caption Builder  HTML Renderer   SVG Renderer
+    │               │                │
+    └───────────────┴────────────────┘
+                    ▼
+         Playwright Screenshot
+                    ▼
+             PNG (1080×1080)
+                    ▼
+         Facebook Publisher
+
+- One Gemini call returns full structured JSON → TechPost model
+- CaptionBuilder assembles the Facebook caption text from TechPost fields
+- SvgRenderer generates an inline SVG chart from TechPost data
+- CardRenderer embeds SVG into Jinja2 HTML, screenshots via Playwright
+- Falls back to static text + None image if the AI call fails
 """
 
 import random
@@ -122,8 +148,6 @@ TOPICS = {
     ],
 }
 
-# ── Category → PostTheme mapping ───────────────────────────────────────────────
-
 CATEGORY_THEMES: dict = {
     "system_architecture":    PostTheme.ARCHITECTURE,
     "database_mastery":       PostTheme.DATABASE,
@@ -137,8 +161,6 @@ CATEGORY_THEMES: dict = {
     "career_growth":          PostTheme.TUTORIAL,
 }
 
-# ── Category → hashtags ────────────────────────────────────────────────────────
-
 HASHTAGS: dict = {
     "system_architecture":    "#SystemDesign #SoftwareArchitecture #CloudComputing #TechTips",
     "database_mastery":       "#Database #SQL #NoSQL #Scaling #PostgreSQL",
@@ -151,8 +173,6 @@ HASHTAGS: dict = {
     "malawi_tech":            "#MalawiTech #AfricaTech #DigitalAfrica #TechAfrica",
     "career_growth":          "#SoftwareEngineering #CareerAdvice #DevLife #CodingCareer",
 }
-
-# ── Caption assembly helpers ───────────────────────────────────────────────────
 
 VIRAL_HOOKS: list = [
     "Most developers get this wrong. Here's the truth:",
@@ -210,61 +230,24 @@ FALLBACK_POSTS: list = [
 ]
 
 
-# ── Engine ─────────────────────────────────────────────────────────────────────
+# ── Caption Builder ─────────────────────────────────────────────────────────────
+#
+# Receives a fully-populated TechPost (from the single Gemini call) and
+# assembles the Facebook caption.  No second Gemini call is made here.
 
-class ContentEngine:
+class CaptionBuilder:
     """
-    Generates structured tech posts using a single Gemini call.
-    Pipeline: topic → generate_structured_post() → TechPost model → caption + image.
-    Falls back to legacy text generation if structured call fails.
+    Builds a Facebook-ready caption from a TechPost and its category metadata.
+    All content comes from the TechPost model — zero additional AI calls.
     """
 
-    def __init__(self):
-        self.posted_topics: List[str] = []
-        self.post_counter: int = 0
-        self.last_category: str = "system_architecture"
-        self.last_topic: str = ""
-        self._lock = threading.Lock()
-
-    # ── Topic rotation ─────────────────────────────────────────────────────────
-
-    def get_next_topic(self) -> Tuple[str, str]:
-        with self._lock:
-            category = random.choice(list(TOPICS.keys()))
-            self.last_category = category
-            available = [t for t in TOPICS[category] if t not in self.posted_topics[-20:]]
-            if not available:
-                available = TOPICS[category]
-            topic = random.choice(available)
-            self.last_topic = topic
-            self.posted_topics.append(topic)
-            if len(self.posted_topics) > 60:
-                self.posted_topics = self.posted_topics[-40:]
-            return category, topic
-
-    def get_theme(self, category: str) -> PostTheme:
-        return CATEGORY_THEMES.get(category, PostTheme.COMPARISON)
-
-    def get_hashtags(self, category: str) -> str:
-        return HASHTAGS.get(category, "#TechTips #Coding #SoftwareEngineering")
-
-    def list_categories(self) -> List[str]:
-        return list(TOPICS.keys())
-
-    def get_fallback_post(self) -> Tuple[str, Optional[bytes]]:
-        post = random.choice(FALLBACK_POSTS)
-        return post, None
-
-    # ── Caption builder ────────────────────────────────────────────────────────
-
-    def _build_caption_from_tech_post(self, post: TechPost, category: str) -> str:
-        """
-        Assemble a full Facebook caption from a structured TechPost.
-        No second Gemini call needed — all data comes from the model.
-        """
+    @staticmethod
+    def build(post: TechPost, category: str) -> str:
         viral_hook = random.choice(VIRAL_HOOKS)
         engagement = random.choice(ENGAGEMENT_HOOKS)
-        tags = post.formatted_hashtags or self.get_hashtags(category)
+        tags = post.formatted_hashtags or HASHTAGS.get(
+            category, "#TechTips #Coding #SoftwareEngineering"
+        )
 
         lines = [viral_hook, ""]
 
@@ -294,91 +277,174 @@ class ContentEngine:
 
         return "\n".join(lines)
 
-    # ── Image generation ───────────────────────────────────────────────────────
 
-    def _generate_image(self, post: TechPost, topic: str) -> Optional[bytes]:
-        """
-        Try card renderer (Jinja2 + HCTI/Playwright), then diagram fallback.
-        The TechPost model has all data — no second Gemini call needed.
-        """
-        image_bytes = None
+# ── Content Engine ──────────────────────────────────────────────────────────────
 
-        try:
-            from services.card_renderer import card_renderer
-            image_bytes = card_renderer.render(post)
-            if image_bytes:
-                logger.info("✅ Card renderer produced image")
-                return image_bytes
-        except Exception as exc:
-            logger.warning("Card renderer failed: %s", exc)
+class ContentEngine:
+    """
+    Orchestrates the full post pipeline.
 
-        try:
-            from services.image_engine import generate_best_image
-            caption_preview = f"{post.title} — {post.caption[:100]}"
-            image_bytes = generate_best_image(topic, caption_preview, post.theme.value)
-            if image_bytes:
-                logger.info("✅ Image engine fallback used")
-        except Exception as exc:
-            logger.warning("Image engine fallback failed: %s", exc)
+    Primary path (structured):
+      1. Pick topic from rotating bank
+      2. ONE Gemini call → structured JSON
+      3. Parse JSON into TechPost dataclass
+      4. CaptionBuilder.build()  → Facebook caption text
+      5. card_renderer.render()  → SVG Renderer + HTML Renderer + Playwright → PNG 1080×1080
+      6. Return (caption, png_bytes) to caller (scheduler / API route)
 
-        return image_bytes
+    Fallback path (if Gemini or parse fails):
+      - Legacy free-text Gemini call → plain caption, no image
+      - Static fallback → hardcoded caption, no image
+    """
 
-    # ── Main entry point ───────────────────────────────────────────────────────
+    def __init__(self):
+        self.posted_topics: List[str] = []
+        self.post_counter:  int = 0
+        self.last_category: str = "system_architecture"
+        self.last_topic:    str = ""
+        self._lock = threading.Lock()
+        self._caption_builder = CaptionBuilder()
+
+    # ── Topic rotation ──────────────────────────────────────────────────────────
+
+    def get_next_topic(self) -> Tuple[str, str]:
+        with self._lock:
+            category  = random.choice(list(TOPICS.keys()))
+            self.last_category = category
+            available = [t for t in TOPICS[category] if t not in self.posted_topics[-20:]]
+            if not available:
+                available = TOPICS[category]
+            topic = random.choice(available)
+            self.last_topic = topic
+            self.posted_topics.append(topic)
+            if len(self.posted_topics) > 60:
+                self.posted_topics = self.posted_topics[-40:]
+            return category, topic
+
+    def get_theme(self, category: str) -> PostTheme:
+        return CATEGORY_THEMES.get(category, PostTheme.COMPARISON)
+
+    def get_hashtags(self, category: str) -> str:
+        return HASHTAGS.get(category, "#TechTips #Coding #SoftwareEngineering")
+
+    def list_categories(self) -> List[str]:
+        return list(TOPICS.keys())
+
+    def get_fallback_post(self) -> Tuple[str, Optional[bytes]]:
+        return random.choice(FALLBACK_POSTS), None
+
+    # ── Main entry point ────────────────────────────────────────────────────────
 
     def generate_post(self) -> Tuple[str, Optional[bytes]]:
         """
-        Structured pipeline: one Gemini call → TechPost → caption + image.
-        Falls back to legacy text pipeline if structured call fails.
+        Canonical pipeline:
+
+            Scheduler
+                │
+                ▼
+            Gemini (ONE call)
+                │
+                ▼
+            TechPost
+            ┌───────────────┼────────────────┐
+            ▼               ▼                ▼
+        Caption Builder  HTML Renderer   SVG Renderer
+            │               └────────────────┘
+            │                       │
+            │              Playwright Screenshot
+            │                       │
+            │                PNG 1080×1080
+            └───────────────────────┘
+                            │
+                     Facebook Publisher
         """
         try:
             category, topic = self.get_next_topic()
             theme = self.get_theme(category)
 
-            logger.info("Generating post: category='%s' topic='%s' theme='%s'",
-                        category, topic[:60], theme.value)
+            logger.info(
+                "Pipeline start: category='%s'  topic='%s'  theme='%s'",
+                category, topic[:60], theme.value,
+            )
 
-            # ── Structured path (primary) ──────────────────────────────────────
+            # ── Step 1: ONE Gemini call ────────────────────────────────────────
             structured = gemini.generate_structured_post(topic, theme.value)
 
             if structured:
                 try:
+                    # ── Step 2: TechPost ───────────────────────────────────────
                     post = TechPost.from_gemini_response(structured, theme=theme)
-                    caption = self._build_caption_from_tech_post(post, category)
-                    image_bytes = self._generate_image(post, topic)
-                    logger.info("Structured post assembled: %d words", len(caption.split()))
+                    logger.info("TechPost parsed: is_debate=%s", post.is_debate)
+
+                    # ── Step 3a: Caption Builder ───────────────────────────────
+                    caption = CaptionBuilder.build(post, category)
+
+                    # ── Step 3b: SVG Renderer + HTML Renderer + Playwright ─────
+                    image_bytes = self._render_image(post, topic)
+
+                    logger.info(
+                        "Pipeline complete: caption=%d words  image=%s",
+                        len(caption.split()),
+                        f"{len(image_bytes)} bytes" if image_bytes else "None",
+                    )
                     self.post_counter += 1
                     return caption, image_bytes
-                except Exception as exc:
-                    logger.warning("TechPost model parse failed, falling back: %s", exc)
 
-            # ── Legacy path (fallback) ─────────────────────────────────────────
-            logger.info("Using legacy text pipeline for topic '%s'", topic[:60])
+                except Exception as exc:
+                    logger.warning("TechPost parse/render failed — falling back: %s", exc)
+
+            # ── Legacy fallback: free-text Gemini call ─────────────────────────
+            logger.info("Structured pipeline failed — using legacy text path for '%s'", topic[:60])
             post_body = gemini.generate_content_post(topic=topic, template_type="deep_dive")
 
             if not post_body:
                 logger.warning("Both pipelines failed — using static fallback")
                 return self.get_fallback_post()
 
-            post_body = post_body.replace("Madalitso", "").replace("madalitso", "")
-            viral_hook = random.choice(VIRAL_HOOKS)
-            engagement = random.choice(ENGAGEMENT_HOOKS)
-            tags = self.get_hashtags(category)
-
-            caption = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
-
-            try:
-                from services.image_engine import generate_best_image
-                image_bytes = generate_best_image(topic, caption[:200], "comparison")
-            except Exception:
-                image_bytes = None
+            post_body   = post_body.replace("Madalitso", "").replace("madalitso", "")
+            viral_hook  = random.choice(VIRAL_HOOKS)
+            engagement  = random.choice(ENGAGEMENT_HOOKS)
+            tags        = self.get_hashtags(category)
+            caption     = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
 
             self.post_counter += 1
-            logger.info("Legacy post assembled: %d words", len(caption.split()))
-            return caption, image_bytes
+            logger.info("Legacy caption assembled: %d words, no image", len(caption.split()))
+            return caption, None
 
         except Exception as exc:
             logger.error("Post generation crashed: %s", exc)
             return self.get_fallback_post()
+
+    # ── Image rendering (steps 3b-3d) ──────────────────────────────────────────
+
+    def _render_image(self, post: TechPost, topic: str) -> Optional[bytes]:
+        """
+        Card rendering sub-pipeline:
+          SVG Renderer  →  HTML Renderer  →  Playwright  →  PNG 1080×1080
+
+        Falls back to Kroki/Picsum image_engine as a last resort.
+        """
+        try:
+            from services.card_renderer import card_renderer
+            png = card_renderer.render(post)
+            if png:
+                logger.info("Card renderer produced PNG (%d bytes)", len(png))
+                return png
+        except Exception as exc:
+            logger.warning("Card renderer failed: %s", exc)
+
+        # Last resort: diagram generator (no Gemini call, uses Kroki/Picsum)
+        try:
+            from services.image_engine import generate_best_image
+            caption_preview = f"{post.title} — {post.caption[:100]}"
+            png = generate_best_image(topic, caption_preview, post.theme.value)
+            if png:
+                logger.info("image_engine last-resort fallback used")
+            return png
+        except Exception as exc:
+            logger.warning("image_engine fallback also failed: %s", exc)
+
+        return None
 
 
 content_engine = ContentEngine()
