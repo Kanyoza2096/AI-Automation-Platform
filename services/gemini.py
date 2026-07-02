@@ -221,14 +221,24 @@ class GeminiService:
             "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT",
         ]]
 
-    def _call(self, prompt: str, temperature: float, max_tokens: int) -> str:
+    def _call(self, prompt: str, temperature: float, max_tokens: int,
+              thinking_budget: Optional[int] = None) -> str:
+        """
+        Call Gemini.  thinking_budget=0 disables the reasoning phase on
+        gemini-2.5-* thinking models so the full maxOutputTokens budget is
+        available for the actual text response.
+        """
         if time.time() - self._last_rate_limit_time < RATE_LIMIT_BACKOFF_SECONDS:
             raise GeminiRateLimited("Preemptive backoff")
 
         url = f"{GEMINI_BASE}/models/{self.model}:generateContent?key={self.api_key}"
+        gen_cfg: dict = {"temperature": temperature, "maxOutputTokens": max_tokens, "topP": 0.92}
+        if thinking_budget is not None:
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": thinking_budget}
+
         payload = {
             "contents": [{"parts": [{"text": prompt}], "role": "user"}],
-            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens, "topP": 0.92},
+            "generationConfig": gen_cfg,
             "safetySettings": self._safety_settings(),
         }
 
@@ -513,19 +523,24 @@ RULES:
 - JSON must be valid — double-quote all keys and strings
 """
         try:
-            raw = self._call(prompt, temperature=self._post_temp, max_tokens=1200)
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = "\n".join(raw.split("\n")[1:])
-            if "```" in raw:
-                raw = raw.split("```")[0]
-            raw = raw.strip()
-            data = json.loads(raw)
+            # thinking_budget=0 disables the reasoning phase on gemini-2.5-* models
+            # so the full max_tokens budget goes to the JSON output, not reasoning.
+            raw = self._call(prompt, temperature=self._post_temp,
+                             max_tokens=2048, thinking_budget=0)
+            # Extract JSON object robustly — works regardless of surrounding text or fences
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                logger.warning("generate_structured_post: no JSON object found (len=%d, preview=%r)",
+                               len(raw), raw[:120])
+                return None
+            json_str = raw[start:end + 1]
+            data = json.loads(json_str)
             if not data.get("title") or not data.get("caption"):
                 return None
             return data
         except (json.JSONDecodeError, Exception) as exc:
-            logger.warning("generate_structured_post JSON parse failed: %s", exc)
+            logger.warning("generate_structured_post failed: %s", exc)
             return None
 
     def generate_raw(self, prompt: str, temperature: float = 0.7) -> Optional[str]:
