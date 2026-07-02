@@ -81,9 +81,9 @@ class PostScheduler:
         if self._running:
             return
         self._running = True
-        self._scheduler_thread = threading.Thread(target=self._run, daemon=False, name="scheduler-producer")
-        self._worker_thread = threading.Thread(target=self._worker, daemon=False, name="scheduler-worker")
-        self._engagement_thread = threading.Thread(target=self._engagement_loop, daemon=False, name="engagement-loop")
+        self._scheduler_thread = threading.Thread(target=self._run, daemon=True, name="scheduler-producer")
+        self._worker_thread = threading.Thread(target=self._worker, daemon=True, name="scheduler-worker")
+        self._engagement_thread = threading.Thread(target=self._engagement_loop, daemon=True, name="engagement-loop")
         self._scheduler_thread.start()
         self._worker_thread.start()
         self._engagement_thread.start()

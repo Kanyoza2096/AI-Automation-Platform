@@ -29,7 +29,15 @@ def register_api_routes(app):
 
     def _require_auth():
         api_key = request.headers.get("X-API-Key", "")
-        return api_key == settings.owner_psid or api_key == getattr(settings, 'api_secret', '')
+        if not api_key:
+            return False
+        owner_psid = settings.owner_psid
+        api_secret = getattr(settings, 'api_secret', '')
+        if owner_psid and api_key == owner_psid:
+            return True
+        if api_secret and api_key == api_secret:
+            return True
+        return False
 
     # ==================================================================
     # PUBLIC
@@ -214,7 +222,7 @@ def register_api_routes(app):
     def force_news():
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        category = request.get_json().get("category", None) if request.is_json else None
+        category = (request.get_json() or {}).get('category', None) if request.is_json else None
         return jsonify({"status": "queued" if scheduler.force_news(category) else "failed"})
 
     @app.route("/api/bot/force-engagement", methods=["POST"])

@@ -72,7 +72,6 @@ def constant_time_compare(a: str, b: str) -> bool:
     Compare two strings in constant time to prevent timing attacks.
     Use for comparing tokens, secrets, and verify-tokens.
     """
-    import hmac
     return hmac.compare_digest(a.encode(), b.encode())
 
 

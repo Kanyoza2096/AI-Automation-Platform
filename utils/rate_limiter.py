@@ -6,6 +6,7 @@ Rate Limiter v1.0 — Database-backed rate limiting
 """
 
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -18,6 +19,7 @@ class RateLimiter:
     def __init__(self, supabase_client=None):
         self.supabase = supabase_client
         self._fallback_counts = {}  # In-memory fallback if Supabase down
+        self._fallback_lock = threading.Lock()  # Protect _fallback_counts
 
     def is_allowed(self, identifier: str, request_type: str) -> bool:
         """
@@ -35,24 +37,25 @@ class RateLimiter:
             except Exception as e:
                 logger.warning(f"Rate limit check failed, using fallback: {e}")
 
-        # Fallback: simple in-memory rate limiting
+        # Fallback: simple in-memory rate limiting (thread-safe)
         key = f"{identifier}:{request_type}"
         now = datetime.now().timestamp()
 
-        if key not in self._fallback_counts:
-            self._fallback_counts[key] = []
+        with self._fallback_lock:
+            if key not in self._fallback_counts:
+                self._fallback_counts[key] = []
 
-        # Clean old entries
-        self._fallback_counts[key] = [
-            t for t in self._fallback_counts[key]
-            if now - t < 60
-        ]
+            # Clean old entries
+            self._fallback_counts[key] = [
+                t for t in self._fallback_counts[key]
+                if now - t < 60
+            ]
 
-        if len(self._fallback_counts[key]) >= 10:
-            return False
+            if len(self._fallback_counts[key]) >= 10:
+                return False
 
-        self._fallback_counts[key].append(now)
-        return True
+            self._fallback_counts[key].append(now)
+            return True
 
     def unblock(self, identifier: str) -> bool:
         """Manually unblock a user."""

@@ -6,7 +6,7 @@ Analytics Tracker v7.0 — Supabase Persistence
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger("kanyoza.analytics")
@@ -23,9 +23,9 @@ class AnalyticsTracker:
             return
         try:
             self.supabase.table(table).insert({
-                'id': f"evt-{datetime.now().timestamp()}-{data.get('event_type', 'unknown')[:10]}",
+                'id': __import__('uuid').uuid4().hex,
                 **data,
-                'created_at': datetime.now().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
             }).execute()
         except Exception as e:
             logger.error(f"Failed to track {table} event: {e}")
@@ -95,12 +95,12 @@ class AnalyticsTracker:
             return
         try:
             self.supabase.table('scan_history').insert({
-                'id': f"scan-{datetime.now().timestamp()}",
+                'id': 'scan-' + __import__('uuid').uuid4().hex[:16],
                 'repos_scanned': repos, 'files_scanned': files,
                 'total_issues': issues, 'critical': critical,
                 'high': high, 'medium': medium, 'low': low,
                 'scan_type': scan_type,
-                'scanned_at': datetime.now().isoformat(),
+                'scanned_at': datetime.now(timezone.utc).isoformat(),
             }).execute()
         except Exception as e:
             logger.error(f"Failed to record scan: {e}")

@@ -10,7 +10,7 @@ import json
 import re
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger("kanyoza.core.memory")
@@ -62,7 +62,7 @@ class MemorySystem:
         return []
 
     def add_message(self, sender_id: str, role: str, text: str):
-        message = {"role": role, "text": text, "timestamp": datetime.now().isoformat()}
+        message = {"role": role, "text": text, "timestamp": datetime.now(timezone.utc).isoformat()}
         with self._lock:
             if sender_id not in self._short_term:
                 self._short_term[sender_id] = []
@@ -73,9 +73,9 @@ class MemorySystem:
         if self.supabase:
             try:
                 self.supabase.table('conversation_history').insert({
-                    'id': f"msg-{datetime.now().timestamp()}-{sender_id[:8]}",
+                    'id': f"msg-{__import__('uuid').uuid4().hex[:16]}-{sender_id[:8]}",
                     'sender_id': sender_id, 'role': role, 'text': text[:2000],
-                    'created_at': datetime.now().isoformat(),
+                    'created_at': datetime.now(timezone.utc).isoformat(),
                 }).execute()
             except Exception as e:
                 logger.error(f"Failed to persist message: {e}")
@@ -91,13 +91,13 @@ class MemorySystem:
         with self._lock:
             if sender_id in self._profiles:
                 cache_time = self._profile_cache_times.get(sender_id)
-                if cache_time and (datetime.now() - cache_time) < self._profile_cache_ttl:
+                if cache_time and (datetime.now(timezone.utc) - cache_time) < self._profile_cache_ttl:
                     return self._profiles[sender_id]
 
         profile = self._fetch_profile(sender_id)
         with self._lock:
             self._profiles[sender_id] = profile
-            self._profile_cache_times[sender_id] = datetime.now()
+            self._profile_cache_times[sender_id] = datetime.now(timezone.utc)
         return profile
 
     def _fetch_profile(self, sender_id: str) -> Dict:
@@ -114,8 +114,8 @@ class MemorySystem:
                         'communication_style': 'neutral',
                         'relationship_score': 0,
                         'total_messages': 0,
-                        'first_seen': datetime.now().isoformat(),
-                        'last_seen': datetime.now().isoformat(),
+                        'first_seen': datetime.now(timezone.utc).isoformat(),
+                        'last_seen': datetime.now(timezone.utc).isoformat(),
                     }
                     for row in result.data:
                         key = row.get('fact_key', '')
@@ -142,7 +142,7 @@ class MemorySystem:
             'sender_id': sender_id, 'name': 'there', 'interests': [],
             'topics_discussed': [], 'communication_style': 'neutral',
             'relationship_score': 0, 'total_messages': 0,
-            'first_seen': datetime.now().isoformat(), 'last_seen': datetime.now().isoformat(),
+            'first_seen': datetime.now(timezone.utc).isoformat(), 'last_seen': datetime.now(timezone.utc).isoformat(),
         }
 
     def update_user_profile(self, sender_id: str, facts: Dict[str, Any]):
@@ -153,11 +153,11 @@ class MemorySystem:
                 profile[key] = combined[:20]
             else:
                 profile[key] = value
-        profile['last_seen'] = datetime.now().isoformat()
+        profile['last_seen'] = datetime.now(timezone.utc).isoformat()
 
         with self._lock:
             self._profiles[sender_id] = profile
-            self._profile_cache_times[sender_id] = datetime.now()
+            self._profile_cache_times[sender_id] = datetime.now(timezone.utc)
 
         if self.supabase:
             try:
@@ -171,7 +171,7 @@ class MemorySystem:
                         'sender_id': sender_id,
                         'fact_key': key,
                         'fact_value': str(value)[:500],
-                        'updated_at': datetime.now().isoformat(),
+                        'updated_at': datetime.now(timezone.utc).isoformat(),
                     }, on_conflict='sender_id,fact_key').execute()
             except Exception as e:
                 logger.error(f"Failed to persist profile: {e}")
@@ -252,7 +252,7 @@ class MemorySystem:
                 self.supabase.table('conversation_summaries').upsert({
                     'id': f"sum-{sender_id}", 'sender_id': sender_id,
                     'summary': summary,
-                    'updated_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
                 }, on_conflict='sender_id').execute()
             except Exception as e:
                 logger.error(f"Failed to persist summary: {e}")
