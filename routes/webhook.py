@@ -33,21 +33,25 @@ _humanizer = Humanizer()
 
 # Slash-command handler — initialized lazily after services are ready
 _slash_handler: Optional["_SlashCommands"] = None
+_slash_handler_lock = threading.Lock()
 
 
 def _get_slash_handler() -> "_SlashCommands":
     global _slash_handler
+    # Double-checked locking — prevents duplicate init in multi-threaded Flask
     if _slash_handler is None:
-        from services.facebook import facebook as _fb
-        from analytics.tracker import analytics as _analytics
-        from scheduler.post_scheduler import scheduler as _sched
-        from config.settings import settings as _settings
-        _slash_handler = _SlashCommands(
-            facebook_service=_fb,
-            analytics=_analytics,
-            post_scheduler=_sched,
-            settings=_settings,
-        )
+        with _slash_handler_lock:
+            if _slash_handler is None:
+                from services.facebook import facebook as _fb
+                from analytics.tracker import analytics as _analytics
+                from scheduler.post_scheduler import scheduler as _sched
+                from config.settings import settings as _settings
+                _slash_handler = _SlashCommands(
+                    facebook_service=_fb,
+                    analytics=_analytics,
+                    post_scheduler=_sched,
+                    settings=_settings,
+                )
     return _slash_handler
 
 
@@ -76,7 +80,10 @@ def register_webhook_routes(app):
         if not verify_facebook_signature(request.data, request.headers.get('X-Hub-Signature-256', ''), settings.app_secret):
             return "Invalid signature", 403
 
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not data:
+            logger.warning("Webhook POST received with no parseable JSON body")
+            return "EVENT_RECEIVED", 200
         try:
             for entry in data.get("entry", []):
                 for event in entry.get("messaging", []):

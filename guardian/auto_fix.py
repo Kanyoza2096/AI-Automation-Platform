@@ -81,12 +81,10 @@ class AutoFixEngine:
                 "Just the corrected code. Keep all other lines unchanged."
             )
 
-            fixed_code = gemini._call_gemini(
+            fixed_code = gemini._call(
                 prompt=prompt,
                 temperature=0.2,
-                max_output_tokens=2000,
-                top_p=0.9,
-                timeout=30,
+                max_tokens=2000,
             )
 
             if fixed_code:
@@ -270,10 +268,10 @@ class AutoFixEngine:
                 timeout=10,
             )
 
-            if branch_response.status_code not in [201, 422]:
-                # 422 means branch already exists, try with random suffix
-                import random
-                branch_name = f"{branch_name}-{random.randint(100, 999)}"
+            if branch_response.status_code == 422:
+                # 422 means branch already exists — retry once with a unique timestamp suffix
+                import time as _time
+                branch_name = f"{branch_name}-{int(_time.time())}"
                 branch_response = requests.post(
                     branch_url,
                     headers=self._headers(),
@@ -283,6 +281,10 @@ class AutoFixEngine:
                     },
                     timeout=10,
                 )
+            # After creation or retry, we require HTTP 201 — anything else aborts
+            if branch_response.status_code != 201:
+                logger.error(f"Failed to create branch after retry: {branch_response.status_code}")
+                return None
 
             # Step 8: Create the Pull Request
             language = self._detect_language(file_path)

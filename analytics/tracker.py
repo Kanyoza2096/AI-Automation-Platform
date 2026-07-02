@@ -6,6 +6,7 @@ Analytics Tracker v7.0 — Supabase Persistence
 """
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -23,7 +24,7 @@ class AnalyticsTracker:
             return
         try:
             self.supabase.table(table).insert({
-                'id': __import__('uuid').uuid4().hex,
+                'id': uuid.uuid4().hex,
                 **data,
                 'created_at': datetime.now(timezone.utc).isoformat(),
             }).execute()
@@ -95,7 +96,7 @@ class AnalyticsTracker:
             return
         try:
             self.supabase.table('scan_history').insert({
-                'id': 'scan-' + __import__('uuid').uuid4().hex[:16],
+                'id': 'scan-' + uuid.uuid4().hex[:16],
                 'repos_scanned': repos, 'files_scanned': files,
                 'total_issues': issues, 'critical': critical,
                 'high': high, 'medium': medium, 'low': low,

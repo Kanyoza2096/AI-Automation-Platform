@@ -199,15 +199,18 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping post scheduler: %s", exc)
 
-    # v9 services
-    for svc_name in ("services.gemini", "services.facebook", "services.news_scraper"):
+    # v9 services — each module exposes a named singleton with .close()
+    _v9_singletons = [
+        ("services.gemini", "gemini"),
+        ("services.facebook", "facebook"),
+        ("services.news_scraper", "news_scraper"),
+    ]
+    for svc_name, attr in _v9_singletons:
         try:
             svc_module = __import__(svc_name, fromlist=[""])
-            # Each v9 service exposes a module-level singleton with .close()
-            for attr in ("gemini", "facebook", "news_scraper"):
-                obj = getattr(svc_module, attr, None)
-                if obj and hasattr(obj, "close"):
-                    obj.close()
+            obj = getattr(svc_module, attr, None)
+            if obj and hasattr(obj, "close"):
+                obj.close()
         except Exception:
             pass
 

@@ -116,7 +116,7 @@ def register_api_routes(app):
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         topic = data.get("topic", "")
         template = data.get("template", "deep_dive")
 
@@ -178,7 +178,7 @@ def register_api_routes(app):
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         sender_id = data.get("sender_id", "")
         message = data.get("message", "")
         if not sender_id or not message:
@@ -250,7 +250,7 @@ def register_api_routes(app):
     def toggle_feature():
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         feature = data.get("feature", "")
         enabled = data.get("enabled", True)
         if feature not in ['auto_reply', 'auto_post', 'auto_comment_reply', 'cross_engage']:
@@ -275,13 +275,24 @@ def register_api_routes(app):
     def update_schedule():
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        data = request.get_json()
-        if data.get("content_hours_utc"):
-            settings.content_posting_hours_utc = data["content_hours_utc"]
-            scheduler.content_hours_utc = data["content_hours_utc"]
-        if data.get("news_hours_utc"):
-            settings.news_posting_hours_utc = data["news_hours_utc"]
-            scheduler.news_hours_utc = data["news_hours_utc"]
+        data = request.get_json(silent=True) or {}
+        def _validate_hours(raw):
+            """Convert to ints and reject any value outside 0-23."""
+            result = [int(h) for h in raw]
+            if any(h < 0 or h > 23 for h in result):
+                raise ValueError(f"Hours must be 0-23, got {result}")
+            return result
+        try:
+            if data.get("content_hours_utc"):
+                hours = _validate_hours(data["content_hours_utc"])
+                settings.content_posting_hours_utc = hours
+                scheduler.content_hours_utc = hours
+            if data.get("news_hours_utc"):
+                hours = _validate_hours(data["news_hours_utc"])
+                settings.news_posting_hours_utc = hours
+                scheduler.news_hours_utc = hours
+        except (ValueError, TypeError) as e:
+            return jsonify({"error": f"Invalid hours value: {e}"}), 400
         return jsonify({"status": "updated"})
 
     # ==================================================================
@@ -349,7 +360,7 @@ def register_api_routes(app):
     def switch_tenant():
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        return jsonify({"status": "switched", "tenant_id": request.get_json().get("tenant_id", "")})
+        return jsonify({"status": "switched", "tenant_id": (request.get_json(silent=True) or {}).get("tenant_id", "")})
 
     # ==================================================================
     # RATE LIMITS
@@ -363,7 +374,7 @@ def register_api_routes(app):
     def unblock_user():
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         identifier = data.get('identifier', '')
         if not identifier:
             return jsonify({"error": "Missing identifier"}), 400

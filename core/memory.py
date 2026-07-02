@@ -10,6 +10,7 @@ import json
 import re
 import logging
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
@@ -73,7 +74,7 @@ class MemorySystem:
         if self.supabase:
             try:
                 self.supabase.table('conversation_history').insert({
-                    'id': f"msg-{__import__('uuid').uuid4().hex[:16]}-{sender_id[:8]}",
+                    'id': f"msg-{uuid.uuid4().hex[:16]}-{sender_id[:8]}",
                     'sender_id': sender_id, 'role': role, 'text': text[:2000],
                     'created_at': datetime.now(timezone.utc).isoformat(),
                 }).execute()
@@ -258,8 +259,9 @@ class MemorySystem:
                 logger.error(f"Failed to persist summary: {e}")
 
     def get_summary(self, sender_id: str) -> Optional[str]:
-        if sender_id in self._summaries:
-            return self._summaries[sender_id]
+        with self._lock:
+            if sender_id in self._summaries:
+                return self._summaries[sender_id]
         if self.supabase:
             try:
                 result = (self.supabase.table('conversation_summaries')
