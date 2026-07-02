@@ -4,9 +4,6 @@ Kanyoza Systems AI Platform v10 — Application Factory.
 Creates and configures the Flask application.
 Zero business logic lives here — this module only wires middleware,
 error handlers, and route blueprints to the Flask app instance.
-
-Follows the Flask application factory pattern so the app can be created
-multiple times in tests with different configurations.
 """
 
 from __future__ import annotations
@@ -30,20 +27,6 @@ def create_app(
 ) -> Flask:
     """
     Construct and return a configured Flask application.
-
-    Parameters
-    ----------
-    settings : Settings
-        Application configuration (injected — not read from globals).
-    container : ServiceContainer
-        Fully-wired DI container.
-    test_config : dict | None
-        Optional Flask config overrides for the test environment.
-
-    Returns
-    -------
-    Flask
-        Ready-to-serve application instance.
     """
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -54,22 +37,16 @@ def create_app(
     _secret_key = os.getenv("SESSION_SECRET", "")
     if not _secret_key:
         if settings.env.is_production:
-            # Hard-fail in production — a missing signing key is a security
-            # vulnerability, not a degradable condition.
             import sys
             logger.critical(
-                "SESSION_SECRET is not set — refusing to start in production. "
-                "Add it as a Replit Secret."
+                "SESSION_SECRET is not set — refusing to start in production."
             )
             sys.exit(1)
         else:
-            # Development only: generate a per-process ephemeral key so
-            # sessions are invalidated on restart (acceptable in dev).
             import secrets
             _secret_key = secrets.token_hex(32)
             logger.warning(
-                "SESSION_SECRET not set — using ephemeral key (development only). "
-                "Sessions will not persist across restarts."
+                "SESSION_SECRET not set — using ephemeral key (development only)."
             )
 
     app.config.update(
@@ -77,12 +54,11 @@ def create_app(
         TESTING=settings.env.is_testing,
         SECRET_KEY=_secret_key,
         JSON_SORT_KEYS=False,
-        MAX_CONTENT_LENGTH=16 * 1024 * 1024,  # 16 MB max request body
+        MAX_CONTENT_LENGTH=16 * 1024 * 1024,
     )
     if test_config:
         app.config.update(test_config)
 
-    # Attach container to app for access from request context if needed
     app.extensions["service_container"] = container
 
     # ------------------------------------------------------------------
@@ -96,16 +72,15 @@ def create_app(
     _register_error_handlers(app)
 
     # ------------------------------------------------------------------
-    # Health / root routes (inline — no business logic)
+    # System routes
     # ------------------------------------------------------------------
     _register_system_routes(app, settings)
 
     # ------------------------------------------------------------------
     # Application blueprints
-    # NOTE: v9 routes are registered here to keep the existing bot alive
-    #       while v10 route blueprints are built in later milestones.
     # ------------------------------------------------------------------
     _register_v9_routes(app)
+    _register_product_routes(app)
 
     logger.info("Flask application created (env=%s)", settings.environment)
     return app
@@ -115,24 +90,18 @@ def create_app(
 # Middleware
 # ---------------------------------------------------------------------------
 
-
 def _register_request_hooks(app: Flask) -> None:
-    """Attach before/after request hooks for correlation IDs and logging."""
-
     @app.before_request
     def assign_correlation_id():
-        """Assign a correlation ID to every inbound request."""
         incoming = request.headers.get("X-Correlation-ID")
         cid = set_correlation_id(incoming)
         request.environ["correlation_id"] = cid
 
     @app.after_request
     def add_correlation_header(response):
-        """Echo the correlation ID back in the response headers."""
         cid = get_current_correlation_id()
         if cid:
             response.headers["X-Correlation-ID"] = cid
-        # Security headers
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -143,28 +112,13 @@ def _register_request_hooks(app: Flask) -> None:
 # Error handlers
 # ---------------------------------------------------------------------------
 
-
 def _register_error_handlers(app: Flask) -> None:
-    """Map exception types to consistent JSON error responses."""
-
-    from core.exceptions import (
-        KanyozaError,
-        APIError,
-        ValidationError,
-        NotFoundError,
-        RateLimitError,
-        UnauthorizedError,
-    )
+    from core.exceptions import KanyozaError
 
     @app.errorhandler(KanyozaError)
     def handle_kanyoza_error(exc: KanyozaError):
         status = getattr(exc, "http_status", 500)
-        logger.error(
-            "KanyozaError: %s [%s]",
-            exc.message,
-            exc.error_code,
-            extra={"context": exc.context},
-        )
+        logger.error("KanyozaError: %s [%s]", exc.message, exc.error_code)
         return jsonify(exc.to_dict()), status
 
     @app.errorhandler(404)
@@ -174,10 +128,6 @@ def _register_error_handlers(app: Flask) -> None:
     @app.errorhandler(405)
     def handle_405(exc):
         return jsonify({"error": "METHOD_NOT_ALLOWED", "message": "Method not allowed."}), 405
-
-    @app.errorhandler(413)
-    def handle_413(exc):
-        return jsonify({"error": "PAYLOAD_TOO_LARGE", "message": "Request body too large."}), 413
 
     @app.errorhandler(500)
     def handle_500(exc):
@@ -189,10 +139,7 @@ def _register_error_handlers(app: Flask) -> None:
 # System routes
 # ---------------------------------------------------------------------------
 
-
 def _register_system_routes(app: Flask, settings: Settings) -> None:
-    """Register lightweight health and status endpoints."""
-
     @app.route("/")
     def root():
         return jsonify({
@@ -220,20 +167,11 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 
     @app.route("/api/v1/health/deep")
     def health_deep():
-        """
-        Live connectivity probe for every external dependency.
-
-        Returns per-service status:
-          ok      — configured and reachable
-          error   — configured but unreachable / auth failure
-          skip    — not configured (degraded-mode expected)
-        """
         import time
-
         results = {}
         overall = "ok"
 
-        # ── Gemini ─────────────────────────────────────────────────────────────
+        # Gemini
         gemini_key = getattr(settings, "gemini_key", "") or ""
         if not gemini_key:
             results["gemini"] = {"status": "skip", "reason": "GEMINI_KEY not set"}
@@ -241,22 +179,14 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             try:
                 from services.gemini import gemini as gemini_svc
                 t0 = time.monotonic()
-                reply = gemini_svc._call(
-                    prompt="Reply with exactly one word: ok",
-                    temperature=0.0,
-                    max_tokens=8,
-                )
+                reply = gemini_svc._call(prompt="Reply with exactly one word: ok", temperature=0.0, max_tokens=8)
                 ms = round((time.monotonic() - t0) * 1000)
-                if reply and reply.strip():
-                    results["gemini"] = {"status": "ok", "latency_ms": ms}
-                else:
-                    results["gemini"] = {"status": "error", "reason": "empty response"}
-                    overall = "degraded"
+                results["gemini"] = {"status": "ok", "latency_ms": ms} if reply else {"status": "error", "reason": "empty response"}
             except Exception as exc:
                 results["gemini"] = {"status": "error", "reason": str(exc)[:120]}
                 overall = "degraded"
 
-        # ── Facebook Graph API ──────────────────────────────────────────────────
+        # Facebook
         fb_token = getattr(settings, "page_access_token", "") or ""
         if not fb_token:
             results["facebook"] = {"status": "skip", "reason": "PAGE_ACCESS_TOKEN not set"}
@@ -264,85 +194,42 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             try:
                 import requests as _req
                 t0 = time.monotonic()
-                r = _req.get(
-                    "https://graph.facebook.com/me",
-                    params={"fields": "id,name", "access_token": fb_token},
-                    timeout=8,
-                )
+                r = _req.get("https://graph.facebook.com/me", params={"fields": "id,name", "access_token": fb_token}, timeout=8)
                 ms = round((time.monotonic() - t0) * 1000)
                 if r.status_code == 200:
                     data = r.json()
-                    results["facebook"] = {
-                        "status": "ok",
-                        "latency_ms": ms,
-                        "page_id": data.get("id"),
-                        "page_name": data.get("name"),
-                    }
+                    results["facebook"] = {"status": "ok", "latency_ms": ms, "page_id": data.get("id"), "page_name": data.get("name")}
                 else:
-                    results["facebook"] = {
-                        "status": "error",
-                        "http": r.status_code,
-                        "reason": r.json().get("error", {}).get("message", "unknown")[:120],
-                    }
+                    results["facebook"] = {"status": "error", "http": r.status_code}
                     overall = "degraded"
             except Exception as exc:
                 results["facebook"] = {"status": "error", "reason": str(exc)[:120]}
                 overall = "degraded"
 
-        # ── Supabase ────────────────────────────────────────────────────────────
-        if not settings.supabase_enabled:
-            results["supabase"] = {"status": "skip", "reason": "Supabase not configured"}
-        else:
-            try:
-                from supabase import create_client
-                sb_url = getattr(settings, "supabase_url", "") or ""
-                sb_key = getattr(settings, "supabase_key", "") or ""
-                t0 = time.monotonic()
-                client = create_client(sb_url, sb_key)
-                client.table("__health_check__").select("1").limit(1).execute()
-                ms = round((time.monotonic() - t0) * 1000)
-                results["supabase"] = {"status": "ok", "latency_ms": ms}
-            except Exception as exc:
-                msg = str(exc)[:120]
-                if "does not exist" in msg or "relation" in msg:
-                    ms = round((time.monotonic() - t0) * 1000)
-                    results["supabase"] = {"status": "ok", "latency_ms": ms, "note": "connected"}
-                else:
-                    results["supabase"] = {"status": "error", "reason": msg}
-                    overall = "degraded"
-
-        return jsonify({
-            "status": overall,
-            "version": "10.0",
-            "services": results,
-        })
+        return jsonify({"status": overall, "version": "10.0", "services": results})
 
 
 # ---------------------------------------------------------------------------
-# v9 route compatibility shim
+# Route registration
 # ---------------------------------------------------------------------------
-
 
 def _register_v9_routes(app: Flask) -> None:
-    """
-    Register existing v9 routes so the bot remains functional
-    while v10 services are built in later milestones.
-    Removed once all route blueprints are migrated to v10.
-    """
+    """Register v9 bot routes (compatibility shim)."""
     try:
         from routes.webhook import register_webhook_routes
         from routes.api import register_api_routes
         register_webhook_routes(app)
         register_api_routes(app)
-        logger.info("v9 routes registered (compatibility shim active).")
-    except Exception as exc:  # pragma: no cover
+        logger.info("v9 routes registered")
+    except Exception as exc:
         logger.warning("v9 route registration skipped: %s", exc)
-        from products.converter.routes import converter_bp
 
-def create_app():
-    app = Flask(__name__)
-    
-    # Register product blueprints
-    app.register_blueprint(converter_bp)
-    
-    return app
+
+def _register_product_routes(app: Flask) -> None:
+    """Register product API blueprints."""
+    try:
+        from products.converter.routes import converter_bp
+        app.register_blueprint(converter_bp)
+        logger.info("Converter API registered at /api/v1")
+    except Exception as exc:
+        logger.warning("Converter blueprint skipped: %s", exc)
