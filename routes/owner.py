@@ -175,10 +175,28 @@ class OwnerCommands:
             logger.error(f"Force engage error: {e}")
 
     def cmd_pause(self, sender_id: str):
-        facebook.send_message(sender_id, "⏸️ Paused.")
+        try:
+            scheduler._running = False
+            facebook.send_message(sender_id, "Scheduler paused. Auto-posting stopped.")
+        except Exception as e:
+            logger.error(f"Pause error: {e}")
+            facebook.send_message(sender_id, "Could not pause scheduler.")
 
     def cmd_resume(self, sender_id: str):
-        facebook.send_message(sender_id, "▶️ Resumed.")
+        try:
+            if not scheduler._running:
+                scheduler._running = True
+                import threading
+                scheduler._scheduler_thread = threading.Thread(
+                    target=scheduler._run, daemon=False, name="scheduler-producer"
+                )
+                scheduler._scheduler_thread.start()
+                facebook.send_message(sender_id, "Scheduler resumed. Auto-posting restarted.")
+            else:
+                facebook.send_message(sender_id, "Scheduler is already running.")
+        except Exception as e:
+            logger.error(f"Resume error: {e}")
+            facebook.send_message(sender_id, "Could not resume scheduler.")
 
 
 owner_commands = OwnerCommands()

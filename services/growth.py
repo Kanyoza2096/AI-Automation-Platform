@@ -137,7 +137,7 @@ class GrowthService:
                 "Be authentic. No emojis. Don't mention your own page.\n\n"
                 f"POST: {post_text[:500]}\n\nComment:"
             )
-            comment = gemini._call_gemini(prompt=prompt, temperature=0.85, max_output_tokens=80, top_p=0.95, timeout=15)
+            comment = gemini._call(prompt, temperature=0.85, max_tokens=80)
             comment = comment.strip().strip('"').strip("'")
             return comment if len(comment) > 10 and len(comment) < 300 else None
         except Exception:

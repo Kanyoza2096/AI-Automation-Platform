@@ -200,16 +200,16 @@ def generate_card_from_post(post_content: str) -> bytes:
 
     try:
         from services.gemini import gemini
-prompt = (
-    "Extract as JSON (keep it SHORT):\n"
-    '"option_a": name (1-2 words)\n'
-    '"option_b": name (1-2 words)\n'
-    '"winner": which wins (1-2 words)\n'
-    '"points_a": 2 short pros (max 4 words each)\n'
-    '"points_b": 2 short pros (max 4 words each)\n\n'
-    f"POST:\n{post_content[:600]}\n\n"
-    "Return ONLY valid JSON. No other text."
-)
+        prompt = (
+            "Extract as JSON (keep it SHORT):\n"
+            '"option_a": name (1-2 words)\n'
+            '"option_b": name (1-2 words)\n'
+            '"winner": which wins (1-2 words)\n'
+            '"points_a": 2 short pros (max 4 words each)\n'
+            '"points_b": 2 short pros (max 4 words each)\n\n'
+            f"POST:\n{post_content[:600]}\n\n"
+            "Return ONLY valid JSON. No other text."
+        )
 
         logger.info("CardFromPost: Calling Gemini for extraction...")
         result = gemini._call(

@@ -171,15 +171,55 @@ class NewsScraper:
             self.posted_articles = self.posted_articles[-_TRIM_TO:]
 
     def post_news(self, category: str = None) -> bool:
-        """Scrape and return one article for posting."""
+        """Scrape an article, generate a Gemini post, and publish to Facebook."""
+        from services.gemini import gemini
+        from services.facebook import facebook
+
         articles = self.scrape_all(category)
-        for article in articles[:3]:
+        for article in articles[:5]:
             url = article.get("url", "")
-            if url and url not in self.posted_articles:
+            if not url or url in self.posted_articles:
+                continue
+
+            title = article.get("title", "")
+            summary = article.get("summary", "")
+            source = article.get("source", "")
+
+            prompt = (
+                f"Write a compelling Facebook tech news post about this article.\n\n"
+                f"Title: {title}\n"
+                f"Source: {source}\n"
+                f"Summary: {summary}\n\n"
+                f"RULES:\n"
+                f"- 100-150 words\n"
+                f"- Start with a strong hook\n"
+                f"- Explain why this matters to developers\n"
+                f"- End with an engagement question\n"
+                f"- Add 3-5 relevant hashtags\n"
+                f"- Never say 'As an AI' or introduce yourself\n"
+                f"- Write in professional English\n\n"
+                f"Article URL: {url}\n\n"
+                f"Post:"
+            )
+
+            post_text = gemini.generate_news_post(prompt)
+            if not post_text:
+                logger.warning(f"Gemini failed for article: {title[:60]}")
+                continue
+
+            success = facebook.post_to_page(post_text)
+            if success:
                 self._mark_posted(url)
-                # In the full flow, this calls Gemini + Facebook
+                logger.info(f"News posted: {title[:60]}")
                 return True
+            else:
+                logger.error(f"Facebook post failed for: {title[:60]}")
+
         return False
+
+    def post_trending(self) -> bool:
+        """Fetch and post the most trending tech article."""
+        return self.post_news(category=None)
 
     def close(self):
         self._session.close()
