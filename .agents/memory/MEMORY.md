@@ -1,4 +1,5 @@
 - [v10 platform spec](v10-platform-spec.md) — master prompt lives in attached_assets; build milestone-by-milestone, never all at once
 - [v10 architecture decisions](v10-architecture.md) — DI container, settings, logging, exception hierarchy, model design choices
-- [gemini-2.5-flash thinking tokens](gemini-thinking-model.md) — structured JSON calls must set thinkingBudget=0 or output is truncated to ~320 chars
+- [gemini-2.5-flash thinking tokens](gemini-thinking-model.md) — parts[0] may be a thought block; use next((p for p in parts if "text" in p)) not parts[0]["text"]
 - [playwright-nix-deps](playwright-nix-deps.md) — Playwright Chromium needs Nix system packages; full list of 20+ packages required
+- [v10 hardening bugs fixed](v10-hardening-bugs.md) — full list of all 15 bugs found and fixed during live testing with real API keys

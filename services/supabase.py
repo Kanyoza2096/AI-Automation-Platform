@@ -64,3 +64,23 @@ def ping(client) -> bool:
     except Exception as exc:
         logger.debug("Supabase ping failed: %s", exc)
         return False
+
+
+class _SupabaseServiceShim:
+    """
+    Backwards-compat shim so routes can do:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            supabase_service.client.table(...).execute()
+    This maps .client to whichever singleton client has been initialised.
+    Returns None (falsy) when Supabase is not configured.
+    """
+    @property
+    def client(self):
+        return _service_client if _service_client is not None else _anon_client
+
+    def __bool__(self):
+        return self.client is not None
+
+
+supabase_service = _SupabaseServiceShim()

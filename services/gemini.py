@@ -256,10 +256,13 @@ class GeminiService:
             raise GeminiServiceError(f"Blocked: {data.get('promptFeedback', {}).get('blockReason', 'unknown')}")
 
         parts = candidates[0].get("content", {}).get("parts", [])
-        if not parts or "text" not in parts[0]:
+        # Gemini 2.5 may prepend thinking-token parts (keyed "thought");
+        # find the first part that actually contains output text.
+        text_part = next((p for p in parts if "text" in p), None)
+        if text_part is None:
             raise GeminiServiceError("Missing text")
 
-        return parts[0]["text"].strip()
+        return text_part["text"].strip()
 
     def _strip_bad_phrases(self, text: str) -> str:
         return ' '.join(_BAD_PHRASES_PATTERN.sub("", text).split()).strip()

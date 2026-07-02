@@ -100,9 +100,9 @@ class OwnerCommands:
         cfg = settings.to_safe_dict()
         lines = [
             f"🔧 Bot Status — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-            f"Gemini: {'✅' if cfg['gemini_key_configured'] else '❌'}  |  FB: {'✅' if cfg['page_token_configured'] else '❌'}",
-            f"Supabase: {'✅' if cfg['supabase_enabled'] else '❌'}  |  HF: {'✅' if cfg['hf_configured'] else '❌'}",
-            f"Guardian: {'✅' if cfg['guardian_enabled'] else '❌'}  |  WA: {'✅' if cfg['whatsapp_configured'] else '❌'}",
+            f"Gemini: {'✅' if cfg.get('gemini_key_configured') else '❌'}  |  FB: {'✅' if cfg.get('facebook_configured') else '❌'}",
+            f"Supabase: {'✅' if cfg.get('supabase_enabled') else '❌'}  |  HF: {'✅' if cfg.get('hf_configured') else '❌'}",
+            f"Guardian: {'✅' if cfg.get('guardian_enabled') else '❌'}  |  WA: {'✅' if cfg.get('whatsapp_configured') else '❌'}",
         ]
         if self._persona:
             lines.append(f"Mood: {self._persona.current_mood}")
@@ -112,15 +112,15 @@ class OwnerCommands:
         if not self._analytics:
             self._reply(sender_id, "Analytics not configured.")
             return
-        stats = self._analytics.stats()
+        stats = self._analytics.get_stats()
+        overview = stats.get("overview", {})
         lines = [
             f"📊 Analytics",
-            f"Messages: {stats['messages_total']}",
-            f"Unique users: {stats['unique_users']}",
-            f"Posts published: {stats['posts_total']}",
-            f"News posts: {stats['news_posts_total']}",
-            f"Errors: {stats['errors_total']}",
-            f"Uptime: {int(stats['uptime_seconds'] / 3600)}h",
+            f"Messages: {overview.get('messages_received', 0)}",
+            f"Unique users: {overview.get('total_users', 0)}",
+            f"Posts published: {overview.get('posts_published', 0)}",
+            f"Errors: {overview.get('total_errors', 0)}",
+            f"Active 24h: {overview.get('active_users_24h', 0)}",
         ]
         self._reply(sender_id, "\n".join(lines))
 

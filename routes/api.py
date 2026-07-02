@@ -85,6 +85,8 @@ def register_api_routes(app):
 
     @app.route("/api/dashboard", methods=["GET"])
     def dashboard_stats():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         stats = analytics.get_stats()
         s = scheduler.get_status()
         return jsonify({
@@ -102,6 +104,8 @@ def register_api_routes(app):
 
     @app.route("/api/posts", methods=["GET"])
     def get_posts():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -154,6 +158,8 @@ def register_api_routes(app):
 
     @app.route("/api/messages", methods=["GET"])
     def get_conversations():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -165,6 +171,8 @@ def register_api_routes(app):
 
     @app.route("/api/messages/<sender_id>", methods=["GET"])
     def get_conversation(sender_id):
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -199,6 +207,8 @@ def register_api_routes(app):
 
     @app.route("/api/contacts", methods=["GET"])
     def get_contacts():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -311,6 +321,8 @@ def register_api_routes(app):
 
     @app.route("/api/guardian/results", methods=["GET"])
     def get_guardian_results():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -332,6 +344,8 @@ def register_api_routes(app):
 
     @app.route("/api/analytics/performance", methods=["GET"])
     def get_post_performance():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
@@ -347,6 +361,8 @@ def register_api_routes(app):
 
     @app.route("/api/tenants", methods=["GET"])
     def get_tenants():
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
         try:
             from services.supabase import supabase_service
             if supabase_service and supabase_service.client:
