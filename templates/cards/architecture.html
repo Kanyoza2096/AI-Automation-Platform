@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0F172A;
+    width: 1200px;
+    height: 630px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+}
+.card {
+    background: #1E293B;
+    width: 1140px;
+    height: 590px;
+    border-radius: 24px;
+    padding: 40px 48px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    border: 1px solid #334155;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+}
+.badge {
+    background: linear-gradient(135deg, #0EA5E9, #6366F1);
+    color: #fff;
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: inline-block;
+}
+h1 {
+    color: #F1F5F9;
+    font-size: 30px;
+    font-weight: 800;
+    margin-top: 12px;
+    line-height: 1.2;
+}
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    flex: 1;
+    margin: 18px 0;
+}
+.block {
+    background: #0F172A;
+    border-radius: 12px;
+    padding: 18px 20px;
+    border: 1px solid #334155;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.block-title {
+    color: #94A3B8;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.block-value {
+    color: #E2E8F0;
+    font-size: 16px;
+    font-weight: 600;
+}
+.block-highlight {
+    border-color: #4F46E5;
+    border-width: 2px;
+}
+.block-highlight .block-value { color: #818CF8; }
+.winner-bar {
+    background: linear-gradient(135deg, #0EA5E9 0%, #6366F1 100%);
+    border-radius: 12px;
+    padding: 12px 24px;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+}
+.footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 14px;
+    border-top: 1px solid #334155;
+}
+.brand { color: #64748B; font-size: 14px; font-weight: 600; }
+.tagline { color: #0EA5E9; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+    <div>
+        <span class="badge">Architecture</span>
+        <h1>{{ title }}</h1>
+    </div>
+    <div class="grid">
+        {% set all_points = points_a + points_b %}
+        {% for point in all_points[:4] %}
+        <div class="block {% if loop.index == 1 %}block-highlight{% endif %}">
+            <div class="block-title">{{ ["Approach", "Trade-off", "Consideration", "Best For"][loop.index0] }}</div>
+            <div class="block-value">{{ point }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% if winner %}
+    <div class="winner-bar">🏗️ Recommendation: {{ winner }}</div>
+    {% endif %}
+    <div class="footer">
+        <span class="brand">Kanyoza Systems</span>
+        <span class="tagline">System Design Insights</span>
+    </div>
+</div>
+</body>
+</html>

@@ -21,19 +21,22 @@ class OwnerCommands:
 
     def __init__(self):
         self.commands: Dict[str, Callable] = {
-            "!test": self.cmd_test,
-            "!status": self.cmd_status,
-            "!users": self.cmd_users,
-            "!health": self.cmd_health,
-            "!help": self.cmd_help,
-            "!post": self.cmd_post,
-            "!news": self.cmd_news,
-            "!technews": self.cmd_technews,
+            "!test":      self.cmd_test,
+            "!status":    self.cmd_status,
+            "!users":     self.cmd_users,
+            "!health":    self.cmd_health,
+            "!help":      self.cmd_help,
+            "!post":      self.cmd_post,
+            "!news":      self.cmd_news,
+            "!technews":  self.cmd_technews,
             "!malawinews": self.cmd_malawinews,
-            "!trending": self.cmd_trending,
-            "!engage": self.cmd_engage,
-            "!pause": self.cmd_pause,
-            "!resume": self.cmd_resume,
+            "!trending":  self.cmd_trending,
+            "!engage":    self.cmd_engage,
+            "!pause":     self.cmd_pause,
+            "!resume":    self.cmd_resume,
+            "!memory":    self.cmd_memory,
+            "!topics":    self.cmd_topics,
+            "!version":   self.cmd_version,
         }
 
     def handle_command(self, sender_id: str, text: str) -> bool:
@@ -93,9 +96,11 @@ class OwnerCommands:
     def cmd_help(self, sender_id: str):
         facebook.send_message(sender_id,
             "🤖 COMMANDS\n\n"
-            "!test !status !users !health\n"
-            "!post !news !technews !malawinews !trending\n"
-            "!engage !pause !resume !help"
+            "📊 Info: !test !status !users !health !version\n"
+            "📝 Content: !post !news !technews !malawinews !trending\n"
+            "💬 Engage: !engage !pause !resume\n"
+            "🧠 Memory: !memory !topics\n\n"
+            "Slash: /help /status /analytics /post /news /mood /ping /scan"
         )
 
     # ==========================================
@@ -197,6 +202,68 @@ class OwnerCommands:
         except Exception as e:
             logger.error(f"Resume error: {e}")
             facebook.send_message(sender_id, "Could not resume scheduler.")
+
+    # ==========================================
+    # MEMORY & TOPICS
+    # ==========================================
+
+    def cmd_memory(self, sender_id: str):
+        """Show memory summary for the owner's own profile."""
+        try:
+            profile = memory.get_user_profile(sender_id)
+            recent = memory.get_recent_messages(sender_id, limit=3)
+            name = profile.get("name") or "unknown"
+            interests = profile.get("interests", [])
+            msg_count = profile.get("message_count", 0)
+            lang = profile.get("communication_style", "unknown")
+            msg = (
+                f"🧠 MEMORY — you ({sender_id[:10]}...)\n\n"
+                f"Name: {name}\n"
+                f"Language: {lang}\n"
+                f"Total messages: {msg_count}\n"
+                f"Interests: {', '.join(interests[:5]) if interests else 'none detected'}\n"
+                f"Recent turns: {len(recent)}\n"
+            )
+            facebook.send_message(sender_id, msg)
+        except Exception as e:
+            logger.error(f"Memory command error: {e}")
+            facebook.send_message(sender_id, f"Memory read failed: {e}")
+
+    def cmd_topics(self, sender_id: str):
+        """List all available topic categories and their counts."""
+        try:
+            from services.content_engine import TOPICS, content_engine
+            lines = ["📚 TOPIC CATEGORIES\n"]
+            for cat, topics in TOPICS.items():
+                lines.append(f"• {cat.replace('_', ' ').title()}: {len(topics)} topics")
+            lines.append(f"\nTotal topics: {sum(len(v) for v in TOPICS.values())}")
+            lines.append(f"Posts generated this session: {content_engine.post_counter}")
+            lines.append(f"Last topic: {content_engine.last_topic[:60] or 'none'}")
+            facebook.send_message(sender_id, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"Topics command error: {e}")
+            facebook.send_message(sender_id, f"Topics read failed: {e}")
+
+    def cmd_version(self, sender_id: str):
+        """Show platform version and architecture summary."""
+        import sys
+        try:
+            sched_status = scheduler.get_status()
+            running = sched_status.get("running", False)
+        except Exception:
+            running = False
+        msg = (
+            f"🚀 Kanyoza Systems AI Platform\n\n"
+            f"Version: v10.0\n"
+            f"Python: {sys.version.split()[0]}\n"
+            f"Architecture: Flask + Gunicorn\n"
+            f"AI: Google Gemini\n"
+            f"Pipeline: Structured JSON → TechPost model → Facebook\n"
+            f"Scheduler: {'running ✅' if running else 'paused ⏸️'}\n"
+            f"Card themes: comparison, tutorial, code_tips, architecture\n"
+            f"Owner commands: 16 (!bang) + 9 (/slash)"
+        )
+        facebook.send_message(sender_id, msg)
 
 
 owner_commands = OwnerCommands()

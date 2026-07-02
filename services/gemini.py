@@ -9,6 +9,7 @@ image prompt crafting, and conversation summarization.
 - Hugging Face fallback support
 """
 
+import json
 import logging
 import re
 import time
@@ -462,6 +463,70 @@ Generate the COMPLETE post now:
     def summarize_conversation(self, messages: List[Dict]) -> Optional[str]:
         lines = [f"{'User' if m.get('role')=='user' else 'Bot'}: {m.get('text','')}" for m in messages]
         return self.generate_raw("Summarize this in 3-4 sentences:\n" + "\n".join(lines), temperature=0.3)
+
+    @smart_retry(max_retries=2, base_delay=2.0)
+    def generate_structured_post(self, topic: str, theme: str = "comparison") -> Optional[dict]:
+        """
+        Call Gemini ONCE and return a structured JSON post payload.
+        Eliminates the double-call pattern — all downstream services use this dict.
+        Returns keys: title, caption, option_a, option_b, winner, points_a, points_b, hashtags
+        """
+        if not self.api_key:
+            return None
+
+        theme_instructions = {
+            "comparison": "Compare two technologies/approaches. Pick a clear winner.",
+            "tutorial": "Give a step-by-step how-to. Use points_a for the steps.",
+            "code_tips": "Show wrong way vs right way. option_a=wrong, option_b=right.",
+            "architecture": "Explain a system design pattern. Use points_a+points_b for key considerations.",
+            "system_design": "Explain a system design trade-off. Pick a clear recommendation.",
+            "security": "Explain a security best practice or comparison. Be specific.",
+            "database": "Compare two database approaches with concrete metrics.",
+            "backend": "Compare two backend approaches or patterns.",
+            "frontend": "Compare two frontend approaches or patterns.",
+            "cloud": "Compare two cloud/DevOps approaches.",
+        }
+        instruction = theme_instructions.get(theme, theme_instructions["comparison"])
+
+        prompt = f"""You are writing an expert tech post for Facebook. {instruction}
+
+Topic: {topic}
+
+Return ONLY valid JSON — no markdown fences, no explanation, no extra text:
+{{
+  "title": "compelling headline (max 12 words)",
+  "caption": "main post body, 90-130 words, professional and specific, declares a clear winner",
+  "option_a": "first technology or approach name (1-4 words)",
+  "option_b": "second technology or approach name (1-4 words)",
+  "winner": "which option wins and the decisive reason (1-2 sentences)",
+  "points_a": ["specific pro 1 (max 7 words)", "specific pro 2", "specific pro 3"],
+  "points_b": ["specific pro 1 (max 7 words)", "specific pro 2", "specific pro 3"],
+  "hashtags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
+}}
+
+RULES:
+- Be specific — use real numbers, benchmarks, version names
+- Declare a decisive winner, never hedge
+- caption must be 90-130 words, professional English only
+- hashtags: no # prefix, relevant tech terms only
+- Never mention being an AI or introduce yourself
+- JSON must be valid — double-quote all keys and strings
+"""
+        try:
+            raw = self._call(prompt, temperature=self._post_temp, max_tokens=1200)
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = "\n".join(raw.split("\n")[1:])
+            if "```" in raw:
+                raw = raw.split("```")[0]
+            raw = raw.strip()
+            data = json.loads(raw)
+            if not data.get("title") or not data.get("caption"):
+                return None
+            return data
+        except (json.JSONDecodeError, Exception) as exc:
+            logger.warning("generate_structured_post JSON parse failed: %s", exc)
+            return None
 
     def generate_raw(self, prompt: str, temperature: float = 0.7) -> Optional[str]:
         try:

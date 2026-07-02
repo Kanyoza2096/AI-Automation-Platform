@@ -11,6 +11,7 @@ import logging
 import threading
 import time as time_module
 from datetime import datetime, timezone
+from typing import Optional
 from flask import request, jsonify
 
 from config.settings import settings
@@ -22,12 +23,32 @@ from core.sentiment import detect_sentiment
 from core.humanizer import Humanizer
 from analytics.tracker import analytics
 from routes.owner import owner_commands
+from routes.owner_commands import OwnerCommands as _SlashCommands
 from utils.security import verify_facebook_signature, sanitize_message, detect_abuse
 from utils.rate_limiter import rate_limiter
 
 logger = logging.getLogger("kanyoza.routes.webhook")
 
 _humanizer = Humanizer()
+
+# Slash-command handler — initialized lazily after services are ready
+_slash_handler: Optional["_SlashCommands"] = None
+
+
+def _get_slash_handler() -> "_SlashCommands":
+    global _slash_handler
+    if _slash_handler is None:
+        from services.facebook import facebook as _fb
+        from analytics.tracker import analytics as _analytics
+        from scheduler.post_scheduler import scheduler as _sched
+        from config.settings import settings as _settings
+        _slash_handler = _SlashCommands(
+            facebook_service=_fb,
+            analytics=_analytics,
+            post_scheduler=_sched,
+            settings=_settings,
+        )
+    return _slash_handler
 
 
 def calculate_typing_delay(msg, length):
@@ -101,9 +122,22 @@ def _handle_text_message(sender_id: str, text: str):
 
     analytics.record_message_received(sender_id)
 
-    if sender_id == settings.owner_psid and owner_commands.handle_command(sender_id, text):
-        logger.info(f"Owner command handled for {sender_id}")
-        return
+    if sender_id == settings.owner_psid:
+        # Slash commands (from owner_commands.py — /help, /post, /status …)
+        if text.startswith("/"):
+            try:
+                slash = _get_slash_handler()
+                if slash.is_owner(sender_id, settings):
+                    slash.handle(sender_id, text)
+                    logger.info("Slash command handled for %s", sender_id)
+                    return
+            except Exception as exc:
+                logger.error("Slash command error: %s", exc)
+
+        # Bang commands (from owner.py — !post, !news, !pause …)
+        if owner_commands.handle_command(sender_id, text):
+            logger.info("Owner command handled for %s", sender_id)
+            return
 
     logger.info(f"Starting async processing for {sender_id}")
     facebook.send_mark_seen(sender_id)

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0F172A;
+    width: 1200px;
+    height: 630px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    overflow: hidden;
+}
+.card {
+    background: #1E293B;
+    width: 1140px;
+    height: 590px;
+    border-radius: 24px;
+    padding: 40px 48px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    border: 1px solid #334155;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+}
+.header { margin-bottom: 20px; }
+.badge {
+    background: linear-gradient(135deg, #4F46E5, #7C3AED);
+    color: #fff;
+    padding: 6px 16px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+h1 {
+    color: #F1F5F9;
+    font-size: 30px;
+    font-weight: 800;
+    margin-top: 12px;
+    line-height: 1.2;
+}
+.versus {
+    display: flex;
+    gap: 20px;
+    flex: 1;
+    margin: 16px 0;
+    align-items: stretch;
+}
+.option {
+    flex: 1;
+    background: #0F172A;
+    border-radius: 16px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.option-a { border: 2px solid #4F46E5; }
+.option-b { border: 2px solid #0EA5E9; }
+.option h2 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.option-a h2 { color: #818CF8; }
+.option-b h2 { color: #38BDF8; }
+.point {
+    color: #CBD5E1;
+    font-size: 14px;
+    padding: 6px 0;
+    border-bottom: 1px solid #1E293B;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+.point:last-child { border-bottom: none; }
+.checkmark { color: #10B981; font-size: 14px; flex-shrink: 0; }
+.divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 900;
+    color: #475569;
+    width: 50px;
+    flex-shrink: 0;
+}
+.winner-bar {
+    background: linear-gradient(135deg, #4F46E5, #7C3AED);
+    border-radius: 12px;
+    padding: 12px 24px;
+    text-align: center;
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+}
+.footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #334155;
+}
+.brand { color: #64748B; font-size: 14px; font-weight: 600; }
+.tagline { color: #4F46E5; font-size: 13px; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="header">
+        <span class="badge">Comparison</span>
+        <h1>{{ title }}</h1>
+    </div>
+    <div class="versus">
+        <div class="option option-a">
+            <h2>{{ option_a }}</h2>
+            {% for point in points_a %}
+            <div class="point"><span class="checkmark">✅</span> {{ point }}</div>
+            {% endfor %}
+        </div>
+        <div class="divider">VS</div>
+        <div class="option option-b">
+            <h2>{{ option_b }}</h2>
+            {% for point in points_b %}
+            <div class="point"><span class="checkmark">✅</span> {{ point }}</div>
+            {% endfor %}
+        </div>
+    </div>
+    <div class="winner-bar">🏆 Winner: {{ winner }}</div>
+    <div class="footer">
+        <span class="brand">Kanyoza Systems</span>
+        <span class="tagline">Daily Tech Insights</span>
+    </div>
+</div>
+</body>
+</html>
