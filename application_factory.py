@@ -337,3 +337,12 @@ def _register_v9_routes(app: Flask) -> None:
         logger.info("v9 routes registered (compatibility shim active).")
     except Exception as exc:  # pragma: no cover
         logger.warning("v9 route registration skipped: %s", exc)
+        from products.converter.routes import converter_bp
+
+def create_app():
+    app = Flask(__name__)
+    
+    # Register product blueprints
+    app.register_blueprint(converter_bp)
+    
+    return app
