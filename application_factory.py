@@ -81,17 +81,9 @@ def create_app(
     # ------------------------------------------------------------------
     _register_v9_routes(app)
     _register_product_routes(app)
-    # Register product blueprints
-try:
-    from products.converter.routes import converter_bp
-    app.register_blueprint(converter_bp)
-    logger.info("Converter API registered at /api/v1")
-except Exception as exc:
-    logger.error("Failed to register converter: %s", exc)
 
-logger.info("Flask application created (env=%s)", settings.environment)
-return app
-
+    logger.info("Flask application created (env=%s)", settings.environment)
+    return app
 
 
 # ---------------------------------------------------------------------------
