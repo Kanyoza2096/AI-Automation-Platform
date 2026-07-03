@@ -1,0 +1,269 @@
+
+You are acting as a Principal Software Architect, Senior Backend Engineer, Infrastructure Engineer, and AI Systems Architect.
+Your goal is NOT to rewrite this project.
+Your goal is to evolve the existing architecture into a production-grade AI Automation Platform while preserving all existing functionality.
+Critical Constraints
+Do NOT break any existing features.
+Do NOT remove working modules.
+Do NOT introduce unnecessary complexity.
+Prefer incremental improvements over rewrites.
+Maintain backward compatibility whenever possible.
+Every architectural improvement should be production-ready.
+Refactor gracefully with clear module boundaries.
+Primary Goal
+Transform this project from a Messenger bot into a scalable AI Automation Platform.
+The project should remain fully functional throughout the migration.
+Architecture Improvements
+1. Introduce a true Domain Layer
+Separate business logic from infrastructure.
+Target structure:
+
+domain/
+    content/
+    memory/
+    publishing/
+    ai/
+    analytics/
+    security/
+Infrastructure should never contain business rules.
+2. Repository Pattern
+Remove direct database access from services.
+Instead of:
+
+Memory
+   ↓
+Supabase
+Use:
+
+Memory
+   ↓
+ProfileRepository
+   ↓
+Supabase
+Create repositories for:
+Profiles
+Conversations
+Memory
+Analytics
+Scheduled Posts
+Repositories should expose clean interfaces.
+3. AI Provider Abstraction
+Gemini should become only one provider.
+Design:
+
+AIProvider (abstract)
+
+GeminiProvider
+
+OpenAIProvider
+
+OllamaProvider
+
+HuggingFaceProvider
+
+Future Providers...
+Add an AI Orchestrator responsible for:
+provider selection
+failover
+retries
+routing
+cost optimization
+The rest of the project must never directly call Gemini.
+4. Browser Manager
+Do NOT launch Chromium for every render.
+Create:
+
+BrowserManager
+
+↓
+
+Persistent Chromium
+
+↓
+
+Page Pool
+Renderers should request pages from the pool.
+5. Render Cache
+Hash rendered content.
+If an identical render already exists:
+Return cached PNG instead of rendering again.
+Implement automatic cache expiration.
+6. Event Bus
+Reduce tight coupling.
+Instead of:
+
+Webhook
+
+↓
+
+Memory
+
+↓
+
+Analytics
+
+↓
+
+Publishing
+Use:
+
+Webhook
+
+↓
+
+Event Bus
+
+↓
+
+Subscribers
+Events should include:
+MessageReceived
+MessageSent
+PostGenerated
+ImageRendered
+PostPublished
+UserRemembered
+ScanCompleted
+7. Background Workers
+Move expensive operations into workers.
+Examples:
+rendering
+AI generation
+GitHub scanning
+scheduled publishing
+Web requests should remain lightweight.
+8. Dependency Injection
+Use constructor injection everywhere.
+Avoid:
+
+from services.facebook import facebook
+Instead inject dependencies through the container.
+9. Configuration Validation
+Application startup should validate:
+environment variables
+API keys
+directories
+templates
+database connectivity
+Fail fast with meaningful errors.
+10. Observability
+Expand observability.
+Add:
+structured metrics
+render timing
+AI latency
+database latency
+webhook latency
+scheduler metrics
+Keep structured JSON logging.
+11. Plugin Architecture
+Prepare for future integrations.
+Create:
+
+plugins/
+
+facebook/
+
+linkedin/
+
+telegram/
+
+discord/
+
+slack/
+
+email/
+Each plugin should expose:
+
+start()
+
+stop()
+
+publish()
+
+health()
+12. Workflow Engine
+Replace hardcoded automation pipelines with reusable workflows.
+Example:
+
+Generate Content
+
+↓
+
+Review
+
+↓
+
+Render
+
+↓
+
+Publish
+
+↓
+
+Analytics
+Future workflows should be configurable.
+13. Security Improvements
+Improve security by adding:
+rate limiting
+request validation
+webhook replay protection
+timeout handling
+retry policies
+circuit breakers
+centralized outbound HTTP client
+14. HTTP Client Abstraction
+Replace scattered requests usage.
+Create one reusable HTTP client with:
+retries
+exponential backoff
+timeout policies
+connection pooling
+structured logging
+Every external API should use this client.
+15. Performance Improvements
+Optimize:
+Playwright lifecycle
+template rendering
+SVG generation
+Supabase queries
+memory caching
+Avoid unnecessary allocations.
+16. Testing Infrastructure
+Create architecture that supports:
+unit tests
+integration tests
+end-to-end tests
+load tests
+Improve dependency injection to simplify mocking.
+17. Preserve Existing Features
+The following systems must continue working:
+Messenger webhook
+Scheduler
+Code Guardian
+Memory System
+Rendering
+Content Engine
+AI responses
+Facebook publishing
+Migration Strategy
+Do NOT perform one massive rewrite.
+Work incrementally.
+For every improvement:
+Analyze existing implementation.
+Preserve current behavior.
+Refactor safely.
+Add compatibility layers if necessary.
+Remove deprecated code only after migration succeeds.
+Deliverables
+For every major refactor:
+Explain why it is needed.
+Explain architectural benefits.
+Implement production-ready code.
+Maintain backward compatibility.
+Add clear documentation.
+Keep modules cohesive and loosely coupled.
+The final result should resemble the architecture of a modern SaaS platform, emphasizing scalability, maintainability, testability, and operational reliability rather than simply adding more features.
+I would also add one final instruction that I think is essential:
+Before modifying any code, inspect the entire codebase and produce an architecture assessment. Identify existing patterns, dependencies, and migration risks. Reuse existing components wherever appropriate instead of duplicating functionality. If a requested improvement conflicts with the current architecture, prefer extending the existing design rather than replacing it. Each refactor should leave the system in a working state with no regressions.
