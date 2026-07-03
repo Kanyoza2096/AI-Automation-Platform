@@ -64,8 +64,10 @@ class PostScheduler:
         self.content_hours_utc = settings.content_posting_hours_utc
         self.news_hours_utc = settings.news_posting_hours_utc
 
-        # Track which (date, hour) slots have already been posted today.
-        # Format: set of (datetime.date, int) tuples.
+        # Track which slots have already been posted today.
+        # Format: set of 3-tuples (datetime.date, int hour, str kind)
+        # where kind is "content" or "news".  Uniform shape avoids
+        # ValueError when iterating with `for d, h in _fired_slots`.
         self._fired_slots: set = set()
 
         self._job_queue: queue.Queue = queue.Queue(maxsize=MAX_JOB_QUEUE_SIZE)
@@ -160,44 +162,56 @@ class PostScheduler:
         now = datetime.now(timezone.utc)
         today = now.date()
 
-        # Prune fired_slots from previous days to avoid unbounded growth
-        self._fired_slots = {
-            (d, h) for d, h in self._fired_slots if d == today
-        }
+        with self._lock:
+            # Prune slots from previous days — uniform 3-tuple shape throughout
+            self._fired_slots = {
+                (d, h, k) for d, h, k in self._fired_slots if d == today
+            }
 
-        # ── Content posts (10/day) ─────────────────────────────────────────────
-        if now.hour in self.content_hours_utc:
-            slot = (today, now.hour)
-            already_fired = slot in self._fired_slots
+            # ── Content posts (10/day) ─────────────────────────────────────────
+            content_slot = (today, now.hour, "content")
+            content_due = now.hour in self.content_hours_utc
+            already_fired = content_slot in self._fired_slots
             gap_ok = (
                 self.last_post_time is None
                 or (now - self.last_post_time) >= self.min_interval
             )
             rate_ok = rate_limiter.is_allowed("scheduler", "post_per_hour")
 
-            if not already_fired and gap_ok and rate_ok:
-                self._fired_slots.add(slot)
-                self._enqueue_job("content")
-                logger.info(
-                    "Scheduled content post enqueued for slot UTC %02d:xx (%s)",
-                    now.hour, today,
-                )
+            if content_due and not already_fired and gap_ok and rate_ok:
+                self._fired_slots.add(content_slot)
+                enqueue_content = True
+            else:
+                enqueue_content = False
 
-        # ── News posts (3/day) ─────────────────────────────────────────────────
-        if now.hour in self.news_hours_utc:
+            # ── News posts (3/day) ─────────────────────────────────────────────
             news_slot = (today, now.hour, "news")
-            if news_slot not in self._fired_slots:
-                news_gap_ok = (
-                    self.last_news_post_time is None
-                    or (now - self.last_news_post_time) >= timedelta(hours=3)
+            news_due = now.hour in self.news_hours_utc
+            news_already_fired = news_slot in self._fired_slots
+            news_gap_ok = (
+                self.last_news_post_time is None
+                or (now - self.last_news_post_time) >= timedelta(hours=3)
+            )
+            if news_due and not news_already_fired and news_gap_ok:
+                self._fired_slots.add(news_slot)
+                enqueue_news = True
+                news_category = (
+                    "technology" if now.hour == 6
+                    else ("malawi" if now.hour == 13 else None)
                 )
-                if news_gap_ok:
-                    self._fired_slots.add(news_slot)
-                    category = (
-                        "technology" if now.hour == 6
-                        else ("malawi" if now.hour == 13 else None)
-                    )
-                    self._enqueue_job("news", category=category)
+            else:
+                enqueue_news = False
+                news_category = None
+
+        # Enqueue outside the lock so we don't hold it during a blocking put()
+        if enqueue_content:
+            self._enqueue_job("content")
+            logger.info(
+                "Scheduled content post enqueued for slot UTC %02d:xx (%s)",
+                now.hour, today,
+            )
+        if enqueue_news:
+            self._enqueue_job("news", category=news_category)
 
     def _enqueue_job(self, job_type: str, **kwargs):
         try:
@@ -374,10 +388,12 @@ class PostScheduler:
     def get_status(self) -> dict:
         now = datetime.now(timezone.utc)
         today = now.date()
-        posts_today = sum(
-            1 for d, h in self._fired_slots
-            if isinstance(h, int) and d == today
-        )
+        with self._lock:
+            # Snapshot under lock — all entries are 3-tuples (date, hour, kind)
+            posts_today = sum(
+                1 for d, h, k in self._fired_slots
+                if d == today and k == "content"
+            )
         return {
             "last_post": str(self.last_post_time) if self.last_post_time else None,
             "last_news_post": str(self.last_news_post_time) if self.last_news_post_time else None,

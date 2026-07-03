@@ -396,18 +396,16 @@ class ContentEngine:
     # ── Topic rotation ──────────────────────────────────────────────────────────
 
     def get_next_topic(self) -> Tuple[str, str]:
+        """Pick the next topic using the shared TopicSelector rotation."""
+        from domain.content.topic_selector import topic_selector
+        topic, category = topic_selector.pick()
         with self._lock:
-            category  = random.choice(list(TOPICS.keys()))
             self.last_category = category
-            available = [t for t in TOPICS[category] if t not in self.posted_topics[-20:]]
-            if not available:
-                available = TOPICS[category]
-            topic = random.choice(available)
             self.last_topic = topic
             self.posted_topics.append(topic)
             if len(self.posted_topics) > 60:
                 self.posted_topics = self.posted_topics[-40:]
-            return category, topic
+        return category, topic
 
     def get_theme(self, category: str) -> PostTheme:
         return CATEGORY_THEMES.get(category, PostTheme.COMPARISON)

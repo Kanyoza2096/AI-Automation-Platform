@@ -42,7 +42,7 @@ class FacebookPlugin(Plugin):
             return {"ok": False, "error": "plugin not started"}
         try:
             post_id = self._svc.post_to_page(
-                caption=content,
+                message=content,
                 image_bytes=image_bytes or None,
                 image_url=image_url if not image_bytes else None,
             )

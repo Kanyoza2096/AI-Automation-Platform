@@ -23,9 +23,10 @@ class SelectTopicStep(Step):
         self._category = category
 
     def run(self, context: dict[str, Any]) -> Any:
-        from domain.content.topic_selector import TopicSelector
-        selector = TopicSelector()
-        topic, cat = selector.pick(self._category)
+        # Use the module-level singleton so category rotation persists across
+        # all runs throughout the day — not reset on each workflow execution.
+        from domain.content.topic_selector import topic_selector
+        topic, cat = topic_selector.pick(self._category)
         context["topic"] = topic
         context["category"] = cat
         logger.info("PostWorkflow: topic='%s' category='%s'", topic, cat)

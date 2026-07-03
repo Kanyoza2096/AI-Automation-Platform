@@ -155,33 +155,36 @@ class TopicSelector:
 
     Cycles through all categories evenly before repeating, so a 10-post day
     covers a wide variety of subjects (phones, OS, coding, laptops, gaming…).
-    This is a pure domain object — no I/O.
+    This is a pure domain object — no I/O, thread-safe via threading.Lock.
     """
 
     def __init__(self, categories: Optional[dict[str, list[str]]] = None) -> None:
+        import threading
         self._categories = categories or CATEGORIES
         # Rotation state — tracks which categories have been used this cycle
         self._unused: list[str] = []
+        self._lock = threading.Lock()
 
     def pick(self, category: Optional[str] = None) -> tuple[str, str]:
-        """Return (topic, category). If *category* is None, use rotation."""
-        if category and category in self._categories:
-            cat = category
-        else:
-            cat = self._next_category()
+        """Return (topic, category). If *category* is None, use even rotation."""
+        with self._lock:
+            if category and category in self._categories:
+                cat = category
+            else:
+                cat = self._next_category_locked()
 
-        topic = random.choice(self._categories[cat])
-        return topic, cat
+            topic = random.choice(self._categories[cat])
+            return topic, cat
 
-    def _next_category(self) -> str:
+    def _next_category_locked(self) -> str:
         """
         Rotate evenly through all categories before repeating.
+        Must be called with self._lock held.
 
         Guarantees that over any N-category window, every category appears
         once, which produces maximally varied daily posts.
         """
         if not self._unused:
-            # Shuffle a fresh copy of all category names
             self._unused = list(self._categories.keys())
             random.shuffle(self._unused)
         return self._unused.pop()
@@ -194,3 +197,8 @@ class TopicSelector:
 
     def total_topics(self) -> int:
         return sum(len(v) for v in self._categories.values())
+
+
+# Module-level singleton — shared across workflow runs so category rotation
+# state persists across all 10 daily posts instead of resetting each time.
+topic_selector = TopicSelector()
