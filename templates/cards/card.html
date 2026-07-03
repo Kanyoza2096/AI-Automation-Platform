@@ -6,6 +6,12 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html {
+    width: 1080px;
+    height: 1080px;
+    overflow: hidden;
+}
+
 body {
     background: #0B1120;
     width: 1080px;
@@ -39,6 +45,14 @@ body {
     flex-direction: column;
     border: 1px solid #26324A;
     box-shadow: 0 40px 100px rgba(0,0,0,0.55), 0 2px 0 rgba(255,255,255,0.04) inset;
+    /* auto margins cooperate with the parent flex centering: flex alignment
+       centres the card first; auto margins act as a secondary mechanism that
+       also centres it if flex alignment is ever absent (e.g. non-flex fallback).
+       Note: margin:auto alone centres horizontally in block layout but NOT
+       vertically — the flex align-items:center on body is still the vertical
+       anchor, so both rules together are required for a guaranteed (40px,40px)
+       position on all sides. */
+    margin: auto;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */

@@ -247,7 +247,8 @@ class CardRenderer:
                 with browser_manager.acquire_page() as page:
                     png = self._render_on_page(page, html)
                 logger.info(
-                    "BrowserManager rendered 1080x1080 card at %sx scale (%d bytes)",
+                    "BrowserManager rendered card: %dx%d px at %sx device scale (%d bytes)",
+                    CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
                     DEVICE_SCALE_FACTOR, len(png),
                 )
                 return png
@@ -272,7 +273,8 @@ class CardRenderer:
                 png = self._render_on_page(page, html)
                 browser.close()
             logger.info(
-                "One-shot Playwright rendered 1080x1080 card at %sx scale (%d bytes)",
+                "One-shot Playwright rendered card: %dx%d px at %sx device scale (%d bytes)",
+                CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
                 DEVICE_SCALE_FACTOR, len(png),
             )
             return png
@@ -300,10 +302,10 @@ class CardRenderer:
             page.evaluate(AUTOFIT_JS)
         except Exception as exc:
             logger.debug("Autofit script failed (non-fatal): %s", exc)
-        return page.screenshot(
-            type="png",
-            clip={"x": 0, "y": 0, "width": CARD_W, "height": CARD_H},
-        )
+        # No clip — the viewport IS exactly 1080×1080, so a plain full_page=False
+        # screenshot captures the whole canvas without relying on page-coordinate
+        # arithmetic that can be offset if <html> is wider than the body.
+        return page.screenshot(type="png", full_page=False)
 
     # ── Step 3b: HCTI Fallback ──────────────────────────────────────────────────
 
