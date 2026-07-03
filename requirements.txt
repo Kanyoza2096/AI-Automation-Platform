@@ -30,3 +30,4 @@ playwright>=1.49.0
 # Testing (development only)
 pytest==8.3.4
 pytest-mock==3.14.0
+google-genai
