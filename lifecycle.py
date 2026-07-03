@@ -225,6 +225,7 @@ def _start_v9_post_scheduler(container: ServiceContainer) -> None:
 
 
 def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
+    """M7: Start Code Guardian v10 using the DI-registered GuardianService."""
     from config.settings import settings
 
     if not settings.guardian_configured:
@@ -232,92 +233,26 @@ def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
         return
 
     try:
-        import tempfile
-        import shutil
-        from pathlib import Path
-        from datetime import datetime, timezone
-
-        from guardian.github_client import GitHubClient
-        from guardian.scanner import CodeGuardianScanner
-        from guardian.auto_fix import auto_fix
-        from services.facebook import facebook as fb_service
+        from services.guardian_service import GuardianService
         from scheduler.scan_scheduler import ScanScheduler
 
-        github = GitHubClient(settings.github_username, settings.github_token)
-        scanner = CodeGuardianScanner()
+        guardian = container.resolve(GuardianService)
 
-        def run_scan():
-            logger.info("Code Guardian: starting scan...")
-            temp_dir = tempfile.mkdtemp(prefix="guardian_")
-            try:
-                repos = github.get_all_repos(exclude=settings.guardian_exclude_repos)
-                if not repos:
-                    return
-                repo_paths = []
-                for repo in repos:
-                    try:
-                        repo_paths.append({
-                            "name": repo["name"],
-                            "local_path": github.clone_or_pull(repo, temp_dir),
-                        })
-                    except Exception as e:
-                        logger.error("Failed to clone %s: %s", repo["name"], e)
+        # Wire the /scan slash command in the webhook to use this service
+        try:
+            from routes.webhook import set_guardian_runner
+            set_guardian_runner(guardian.scan_all)
+            logger.info("Code Guardian: wired to /scan slash command.")
+        except Exception as exc:
+            logger.debug("Could not wire guardian to webhook slash handler: %s", exc)
 
-                exclude = {"venv", ".venv", "env", "__pycache__", "node_modules", ".git", "dist", "build"}
-                total_files = sum(
-                    len([f for f in Path(rp["local_path"]).rglob("*")
-                         if f.is_file() and not any(e in f.parts for e in exclude)])
-                    for rp in repo_paths
-                )
-                issues = scanner.scan_repos(repo_paths)
-                report = scanner.build_report(issues, len(repos), total_files)
-
-                if auto_fix.is_configured and report["total_issues"] > 0:
-                    for repo in repos:
-                        repo_full = f"{settings.github_username}/{repo['name']}"
-                        repo_issues = [i for i in report["issues"] if i.get("repo") == repo["name"]]
-                        if repo_issues:
-                            try:
-                                fix_results = auto_fix.auto_fix_all(repo_full, repo_issues)
-                                if fix_results["fixed"] > 0:
-                                    logger.info("Auto-fixed %d issues in %s", fix_results["fixed"], repo["name"])
-                            except Exception as e:
-                                logger.error("Auto-fix error: %s", e)
-
-                if settings.owner_psid:
-                    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-                    if report["total_issues"] == 0:
-                        msg = f"🛡️ Code Guardian\n\n📅 {now}\n📂 {report['repos_scanned']} repos | {report['files_scanned']} files\n\n✅ ALL CLEAR"
-                    else:
-                        msg = (
-                            f"🛡️ Code Guardian\n\n📅 {now}\n"
-                            f"📂 {report['repos_scanned']} repos | {report['files_scanned']} files\n\n"
-                            f"🔴 {report['critical']}  🟠 {report['high']}  🟡 {report['medium']}\n"
-                            f"⚠️ {report['total_issues']} issues"
-                        )
-                    fb_service.send_message(settings.owner_psid, msg)
-
-                # Emit event to bus
-                try:
-                    from core.event_bus import get_event_bus
-                    from core.events import ScanCompletedEvent
-                    get_event_bus().publish(ScanCompletedEvent(
-                        repo=settings.github_username,
-                        issues_found=report["total_issues"],
-                        critical=report.get("critical", 0),
-                    ))
-                except Exception:
-                    pass
-
-                logger.info("Guardian scan complete: %d issues", report["total_issues"])
-            except Exception as e:
-                logger.error("Guardian scan failed: %s", e)
-            finally:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-
-        guardian_scheduler = ScanScheduler(run_scan, settings.guardian_scan_hours)
-        guardian_scheduler.start()
-        logger.info("Code Guardian started (every %dh).", settings.guardian_scan_hours)
+        scan_scheduler = ScanScheduler(guardian.scan_all, settings.guardian_scan_hours)
+        scan_scheduler.start()
+        logger.info(
+            "Code Guardian v10 started (every %dh, GitHub user=%s).",
+            settings.guardian_scan_hours,
+            settings.github_username,
+        )
 
     except Exception as exc:
         logger.warning("Code Guardian could not start: %s", exc)

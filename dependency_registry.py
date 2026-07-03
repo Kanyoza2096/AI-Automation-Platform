@@ -198,6 +198,30 @@ def _register_services(c: ServiceContainer) -> None:
     c.register_instance(RenderCache, _rc)
     logger.info("RenderCache registered (module singleton).")
 
+    # GuardianService (M7) — only registered when guardian is configured
+    if settings.guardian_configured:
+        from services.guardian_service import GuardianService
+
+        def _build_guardian():
+            from guardian.github_client import GitHubClient
+            from guardian.scanner import CodeGuardianScanner
+            from guardian.auto_fix import AutoFixEngine
+            from services.facebook import facebook as fb_svc
+
+            bus = c.resolve(EventBus)
+            svc = GuardianService(
+                github_client=GitHubClient(settings.github_username, settings.github_token),
+                scanner=CodeGuardianScanner(),
+                auto_fix_engine=AutoFixEngine(),
+                event_bus=bus,
+                facebook_svc=fb_svc,
+            )
+            logger.info("GuardianService created.")
+            return svc
+
+        c.register(GuardianService, _build_guardian, singleton=True)
+        logger.info("GuardianService registered.")
+
 
 # ---------------------------------------------------------------------------
 # Plugins

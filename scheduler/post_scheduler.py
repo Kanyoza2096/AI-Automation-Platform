@@ -371,6 +371,16 @@ class PostScheduler:
         except queue.Full:
             return False
 
+    def post_now(self) -> str:
+        """Alias for force_post() — used by OwnerCommands /post slash command."""
+        queued = self.force_post()
+        return "content post queued" if queued else "queue full — try again shortly"
+
+    def post_news_now(self) -> str:
+        """Alias for force_news() — used by OwnerCommands /news slash command."""
+        queued = self.force_news()
+        return "news post queued" if queued else "queue full — try again shortly"
+
     def force_news(self, category=None) -> bool:
         try:
             self._job_queue.put(("news", {"category": category}), timeout=5)

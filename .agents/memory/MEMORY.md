@@ -6,3 +6,4 @@
 - [card rendering pipeline](card-rendering-pipeline.md) — text-in-HTML-not-SVG rule, base64 font embedding, autofit-as-safety-net, unified template
 - [m6 scheduling decisions](m6-scheduling-decisions.md) — fired_slots 3-tuple rule, topic_selector singleton, generate_post dict return, FacebookPlugin message= kwarg
 - [websocket-dashboard](websocket-dashboard.md) — eventlet monkey-patch placement, DI bus vs module singleton, service health probe attribute names
+- [m7-m9-wiring](m7-m9-wiring.md) — GuardianService DI wiring, API v1 blueprint, test conftest patterns

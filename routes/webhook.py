@@ -46,6 +46,14 @@ def _emit(event):
 # Slash-command handler — initialized lazily after services are ready
 _slash_handler: Optional["_SlashCommands"] = None
 _slash_handler_lock = threading.Lock()
+_guardian_runner = None   # set by lifecycle.py via set_guardian_runner()
+
+
+def set_guardian_runner(fn) -> None:
+    """Called by lifecycle.py after GuardianService is started."""
+    global _guardian_runner
+    _guardian_runner = fn
+    logger.info("Guardian runner wired to webhook slash handler.")
 
 
 def _get_slash_handler() -> "_SlashCommands":
@@ -62,6 +70,7 @@ def _get_slash_handler() -> "_SlashCommands":
                     facebook_service=_fb,
                     analytics=_analytics,
                     post_scheduler=_sched,
+                    guardian_runner=_guardian_runner,
                     settings=_settings,
                 )
     return _slash_handler
