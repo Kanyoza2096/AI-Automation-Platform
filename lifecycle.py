@@ -203,7 +203,7 @@ def _wire_socket_events(container: ServiceContainer) -> None:
 
 def _start_schedulers(container: ServiceContainer) -> None:
     _start_post_scheduler(container)
-    _start_guardian_scheduler(container)
+    #_start_guardian_scheduler(container)
 
 
 def _start_post_scheduler(container: ServiceContainer) -> None:
