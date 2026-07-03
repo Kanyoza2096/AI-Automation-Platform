@@ -74,14 +74,23 @@ class PluginRegistry:
                 logger.error("Plugin '%s' failed to stop: %s", p.name, exc)
 
     def publish_all(
-        self, content: str, image_url: Optional[str] = None, **kwargs
+        self,
+        content: str,
+        image_url: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        **kwargs,
     ) -> dict[str, dict]:
         results: dict[str, dict] = {}
         with self._lock:
             plugins = list(self._plugins.values())
         for p in plugins:
             try:
-                results[p.name] = p.publish(content, image_url=image_url, **kwargs)
+                results[p.name] = p.publish(
+                    content,
+                    image_url=image_url,
+                    image_bytes=image_bytes,
+                    **kwargs,
+                )
             except Exception as exc:
                 logger.error("Plugin '%s' publish failed: %s", p.name, exc)
                 results[p.name] = {"ok": False, "error": str(exc)}

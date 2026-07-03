@@ -148,6 +148,78 @@ TOPICS = {
         "Code bootcamp vs university for tech careers",
         "Reading docs vs watching tutorials",
     ],
+
+    # ── Smartphones ────────────────────────────────────────────────────────────
+    "smartphones": [
+        "iPhone 16 vs Samsung Galaxy S25",
+        "Google Pixel vs OnePlus in 2025",
+        "iOS vs Android: which is better for you",
+        "Flagship phones vs mid-range phones: worth the price?",
+        "iPhone camera system vs Samsung camera system",
+        "Apple Face ID vs Android fingerprint scanners",
+        "iPhone battery vs Android battery in 2025",
+        "Foldable phones vs traditional slabs",
+    ],
+
+    # ── Computers & Laptops ────────────────────────────────────────────────────
+    "computers_laptops": [
+        "MacBook vs Windows laptop for developers",
+        "MacBook Air vs MacBook Pro: which to buy",
+        "Apple M4 vs Intel Core Ultra performance",
+        "AMD Ryzen vs Intel Core for workstations",
+        "16GB vs 32GB RAM: do devs need more?",
+        "SSD vs NVMe SSD speed difference",
+        "Laptop vs Desktop for software development",
+        "MacBook vs Dell XPS vs Lenovo ThinkPad",
+    ],
+
+    # ── Operating Systems ──────────────────────────────────────────────────────
+    "operating_systems": [
+        "Windows vs macOS for developers",
+        "Linux vs Windows for software engineering",
+        "macOS vs Linux: which is better for devs",
+        "Ubuntu vs Fedora vs Arch Linux",
+        "Windows 11 vs macOS Sequoia",
+        "Android vs iOS: which ecosystem wins",
+        "WSL2 vs dual-boot Linux on Windows",
+        "ChromeOS vs Windows for students",
+    ],
+
+    # ── Gaming ─────────────────────────────────────────────────────────────────
+    "gaming": [
+        "PC gaming vs Console gaming in 2025",
+        "PlayStation 5 vs Xbox Series X",
+        "Nintendo Switch 2 vs Steam Deck",
+        "Cloud gaming vs local gaming",
+        "RTX 4080 vs RTX 4090: is the price worth it",
+        "4K gaming vs 1440p at high FPS",
+        "Wired vs Wireless gaming peripherals",
+        "Gaming laptop vs Gaming desktop",
+    ],
+
+    # ── Gadgets & Consumer Tech ────────────────────────────────────────────────
+    "gadgets_tech": [
+        "AirPods Pro vs Sony WH-1000XM5",
+        "Apple Watch vs Samsung Galaxy Watch",
+        "Kindle vs iPad for reading",
+        "Smart TV vs Projector for home theatre",
+        "Wi-Fi 6 vs Wi-Fi 7: is the upgrade worth it",
+        "4K monitor vs Ultrawide for productivity",
+        "Mechanical keyboard vs membrane keyboard",
+        "NAS vs Cloud storage for home backups",
+    ],
+
+    # ── Apps & Productivity ────────────────────────────────────────────────────
+    "apps_productivity": [
+        "Notion vs Obsidian for developers",
+        "VS Code vs JetBrains IDEs",
+        "Slack vs Microsoft Teams",
+        "Google Workspace vs Microsoft 365",
+        "Zoom vs Google Meet for remote teams",
+        "Trello vs Jira vs Linear for project management",
+        "GitHub vs GitLab vs Bitbucket",
+        "1Password vs Bitwarden",
+    ],
 }
 
 CATEGORY_THEMES: dict = {
@@ -161,6 +233,13 @@ CATEGORY_THEMES: dict = {
     "system_design_patterns": PostTheme.SYSTEM_DESIGN,
     "malawi_tech":            PostTheme.COMPARISON,
     "career_growth":          PostTheme.TUTORIAL,
+    # New comparison categories
+    "smartphones":            PostTheme.COMPARISON,
+    "computers_laptops":      PostTheme.COMPARISON,
+    "operating_systems":      PostTheme.COMPARISON,
+    "gaming":                 PostTheme.COMPARISON,
+    "gadgets_tech":           PostTheme.COMPARISON,
+    "apps_productivity":      PostTheme.COMPARISON,
 }
 
 HASHTAGS: dict = {
@@ -174,6 +253,13 @@ HASHTAGS: dict = {
     "system_design_patterns": "#SystemDesign #DistributedSystems #Architecture #ScalableSystems",
     "malawi_tech":            "#MalawiTech #AfricaTech #DigitalAfrica #TechAfrica",
     "career_growth":          "#SoftwareEngineering #CareerAdvice #DevLife #CodingCareer",
+    # New comparison categories
+    "smartphones":            "#Smartphones #iPhone #Android #Samsung #TechReview",
+    "computers_laptops":      "#Laptops #MacBook #Windows #Apple #PCSetup",
+    "operating_systems":      "#Windows #macOS #Linux #Android #iOS #TechTips",
+    "gaming":                 "#Gaming #PlayStation #Xbox #PCGaming #Nintendo",
+    "gadgets_tech":           "#Gadgets #TechReview #Unboxing #ConsumerTech #TechTrends",
+    "apps_productivity":      "#Productivity #Apps #SoftwareTools #TechTips #DevTools",
 }
 
 VIRAL_HOOKS: list = [
@@ -332,38 +418,39 @@ class ContentEngine:
     def list_categories(self) -> List[str]:
         return list(TOPICS.keys())
 
-    def get_fallback_post(self) -> Tuple[str, Optional[bytes]]:
-        return random.choice(FALLBACK_POSTS), None
+    def get_fallback_post(self) -> dict:
+        caption = random.choice(FALLBACK_POSTS)
+        return {"caption": caption, "image_bytes": None, "topic": "", "category": ""}
 
     # ── Main entry point ────────────────────────────────────────────────────────
 
-    def generate_post(self) -> Tuple[str, Optional[bytes]]:
+    def generate_post(self, topic: Optional[str] = None) -> dict:
         """
-        Canonical pipeline (timing recorded in platform metrics):
+        Canonical pipeline (timing recorded in platform metrics).
 
+        Args:
+            topic: Optional topic string from the v10 workflow. When provided
+                   the engine uses it directly and skips its internal rotation.
+                   When None (v9 scheduler path) the engine picks from its bank.
 
-            Scheduler
-                │
-                ▼
-            Gemini (ONE call)
-                │
-                ▼
-            TechPost
-            ┌───────────────┼────────────────┐
-            ▼               ▼                ▼
-        Caption Builder  HTML Renderer   SVG Renderer
-            │               └────────────────┘
-            │                       │
-            │              Playwright Screenshot
-            │                       │
-            │                PNG 1080×1080
-            └───────────────────────┘
-                            │
-                     Facebook Publisher
+        Returns a dict with keys:
+            caption      — Facebook-ready caption string
+            image_bytes  — PNG bytes (1080×1080) or None
+            topic        — topic string used
+            category     — category bucket
         """
         _t0 = time.monotonic()
         try:
-            category, topic = self.get_next_topic()
+            if topic:
+                # v10 workflow supplied an explicit topic — infer category
+                category = self.last_category or "system_architecture"
+                # Try to find which category this topic belongs to
+                for cat, topics in TOPICS.items():
+                    if topic in topics:
+                        category = cat
+                        break
+            else:
+                category, topic = self.get_next_topic()
             theme = self.get_theme(category)
 
             logger.info(
@@ -393,7 +480,12 @@ class ContentEngine:
                     )
                     self.post_counter += 1
                     metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, True)
-                    return caption, image_bytes
+                    return {
+                        "caption": caption,
+                        "image_bytes": image_bytes,
+                        "topic": topic,
+                        "category": category,
+                    }
 
                 except Exception as exc:
                     logger.warning("TechPost parse/render failed — falling back: %s", exc)
@@ -404,7 +496,8 @@ class ContentEngine:
 
             if not post_body:
                 logger.warning("Both pipelines failed — using static fallback")
-                return self.get_fallback_post()
+                fallback_caption, fallback_bytes = random.choice(FALLBACK_POSTS), None
+                return {"caption": fallback_caption, "image_bytes": fallback_bytes, "topic": topic, "category": category}
 
             post_body   = post_body.replace("Madalitso", "").replace("madalitso", "")
             viral_hook  = random.choice(VIRAL_HOOKS)
@@ -414,12 +507,13 @@ class ContentEngine:
 
             self.post_counter += 1
             logger.info("Legacy caption assembled: %d words, no image", len(caption.split()))
-            return caption, None
+            return {"caption": caption, "image_bytes": None, "topic": topic, "category": category}
 
         except Exception as exc:
             logger.error("Post generation crashed: %s", exc)
             metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, False)
-            return self.get_fallback_post()
+            fallback_caption, fallback_bytes = random.choice(FALLBACK_POSTS), None
+            return {"caption": fallback_caption, "image_bytes": fallback_bytes, "topic": "", "category": ""}
 
     # ── Image rendering (steps 3b-3d) ──────────────────────────────────────────
 

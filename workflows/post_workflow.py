@@ -33,7 +33,7 @@ class SelectTopicStep(Step):
 
 
 class GenerateContentStep(Step):
-    """Call ContentEngine to produce a TechPost + caption."""
+    """Call ContentEngine to produce a caption + PNG image bytes."""
 
     name = "generate_content"
 
@@ -45,12 +45,27 @@ class GenerateContentStep(Step):
         result = self._engine.generate_post(topic=topic)
         if not result:
             raise RuntimeError(f"ContentEngine returned no result for '{topic}'")
+
+        # Normalise to dict — generate_post() always returns a dict in v10
+        if isinstance(result, tuple):
+            # Backward-compat shim: (caption, image_bytes) tuple from older code
+            caption, image_bytes = result[0], result[1] if len(result) > 1 else None
+            result = {"caption": caption, "image_bytes": image_bytes, "topic": topic, "category": ""}
+
         context["content_result"] = result
+        # Promote key fields to top-level context for downstream steps
+        context["caption"] = result.get("caption", "")
+        context["image_bytes"] = result.get("image_bytes")
         return result
 
 
 class RenderImageStep(Step):
-    """Render an image card for the post (optional — continue on failure)."""
+    """Pass image bytes from ContentEngine through to PublishStep.
+
+    ContentEngine already renders the card PNG internally, so this step is
+    lightweight — it just promotes image_bytes into context and logs the size.
+    continue_on_failure = True so a render glitch never blocks publishing.
+    """
 
     name = "render_image"
     continue_on_failure = True
@@ -59,12 +74,16 @@ class RenderImageStep(Step):
         self._engine = content_engine
 
     def run(self, context: dict[str, Any]) -> Any:
-        content_result = context.get("content_result")
-        if not content_result:
-            return None
-        image_url = content_result.get("image_url")
-        context["image_url"] = image_url
-        return image_url
+        image_bytes = context.get("image_bytes")
+        if image_bytes:
+            logger.info(
+                "RenderImageStep: PNG ready (%d bytes) — passing to publisher",
+                len(image_bytes),
+            )
+        else:
+            logger.debug("RenderImageStep: no image bytes — text-only post")
+        context["image_bytes"] = image_bytes
+        return image_bytes
 
 
 class PublishStep(Step):
@@ -76,14 +95,13 @@ class PublishStep(Step):
         self._registry = registry
 
     def run(self, context: dict[str, Any]) -> Any:
-        content_result = context.get("content_result", {})
-        caption = content_result.get("caption", "")
-        image_url = context.get("image_url")
+        caption = context.get("caption") or context.get("content_result", {}).get("caption", "")
+        image_bytes = context.get("image_bytes")
 
         if not caption:
             raise RuntimeError("No caption available — cannot publish")
 
-        results = self._registry.publish_all(caption, image_url=image_url)
+        results = self._registry.publish_all(caption, image_bytes=image_bytes)
         context["publish_results"] = results
         logger.info("PostWorkflow: published to %s", list(results.keys()))
         return results

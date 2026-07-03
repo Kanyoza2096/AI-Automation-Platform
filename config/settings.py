@@ -95,7 +95,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Posting schedule (UTC hours as comma-separated string)
     # -------------------------------------------------------------------------
-    content_posting_hours_utc: List[int] = Field(default=[4, 7, 10, 14, 17, 19])
+    content_posting_hours_utc: List[int] = Field(
+        default=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19],
+        description="10 UTC hours for automated posts — one post per slot, ~2 h apart",
+    )
     news_posting_hours_utc: List[int] = Field(default=[6, 13, 18])
 
     # -------------------------------------------------------------------------

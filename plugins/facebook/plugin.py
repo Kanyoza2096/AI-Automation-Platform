@@ -35,12 +35,17 @@ class FacebookPlugin(Plugin):
         self,
         content: str,
         image_url: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
         **kwargs,
     ) -> dict[str, Any]:
         if not self._active:
             return {"ok": False, "error": "plugin not started"}
         try:
-            post_id = self._svc.post_to_page(caption=content, image_url=image_url)
+            post_id = self._svc.post_to_page(
+                caption=content,
+                image_bytes=image_bytes or None,
+                image_url=image_url if not image_bytes else None,
+            )
             return {"ok": bool(post_id), "post_id": post_id, "platform": "facebook"}
         except Exception as exc:
             logger.error("FacebookPlugin.publish: %s", exc)
