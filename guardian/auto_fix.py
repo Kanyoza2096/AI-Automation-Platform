@@ -6,13 +6,16 @@ Guardian Auto-Fix Engine v1.0
 """
 
 import logging
-import requests
 import base64
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.guardian.auto_fix")
+
+# Shared HTTP client for all GitHub API calls in auto-fix
+_http = HttpClient("github_auto_fix", default_timeout=30)
 
 
 class AutoFixEngine:
@@ -162,7 +165,7 @@ class AutoFixEngine:
         try:
             # Step 1: Get repository info
             repo_url = f"{self.api_base}/repos/{repo_full_name}"
-            repo_response = requests.get(repo_url, headers=self._headers(), timeout=10)
+            repo_response = _http.get(repo_url, headers=self._headers(), timeout=10)
 
             if repo_response.status_code != 200:
                 logger.error(f"Failed to get repo: {repo_response.status_code}")
@@ -174,7 +177,7 @@ class AutoFixEngine:
 
             # Step 2: Get the current file to get its SHA
             file_url = f"{repo_url}/contents/{file_path}"
-            file_response = requests.get(file_url, headers=self._headers(), timeout=10)
+            file_response = _http.get(file_url, headers=self._headers(), timeout=10)
 
             if file_response.status_code != 200:
                 logger.error(f"Failed to get file: {file_response.status_code}")
@@ -185,7 +188,7 @@ class AutoFixEngine:
 
             # Step 3: Get the latest commit SHA on the default branch
             ref_url = f"{repo_url}/git/ref/heads/{default_branch}"
-            ref_response = requests.get(ref_url, headers=self._headers(), timeout=10)
+            ref_response = _http.get(ref_url, headers=self._headers(), timeout=10)
 
             if ref_response.status_code != 200:
                 logger.error(f"Failed to get ref: {ref_response.status_code}")
@@ -195,7 +198,7 @@ class AutoFixEngine:
 
             # Step 4: Create a new blob with the fixed content
             blob_url = f"{repo_url}/git/blobs"
-            blob_response = requests.post(
+            blob_response = _http.post(
                 blob_url,
                 headers=self._headers(),
                 json={
@@ -213,7 +216,7 @@ class AutoFixEngine:
 
             # Step 5: Create a new tree
             tree_url = f"{repo_url}/git/trees"
-            tree_response = requests.post(
+            tree_response = _http.post(
                 tree_url,
                 headers=self._headers(),
                 json={
@@ -237,7 +240,7 @@ class AutoFixEngine:
             # Step 6: Create a new commit
             commit_message = f"🔒 Security Fix: {issue.get('message', 'Auto-fix')[:70]}"
             commit_url = f"{repo_url}/git/commits"
-            commit_response = requests.post(
+            commit_response = _http.post(
                 commit_url,
                 headers=self._headers(),
                 json={
@@ -258,7 +261,7 @@ class AutoFixEngine:
             branch_name = f"guardian-fix-{file_path.replace('/', '-')[:40]}-line{issue.get('line', '')}"
             branch_url = f"{repo_url}/git/refs"
 
-            branch_response = requests.post(
+            branch_response = _http.post(
                 branch_url,
                 headers=self._headers(),
                 json={
@@ -272,7 +275,7 @@ class AutoFixEngine:
                 # 422 means branch already exists — retry once with a unique timestamp suffix
                 import time as _time
                 branch_name = f"{branch_name}-{int(_time.time())}"
-                branch_response = requests.post(
+                branch_response = _http.post(
                     branch_url,
                     headers=self._headers(),
                     json={
@@ -310,7 +313,7 @@ class AutoFixEngine:
             )
 
             pr_url = f"{repo_url}/pulls"
-            pr_response = requests.post(
+            pr_response = _http.post(
                 pr_url,
                 headers=self._headers(),
                 json={

@@ -7,13 +7,15 @@ Notifier Service v1.0
 """
 
 import logging
-import requests
 from datetime import datetime
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.notifier")
+
+_http = HttpClient("notifier", default_timeout=10)
 
 
 class NotifierService:
@@ -40,7 +42,7 @@ class NotifierService:
                     "footer": f"Kanyoza Systems • {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}",
                 }]
             }
-            response = requests.post(self.slack_webhook, json=payload, timeout=10)
+            response = _http.post(self.slack_webhook, json=payload, timeout=10)
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Slack notification failed: {e}")
@@ -63,7 +65,7 @@ class NotifierService:
                     "timestamp": datetime.now().isoformat(),
                 }]
             }
-            response = requests.post(self.discord_webhook, json=payload, timeout=10)
+            response = _http.post(self.discord_webhook, json=payload, timeout=10)
             return response.status_code == 204
         except Exception as e:
             logger.error(f"Discord notification failed: {e}")
@@ -79,7 +81,7 @@ class NotifierService:
             return False
 
         try:
-            response = requests.post(
+            response = _http.post(
                 "https://api.sendgrid.com/v3/mail/send",
                 headers={
                     "Authorization": f"Bearer {sendgrid_key}",

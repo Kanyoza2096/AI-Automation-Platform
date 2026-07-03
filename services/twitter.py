@@ -7,13 +7,16 @@ Twitter/X Integration Service v1.0
 """
 
 import logging
-import requests
 from requests_oauthlib import OAuth1
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.twitter")
+
+# Shared HTTP client — OAuth1 auth passed per-request
+_http = HttpClient("twitter", default_timeout=15)
 
 
 class TwitterService:
@@ -42,7 +45,7 @@ class TwitterService:
             return None
 
         try:
-            response = requests.post(
+            response = _http.post(
                 f"{self.base_url}/tweets",
                 json={"text": text[:280]},
                 auth=self._auth(),
@@ -66,7 +69,7 @@ class TwitterService:
 
         try:
             # Step 1: Upload media
-            media_response = requests.post(
+            media_response = _http.post(
                 "https://upload.twitter.com/1.1/media/upload.json",
                 files={"media": image_bytes},
                 auth=self._auth(),
@@ -79,7 +82,7 @@ class TwitterService:
             media_id = media_response.json().get('media_id_string')
 
             # Step 2: Post tweet with media
-            response = requests.post(
+            response = _http.post(
                 f"{self.base_url}/tweets",
                 json={
                     "text": text[:280],

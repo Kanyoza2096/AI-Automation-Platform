@@ -26,6 +26,7 @@ from routes.owner import owner_commands
 from routes.owner_commands import OwnerCommands as _SlashCommands
 from utils.security import verify_facebook_signature, sanitize_message, detect_abuse
 from utils.rate_limiter import rate_limiter
+from utils.metrics import metrics
 
 logger = logging.getLogger("kanyoza.routes.webhook")
 
@@ -94,6 +95,8 @@ def register_webhook_routes(app):
 
 
 def _handle_event(event: dict):
+    _t0 = time_module.monotonic()
+    _ok = True
     try:
         sender_id = event.get("sender", {}).get("id")
         message = event.get("message", {})
@@ -106,7 +109,10 @@ def _handle_event(event: dict):
         elif "postback" in event:
             _handle_postback(sender_id, event["postback"])
     except Exception as e:
+        _ok = False
         logger.error(f"Event handling error: {e}")
+    finally:
+        metrics.record_webhook((time_module.monotonic() - _t0) * 1000, _ok)
 
 
 def _handle_text_message(sender_id: str, text: str):

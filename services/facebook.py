@@ -8,9 +8,8 @@ import io
 import logging
 from typing import Optional, Dict, Any, List
 
-import requests
-
 from config.settings import settings
+from utils.http_client import HttpClient
 from utils.retry import smart_retry
 
 logger = logging.getLogger("kanyoza.services.facebook")
@@ -35,8 +34,12 @@ class FacebookService:
     def __init__(self):
         self.page_token = settings.page_access_token
         self.page_id = settings.page_id
-        self._session = requests.Session()
-        self._session.headers.update({"Accept": "application/json"})
+        self._session = HttpClient(
+            "facebook",
+            base_url=GRAPH_BASE,
+            default_timeout=_REQUEST_TIMEOUT,
+            default_headers={"Accept": "application/json"},
+        )
 
     @property
     def is_configured(self) -> bool:
@@ -46,7 +49,7 @@ class FacebookService:
         self.page_token = settings.page_access_token
         self.page_id = settings.page_id
 
-    def _handle_response(self, response: requests.Response, context: str) -> dict:
+    def _handle_response(self, response, context: str) -> dict:
         result = response.json() if response.text else {}
         if response.status_code == 200:
             return result

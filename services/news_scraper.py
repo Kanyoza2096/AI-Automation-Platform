@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from urllib.parse import urljoin
 
-import requests
 from bs4 import BeautifulSoup
+
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.news_scraper")
 
@@ -43,10 +44,11 @@ class NewsScraper:
     """Scrapes news from multiple sources."""
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.headers.update({
-            "User-Agent": "Mozilla/5.0 (compatible; KanyozaBot/1.0)"
-        })
+        self._session = HttpClient(
+            "news_scraper",
+            default_timeout=_REQUEST_TIMEOUT,
+            default_headers={"User-Agent": "Mozilla/5.0 (compatible; KanyozaBot/1.0)"},
+        )
         self.posted_articles: List[str] = []
         self.last_scraped: Dict[str, datetime] = {}
         self._source_article_counts: Dict[str, List[int]] = {}

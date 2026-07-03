@@ -152,12 +152,12 @@ class CardRenderer:
         if not (self._hcti_user and self._hcti_key):
             return None
         try:
-            import requests
-            resp = requests.post(
+            from utils.http_client import HttpClient as _HC
+            _hcti_http = _HC("hcti_renderer", default_timeout=30)
+            resp = _hcti_http.post(
                 "https://hcti.io/v1/image",
                 data={"html": html, "viewport_width": CARD_W, "viewport_height": CARD_H},
                 auth=(self._hcti_user, self._hcti_key),
-                timeout=30,
             )
             if resp.status_code != 200:
                 logger.warning("HCTI returned HTTP %s", resp.status_code)
@@ -165,7 +165,7 @@ class CardRenderer:
             url = resp.json().get("url", "")
             if not url:
                 return None
-            img = requests.get(url, timeout=20)
+            img = _hcti_http.get(url, timeout=20)
             if img.status_code == 200:
                 logger.info("HCTI fallback rendered card (%d bytes)", len(img.content))
                 return img.content

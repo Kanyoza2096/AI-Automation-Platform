@@ -6,12 +6,14 @@ LinkedIn Integration Service v1.0
 """
 
 import logging
-import requests
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.linkedin")
+
+_http = HttpClient("linkedin", base_url="https://api.linkedin.com/v2", default_timeout=15)
 
 
 class LinkedInService:
@@ -55,7 +57,7 @@ class LinkedInService:
                 },
             }
 
-            response = requests.post(
+            response = _http.post(
                 f"{self.base_url}/ugcPosts",
                 headers=self._headers(),
                 json=payload,

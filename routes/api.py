@@ -12,6 +12,7 @@ from scheduler.post_scheduler import scheduler
 from core.memory import memory
 from config.settings import settings
 from utils.rate_limiter import rate_limiter
+from utils.metrics import metrics
 
 logger = logging.getLogger("kanyoza.routes.api")
 
@@ -385,6 +386,17 @@ def register_api_routes(app):
     @app.route("/api/rate-limits", methods=["GET"])
     def get_rate_limits():
         return jsonify(rate_limiter.get_config())
+
+    # ==================================================================
+    # OBSERVABILITY METRICS
+    # ==================================================================
+
+    @app.route("/api/metrics", methods=["GET"])
+    def get_metrics():
+        """JSON snapshot of all in-process operational metrics (auth required)."""
+        if not _require_auth():
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify(metrics.get_snapshot())
 
     @app.route("/api/unblock", methods=["POST"])
     def unblock_user():

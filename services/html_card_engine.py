@@ -6,12 +6,15 @@ Verbose logging for debugging.
 """
 
 import logging
-import requests
 import json
+
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.html_card_engine")
 
 HCTI_API = "https://hcti.io/v1/image"
+
+_http = HttpClient("hcti", default_timeout=10)
 
 
 def _get_hcti_credentials():
@@ -48,7 +51,7 @@ def _html_to_png(html: str) -> bytes:
     logger.info(f"HCTI: Sending request... (HTML length: {len(html)} chars)")
 
     try:
-        response = requests.post(
+        response = _http.post(
             HCTI_API,
             data={"html": html},
             auth=(user_id, api_key),

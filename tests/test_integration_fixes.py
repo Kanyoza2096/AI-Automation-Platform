@@ -410,21 +410,26 @@ class TestAutoFixBranchRetry201OnlyIntegration:
             m.json.return_value = json_data
             return m
 
+        import guardian.auto_fix as _af_mod
+        mock_http = MagicMock()
+        mock_http.get.return_value = make_mock(200, {
+            "default_branch": "main",
+            "owner": {"login": "test"},
+            "sha": "file_sha",
+            "object": {"sha": "abc123"},
+        })
+        # Call sequence: create_blob, create_tree, create_commit, create_branch (422), retry (400)
+        mock_http.post.side_effect = [
+            make_mock(201, {"sha": "blob123"}),    # create_blob
+            make_mock(201, {"sha": "tree123"}),    # create_tree
+            make_mock(201, {"sha": "commit123"}),  # create_commit
+            make_mock(422, {}),                    # create_branch → conflict
+            make_mock(400, {}),                    # retry create_branch → fail
+        ]
         with patch("guardian.auto_fix.settings"), \
-             patch("guardian.auto_fix.requests") as mock_req:
-            mock_req.get.return_value = make_mock(200, {
-                "object": {"sha": "abc123"}
-            })
-            # Call sequence: create_blob, create_tree, create_commit, create_branch (422), retry (400)
-            mock_req.post.side_effect = [
-                make_mock(201, {"sha": "blob123"}),    # create_blob
-                make_mock(201, {"sha": "tree123"}),    # create_tree
-                make_mock(201, {"sha": "commit123"}),  # create_commit
-                make_mock(422, {}),                    # create_branch → conflict
-                make_mock(400, {}),                    # retry create_branch → fail
-            ]
+             patch.object(_af_mod, "_http", mock_http):
             result = engine.create_fix_pr(
-                "file.py", "old", "new", "Fix security issue"
+                "owner/repo", "file.py", "fixed content", "Fix security issue"
             )
             assert result is None, \
                 f"Expected None when branch retry fails, got {result!r}"

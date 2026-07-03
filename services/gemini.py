@@ -15,10 +15,10 @@ import re
 import time
 from typing import Optional, List, Dict
 
-import requests
-
 from config.settings import settings
 from core.memory import memory
+from utils.http_client import HttpClient
+from utils.metrics import metrics
 from utils.retry import smart_retry
 
 logger = logging.getLogger("kanyoza.services.gemini")
@@ -211,8 +211,12 @@ class GeminiService:
         self._chat_temp = settings.gemini_chat_temperature or 0.7
         self._post_temp = settings.gemini_post_temperature or 0.65
         self._safety = _SAFETY_LEVELS.get(settings.gemini_safety_level, "BLOCK_MEDIUM_AND_ABOVE")
-        self._session = requests.Session()
-        self._session.headers.update({"Content-Type": "application/json"})
+        self._session = HttpClient(
+            "gemini",
+            base_url=GEMINI_BASE,
+            default_timeout=_REQUEST_TIMEOUT,
+            default_headers={"Content-Type": "application/json"},
+        )
         self._last_rate_limit_time: float = 0.0
 
     def _safety_settings(self):
@@ -242,27 +246,33 @@ class GeminiService:
             "safetySettings": self._safety_settings(),
         }
 
-        response = self._session.post(url, json=payload, timeout=_REQUEST_TIMEOUT)
+        t0      = time.monotonic()
+        _ok     = False
+        try:
+            response = self._session.post(url, json=payload)
 
-        if response.status_code == 429:
-            self._last_rate_limit_time = time.time()
-            raise GeminiRateLimited("Rate limited")
-        if response.status_code != 200:
-            raise GeminiServiceError(f"HTTP {response.status_code}")
+            if response.status_code == 429:
+                self._last_rate_limit_time = time.time()
+                raise GeminiRateLimited("Rate limited")
+            if response.status_code != 200:
+                raise GeminiServiceError(f"HTTP {response.status_code}")
 
-        data = response.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            raise GeminiServiceError(f"Blocked: {data.get('promptFeedback', {}).get('blockReason', 'unknown')}")
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise GeminiServiceError(f"Blocked: {data.get('promptFeedback', {}).get('blockReason', 'unknown')}")
 
-        parts = candidates[0].get("content", {}).get("parts", [])
-        # Gemini 2.5 may prepend thinking-token parts (keyed "thought");
-        # find the first part that actually contains output text.
-        text_part = next((p for p in parts if "text" in p), None)
-        if text_part is None:
-            raise GeminiServiceError("Missing text")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            # Gemini 2.5 may prepend thinking-token parts (keyed "thought");
+            # find the first part that actually contains output text.
+            text_part = next((p for p in parts if "text" in p), None)
+            if text_part is None:
+                raise GeminiServiceError("Missing text")
 
-        return text_part["text"].strip()
+            _ok = True
+            return text_part["text"].strip()
+        finally:
+            metrics.record_ai("gemini", "call", (time.monotonic() - t0) * 1000, _ok)
 
     def _strip_bad_phrases(self, text: str) -> str:
         return ' '.join(_BAD_PHRASES_PATTERN.sub("", text).split()).strip()

@@ -6,19 +6,23 @@ No Pillow dependency.
 """
 
 import logging
-import requests
 import json
+
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.image_engine")
 
 KROKI_BASE = "https://kroki.io"
+
+_kroki_http  = HttpClient("kroki",  base_url=KROKI_BASE,                   default_timeout=15)
+_picsum_http = HttpClient("picsum", base_url="https://picsum.photos",       default_timeout=15)
 
 
 def _kroki(diagram_code: str, diagram_type: str = "mermaid") -> bytes:
     """Send diagram code to Kroki, get PNG back. Free, no API key."""
     try:
         url = f"{KROKI_BASE}/{diagram_type}/png"
-        response = requests.post(url, data=diagram_code.encode(), timeout=15)
+        response = _kroki_http.post(url, data=diagram_code.encode(), timeout=15)
         if response.status_code == 200:
             logger.info("✅ Diagram generated via Kroki")
             return response.content
@@ -33,7 +37,7 @@ def _picsum(seed: str) -> bytes:
     try:
         clean_seed = seed.replace(' ', '-').replace('?', '').replace(':', '').replace("'", '')[:30]
         url = f"https://picsum.photos/seed/{clean_seed}/1200/630"
-        response = requests.get(url, timeout=15)
+        response = _picsum_http.get(url, timeout=15)
         if response.status_code == 200:
             logger.info("✅ Picsum fallback used")
             return response.content

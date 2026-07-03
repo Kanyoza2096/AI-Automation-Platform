@@ -35,10 +35,12 @@ Caption Builder  HTML Renderer   SVG Renderer
 import random
 import logging
 import threading
+import time
 from typing import Tuple, Optional, List
 
 from models.content import TechPost, PostTheme
 from services.gemini import gemini
+from utils.metrics import metrics
 
 logger = logging.getLogger("kanyoza.services.content_engine")
 
@@ -337,7 +339,8 @@ class ContentEngine:
 
     def generate_post(self) -> Tuple[str, Optional[bytes]]:
         """
-        Canonical pipeline:
+        Canonical pipeline (timing recorded in platform metrics):
+
 
             Scheduler
                 │
@@ -358,6 +361,7 @@ class ContentEngine:
                             │
                      Facebook Publisher
         """
+        _t0 = time.monotonic()
         try:
             category, topic = self.get_next_topic()
             theme = self.get_theme(category)
@@ -388,6 +392,7 @@ class ContentEngine:
                         f"{len(image_bytes)} bytes" if image_bytes else "None",
                     )
                     self.post_counter += 1
+                    metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, True)
                     return caption, image_bytes
 
                 except Exception as exc:
@@ -413,6 +418,7 @@ class ContentEngine:
 
         except Exception as exc:
             logger.error("Post generation crashed: %s", exc)
+            metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, False)
             return self.get_fallback_post()
 
     # ── Image rendering (steps 3b-3d) ──────────────────────────────────────────

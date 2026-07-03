@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from typing import Dict, List, Optional
 
-import requests
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.guardian.github")
 
@@ -22,12 +22,16 @@ class GitHubClient:
     def __init__(self, username: str, token: str):
         self._username = username
         self._token = token
-        self._session = requests.Session()
-        self._session.headers.update({
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "KanyozaSystemsBot/1.0",
-        })
+        self._session = HttpClient(
+            "github",
+            base_url=GITHUB_API,
+            default_timeout=_REQUEST_TIMEOUT,
+            default_headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "KanyozaSystemsBot/1.0",
+            },
+        )
 
     # ------------------------------------------------------------------
     # Repository listing
@@ -80,7 +84,7 @@ class GitHubClient:
                     break
                 page += 1
 
-            except requests.RequestException as exc:
+            except Exception as exc:
                 logger.error("GitHub API error (page %d): %s", page, exc)
                 break
 

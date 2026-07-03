@@ -6,12 +6,15 @@ Hybrid thumbnail generation with Picsum fallback (guaranteed to work).
 
 import re
 import logging
-import requests
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.huggingface")
+
+# Shared HTTP client — auth token passed per-request via self.headers
+_http = HttpClient("huggingface", default_timeout=30)
 
 API_BASE = "https://api-inference.huggingface.co/models"
 
@@ -48,7 +51,7 @@ class HuggingFaceService:
                     "return_full_text": False,
                 }
             }
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+            response = _http.post(url, headers=self.headers, json=payload, timeout=30)
 
             if response.status_code == 200:
                 result = response.json()
@@ -69,7 +72,7 @@ class HuggingFaceService:
 
         try:
             url = f"{API_BASE}/{MODELS['sentiment']}"
-            response = requests.post(
+            response = _http.post(
                 url, headers=self.headers,
                 json={"inputs": text[:500]}, timeout=10
             )
@@ -101,7 +104,7 @@ class HuggingFaceService:
         url = f"{API_BASE}/{MODELS['thumbnail']}"
 
         try:
-            response = requests.post(url, headers=self.headers, json={"inputs": prompt}, timeout=90)
+            response = _http.post(url, headers=self.headers, json={"inputs": prompt}, timeout=90)
 
             if response.status_code == 200:
                 content_type = response.headers.get("Content-Type", "")
@@ -116,11 +119,11 @@ class HuggingFaceService:
             else:
                 logger.warning(f"FLUX returned HTTP {response.status_code}")
 
-        except requests.Timeout:
+        except Exception:  # Timeout
             logger.warning("FLUX request timed out.")
-        except requests.ConnectionError:
+        except Exception:  # ConnectionError
             logger.warning("Unable to connect to Hugging Face.")
-        except requests.RequestException as exc:
+        except Exception as exc:  # RequestException
             logger.error(f"FLUX request failed: {exc}")
 
         return None
@@ -131,16 +134,16 @@ class HuggingFaceService:
         url = f"https://picsum.photos/seed/{seed}/1200/630"
 
         try:
-            response = requests.get(url, timeout=15)
+            response = _http.get(url, timeout=15)
             if response.status_code == 200:
                 logger.info("✅ Using Picsum fallback image.")
                 return response.content
             logger.warning(f"Picsum returned HTTP {response.status_code}")
-        except requests.Timeout:
+        except Exception:  # Timeout
             logger.warning("Picsum timeout.")
-        except requests.ConnectionError:
+        except Exception:  # ConnectionError
             logger.warning("Unable to connect to Picsum.")
-        except requests.RequestException as exc:
+        except Exception as exc:  # RequestException
             logger.error(f"Picsum request failed: {exc}")
 
         return None

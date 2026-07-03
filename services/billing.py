@@ -7,13 +7,16 @@ Billing Service v1.0
 """
 
 import logging
-import requests
 from datetime import datetime, timezone
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.billing")
+
+# Shared HTTP client for Stripe and M-Pesa API calls
+_http = HttpClient("billing", default_timeout=30)
 
 
 class BillingService:
@@ -48,7 +51,7 @@ class BillingService:
         }
 
         try:
-            response = requests.post(
+            response = _http.post(
                 "https://api.stripe.com/v1/checkout/sessions",
                 auth=(self.stripe_key, ''),
                 data={
@@ -113,7 +116,7 @@ class BillingService:
     def _mpesa_auth(self) -> Optional[str]:
         """Get M-Pesa OAuth token."""
         try:
-            response = requests.get(
+            response = _http.get(
                 f"https://{'sandbox' if self.mpesa_environment == 'sandbox' else 'api'}.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
                 auth=(self.mpesa_consumer_key, self.mpesa_consumer_secret),
                 timeout=10,
@@ -143,7 +146,7 @@ class BillingService:
                 f"{self.mpesa_shortcode}{self.mpesa_passkey}{timestamp}".encode()
             ).decode()
 
-            response = requests.post(
+            response = _http.post(
                 f"https://{'sandbox' if self.mpesa_environment == 'sandbox' else 'api'}.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={
@@ -180,7 +183,7 @@ class BillingService:
             return {'success': False, 'error': 'M-Pesa auth failed'}
 
         try:
-            response = requests.post(
+            response = _http.post(
                 f"https://{'sandbox' if self.mpesa_environment == 'sandbox' else 'api'}.safaricom.co.ke/mpesa/stkpushquery/v1/query",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json={

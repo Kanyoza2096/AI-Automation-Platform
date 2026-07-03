@@ -6,12 +6,14 @@ WhatsApp Business Integration Service v1.0
 """
 
 import logging
-import requests
 from typing import Optional
 
 from config.settings import settings
+from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.services.whatsapp")
+
+_http = HttpClient("whatsapp", default_timeout=15)
 
 
 class WhatsAppService:
@@ -33,7 +35,7 @@ class WhatsAppService:
             return False
 
         try:
-            response = requests.post(
+            response = _http.post(
                 f"{self.base_url}/messages",
                 headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
                 json={
