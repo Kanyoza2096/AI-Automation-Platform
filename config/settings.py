@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     )
 
     # -------------------------------------------------------------------------
+    # Branding
+    # -------------------------------------------------------------------------
+    brand_name: str = Field(default="Dev Comparisons", description="Brand name shown in the card footer (BRAND_NAME)")
+
+    # -------------------------------------------------------------------------
     # Facebook / Messenger
     # -------------------------------------------------------------------------
     page_access_token: str = Field(default="", description="Facebook Page access token")

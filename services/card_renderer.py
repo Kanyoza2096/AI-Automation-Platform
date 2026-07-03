@@ -150,6 +150,7 @@ class CardRenderer:
         points_a = self._safe_points(post.points_a)
         points_b = self._safe_points(post.points_b)
 
+        from config.settings import settings as _settings
         ctx = {
             "title":        truncate_chars(post.title, 110),
             "theme_label":  theme_val.replace("_", " ").title(),
@@ -160,6 +161,7 @@ class CardRenderer:
             "font_size":     FONT_SIZE,
             "palette":       palette,
             "layout_kind":   layout_kind,
+            "brand_name":    _settings.brand_name,
             "columns":      [],
             "cells":        [],
             "items":        [],
