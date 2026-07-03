@@ -16,21 +16,36 @@ logger = logging.getLogger("kanyoza.guardian.github")
 
 
 def _run_git(cmd: list, timeout: int) -> subprocess.CompletedProcess:
-    """Run a git subprocess in a real OS thread.
+    """Run a git subprocess safely under eventlet.
 
-    Problem: eventlet monkey-patches Python's file I/O.  When
-    subprocess.run() is called from a green thread with capture_output=True,
-    the pipe file objects become GreenFileIO instances.  Git's internal
-    machinery then tries to call _isatty_open_only on them — an attribute
-    GreenFileIO does not have — and every git command raises AttributeError
-    before it even touches the network.
+    Root cause: eventlet.monkey_patch() replaces Python's file I/O classes
+    with GreenFileIO at import time.  When subprocess.run() uses
+    ``text=True`` (or ``capture_output=True, text=True``), Python wraps the
+    raw pipe in a TextIOWrapper, which internally calls ``_isatty_open_only``
+    — a method that GreenFileIO does not implement.  This raises AttributeError
+    for every git call, even when run inside an eventlet tpool thread, because
+    the monkey-patched classes are already in memory.
 
-    Fix: use eventlet.tpool.execute() to run the subprocess call in a real
-    OS thread where the original (un-patched) I/O is in effect.  Falls back
-    to a plain call if eventlet is not present.
+    Fix: use raw byte-mode pipes (no ``text=True``, no ``capture_output``),
+    then decode stdout/stderr manually.  This avoids TextIOWrapper entirely,
+    so ``_isatty_open_only`` is never reached, regardless of eventlet state.
+    We still wrap in ``tpool.execute`` as a defence-in-depth measure for
+    blocking I/O.
     """
-    def _call():
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    def _call() -> subprocess.CompletedProcess:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,   # bytes — avoids TextIOWrapper
+            stderr=subprocess.PIPE,   # bytes — avoids TextIOWrapper
+            timeout=timeout,
+        )
+        # Decode manually; replace undecodable bytes rather than raising
+        return subprocess.CompletedProcess(
+            args=proc.args,
+            returncode=proc.returncode,
+            stdout=(proc.stdout or b"").decode("utf-8", errors="replace"),
+            stderr=(proc.stderr or b"").decode("utf-8", errors="replace"),
+        )
 
     try:
         from eventlet import tpool
