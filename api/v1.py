@@ -385,6 +385,81 @@ def get_metrics():
 
 
 # ---------------------------------------------------------------------------
+# AI configuration (AI Personality Matrix)
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/ai/config", methods=["GET"])
+@_auth_required
+def get_ai_config():
+    """Return current AI model, provider, and temperature settings."""
+    from config.settings import settings as _s
+    return _ok({
+        "provider": _s.ai_provider,
+        "model": _s.gemini_model,
+        "chat_temperature": _s.gemini_chat_temperature,
+        "post_temperature": _s.gemini_post_temperature,
+        "safety_level": _s.gemini_safety_level,
+        "available_models": [
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+        ],
+        "available_providers": ["gemini", "huggingface"],
+    })
+
+
+@api_v1_bp.route("/ai/config", methods=["PUT"])
+@_auth_required
+def update_ai_config():
+    """Update AI model, temperature, or safety level at runtime."""
+    from config.settings import settings as _s
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        allowed = {"model", "chat_temperature", "post_temperature", "safety_level", "provider"}
+        unknown = set(data.keys()) - allowed
+        if unknown:
+            return _err(f"Unknown keys: {sorted(unknown)}", 400)
+
+        if "provider" in data:
+            valid = {"gemini", "huggingface"}
+            if data["provider"] not in valid:
+                return _err(f"provider must be one of {sorted(valid)}", 400)
+            _s.ai_provider = data["provider"]
+
+        if "model" in data:
+            _s.gemini_model = str(data["model"])
+
+        for temp_key in ("chat_temperature", "post_temperature"):
+            if temp_key in data:
+                val = data[temp_key]
+                if not isinstance(val, (int, float)) or not 0.0 <= float(val) <= 2.0:
+                    return _err(f"{temp_key} must be a float in 0.0–2.0", 400)
+                setattr(_s, temp_key, float(val))
+
+        if "safety_level" in data:
+            valid = {"low", "medium", "high"}
+            if data["safety_level"] not in valid:
+                return _err(f"safety_level must be one of {sorted(valid)}", 400)
+            _s.gemini_safety_level = data["safety_level"]
+
+        return _ok({
+            "updated": True,
+            "config": {
+                "provider": _s.ai_provider,
+                "model": _s.gemini_model,
+                "chat_temperature": _s.gemini_chat_temperature,
+                "post_temperature": _s.gemini_post_temperature,
+                "safety_level": _s.gemini_safety_level,
+            },
+        })
+    except Exception as exc:
+        logger.error("PUT /api/v1/ai/config error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
 # Posts — extended
 # ---------------------------------------------------------------------------
 

@@ -9,6 +9,19 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _emit(event: str, data: dict) -> None:
+    """Best-effort SocketIO emit to the /dashboard namespace.
+
+    Uses a soft import so this module works in test environments where
+    SocketIO is never initialised.  All failures are silently swallowed.
+    """
+    try:
+        from core.socket_server import emit_to_dashboard
+        emit_to_dashboard(event, data)
+    except Exception:
+        pass
+
+
 class StepStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
@@ -107,10 +120,28 @@ class Workflow:
         context: dict[str, Any] = dict(initial_context)
 
         logger.info("Workflow '%s' started (%d steps)", self.name, len(self._steps))
+        _emit("workflow_started", {
+            "workflow": self.name,
+            "total_steps": len(self._steps),
+            "steps": [s.name for s in self._steps],
+        })
 
         for step in self._steps:
+            _emit("workflow_step_started", {
+                "workflow": self.name,
+                "step": step.name,
+            })
+
             step_result = step.execute(context)
             result.steps.append(step_result)
+
+            _emit("workflow_step_done", {
+                "workflow": self.name,
+                "step": step.name,
+                "status": step_result.status.value,
+                "latency_ms": round(step_result.latency_ms),
+                "error": step_result.error,
+            })
 
             if step_result.ok:
                 context["last_output"] = step_result.output
@@ -121,10 +152,20 @@ class Workflow:
                 break
 
         result.finished_at = time.monotonic()
+        ok = result.success
         logger.info(
             "Workflow '%s' finished in %.0fms — %s",
             self.name,
             result.total_ms,
-            "OK" if result.success else "FAILED",
+            "OK" if ok else "FAILED",
         )
+        _emit("workflow_done", {
+            "workflow": self.name,
+            "success": ok,
+            "total_ms": round(result.total_ms),
+            "steps": [
+                {"step": s.step_name, "status": s.status.value, "latency_ms": round(s.latency_ms)}
+                for s in result.steps
+            ],
+        })
         return result

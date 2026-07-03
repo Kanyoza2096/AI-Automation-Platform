@@ -92,6 +92,26 @@ def create_app(
 # ---------------------------------------------------------------------------
 
 def _register_request_hooks(app: Flask) -> None:
+    # ------------------------------------------------------------------
+    # CORS — allow the React frontend (any origin) to call REST endpoints.
+    # SocketIO already has cors_allowed_origins="*"; this covers HTTP routes.
+    # ------------------------------------------------------------------
+    _CORS_HEADERS = "Content-Type, Authorization, X-API-Key, X-Correlation-ID"
+    _CORS_METHODS = "GET, POST, PUT, DELETE, OPTIONS"
+
+    @app.before_request
+    def handle_preflight():
+        """Return 200 for CORS preflight OPTIONS requests immediately."""
+        if request.method == "OPTIONS":
+            resp = app.make_default_options_response()
+            origin = request.headers.get("Origin", "*")
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Methods"] = _CORS_METHODS
+            resp.headers["Access-Control-Allow-Headers"] = _CORS_HEADERS
+            resp.headers["Access-Control-Max-Age"] = "86400"
+            return resp
+
     @app.before_request
     def assign_correlation_id():
         incoming = request.headers.get("X-Correlation-ID")
@@ -99,12 +119,20 @@ def _register_request_hooks(app: Flask) -> None:
         request.environ["correlation_id"] = cid
 
     @app.after_request
-    def add_correlation_header(response):
+    def add_cors_and_security_headers(response):
+        # CORS
+        origin = request.headers.get("Origin", "")
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = _CORS_METHODS
+            response.headers["Access-Control-Allow-Headers"] = _CORS_HEADERS
+        # Correlation ID
         cid = get_current_correlation_id()
         if cid:
             response.headers["X-Correlation-ID"] = cid
+        # Security headers (relaxed X-Frame-Options so the console iframe can embed)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
