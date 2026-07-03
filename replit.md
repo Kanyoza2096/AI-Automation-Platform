@@ -94,7 +94,7 @@ utils/
 - [x] M4 — AI abstraction (AIProvider / AIOrchestrator) + content engine
 - [x] M4b — Event Bus, Repository pattern, Background workers, Plugin architecture
 - [x] M4c — Domain layer, Workflow engine, Replay guard, Analytics recorder
-- [ ] M5 — Rendering engine (BrowserManager + page pool + render cache)
+- [x] M5 — Rendering engine (BrowserManager + page pool + render cache)
 - [ ] M6 — Full scheduler integration using PostPublishWorkflow
 - [ ] M7 — Code Guardian v10 migration
 - [ ] M8 — REST API (versioned /api/v1/*)

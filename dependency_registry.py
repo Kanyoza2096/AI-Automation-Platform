@@ -187,6 +187,17 @@ def _register_services(c: ServiceContainer) -> None:
 
     c.register(EventRecorder, _build_recorder, singleton=True)
 
+    # BrowserManager (M5) — register the module singleton so all DI consumers
+    # share the same lifecycle-managed instance that lifecycle.py starts/stops.
+    from services.browser_manager import BrowserManager, browser_manager as _bm
+    c.register_instance(BrowserManager, _bm)
+    logger.info("BrowserManager registered (module singleton).")
+
+    # RenderCache (M5) — register the module singleton for consistency.
+    from services.render_cache import RenderCache, render_cache as _rc
+    c.register_instance(RenderCache, _rc)
+    logger.info("RenderCache registered (module singleton).")
+
 
 # ---------------------------------------------------------------------------
 # Plugins

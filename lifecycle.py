@@ -93,6 +93,14 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("AIOrchestrator boot failed: %s", exc)
 
+    # BrowserManager (M5) — persistent Playwright page pool for card rendering
+    try:
+        from services.browser_manager import browser_manager
+        browser_manager.start()
+        logger.info("BrowserManager ready (page pool started).")
+    except Exception as exc:
+        logger.warning("BrowserManager boot failed (card rendering will use one-shot fallback): %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Scheduler startup
@@ -270,6 +278,14 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
         logger.info("Post scheduler stopped.")
     except Exception as exc:
         logger.warning("Error stopping post scheduler: %s", exc)
+
+    # BrowserManager (M5) — close the persistent page pool
+    try:
+        from services.browser_manager import browser_manager
+        browser_manager.stop()
+        logger.info("BrowserManager stopped.")
+    except Exception as exc:
+        logger.warning("Error stopping BrowserManager: %s", exc)
 
     # v9 service singletons with .close()
     _v9_singletons = [

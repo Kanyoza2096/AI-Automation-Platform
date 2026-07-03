@@ -1,1 +1,6 @@
 .github/
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.zip

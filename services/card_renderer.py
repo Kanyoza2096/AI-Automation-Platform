@@ -1,11 +1,12 @@
 """
-Card Renderer v11.0 — SVG + Jinja2 + Playwright pipeline.
+Card Renderer v11.1 — SVG + Jinja2 + Playwright pipeline (M5 upgrade).
 
-Pipeline (per render call) — unchanged shape from v10:
+Pipeline (per render call):
+  0. RenderCache    — return cached PNG immediately on hit (keyed by HTML hash)
   1. SvgRenderer    — builds a decorative (text-free) background SVG
   2. HtmlRenderer   — renders a Jinja2 template; all copy is real HTML/CSS text
-  3. Playwright     — headless Chromium screenshots HTML → PNG 1080x1080
-  4. HCTI fallback  — htmlcsstoimage.com if Playwright unavailable
+  3. BrowserManager — borrows a pooled Playwright page (no Chromium launch per call)
+     └─ HCTI fallback — htmlcsstoimage.com if BrowserManager is unavailable
 
 The card is always 1080x1080 pixels (square — optimal for Facebook / Instagram).
 
@@ -13,6 +14,15 @@ Typography, spacing, and palette decisions live in services/rendering/*
 so this module stays focused on orchestration: build context → render
 template → screenshot → return bytes. See services/rendering/layout.py
 for design tokens and services/rendering/typography.py for text prep.
+
+M5 changes
+----------
+- BrowserManager replaces the per-render `with sync_playwright()` context.
+  Pages are reused across renders; Chromium is launched once at boot.
+- RenderCache wraps the full pipeline: identical HTML → instant bytes.
+- _screenshot_playwright() gracefully falls back to the old one-shot
+  Playwright path when BrowserManager has not been started yet (e.g.
+  during unit tests that don't boot the full lifecycle).
 """
 
 import logging
@@ -76,6 +86,24 @@ class CardRenderer:
         self._hcti_key: str = ""
         self._init_jinja()
         self._init_hcti()
+
+    # ── Cache helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _cache_get(html: str) -> Optional[bytes]:
+        try:
+            from services.render_cache import render_cache
+            return render_cache.get(render_cache.key_for(html))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _cache_set(html: str, png: bytes) -> None:
+        try:
+            from services.render_cache import render_cache
+            render_cache.set(render_cache.key_for(html), png)
+        except Exception:
+            pass
 
     # ── Init ────────────────────────────────────────────────────────────────────
 
@@ -205,41 +233,77 @@ class CardRenderer:
     # ── Step 3a: Playwright Screenshot ─────────────────────────────────────────
 
     def _screenshot_playwright(self, html: str) -> Optional[bytes]:
+        """
+        Render HTML → PNG via Playwright.
+
+        Preferred path: borrow a page from BrowserManager's pool (fast — no
+        new Chromium process).  Fallback: launch a one-shot browser (used when
+        BrowserManager has not been started, e.g. in isolated unit tests).
+        """
+        # ── Fast path: pooled page via BrowserManager ──────────────────────────
+        try:
+            from services.browser_manager import browser_manager
+            if browser_manager.is_running:
+                with browser_manager.acquire_page() as page:
+                    png = self._render_on_page(page, html)
+                logger.info(
+                    "BrowserManager rendered 1080x1080 card at %sx scale (%d bytes)",
+                    DEVICE_SCALE_FACTOR, len(png),
+                )
+                return png
+        except Exception as exc:
+            logger.warning(
+                "BrowserManager render failed (%s) — falling back to one-shot Playwright.",
+                exc,
+            )
+
+        # ── Fallback path: one-shot Playwright launch ──────────────────────────
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as pw:
-                browser = pw.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+                browser = pw.chromium.launch(
+                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                    headless=True,
+                )
                 page = browser.new_page(
                     viewport={"width": CARD_W, "height": CARD_H},
                     device_scale_factor=DEVICE_SCALE_FACTOR,
                 )
-                page.set_content(html, wait_until="networkidle")
-                # Guarantee the embedded webfont is fully loaded and laid out
-                # before any autofit measurement or screenshot happens.
-                try:
-                    page.evaluate("document.fonts.ready.then(() => true)")
-                except Exception:
-                    pass
-                page.wait_for_load_state("networkidle")
-                # Responsive text-fitting safety net — shrinks any
-                # [data-autofit] element that still overflows its box.
-                try:
-                    page.evaluate(AUTOFIT_JS)
-                except Exception as exc:
-                    logger.debug("Autofit script failed (non-fatal): %s", exc)
-                png = page.screenshot(
-                    type="png",
-                    clip={"x": 0, "y": 0, "width": CARD_W, "height": CARD_H},
-                )
+                png = self._render_on_page(page, html)
                 browser.close()
             logger.info(
-                "Playwright rendered 1080x1080 card at %sx scale (%d bytes)",
+                "One-shot Playwright rendered 1080x1080 card at %sx scale (%d bytes)",
                 DEVICE_SCALE_FACTOR, len(png),
             )
             return png
         except Exception as exc:
             logger.warning("Playwright screenshot failed: %s", exc)
             return None
+
+    @staticmethod
+    def _render_on_page(page, html: str) -> bytes:
+        """
+        Set HTML content on *page*, wait for fonts + networkidle,
+        run the autofit JS safety net, and capture a PNG screenshot.
+
+        Shared by both the pooled and one-shot Playwright paths.
+        """
+        page.set_content(html, wait_until="networkidle")
+        # Ensure the embedded webfont is fully loaded before measuring layout
+        try:
+            page.evaluate("document.fonts.ready.then(() => true)")
+        except Exception:
+            pass
+        page.wait_for_load_state("networkidle")
+        # Autofit safety net — shrinks overflowing [data-autofit] elements
+        try:
+            page.evaluate(AUTOFIT_JS)
+        except Exception as exc:
+            logger.debug("Autofit script failed (non-fatal): %s", exc)
+        return page.screenshot(
+            type="png",
+            clip={"x": 0, "y": 0, "width": CARD_W, "height": CARD_H},
+        )
 
     # ── Step 3b: HCTI Fallback ──────────────────────────────────────────────────
 
@@ -279,25 +343,36 @@ class CardRenderer:
         """
         Full pipeline:
           TechPost
+            ├── RenderCache   → return cached PNG immediately on hit
             ├── SVG Renderer  → decorative background SVG (no text)
             └── HTML Renderer → Jinja2 template (real HTML/CSS text)
-                     └── Playwright / HCTI → PNG 1080x1080
+                     └── BrowserManager (pooled) / one-shot Playwright / HCTI → PNG 1080x1080
 
         Returns PNG bytes, or None if all backends fail.
         """
-        svg   = self._build_svg(post)
-        html  = self._build_html(post, svg)
+        svg  = self._build_svg(post)
+        html = self._build_html(post, svg)
         if not html:
             logger.debug("HTML render produced nothing — skipping screenshot")
             return None
 
+        # ── Cache check (L1 memory → L2 disk) ─────────────────────────────────
+        cached = self._cache_get(html)
+        if cached is not None:
+            logger.debug("Returning cached PNG (%d bytes)", len(cached))
+            return cached
+
+        # ── Playwright (pooled or one-shot) ────────────────────────────────────
         if self._check_playwright():
             png = self._screenshot_playwright(html)
             if png:
+                self._cache_set(html, png)
                 return png
 
+        # ── HCTI fallback ──────────────────────────────────────────────────────
         png = self._screenshot_hcti(html)
         if png:
+            self._cache_set(html, png)
             return png
 
         logger.debug("All PNG backends failed (Playwright + HCTI)")
