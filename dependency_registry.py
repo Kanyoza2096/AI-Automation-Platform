@@ -11,7 +11,7 @@ interfaces inside the service container. Import nothing here except:
 Add a new service in three steps:
   1. Define the interface (ABC / Protocol) in its module.
   2. Create the concrete implementation.
-  3. Add a register() call in _register_services() below.
+  3. Add a register() call in the appropriate section below.
 """
 
 from __future__ import annotations
@@ -33,7 +33,11 @@ def build_container() -> ServiceContainer:
     """
     container = ServiceContainer()
     _register_infrastructure(container)
+    _register_repositories(container)
+    _register_ai_layer(container)
     _register_services(container)
+    _register_plugins(container)
+    _register_workflows(container)
     logger.info(
         "Service container built — %d bindings registered.",
         len(container.registered_types()),
@@ -49,16 +53,52 @@ def build_container() -> ServiceContainer:
 def _register_infrastructure(c: ServiceContainer) -> None:
     """Register config and cross-cutting infrastructure services."""
 
-    # Settings — already a singleton module-level object; wrap it
     from config.settings import Settings
     c.register_instance(Settings, settings)
 
-    # Supabase client (optional — None when not configured)
+    # Event Bus — singleton in-process pub/sub
+    from core.event_bus import EventBus
+    c.register(EventBus, lambda: _build_event_bus(), singleton=True)
+
+    # Task Queue — background worker pool
+    from workers.task_queue import TaskQueue
+    c.register(TaskQueue, lambda: _build_task_queue(), singleton=True)
+
+    # Plugin Registry
+    from plugins.base import PluginRegistry
+    c.register(PluginRegistry, lambda: _build_plugin_registry(), singleton=True)
+
+    # Replay Guard — webhook replay protection
+    from domain.security.replay_guard import ReplayGuard
+    c.register(ReplayGuard, lambda: ReplayGuard(ttl_seconds=300), singleton=True)
+
+    # Supabase (optional)
     _register_supabase(c)
 
 
+def _build_event_bus():
+    from core.event_bus import EventBus
+    bus = EventBus()
+    logger.info("EventBus created.")
+    return bus
+
+
+def _build_task_queue():
+    from workers.task_queue import TaskQueue
+    q = TaskQueue(workers=3)
+    q.start()
+    logger.info("TaskQueue started with 3 workers.")
+    return q
+
+
+def _build_plugin_registry():
+    from plugins.base import PluginRegistry
+    registry = PluginRegistry()
+    logger.info("PluginRegistry created.")
+    return registry
+
+
 def _register_supabase(c: ServiceContainer) -> None:
-    """Register Supabase client when credentials are present."""
     if not settings.supabase_enabled:
         logger.info("Supabase not configured — persistence layer disabled.")
         return
@@ -69,10 +109,6 @@ def _register_supabase(c: ServiceContainer) -> None:
         logger.info("Supabase client created.")
         return client
 
-    # We use a string tag because supabase.Client is not importable without
-    # the package, and we want to avoid a hard dependency at registry load time.
-    # Services resolve it via container.try_resolve(SupabaseClient) after
-    # importing SupabaseClient from this module.
     try:
         from supabase import Client as SupabaseClient  # type: ignore[import-untyped]
         c.register(SupabaseClient, _factory, singleton=True)
@@ -82,50 +118,140 @@ def _register_supabase(c: ServiceContainer) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Application services
+# Repositories
 # ---------------------------------------------------------------------------
-# NOTE: Each lambda defers the import until first resolve().
-#       This prevents circular imports and speeds up startup when optional
-#       services are not needed on a particular code path.
+
+
+def _register_repositories(c: ServiceContainer) -> None:
+    from repositories.profile_repository import ProfileRepository
+    from repositories.conversation_repository import ConversationRepository
+    from repositories.analytics_repository import AnalyticsRepository
+    from repositories.scheduled_post_repository import ScheduledPostRepository
+
+    c.register(ProfileRepository, ProfileRepository, singleton=True)
+    c.register(ConversationRepository, ConversationRepository, singleton=True)
+    c.register(AnalyticsRepository, AnalyticsRepository, singleton=True)
+    c.register(ScheduledPostRepository, ScheduledPostRepository, singleton=True)
+
+    logger.info("Repositories registered.")
+
+
+# ---------------------------------------------------------------------------
+# AI Layer
+# ---------------------------------------------------------------------------
+
+
+def _register_ai_layer(c: ServiceContainer) -> None:
+    from ai.orchestrator import AIOrchestrator
+
+    def _build_orchestrator():
+        from ai.gemini_provider import GeminiProvider
+        from ai.huggingface_provider import HuggingFaceProvider
+        from services.gemini import gemini as gemini_svc
+        from services.huggingface import HuggingFaceService
+
+        providers = [GeminiProvider(gemini_svc)]
+        try:
+            hf = HuggingFaceService()
+            providers.append(HuggingFaceProvider(hf))
+        except Exception as exc:
+            logger.debug("HuggingFace provider unavailable: %s", exc)
+
+        orchestrator = AIOrchestrator(providers)
+        logger.info("AIOrchestrator created with %d provider(s).", len(providers))
+        return orchestrator
+
+    c.register(AIOrchestrator, _build_orchestrator, singleton=True)
+
+
+# ---------------------------------------------------------------------------
+# Application services
 # ---------------------------------------------------------------------------
 
 
 def _register_services(c: ServiceContainer) -> None:
-    """
-    Register all application-layer services.
+    """Register application-layer services."""
 
-    Milestone mapping:
-      M2 — Config / DI (this file)                  ← current milestone
-      M3 — Memory system                             ← uncomment when ready
-      M4 — AI abstraction + content engine           ← uncomment when ready
-      M5 — Rendering engine                          ← uncomment when ready
-      M6 — Facebook integration + scheduler          ← uncomment when ready
-      M7 — Code Guardian                             ← uncomment when ready
-    """
+    # Analytics event recorder — wired to EventBus
+    from domain.analytics.event_recorder import EventRecorder
+    from core.event_bus import EventBus
+    from repositories.analytics_repository import AnalyticsRepository
 
-    # ------------------------------------------------------------------
-    # Milestone 3 — Memory (placeholder until M3 is implemented)
-    # ------------------------------------------------------------------
-    # from core.memory import MemoryService
-    # c.register(MemoryService, lambda: MemoryService(
-    #     supabase=c.try_resolve(SupabaseClient),
-    #     settings=settings,
-    # ))
+    def _build_recorder():
+        bus = c.resolve(EventBus)
+        repo = c.resolve(AnalyticsRepository)
+        recorder = EventRecorder(repo=repo, bus=bus)
+        recorder.start()
+        logger.info("EventRecorder started.")
+        return recorder
 
-    # ------------------------------------------------------------------
-    # Milestone 4 — AI Layer (placeholder until M4 is implemented)
-    # ------------------------------------------------------------------
-    # from core.ai.provider import AIProvider
-    # from core.ai.gemini import GeminiProvider
-    # c.register(AIProvider, lambda: GeminiProvider(api_key=settings.gemini_key))
+    c.register(EventRecorder, _build_recorder, singleton=True)
 
-    # ------------------------------------------------------------------
-    # Milestone 6 — Facebook (placeholder until M6 is implemented)
-    # ------------------------------------------------------------------
-    # from core.facebook import FacebookService
-    # c.register(FacebookService, lambda: FacebookService(
-    #     token=settings.page_access_token,
-    #     page_id=settings.page_id,
-    # ))
 
-    pass  # Remove when first real service is added
+# ---------------------------------------------------------------------------
+# Plugins
+# ---------------------------------------------------------------------------
+
+
+def _register_plugins(c: ServiceContainer) -> None:
+    from plugins.base import PluginRegistry
+
+    def _build_registry_with_plugins():
+        registry = c.resolve(PluginRegistry)
+
+        # Facebook (always primary)
+        try:
+            from plugins.facebook.plugin import FacebookPlugin
+            from services.facebook import facebook as fb_svc
+            registry.register(FacebookPlugin(fb_svc))
+        except Exception as exc:
+            logger.warning("FacebookPlugin could not register: %s", exc)
+
+        # LinkedIn (optional)
+        try:
+            from plugins.linkedin.plugin import LinkedInPlugin
+            from services.linkedIn import LinkedInService
+            registry.register(LinkedInPlugin(LinkedInService()))
+        except Exception as exc:
+            logger.debug("LinkedInPlugin skipped: %s", exc)
+
+        # Twitter (optional)
+        try:
+            from plugins.twitter.plugin import TwitterPlugin
+            from services.twitter import TwitterService
+            registry.register(TwitterPlugin(TwitterService()))
+        except Exception as exc:
+            logger.debug("TwitterPlugin skipped: %s", exc)
+
+        registry.start_all()
+        return registry
+
+    # Override the lazy PluginRegistry registration to include plugins
+    c.register(PluginRegistry, _build_registry_with_plugins, singleton=True)
+
+
+# ---------------------------------------------------------------------------
+# Workflows
+# ---------------------------------------------------------------------------
+
+
+def _register_workflows(c: ServiceContainer) -> None:
+    from workflows.post_workflow import PostPublishWorkflow
+    from plugins.base import PluginRegistry
+    from repositories.analytics_repository import AnalyticsRepository
+    from core.event_bus import EventBus
+
+    def _build_post_workflow():
+        from services.content_engine import content_engine
+        registry = c.resolve(PluginRegistry)
+        analytics_repo = c.resolve(AnalyticsRepository)
+        bus = c.resolve(EventBus)
+        return PostPublishWorkflow(
+            content_engine=content_engine,
+            registry=registry,
+            analytics_repo=analytics_repo,
+            bus=bus,
+        )
+
+    c.register(PostPublishWorkflow, _build_post_workflow, singleton=False)
+    logger.info("PostPublishWorkflow registered.")

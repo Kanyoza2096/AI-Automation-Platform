@@ -32,6 +32,17 @@ logger = logging.getLogger("kanyoza.routes.webhook")
 
 _humanizer = Humanizer()
 
+# ---------------------------------------------------------------------------
+# Domain event helpers (fire-and-forget, never crash the request)
+# ---------------------------------------------------------------------------
+
+def _emit(event):
+    try:
+        from core.event_bus import get_event_bus
+        get_event_bus().publish(event)
+    except Exception:
+        pass
+
 # Slash-command handler — initialized lazily after services are ready
 _slash_handler: Optional["_SlashCommands"] = None
 _slash_handler_lock = threading.Lock()
@@ -135,6 +146,10 @@ def _handle_text_message(sender_id: str, text: str):
 
     analytics.record_message_received(sender_id)
 
+    # Emit domain event
+    from core.events import MessageReceivedEvent
+    _emit(MessageReceivedEvent(sender_id=sender_id, text=text))
+
     if sender_id == settings.owner_psid:
         # Slash commands (from owner_commands.py — /help, /post, /status …)
         if text.startswith("/"):
@@ -187,6 +202,11 @@ def _process_message_async(sender_id: str, text: str):
 
         response_time = time_module.time() - start_time
         analytics.record_message_sent(sender_id, response_time)
+
+        # Emit domain event
+        from core.events import DomainEvent, EventType
+        _emit(DomainEvent(event_type=EventType.MESSAGE_SENT,
+                          payload={"sender_id": sender_id, "latency_s": response_time}))
 
         if should_split_message(reply):
             parts = _split_reply_naturally(reply)

@@ -23,7 +23,6 @@ from service_container import ServiceContainer
 
 logger = logging.getLogger("kanyoza.lifecycle")
 
-# Track whether shutdown has already been triggered (prevent double-shutdown)
 _shutdown_requested = False
 
 
@@ -33,16 +32,66 @@ def register_lifecycle(app: Flask, container: ServiceContainer) -> None:
 
     Called once during bootstrap().
     """
+    _boot_infrastructure(container)
     _start_schedulers(container)
     _register_signal_handlers(container)
 
     @app.teardown_appcontext
     def _on_teardown(exc):
-        """Called by Flask after each request context tears down."""
-        # Per-request cleanup goes here (connection return to pool, etc.)
         pass
 
     logger.info("Lifecycle hooks registered.")
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure boot (EventBus, TaskQueue, PluginRegistry, EventRecorder)
+# ---------------------------------------------------------------------------
+
+
+def _boot_infrastructure(container: ServiceContainer) -> None:
+    """Eagerly resolve singletons that need to start listening / working."""
+
+    # Event Bus — must be first so subscribers can register
+    try:
+        from core.event_bus import EventBus
+        container.resolve(EventBus)
+        logger.info("EventBus ready.")
+    except Exception as exc:
+        logger.warning("EventBus boot failed: %s", exc)
+
+    # Task Queue — starts worker threads
+    try:
+        from workers.task_queue import TaskQueue
+        container.resolve(TaskQueue)
+        logger.info("TaskQueue ready.")
+    except Exception as exc:
+        logger.warning("TaskQueue boot failed: %s", exc)
+
+    # Plugin Registry — starts all registered plugins
+    try:
+        from plugins.base import PluginRegistry
+        container.resolve(PluginRegistry)
+        logger.info("PluginRegistry ready.")
+    except Exception as exc:
+        logger.warning("PluginRegistry boot failed: %s", exc)
+
+    # EventRecorder — subscribes to bus and persists analytics
+    try:
+        from domain.analytics.event_recorder import EventRecorder
+        container.resolve(EventRecorder)
+        logger.info("EventRecorder ready.")
+    except Exception as exc:
+        logger.warning("EventRecorder boot failed: %s", exc)
+
+    # AI Orchestrator — validate providers are reachable
+    try:
+        from ai.orchestrator import AIOrchestrator
+        orch = container.resolve(AIOrchestrator)
+        health = orch.health()
+        available = [name for name, h in health.items() if h["available"]]
+        logger.info("AIOrchestrator ready. Available providers: %s", available)
+    except Exception as exc:
+        logger.warning("AIOrchestrator boot failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -51,20 +100,14 @@ def register_lifecycle(app: Flask, container: ServiceContainer) -> None:
 
 
 def _start_schedulers(container: ServiceContainer) -> None:
-    """
-    Start the v9 post scheduler (compatibility) and any v10 schedulers.
-    Errors are logged as warnings — a scheduler failure must not crash startup.
-    """
     _start_v9_post_scheduler(container)
     _start_v9_guardian_scheduler(container)
 
 
 def _start_v9_post_scheduler(container: ServiceContainer) -> None:
-    """Start the legacy v9 post scheduler while the v10 scheduler is built."""
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
 
-        # Wire Supabase if available
         try:
             from supabase import Client as SupabaseClient  # type: ignore[import-untyped]
             supabase = container.try_resolve(SupabaseClient)
@@ -80,7 +123,6 @@ def _start_v9_post_scheduler(container: ServiceContainer) -> None:
 
 
 def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
-    """Start the legacy v9 Code Guardian scheduler when configured."""
     from config.settings import settings
 
     if not settings.guardian_configured:
@@ -153,6 +195,18 @@ def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
                         )
                     fb_service.send_message(settings.owner_psid, msg)
 
+                # Emit event to bus
+                try:
+                    from core.event_bus import get_event_bus
+                    from core.events import ScanCompletedEvent
+                    get_event_bus().publish(ScanCompletedEvent(
+                        repo=settings.github_username,
+                        issues_found=report["total_issues"],
+                        critical=report.get("critical", 0),
+                    ))
+                except Exception:
+                    pass
+
                 logger.info("Guardian scan complete: %d issues", report["total_issues"])
             except Exception as e:
                 logger.error("Guardian scan failed: %s", e)
@@ -173,8 +227,6 @@ def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
 
 
 def _register_signal_handlers(container: ServiceContainer) -> None:
-    """Register SIGTERM / SIGINT handlers for graceful shutdown."""
-
     def _shutdown(signum, frame):
         global _shutdown_requested
         if _shutdown_requested:
@@ -191,7 +243,27 @@ def _register_signal_handlers(container: ServiceContainer) -> None:
 def _graceful_shutdown(container: ServiceContainer) -> None:
     """Stop all running services cleanly."""
 
-    # v9 schedulers
+    # Stop plugin registry
+    try:
+        from plugins.base import PluginRegistry
+        registry = container.try_resolve(PluginRegistry)
+        if registry:
+            registry.stop_all()
+            logger.info("PluginRegistry stopped.")
+    except Exception as exc:
+        logger.warning("Error stopping PluginRegistry: %s", exc)
+
+    # Stop task queue
+    try:
+        from workers.task_queue import TaskQueue
+        tq = container.try_resolve(TaskQueue)
+        if tq:
+            tq.stop(timeout=10)
+            logger.info("TaskQueue stopped.")
+    except Exception as exc:
+        logger.warning("Error stopping TaskQueue: %s", exc)
+
+    # v9 post scheduler
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
         post_scheduler.stop(timeout=30)
@@ -199,7 +271,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping post scheduler: %s", exc)
 
-    # v9 services — each module exposes a named singleton with .close()
+    # v9 service singletons with .close()
     _v9_singletons = [
         ("services.gemini", "gemini"),
         ("services.facebook", "facebook"),

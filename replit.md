@@ -1,19 +1,61 @@
 # Kanyoza Systems AI Platform v10
 
 ## Project overview
-An enterprise-grade AI platform built on Python 3.12 + Flask. It handles AI conversations, social media publishing, content generation, code analysis, GitHub automation, and scheduling — capable of scaling from a single Messenger bot to 100,000+ users without architectural changes.
+An enterprise-grade AI Automation Platform built on Python 3.12 + Flask. It handles AI conversations, social media publishing, content generation, code analysis, GitHub automation, and scheduling — capable of scaling from a single Messenger bot to 100,000+ users without architectural changes.
 
 ## Architecture (v10)
 ```
 main.py              → thin WSGI entry point
 bootstrap.py         → startup orchestration (logging → config → DI → Flask → lifecycle)
 application_factory.py → Flask app factory (middleware, error handlers, blueprints)
-service_container.py → generic DI container
+service_container.py → generic DI container (lazy singletons, thread-safe)
 dependency_registry.py → wires concrete services to interfaces
-lifecycle.py         → scheduler start/stop and signal handling
+lifecycle.py         → scheduler start/stop, plugin boot, event bus, signal handling
+
+ai/
+  provider.py        → AIProvider abstract base (AIRequest / AIResponse / ProviderCapability)
+  gemini_provider.py → wraps GeminiService behind AIProvider interface
+  huggingface_provider.py → fallback AI provider via HuggingFace Inference API
+  orchestrator.py    → routing, failover, retries, cost-aware provider selection
+
+core/
+  events.py          → typed domain events (MessageReceived, PostPublished, ScanCompleted…)
+  event_bus.py       → thread-safe in-process pub/sub (EventBus, get_event_bus)
+  exceptions.py      → full exception hierarchy (KanyozaError → specific types)
+
+domain/
+  ai/                → AI business rules (provider policies, prompt rules)
+  content/
+    topic_selector.py → 100 topics across 10 categories, weighted random selection
+  publishing/        → platform routing, scheduling, retry policy
+  memory/            → user profiling, conversation context, recall
+  analytics/
+    event_recorder.py → subscribes to EventBus, persists analytics via repository
+  security/
+    replay_guard.py  → webhook replay protection (TTL-based deduplication)
+
+repositories/
+  base.py            → Repository[T] abstract base (find_by_id / save / delete)
+  profile_repository.py       → user memory profiles (Supabase + in-memory fallback)
+  conversation_repository.py  → conversation turns per user
+  analytics_repository.py     → analytics events
+  scheduled_post_repository.py → scheduled posts and execution history
+
+workers/
+  task_queue.py      → thread-pool background task queue (3 workers, 200-slot queue)
+
+plugins/
+  base.py            → Plugin abstract (start/stop/publish/health) + PluginRegistry
+  facebook/plugin.py → wraps FacebookService behind Plugin interface
+  linkedin/plugin.py → wraps LinkedInService behind Plugin interface
+  twitter/plugin.py  → wraps TwitterService behind Plugin interface
+
+workflows/
+  base.py            → Step + Workflow engine (shared context dict, continue_on_failure)
+  post_workflow.py   → SelectTopic → Generate → Render → Publish → Analytics → Event
 
 config/
-  settings.py        → pydantic-settings strongly-typed config (env vars)
+  settings.py        → pydantic-settings strongly-typed config (env vars) + get_settings()
   logging_config.py  → structured JSON logging with correlation IDs
   environments.py    → Environment enum (development / testing / production)
 
@@ -25,10 +67,11 @@ models/
   scheduler.py       → ScheduledJob, JobStatus, JobType
   notification.py    → Notification, NotificationChannel
 
-core/
-  exceptions.py      → full exception hierarchy (KanyozaError → specific types)
-
 utils/
+  http_client.py     → HttpClient with circuit breaker, retries, pooling
+  metrics.py         → structured in-process metrics (latency, counts, snapshots)
+  retry.py           → smart_retry() exponential backoff decorator
+  rate_limiter.py    → Supabase-backed + in-memory rate limiter
   ids.py             → correlation ID (contextvars-based)
   text.py            → sanitize, truncate, split helpers
   datetime_utils.py  → UTC-first datetime helpers
@@ -37,22 +80,21 @@ utils/
 
 ## Milestone status
 - [x] M1 — Foundation & project structure
-- [ ] M2 — Configuration, DI, and bootstrap  *(currently wiring)*
-- [ ] M3 — Core models and memory
-- [ ] M4 — AI abstraction and content engine
-- [ ] M5 — Rendering engine (Jinja2 + Playwright → PNG)
-- [ ] M6 — Facebook integration and scheduler
-- [ ] M7 — Code Guardian
+- [x] M2 — Configuration, DI, and bootstrap
+- [x] M3 — Core models and memory
+- [x] M4 — AI abstraction (AIProvider / AIOrchestrator) + content engine
+- [x] M4b — Event Bus, Repository pattern, Background workers, Plugin architecture
+- [x] M4c — Domain layer, Workflow engine, Replay guard, Analytics recorder
+- [ ] M5 — Rendering engine (BrowserManager + page pool + render cache)
+- [ ] M6 — Full scheduler integration using PostPublishWorkflow
+- [ ] M7 — Code Guardian v10 migration
 - [ ] M8 — REST API (versioned /api/v1/*)
-- [ ] M9 — Testing, documentation, and deployment
+- [ ] M9 — Testing infrastructure, documentation, deployment
 
 ## Running the app
 ```bash
 # Development
-python main.py
-
-# Production (Gunicorn)
-gunicorn main:app
+ENVIRONMENT=development gunicorn main:app --bind 0.0.0.0:5000 --workers 1 --timeout 120
 ```
 
 ## Required environment variables
@@ -62,16 +104,22 @@ gunicorn main:app
 | `PAGE_ACCESS_TOKEN` | Facebook Page access token |
 | `PAGE_ID` | Facebook Page ID |
 | `VERIFY_TOKEN` | Facebook webhook verify token |
+| `APP_SECRET` | Facebook app HMAC secret |
 
 See `ENV.md` for the full list including optional variables.
 
 ## Engineering principles
 - SOLID, Clean Architecture, Dependency Injection
+- AI provider abstraction — platform never calls Gemini directly, uses AIOrchestrator
+- Event-driven — components communicate via EventBus, not direct calls
+- Repository pattern — all storage behind repository interfaces
+- Plugin architecture — each social platform is an isolated, swappable plugin
+- Workflow engine — automation pipelines are composable Step sequences
 - Strongly typed (Pydantic v2 models and settings)
 - Structured JSON logging with correlation IDs
 - Fail fast on missing required config
 - Immutable domain models (`frozen=True`)
-- No God Objects, no duplicated business logic
+- Graceful degradation — Supabase optional, all repos have in-memory fallbacks
 
 ## User preferences
 - Build milestone-by-milestone (do not generate the entire platform in one shot)

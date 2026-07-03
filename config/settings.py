@@ -259,3 +259,9 @@ class Settings(BaseSettings):
 # Module-level singleton — import this everywhere
 # ---------------------------------------------------------------------------
 settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Return the module-level Settings singleton. Use this in type-annotated
+    code where you want an explicit factory call rather than a bare import."""
+    return settings
