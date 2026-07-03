@@ -44,6 +44,15 @@ repositories/
 workers/
   task_queue.py      → thread-pool background task queue (3 workers, 200-slot queue)
 
+services/
+  card_renderer.py   → orchestrates card image pipeline: decorative SVG → Jinja2 HTML → Playwright PNG (1080x1080, device_scale_factor=2)
+  svg_renderer.py    → decorative-only SVG (gradient glows + dot grid); no text is ever rasterized in SVG
+  rendering/
+    fonts.py         → self-hosted Inter variable webfont, base64-embedded @font-face (no network/file dependency at screenshot time)
+    typography.py    → bullet shortening, winner-string parsing, text truncation — display-only, never touches stored content
+    layout.py        → design tokens (spacing, type scale, theme palettes) + in-browser JS autofit safety net
+  templates/cards/card.html → single unified Jinja2 template covering all card layout kinds (two-column "vs", before/after, 2x2 grid, numbered list)
+
 plugins/
   base.py            → Plugin abstract (start/stop/publish/health) + PluginRegistry
   facebook/plugin.py → wraps FacebookService behind Plugin interface

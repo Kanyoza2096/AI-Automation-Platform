@@ -3,3 +3,4 @@
 - [gemini-2.5-flash thinking tokens](gemini-thinking-model.md) — parts[0] may be a thought block; use next((p for p in parts if "text" in p)) not parts[0]["text"]
 - [playwright-nix-deps](playwright-nix-deps.md) — Playwright Chromium needs Nix system packages; full list of 20+ packages required
 - [v10 hardening bugs fixed](v10-hardening-bugs.md) — full list of all 15 bugs found and fixed during live testing with real API keys
+- [card rendering pipeline](card-rendering-pipeline.md) — text-in-HTML-not-SVG rule, base64 font embedding, autofit-as-safety-net, unified template
