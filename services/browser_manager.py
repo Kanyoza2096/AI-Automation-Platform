@@ -34,7 +34,7 @@ logger = logging.getLogger("kanyoza.services.browser_manager")
 
 # How many Playwright pages to keep alive simultaneously.
 # 3 is enough for the current task-queue worker count (3 workers).
-POOL_SIZE = 3
+POOL_SIZE = 1
 CARD_W = 1080
 CARD_H = 1080
 DEVICE_SCALE_FACTOR = 2
