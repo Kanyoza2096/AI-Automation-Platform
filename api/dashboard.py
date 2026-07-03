@@ -46,11 +46,46 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger("kanyoza.dashboard")
 
 dashboard_bp = Blueprint("dashboard", __name__, url_prefix="/api/v1/dashboard")
+
+
+def _require_dashboard_auth() -> bool:
+    """Accept Authorization: Bearer <MASTER_API_TOKEN> or the legacy X-API-Key."""
+    import hmac
+    from config.settings import settings as _s
+
+    master_token = getattr(_s, "master_api_token", "") or ""
+    api_secret   = getattr(_s, "app_secret", "") or ""
+
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.startswith("Bearer "):
+        bearer = auth_header[len("Bearer "):]
+        if master_token and hmac.compare_digest(bearer, master_token):
+            return True
+
+    key = request.headers.get("X-API-Key", "").strip()
+    if key and api_secret and hmac.compare_digest(key, api_secret):
+        return True
+
+    return False
+
+
+def _dashboard_auth_required(fn):
+    """Reject dashboard requests that don't carry a valid token."""
+    from functools import wraps
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not _require_dashboard_auth():
+            return jsonify({
+                "error": "unauthorized",
+                "message": "Authorization: Bearer <MASTER_API_TOKEN> required",
+            }), 401
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +205,7 @@ def build_live_stats() -> dict:
 # ---------------------------------------------------------------------------
 
 @dashboard_bp.route("/live")
+@_dashboard_auth_required
 def live():
     """
     Fast snapshot of all live stats.
@@ -181,6 +217,7 @@ def live():
 
 
 @dashboard_bp.route("/ws-info")
+@_dashboard_auth_required
 def ws_info():
     """Return WebSocket connection parameters for the frontend controller."""
     return jsonify({

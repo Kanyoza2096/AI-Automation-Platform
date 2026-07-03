@@ -112,6 +112,14 @@ class Settings(BaseSettings):
     guardian_auto_fix: bool = Field(default=False, description="Enable auto-fix PR creation for fixable issues")
 
     # -------------------------------------------------------------------------
+    # API access
+    # -------------------------------------------------------------------------
+    master_api_token: str = Field(
+        default="",
+        description="Bearer token for frontend/dashboard API access (MASTER_API_TOKEN)",
+    )
+
+    # -------------------------------------------------------------------------
     # Server
     # -------------------------------------------------------------------------
     port: int = Field(default=5000, ge=1, le=65535)

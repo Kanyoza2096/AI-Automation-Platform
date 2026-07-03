@@ -2,8 +2,10 @@
 Kanyoza Systems AI Platform v10 — REST API v1 Blueprint (M8).
 
 Versioned endpoints at /api/v1/* that mirror and extend the v9 routes in
-routes/api.py.  All state-changing endpoints require the X-API-Key header
-(value = OWNER_PSID or APP_SECRET).
+routes/api.py.  Protected endpoints require one of:
+  - Authorization: Bearer <MASTER_API_TOKEN>   (preferred — frontend/dashboard)
+  - X-API-Key: <APP_SECRET>                    (legacy admin key)
+  - X-API-Key: <OWNER_PSID>                    (legacy owner PSID)
 
 Endpoints
 ---------
@@ -42,29 +44,49 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 
 def _require_auth() -> bool:
     """
-    Check that the incoming request has a valid X-API-Key header.
+    Validate the incoming request carries a recognised credential.
 
-    Accepted values (priority order):
-    1. APP_SECRET (HMAC secret from settings)
-    2. OWNER_PSID (the bot owner's Messenger sender ID)
+    Accepted (priority order):
+    1. Authorization: Bearer <MASTER_API_TOKEN>  — frontend / dashboard clients
+    2. X-API-Key: <APP_SECRET>                   — legacy admin key
+    3. X-API-Key: <OWNER_PSID>                   — legacy owner PSID
 
-    Returns True when the key is valid, False otherwise.
+    Returns True when a valid credential is present, False otherwise.
     """
+    import hmac
     from config.settings import settings as _s
+
+    master_token = getattr(_s, "master_api_token", "") or ""
+    api_secret   = getattr(_s, "app_secret", "") or ""
+    owner_psid   = getattr(_s, "owner_psid", "") or ""
+
+    # 1. Bearer token (Authorization header)
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.startswith("Bearer "):
+        bearer = auth_header[len("Bearer "):]
+        if master_token and hmac.compare_digest(bearer, master_token):
+            return True
+
+    # 2 & 3. Legacy X-API-Key header
     key = request.headers.get("X-API-Key", "").strip()
-    if not key:
-        return False
-    api_secret = getattr(_s, "app_secret", "") or ""
-    owner_psid = getattr(_s, "owner_psid", "") or ""
-    return bool((api_secret and key == api_secret) or (owner_psid and key == owner_psid))
+    if key:
+        if api_secret and hmac.compare_digest(key, api_secret):
+            return True
+        if owner_psid and hmac.compare_digest(key, owner_psid):
+            return True
+
+    return False
 
 
 def _auth_required(fn):
-    """Decorator: reject requests without a valid X-API-Key with 401."""
+    """Decorator: reject requests without a valid credential with 401."""
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if not _require_auth():
-            return jsonify({"error": "unauthorized", "message": "Valid X-API-Key header required"}), 401
+            return jsonify({
+                "error": "unauthorized",
+                "message": "Valid Authorization: Bearer <token> or X-API-Key header required",
+            }), 401
         return fn(*args, **kwargs)
     return wrapper
 
