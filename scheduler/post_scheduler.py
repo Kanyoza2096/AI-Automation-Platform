@@ -396,6 +396,69 @@ class PostScheduler:
         queued = self.force_post()
         return "content post queued" if queued else "queue full — try again shortly"
 
+    def run_content_now(self) -> dict:
+        """
+        Synchronously run one content publish cycle and return the result.
+
+        Unlike post_now() / force_post(), this BLOCKS until the workflow
+        completes (or fails) and returns a dict describing the outcome.
+        Use this from the /post owner command so the owner gets real feedback
+        instead of "queued" before the actual publish finishes.
+
+        Shares _lock with _publish_content() so a manual /post cannot overlap
+        with a scheduled worker publish — preserving the "one publish at a time"
+        invariant the worker thread was designed to enforce.
+        """
+        if not self._lock.acquire(blocking=False):
+            return {"ok": False, "error": "a publish is already in progress — try again shortly"}
+
+        try:
+            if self.workflow_factory is not None:
+                workflow = self.workflow_factory()
+                wf_result = workflow.run()
+
+                # Pull topic and platform results from individual step outputs.
+                # StepResult fields: step_name, status, output, error, latency_ms, ok
+                topic = ""
+                publish_results = {}
+                for step in wf_result.steps:
+                    if step.step_name == "select_topic" and step.ok:
+                        topic = (step.output or {}).get("topic", "")
+                    elif step.step_name == "publish" and step.ok:
+                        publish_results = step.output if isinstance(step.output, dict) else {}
+
+                if wf_result.success:
+                    self.last_post_time = datetime.now(timezone.utc)
+                    self._save_state("last_post_time", self.last_post_time.isoformat())
+                    return {
+                        "ok": True,
+                        "topic": topic,
+                        "platforms": list(publish_results.keys()),
+                        "results": publish_results,
+                        "duration_ms": round(wf_result.total_ms),
+                    }
+                else:
+                    failed = [s.step_name for s in wf_result.steps if not s.ok]
+                    return {"ok": False, "failed_steps": failed, "topic": topic}
+            else:
+                # Legacy path — no workflow factory injected yet
+                result = content_engine.generate_post()
+                caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
+                image_bytes = result.get("image_bytes") if isinstance(result, dict) else None
+                if not caption:
+                    return {"ok": False, "error": "ContentEngine returned empty caption"}
+                success = facebook.post_to_page(caption, image_bytes=image_bytes)
+                if success:
+                    self.last_post_time = datetime.now(timezone.utc)
+                    self._save_state("last_post_time", self.last_post_time.isoformat())
+                    return {"ok": True, "platforms": ["facebook"]}
+                return {"ok": False, "error": "facebook.post_to_page returned False"}
+        except Exception as exc:
+            logger.error("run_content_now failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+        finally:
+            self._lock.release()
+
     def post_news_now(self) -> str:
         """Alias for force_news() — used by OwnerCommands /news slash command."""
         queued = self.force_news()

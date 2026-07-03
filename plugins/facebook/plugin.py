@@ -53,9 +53,7 @@ class FacebookPlugin(Plugin):
 
     def health(self) -> dict[str, Any]:
         try:
-            ok = self._svc is not None and bool(
-                getattr(self._svc, "_page_access_token", None)
-            )
+            ok = self._svc is not None and self._svc.is_configured
         except Exception:
             ok = False
         return {"ok": ok, "platform": "facebook", "active": self._active}

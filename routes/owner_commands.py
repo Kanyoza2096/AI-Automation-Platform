@@ -137,8 +137,28 @@ class OwnerCommands:
 
     def _run_post_now(self, sender_id: str) -> None:
         try:
-            result = self._post_scheduler.post_now()
-            self._reply(sender_id, f"✅ Post published: {result}")
+            # Use run_content_now() so we block until the workflow finishes
+            # and report the real result — not just "content post queued".
+            if hasattr(self._post_scheduler, "run_content_now"):
+                result = self._post_scheduler.run_content_now()
+                if result.get("ok"):
+                    topic = result.get("topic", "")
+                    platforms = ", ".join(result.get("platforms", []))
+                    duration = result.get("duration_ms", 0)
+                    self._reply(
+                        sender_id,
+                        f"✅ Post published!\n"
+                        f"📌 Topic: {topic}\n"
+                        f"📤 Platform(s): {platforms or 'none'}\n"
+                        f"⏱ {duration}ms",
+                    )
+                else:
+                    error = result.get("error") or result.get("failed_steps") or "unknown error"
+                    self._reply(sender_id, f"❌ Post failed: {error}")
+            else:
+                # Fallback to old queue-based path if method unavailable
+                result = self._post_scheduler.post_now()
+                self._reply(sender_id, f"✅ Post queued: {result}")
         except Exception as exc:
             self._reply(sender_id, f"❌ Post failed: {exc}")
 

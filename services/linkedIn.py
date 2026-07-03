@@ -35,7 +35,7 @@ class LinkedInService:
             "X-Restli-Protocol-Version": "2.0.0",
         }
 
-    def post_article(self, text: str, title: str = None) -> Optional[str]:
+    def post_article(self, text: str, title: str = None, image_url: str = None) -> Optional[str]:
         """Post to LinkedIn feed. Returns post ID or None."""
         if not self.is_configured:
             return None

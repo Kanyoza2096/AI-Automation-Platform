@@ -249,17 +249,31 @@ def _process_message_async(sender_id: str, text: str):
         if should_split_message(reply):
             parts = _split_reply_naturally(reply)
             if len(parts) == 2:
-                facebook.send_message(sender_id, parts[0])
+                ok1 = facebook.send_message(sender_id, parts[0])
                 time_module.sleep(3)
                 facebook.send_typing_on(sender_id)
                 time_module.sleep(2)
                 facebook.send_typing_off(sender_id)
-                facebook.send_message(sender_id, parts[1])
-                logger.info(f"✅ Split reply sent to {sender_id}")
+                ok2 = facebook.send_message(sender_id, parts[1])
+                if ok1 and ok2:
+                    logger.info(f"✅ Split reply sent to {sender_id}")
+                else:
+                    logger.warning(
+                        "⚠️ Split reply to %s — part1_ok=%s part2_ok=%s "
+                        "(check PAGE_ACCESS_TOKEN / page_id config)",
+                        sender_id, ok1, ok2,
+                    )
                 return
 
-        facebook.send_message(sender_id, reply)
-        logger.info(f"✅ Reply sent to {sender_id} ({response_time:.1f}s)")
+        ok = facebook.send_message(sender_id, reply)
+        if ok:
+            logger.info(f"✅ Reply sent to {sender_id} ({response_time:.1f}s)")
+        else:
+            logger.warning(
+                "⚠️ Reply NOT sent to %s — facebook.send_message returned False. "
+                "facebook.is_configured=%s  (check PAGE_ACCESS_TOKEN / PAGE_ID env vars)",
+                sender_id, facebook.is_configured,
+            )
 
     except Exception as e:
         logger.error(f"❌ Message processing failed: {type(e).__name__}: {e}")
