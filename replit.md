@@ -95,10 +95,10 @@ utils/
 - [x] M4b — Event Bus, Repository pattern, Background workers, Plugin architecture
 - [x] M4c — Domain layer, Workflow engine, Replay guard, Analytics recorder
 - [x] M5 — Rendering engine (BrowserManager + page pool + render cache)
-- [ ] M6 — Full scheduler integration using PostPublishWorkflow
-- [ ] M7 — Code Guardian v10 migration
-- [ ] M8 — REST API (versioned /api/v1/*)
-- [ ] M9 — Testing infrastructure, documentation, deployment
+- [x] M6 — Full scheduler integration using PostPublishWorkflow
+- [x] M7 — Code Guardian v10 migration
+- [x] M8 — REST API (versioned /api/v1/*)
+- [x] M9 — Testing infrastructure, documentation, deployment
 
 ## Running the app
 ```bash
@@ -132,4 +132,3 @@ See `ENV.md` for the full list including optional variables.
 
 ## User preferences
 - Build milestone-by-milestone (do not generate the entire platform in one shot)
-- Keep v9 compatibility shim active until each module is migrated to v10

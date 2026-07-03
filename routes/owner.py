@@ -1,6 +1,8 @@
 """
-Owner command handlers v9.0
-Special commands available only to the bot owner.
+Kanyoza Systems AI Platform v10 — Owner Bang-Command Handlers.
+
+Special !commands available only to the bot owner via Messenger.
+Slash (/) commands are handled by routes/owner_commands.py.
 """
 
 import logging
@@ -50,7 +52,7 @@ class OwnerCommands:
     def cmd_test(self, sender_id: str):
         import datetime as dt
         facebook.send_message(sender_id,
-            f"✅ Bot is alive!\n\nVersion: 9.0\n"
+            f"✅ Bot is alive!\n\nVersion: 10.0\n"
             f"Time: {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC"
         )
 
@@ -117,7 +119,16 @@ class OwnerCommands:
             from services.facebook import facebook as fb
 
             logger.info("Force post: generating content...")
-            caption, image_bytes = content_engine.generate_post()
+            result = content_engine.generate_post()
+            # generate_post() returns a dict in v10
+            if isinstance(result, dict):
+                caption = result.get("caption", "")
+                image_bytes = result.get("image_bytes")
+            elif isinstance(result, (tuple, list)):
+                caption = result[0] if result else ""
+                image_bytes = result[1] if len(result) > 1 else None
+            else:
+                caption, image_bytes = "", None
 
             if not caption:
                 logger.error("Force post: caption is empty/None")

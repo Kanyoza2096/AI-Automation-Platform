@@ -1,11 +1,11 @@
 """
 Kanyoza Systems AI Platform v10 — REST API v1 Blueprint (M8).
 
-Versioned endpoints at /api/v1/* that mirror and extend the v9 routes in
-routes/api.py.  Protected endpoints require one of:
+All versioned endpoints live at /api/v1/*.
+Protected endpoints require one of:
   - Authorization: Bearer <MASTER_API_TOKEN>   (preferred — frontend/dashboard)
-  - X-API-Key: <APP_SECRET>                    (legacy admin key)
-  - X-API-Key: <OWNER_PSID>                    (legacy owner PSID)
+  - X-API-Key: <APP_SECRET>                    (admin key)
+  - X-API-Key: <OWNER_PSID>                    (owner PSID fallback)
 
 Endpoints
 ---------
@@ -351,12 +351,17 @@ def update_schedule():
     from scheduler.post_scheduler import scheduler
     try:
         data = request.get_json(force=True, silent=True) or {}
-        allowed_keys = {"post_interval_hours", "news_interval_hours", "enabled"}
+        allowed_keys = {
+            "post_interval_hours", "news_interval_hours", "enabled",
+            "content_hours_utc", "news_hours_utc",
+        }
         unknown = set(data.keys()) - allowed_keys
         if unknown:
             return _err(f"Unknown keys: {sorted(unknown)}", 400)
         result = scheduler.update_config(**{k: v for k, v in data.items() if k in allowed_keys})
         return _ok({"updated": True, "config": result})
+    except ValueError as exc:
+        return _err(str(exc), 400)
     except Exception as exc:
         logger.error("PUT /api/v1/schedule error: %s", exc)
         return _err(str(exc), 500)
@@ -376,4 +381,210 @@ def get_metrics():
         return _ok({"metrics": snapshot, "as_of": datetime.now(timezone.utc).isoformat()})
     except Exception as exc:
         logger.error("GET /api/v1/metrics error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Posts — extended
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/posts/<post_id>", methods=["DELETE"])
+@_auth_required
+def delete_post(post_id):
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            supabase_service.client.table("post_history").delete().eq("id", post_id).execute()
+            return _ok({"deleted": True, "post_id": post_id})
+        return _err("Supabase not configured — cannot delete post", 503)
+    except Exception as exc:
+        logger.error("DELETE /api/v1/posts/%s error: %s", post_id, exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Messages — extended
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/messages/<sender_id>", methods=["GET"])
+@_auth_required
+def get_conversation(sender_id):
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            result = (
+                supabase_service.client.table("conversation_history")
+                .select("*")
+                .eq("sender_id", sender_id)
+                .order("created_at", desc=True)
+                .limit(50)
+                .execute()
+            )
+            return _ok({"messages": result.data or [], "sender_id": sender_id})
+        return _ok({"messages": [], "sender_id": sender_id, "note": "Supabase not configured"})
+    except Exception as exc:
+        logger.error("GET /api/v1/messages/%s error: %s", sender_id, exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Bot control — extended
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/bot/engage", methods=["POST"])
+@_auth_required
+def force_engage():
+    from scheduler.post_scheduler import scheduler
+    try:
+        queued = scheduler.force_engagement()
+        return _ok({"queued": queued}, 202)
+    except Exception as exc:
+        logger.error("POST /api/v1/bot/engage error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Features
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/features", methods=["GET"])
+def get_features():
+    from config.settings import settings as _s
+    try:
+        return _ok({
+            "features": {
+                "auto_reply": getattr(_s, "auto_reply_enabled", True),
+                "auto_post": getattr(_s, "auto_post_enabled", True),
+                "auto_comment_reply": getattr(_s, "auto_comment_reply", True),
+                "cross_engage": getattr(_s, "cross_engage_enabled", False),
+                "guardian_scan": _s.guardian_configured,
+                "thumbnails": bool(_s.hf_token),
+            }
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/features error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/features/toggle", methods=["POST"])
+@_auth_required
+def toggle_feature():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        feature = data.get("feature", "")
+        enabled = data.get("enabled", True)
+        allowed = {"auto_reply", "auto_post", "auto_comment_reply", "cross_engage"}
+        if feature not in allowed:
+            return _err(f"feature must be one of {sorted(allowed)}", 400)
+        try:
+            from services.supabase import supabase_service
+            from datetime import datetime, timezone
+            if supabase_service and supabase_service.client:
+                supabase_service.client.table("settings").upsert(
+                    {"key": f"feature_{feature}", "value": str(enabled).lower(),
+                     "updated_at": datetime.now(timezone.utc).isoformat()},
+                    on_conflict="key",
+                ).execute()
+        except Exception:
+            pass
+        return _ok({"feature": feature, "enabled": enabled})
+    except Exception as exc:
+        logger.error("POST /api/v1/features/toggle error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Analytics — extended
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/analytics/performance", methods=["GET"])
+@_auth_required
+def analytics_performance():
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            result = (
+                supabase_service.client.table("post_history")
+                .select("*")
+                .order("published_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+            return _ok({"posts": result.data or []})
+        return _ok({"posts": [], "note": "Supabase not configured"})
+    except Exception as exc:
+        logger.error("GET /api/v1/analytics/performance error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Tenants
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/tenants", methods=["GET"])
+@_auth_required
+def get_tenants():
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            result = (
+                supabase_service.client.table("tenants")
+                .select("*")
+                .eq("status", "active")
+                .execute()
+            )
+            return _ok({"tenants": result.data or []})
+        return _ok({"tenants": [], "note": "Supabase not configured"})
+    except Exception as exc:
+        logger.error("GET /api/v1/tenants error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/tenants/switch", methods=["POST"])
+@_auth_required
+def switch_tenant():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        tenant_id = data.get("tenant_id", "")
+        if not tenant_id:
+            return _err("tenant_id is required", 400)
+        return _ok({"switched": True, "tenant_id": tenant_id})
+    except Exception as exc:
+        logger.error("POST /api/v1/tenants/switch error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Rate limits
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/rate-limits", methods=["GET"])
+def get_rate_limits():
+    try:
+        from utils.rate_limiter import rate_limiter
+        return _ok({"rate_limits": rate_limiter.get_config()})
+    except Exception as exc:
+        logger.error("GET /api/v1/rate-limits error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/rate-limits/unblock", methods=["POST"])
+@_auth_required
+def unblock_user():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        identifier = data.get("identifier", "").strip()
+        if not identifier:
+            return _err("identifier is required", 400)
+        from utils.rate_limiter import rate_limiter
+        return _ok({"unblocked": rate_limiter.unblock(identifier), "identifier": identifier})
+    except Exception as exc:
+        logger.error("POST /api/v1/rate-limits/unblock error: %s", exc)
         return _err(str(exc), 500)

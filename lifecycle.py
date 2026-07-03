@@ -202,11 +202,11 @@ def _wire_socket_events(container: ServiceContainer) -> None:
 
 
 def _start_schedulers(container: ServiceContainer) -> None:
-    _start_v9_post_scheduler(container)
-    _start_v9_guardian_scheduler(container)
+    _start_post_scheduler(container)
+    _start_guardian_scheduler(container)
 
 
-def _start_v9_post_scheduler(container: ServiceContainer) -> None:
+def _start_post_scheduler(container: ServiceContainer) -> None:
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
 
@@ -229,12 +229,12 @@ def _start_v9_post_scheduler(container: ServiceContainer) -> None:
             logger.warning("Could not wire PostPublishWorkflow into scheduler: %s", exc)
 
         post_scheduler.start()
-        logger.info("v9 post scheduler started.")
+        logger.info("Post scheduler started.")
     except Exception as exc:
-        logger.warning("v9 post scheduler could not start: %s", exc)
+        logger.warning("Post scheduler could not start: %s", exc)
 
 
-def _start_v9_guardian_scheduler(container: ServiceContainer) -> None:
+def _start_guardian_scheduler(container: ServiceContainer) -> None:
     """M7: Start Code Guardian v10 using the DI-registered GuardianService."""
     from config.settings import settings
 
@@ -310,7 +310,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping TaskQueue: %s", exc)
 
-    # v9 post scheduler
+    # Post scheduler
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
         post_scheduler.stop(timeout=30)
@@ -326,13 +326,13 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping BrowserManager: %s", exc)
 
-    # v9 service singletons with .close()
-    _v9_singletons = [
+    # Module-level service singletons with .close()
+    _service_singletons = [
         ("services.gemini", "gemini"),
         ("services.facebook", "facebook"),
         ("services.news_scraper", "news_scraper"),
     ]
-    for svc_name, attr in _v9_singletons:
+    for svc_name, attr in _service_singletons:
         try:
             svc_module = __import__(svc_name, fromlist=[""])
             obj = getattr(svc_module, attr, None)

@@ -7,3 +7,4 @@
 - [m6 scheduling decisions](m6-scheduling-decisions.md) — fired_slots 3-tuple rule, topic_selector singleton, generate_post dict return, FacebookPlugin message= kwarg
 - [websocket-dashboard](websocket-dashboard.md) — eventlet monkey-patch placement, DI bus vs module singleton, service health probe attribute names
 - [m7-m9-wiring](m7-m9-wiring.md) — GuardianService DI wiring, API v1 blueprint, test conftest patterns
+- [v10-migration](v10-migration.md) — files deleted, renames in lifecycle.py, new api/v1 endpoints, scheduler get_config/update_config

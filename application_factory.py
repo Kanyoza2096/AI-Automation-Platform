@@ -79,7 +79,7 @@ def create_app(
     # ------------------------------------------------------------------
     # Application blueprints
     # ------------------------------------------------------------------
-    _register_v9_routes(app)
+    _register_webhook_routes(app)
     _register_product_routes(app)
     _register_socketio(app)
 
@@ -159,6 +159,18 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             "supabase": settings.supabase_enabled,
         })
 
+    @app.route("/status")
+    def status_legacy():
+        """Legacy /status endpoint — returns online flag with service availability."""
+        return jsonify({
+            "status": "online",
+            "version": "10.0",
+            "gemini": bool(getattr(settings, "gemini_key", "")),
+            "facebook": bool(getattr(settings, "page_access_token", "")),
+            "supabase": settings.supabase_enabled,
+            "guardian": settings.guardian_configured,
+        })
+
     @app.route("/api/v1/status")
     def status():
         return jsonify({
@@ -209,21 +221,44 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 
         return jsonify({"status": overall, "version": "10.0", "services": results})
 
+    @app.route("/metrics")
+    def prometheus_metrics():
+        """Prometheus-compatible plaintext metrics."""
+        try:
+            from analytics.tracker import analytics as _analytics
+            o = _analytics.get_stats().get("overview", {})
+        except Exception:
+            o = {}
+        lines = [
+            "# HELP kanyoza_messages_total Total messages",
+            "# TYPE kanyoza_messages_total counter",
+            f'kanyoza_messages_total{{type="received"}} {o.get("messages_received", 0)}',
+            f'kanyoza_messages_total{{type="sent"}} {o.get("messages_sent", 0)}',
+            "# HELP kanyoza_posts_total Total posts",
+            "# TYPE kanyoza_posts_total counter",
+            f'kanyoza_posts_total{{status="published"}} {o.get("posts_published", 0)}',
+            "# HELP kanyoza_users_active Active users 24h",
+            "# TYPE kanyoza_users_active gauge",
+            f'kanyoza_users_active {o.get("active_users_24h", 0)}',
+            "# HELP kanyoza_errors_total Total errors",
+            "# TYPE kanyoza_errors_total counter",
+            f'kanyoza_errors_total {o.get("total_errors", 0)}',
+        ]
+        return "\n".join(lines), 200, {"Content-Type": "text/plain"}
+
 
 # ---------------------------------------------------------------------------
 # Route registration
 # ---------------------------------------------------------------------------
 
-def _register_v9_routes(app: Flask) -> None:
-    """Register v9 bot routes (compatibility shim)."""
+def _register_webhook_routes(app: Flask) -> None:
+    """Register the Facebook Messenger webhook routes."""
     try:
         from routes.webhook import register_webhook_routes
-        from routes.api import register_api_routes
         register_webhook_routes(app)
-        register_api_routes(app)
-        logger.info("v9 routes registered")
+        logger.info("Webhook routes registered")
     except Exception as exc:
-        logger.warning("v9 route registration skipped: %s", exc)
+        logger.warning("Webhook route registration skipped: %s", exc)
 
 
 def _register_product_routes(app: Flask) -> None:

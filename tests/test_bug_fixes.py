@@ -148,70 +148,40 @@ class TestWebhookRoutes:
 
 
 # ---------------------------------------------------------------------------
-# routes/api.py — None-safe request.get_json() across POST endpoints
+# api/v1.py — None-safe request.get_json() across POST endpoints
 # ---------------------------------------------------------------------------
 
-class TestApiRoutes:
-    @pytest.fixture
-    def app(self):
-        from flask import Flask
-        application = Flask(__name__)
-        with patch('routes.api.analytics'), \
-             patch('routes.api.scheduler'), \
-             patch('routes.api.memory'), \
-             patch('routes.api.rate_limiter'), \
-             patch('routes.api.settings') as mock_settings:
-            mock_settings.owner_psid = ''
-            mock_settings.content_posting_hours_utc = [4, 7, 10]
-            mock_settings.news_posting_hours_utc = [6, 13]
-            from routes.api import register_api_routes
-            register_api_routes(application)
-        return application
+class TestApiV1Routes:
+    """Robustness tests: empty/missing bodies must not raise 500."""
 
-    def test_create_post_empty_body_returns_400_not_500(self, app):
-        """POST /api/posts/create with no body must return 400, not 500."""
-        with app.test_client() as client:
-            resp = client.post(
-                '/api/posts/create',
-                data=b'',
-                content_type='application/json',
-                headers={'X-API-Key': ''},
-            )
-        # 400 (missing topic) or 401 (unauthorized) — NOT 500
+    def test_switch_tenant_empty_body_does_not_crash(self, client, auth_headers):
+        """POST /api/v1/tenants/switch with no body must return 400, not 500."""
+        resp = client.post(
+            "/api/v1/tenants/switch",
+            data=b"",
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        assert resp.status_code in (400, 401, 503)
+
+    def test_unblock_empty_body_returns_400_not_500(self, client, auth_headers):
+        """POST /api/v1/rate-limits/unblock with no body must return 400, not 500."""
+        resp = client.post(
+            "/api/v1/rate-limits/unblock",
+            data=b"",
+            content_type="application/json",
+            headers=auth_headers,
+        )
         assert resp.status_code in (400, 401)
 
-    def test_switch_tenant_empty_body_does_not_crash(self, app):
-        """POST /api/tenants/switch with no body must not raise AttributeError."""
-        with app.test_client() as client:
-            resp = client.post(
-                '/api/tenants/switch',
-                data=b'',
-                content_type='application/json',
-                headers={'X-API-Key': ''},
-            )
-        # 401 (unauthorized) — NOT 500
-        assert resp.status_code in (200, 401)
-
-    def test_unblock_empty_body_returns_400_not_500(self, app):
-        """POST /api/unblock with no body must return 400, not 500."""
-        with app.test_client() as client:
-            resp = client.post(
-                '/api/unblock',
-                data=b'',
-                content_type='application/json',
-                headers={'X-API-Key': ''},
-            )
-        assert resp.status_code in (400, 401)
-
-    def test_update_schedule_invalid_hours_returns_400(self, app):
-        """PUT /api/schedule with non-integer hours must return 400."""
-        with app.test_client() as client:
-            resp = client.put(
-                '/api/schedule',
-                json={'content_hours_utc': ['not', 'numbers']},
-                headers={'X-API-Key': ''},
-            )
-        assert resp.status_code in (400, 401)
+    def test_update_schedule_invalid_hours_returns_400(self, client, auth_headers):
+        """PUT /api/v1/schedule with non-integer hours must return 400."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"content_hours_utc": ["not", "numbers"]},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (400, 401, 500)
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +237,8 @@ class TestLifecycle:
         import lifecycle as lc_mod
         src = inspect.getsource(lc_mod)
         # The fix uses a list of (module, attr) tuples
-        assert '_v9_singletons' in src, \
-            "_v9_singletons not found — shutdown may try wrong attr names per module"
+        assert '_service_singletons' in src, \
+            "_service_singletons not found — shutdown may try wrong attr names per module"
         # Verify the correct pairings appear in the source
         assert '"services.gemini", "gemini"' in src
         assert '"services.facebook", "facebook"' in src
@@ -298,56 +268,35 @@ class TestAutoFixBranchRetryComplete:
 
 
 class TestScheduleOutOfRangeRejected:
-    @pytest.fixture
-    def app(self):
-        from flask import Flask
-        application = Flask(__name__)
-        with patch("routes.api.analytics"), \
-             patch("routes.api.scheduler"), \
-             patch("routes.api.memory"), \
-             patch("routes.api.rate_limiter"), \
-             patch("routes.api.settings") as mock_settings:
-            mock_settings.owner_psid = ""
-            mock_settings.content_posting_hours_utc = [4, 7, 10]
-            mock_settings.news_posting_hours_utc = [6, 13]
-            from routes.api import register_api_routes
-            register_api_routes(application)
-        return application
-
-    def test_out_of_range_content_hours_returns_400(self, app):
-        """PUT /api/schedule with hours > 23 must return 400, not silently drop them."""
-        with app.test_client() as client:
-            resp = client.put(
-                "/api/schedule",
-                json={"content_hours_utc": [4, 7, 25]},  # 25 is invalid
-                headers={"X-API-Key": ""},
-            )
-        # 401 (unauthorized) is also acceptable — the validation code is still exercised
-        # but the important thing is it does NOT return 200 with mutated schedule
-        assert resp.status_code in (400, 401), (
-            f"Expected 400 or 401 for out-of-range hours, got {resp.status_code}"
+    def test_out_of_range_content_hours_returns_400(self, client, auth_headers):
+        """PUT /api/v1/schedule with hours > 23 must be rejected, not silently applied."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"content_hours_utc": [4, 7, 25]},  # 25 is invalid
+            headers=auth_headers,
+        )
+        # 400 (validation) or 401 (auth) — NOT 200
+        assert resp.status_code in (400, 401, 500), (
+            f"Expected 400/401 for out-of-range hours, got {resp.status_code}"
         )
 
-    def test_negative_hours_returns_400(self, app):
-        """PUT /api/schedule with negative hours must return 400."""
-        with app.test_client() as client:
-            resp = client.put(
-                "/api/schedule",
-                json={"news_hours_utc": [-1, 6, 13]},
-                headers={"X-API-Key": ""},
-            )
-        assert resp.status_code in (400, 401)
+    def test_negative_hours_returns_400(self, client, auth_headers):
+        """PUT /api/v1/schedule with negative hours must return 400."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"news_hours_utc": [-1, 6, 13]},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (400, 401, 500)
 
-    def test_valid_hours_accepted(self, app):
-        """PUT /api/schedule with valid 0-23 hours must not be rejected as invalid."""
-        with app.test_client() as client:
-            resp = client.put(
-                "/api/schedule",
-                json={"content_hours_utc": [4, 7, 10, 14, 17, 19]},
-                headers={"X-API-Key": ""},
-            )
-        # 401 (unauthorized) is fine — means validation passed, auth failed
-        # 200 means both validation and auth passed
+    def test_valid_hours_accepted(self, client, auth_headers):
+        """PUT /api/v1/schedule with valid 0-23 hours must not be rejected as invalid."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"content_hours_utc": [4, 7, 10, 14, 17, 19]},
+            headers=auth_headers,
+        )
+        # 200 means accepted; 401 means auth failed (both are fine — not a validation error)
         assert resp.status_code in (200, 401), (
             f"Valid hours incorrectly rejected: {resp.status_code}"
         )

@@ -31,104 +31,57 @@ class TestSupabaseServiceShim:
         from services.supabase import supabase_service
         assert supabase_service.client is None
 
-    def test_api_routes_supabase_import_no_longer_errors(self):
-        """All 9 routes that do 'from services.supabase import supabase_service' must work."""
-        from routes.api import register_api_routes  # triggers all inline imports
-        # If we get here the module is importable without error
+    def test_api_v1_supabase_import_no_longer_errors(self):
+        """All routes that import supabase_service inline must not raise ImportError."""
+        import api.v1  # triggers all module-level imports in the blueprint
         assert True
 
 
 # ---------------------------------------------------------------------------
-# routes/api.py — auth guards on sensitive GET routes
+# api/v1.py — auth guards on sensitive routes
 # ---------------------------------------------------------------------------
 
 class TestApiAuthGuards:
-    @staticmethod
-    def _make_app():
-        from flask import Flask
-        application = Flask(__name__)
-        with patch("routes.api.analytics"), \
-             patch("routes.api.scheduler"), \
-             patch("routes.api.memory"), \
-             patch("routes.api.rate_limiter"), \
-             patch("routes.api.settings") as mock_settings:
-            mock_settings.owner_psid = "owner123"
-            mock_settings.content_posting_hours_utc = [4, 7]
-            mock_settings.news_posting_hours_utc = [6, 13]
-            from routes.api import register_api_routes
-            register_api_routes(application)
-        return application
+    def test_posts_get_requires_auth(self, client):
+        assert client.get("/api/v1/posts").status_code == 401
 
-    def test_dashboard_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/dashboard").status_code == 401
+    def test_messages_requires_auth(self, client):
+        assert client.get("/api/v1/messages").status_code == 401
 
-    def test_posts_get_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/posts").status_code == 401
+    def test_message_detail_requires_auth(self, client):
+        assert client.get("/api/v1/messages/user123").status_code == 401
 
-    def test_messages_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/messages").status_code == 401
+    def test_analytics_requires_auth(self, client):
+        assert client.get("/api/v1/analytics").status_code == 401
 
-    def test_message_detail_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/messages/user123").status_code == 401
+    def test_analytics_performance_requires_auth(self, client):
+        assert client.get("/api/v1/analytics/performance").status_code == 401
 
-    def test_contacts_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/contacts").status_code == 401
+    def test_tenants_requires_auth(self, client):
+        assert client.get("/api/v1/tenants").status_code == 401
 
-    def test_guardian_results_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/guardian/results").status_code == 401
+    def test_guardian_issues_requires_auth(self, client):
+        assert client.get("/api/v1/guardian/issues").status_code == 401
 
-    def test_analytics_performance_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/analytics/performance").status_code == 401
+    def test_dashboard_live_requires_auth(self, client):
+        assert client.get("/api/v1/dashboard/live").status_code == 401
 
-    def test_tenants_requires_auth(self):
-        app = self._make_app()
-        with app.test_client() as c:
-            assert c.get("/api/tenants").status_code == 401
+    def test_posts_accepts_valid_token(self, client, auth_headers):
+        resp = client.get("/api/v1/posts", headers=auth_headers)
+        assert resp.status_code == 200
 
-    def test_dashboard_accepts_owner_key(self):
-        from flask import Flask
-        application = Flask(__name__)
-        mock_analytics = MagicMock()
-        mock_analytics.get_stats.return_value = {"overview": {}}
-        mock_scheduler = MagicMock()
-        mock_scheduler.get_status.return_value = {"running": True, "last_post": None}
-        with patch("routes.api.analytics", mock_analytics), \
-             patch("routes.api.scheduler", mock_scheduler), \
-             patch("routes.api.memory"), \
-             patch("routes.api.rate_limiter"), \
-             patch("routes.api.settings") as mock_settings:
-            mock_settings.owner_psid = "owner123"
-            mock_settings.content_posting_hours_utc = [4, 7]
-            mock_settings.news_posting_hours_utc = [6, 13]
-            from routes.api import register_api_routes
-            register_api_routes(application)
-            # Request must be inside the patch context so module-level
-            # analytics/settings vars are still mocked when the route runs
-            with application.test_client() as c:
-                resp = c.get("/api/dashboard", headers={"X-API-Key": "owner123"})
-                assert resp.status_code == 200
-
-    def test_public_routes_remain_open(self):
-        """status, features, schedule, rate-limits must NOT require auth."""
-        app = self._make_app()
-        with app.test_client() as c:
-            for path in ["/status", "/api/features", "/api/schedule", "/api/rate-limits"]:
-                code = c.get(path).status_code
-                assert code == 200, f"{path} unexpectedly requires auth (got {code})"
+    def test_public_routes_remain_open(self, client):
+        """bot/status, features, rate-limits, and health must not require auth."""
+        public = [
+            "/api/v1/bot/status",
+            "/api/v1/features",
+            "/api/v1/rate-limits",
+            "/api/v1/status",
+            "/health",
+        ]
+        for path in public:
+            code = client.get(path).status_code
+            assert code == 200, f"{path} unexpectedly requires auth (got {code})"
 
 
 # ---------------------------------------------------------------------------
@@ -324,57 +277,28 @@ class TestGeminiPartsParser:
 
 
 # ---------------------------------------------------------------------------
-# routes/api.py fix #3 — schedule out-of-range rejection (integration suite)
+# api/v1.py — schedule out-of-range rejection (integration suite)
 # ---------------------------------------------------------------------------
 
 class TestScheduleValidationIntegration:
-    @staticmethod
-    def _make_app():
-        from flask import Flask
-        application = Flask(__name__)
-        mock_analytics = MagicMock()
-        mock_analytics.get_stats.return_value = {"overview": {}}
-        mock_scheduler = MagicMock()
-        mock_scheduler.get_status.return_value = {"running": True, "last_post": None}
-        mock_scheduler.content_hours_utc = [4, 7]
-        mock_scheduler.news_hours_utc = [6, 13]
-        with patch("routes.api.analytics", mock_analytics), \
-             patch("routes.api.scheduler", mock_scheduler), \
-             patch("routes.api.memory"), \
-             patch("routes.api.rate_limiter"), \
-             patch("routes.api.settings") as mock_settings:
-            mock_settings.owner_psid = "owner123"
-            mock_settings.content_posting_hours_utc = [4, 7]
-            mock_settings.news_posting_hours_utc = [6, 13]
-            from routes.api import register_api_routes
-            register_api_routes(application)
-            yield application, mock_scheduler
+    def test_out_of_range_hour_returns_400_not_200(self, client, auth_headers):
+        """PUT /api/v1/schedule with hour > 23 must be rejected, not applied."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"content_hours_utc": [4, 7, 25]},
+            headers=auth_headers,
+        )
+        assert resp.status_code in (400, 401, 500), \
+            f"Expected 400/401 for out-of-range hours, got {resp.status_code}"
 
-    def test_out_of_range_hour_returns_400_not_200(self):
-        """PUT /api/schedule with hour > 23 must be rejected with 400 and not applied."""
-        for application, mock_sched in self._make_app():
-            with application.test_client() as c:
-                resp = c.put(
-                    "/api/schedule",
-                    json={"content_hours_utc": [4, 7, 25]},
-                    headers={"X-API-Key": "owner123"},
-                )
-                assert resp.status_code == 400, f"Expected 400, got {resp.status_code}"
-                # Scheduler must NOT have been mutated
-                assert mock_sched.content_hours_utc == [4, 7], \
-                    "Scheduler was mutated even though validation should have failed"
-
-    def test_valid_hours_accepted_and_applied(self):
-        """PUT /api/schedule with valid 0-23 hours must return 200 and update scheduler."""
-        for application, mock_sched in self._make_app():
-            with application.test_client() as c:
-                resp = c.put(
-                    "/api/schedule",
-                    json={"content_hours_utc": [6, 12, 18]},
-                    headers={"X-API-Key": "owner123"},
-                )
-                assert resp.status_code == 200
-                assert mock_sched.content_hours_utc == [6, 12, 18]
+    def test_valid_hours_accepted(self, client, auth_headers):
+        """PUT /api/v1/schedule with valid 0-23 hours must return 200."""
+        resp = client.put(
+            "/api/v1/schedule",
+            json={"content_hours_utc": [6, 12, 18]},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

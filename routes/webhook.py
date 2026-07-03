@@ -1,9 +1,12 @@
 """
-Facebook webhook handlers v8.0 — Rate-Limited & Persistent
-- Rate limiting enforced
+Kanyoza Systems AI Platform v10 — Facebook Messenger Webhook Handler.
+
+- HMAC signature verification (APP_SECRET)
+- Rate limiting per sender
 - Analytics tracking
-- UTC timezone
-- Verbose logging for debugging
+- Domain event emission via EventBus
+- Slash commands (/help, /status, /post, /scan …) for the bot owner
+- Bang commands (!post, !news, !pause …) for the bot owner
 """
 
 import json

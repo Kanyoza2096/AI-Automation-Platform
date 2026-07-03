@@ -415,6 +415,34 @@ class PostScheduler:
         except queue.Full:
             return False
 
+    def get_config(self) -> dict:
+        """Return current scheduling configuration."""
+        return {
+            "content_hours_utc": list(self.content_hours_utc),
+            "news_hours_utc": list(self.news_hours_utc),
+            "post_interval_hours": getattr(self, "post_interval_hours", None),
+            "news_interval_hours": getattr(self, "news_interval_hours", None),
+            "enabled": getattr(self, "enabled", True),
+        }
+
+    def update_config(self, **kwargs) -> dict:
+        """Update scheduling configuration. Returns the complete new config."""
+        for hour_key in ("content_hours_utc", "news_hours_utc"):
+            if hour_key in kwargs:
+                hours = kwargs[hour_key]
+                if not isinstance(hours, list) or not all(
+                    isinstance(h, int) and 0 <= h <= 23 for h in hours
+                ):
+                    raise ValueError(f"{hour_key} must be a list of integers in 0–23")
+                setattr(self, hour_key, sorted(set(hours)))
+        # Scalar config fields stored on the instance for API round-trip
+        for key in ("post_interval_hours", "news_interval_hours", "enabled"):
+            if key in kwargs:
+                setattr(self, key, kwargs[key])
+        cfg = self.get_config()
+        logger.info("Scheduler config updated: %s", cfg)
+        return cfg
+
     def get_status(self) -> dict:
         now = datetime.now(timezone.utc)
         today = now.date()

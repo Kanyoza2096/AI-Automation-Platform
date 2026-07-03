@@ -262,11 +262,6 @@ class Settings(BaseSettings):
     # Backward-compatibility shim (used by v9 code paths)
     # -------------------------------------------------------------------------
 
-    def validate_or_raise(self) -> None:
-        """v9 compatibility alias for validate_required()."""
-        self.validate_required()
-
-
 # ---------------------------------------------------------------------------
 # Module-level singleton — import this everywhere
 # ---------------------------------------------------------------------------
