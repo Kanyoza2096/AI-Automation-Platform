@@ -8,3 +8,4 @@
 - [websocket-dashboard](websocket-dashboard.md) — eventlet monkey-patch placement, DI bus vs module singleton, service health probe attribute names
 - [m7-m9-wiring](m7-m9-wiring.md) — GuardianService DI wiring, API v1 blueprint, test conftest patterns
 - [v10-migration](v10-migration.md) — files deleted, renames in lifecycle.py, new api/v1 endpoints, scheduler get_config/update_config
+- [eventlet-subprocess-git](eventlet-subprocess-git.md) — GreenFileIO/_isatty_open_only crash: wrap git subprocess.run in tpool.execute

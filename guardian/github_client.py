@@ -14,6 +14,30 @@ from utils.http_client import HttpClient
 
 logger = logging.getLogger("kanyoza.guardian.github")
 
+
+def _run_git(cmd: list, timeout: int) -> subprocess.CompletedProcess:
+    """Run a git subprocess in a real OS thread.
+
+    Problem: eventlet monkey-patches Python's file I/O.  When
+    subprocess.run() is called from a green thread with capture_output=True,
+    the pipe file objects become GreenFileIO instances.  Git's internal
+    machinery then tries to call _isatty_open_only on them — an attribute
+    GreenFileIO does not have — and every git command raises AttributeError
+    before it even touches the network.
+
+    Fix: use eventlet.tpool.execute() to run the subprocess call in a real
+    OS thread where the original (un-patched) I/O is in effect.  Falls back
+    to a plain call if eventlet is not present.
+    """
+    def _call():
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+    try:
+        from eventlet import tpool
+        return tpool.execute(_call)
+    except ImportError:
+        return _call()
+
 GITHUB_API = "https://api.github.com"
 _REQUEST_TIMEOUT = 20
 
@@ -129,10 +153,8 @@ class GitHubClient:
 
     def _clone(self, clone_url: str, local_path: str) -> Optional[str]:
         logger.debug("Cloning into %s", local_path)
-        result = subprocess.run(
+        result = _run_git(
             ["git", "clone", "--depth=1", clone_url, local_path],
-            capture_output=True,
-            text=True,
             timeout=120,
         )
         if result.returncode == 0:
@@ -147,10 +169,8 @@ class GitHubClient:
 
     def _pull(self, local_path: str, branch: str) -> Optional[str]:
         logger.debug("Pulling %s", local_path)
-        result = subprocess.run(
+        result = _run_git(
             ["git", "-C", local_path, "pull", "--ff-only", "origin", branch],
-            capture_output=True,
-            text=True,
             timeout=60,
         )
         if result.returncode == 0:
