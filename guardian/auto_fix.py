@@ -64,38 +64,61 @@ class AutoFixEngine:
     # FIX GENERATION
     # ------------------------------------------------------------------
 
-    def generate_fix(self, issue: dict, original_code: str) -> Optional[str]:
+    def generate_fix(self, issue: dict, full_file_content: str) -> Optional[str]:
         """
-        Use Gemini to generate a fix for the issue.
-        Returns the fixed code or None if generation fails.
+        Use Gemini to fix one security issue inside a complete file.
+
+        Receives the FULL file content so Gemini can return the complete
+        corrected file — not just the affected line.  Returning a complete
+        file is required because create_fix_pr() uploads the result as the
+        new file blob; uploading only the snippet would destroy the rest of
+        the file.
         """
         try:
             from services.gemini import gemini
 
             prompt = (
-                "You are an expert security engineer. Fix this code issue.\n\n"
-                f"ISSUE: {issue.get('message', '')}\n"
+                "You are an expert security engineer. Fix the security issue described "
+                "below inside the complete source file provided.\n\n"
+                f"ISSUE TYPE: {issue.get('message', '')}\n"
                 f"FILE: {issue.get('file', '')}\n"
-                f"LINE: {issue.get('line', '')}\n"
+                f"LINE NUMBER: {issue.get('line', '')}\n"
+                f"SNIPPET (the offending line): {issue.get('snippet', '')}\n"
                 f"RECOMMENDATION: {issue.get('recommendation', '')}\n\n"
-                f"CURRENT CODE:\n```\n{original_code}\n```\n\n"
-                "Return ONLY the complete fixed code. "
+                "COMPLETE FILE CONTENT:\n"
+                f"```\n{full_file_content}\n```\n\n"
+                "Return ONLY the complete fixed file with ALL original lines preserved "
+                "except the one(s) that need changing. "
                 "Do NOT include explanations, markdown, or code fences. "
-                "Just the corrected code. Keep all other lines unchanged."
+                "Do NOT truncate or summarise any part of the file. "
+                "Return the entire file content exactly as it should be saved."
             )
 
             fixed_code = gemini._call(
                 prompt=prompt,
-                temperature=0.2,
-                max_tokens=2000,
+                temperature=0.1,   # Low temperature — we want a precise, minimal edit
+                max_tokens=4000,
             )
 
             if fixed_code:
                 fixed_code = fixed_code.strip()
-                # Remove any code fences Gemini might add
-                fixed_code = fixed_code.replace("```", "").strip()
-                if len(fixed_code) > 10:
+                # Strip any code fences Gemini might add despite instructions
+                if fixed_code.startswith("```"):
+                    lines = fixed_code.splitlines()
+                    # Remove first and last fence lines
+                    fixed_code = "\n".join(
+                        l for l in lines
+                        if not l.strip().startswith("```")
+                    ).strip()
+                # Sanity check: result must be at least half the original file size
+                # to catch cases where Gemini truncated the output
+                if len(fixed_code) >= len(full_file_content) * 0.5:
                     return fixed_code
+                logger.warning(
+                    "generate_fix: Gemini output (%d chars) is less than 50%% of "
+                    "original file (%d chars) — discarding to prevent data loss",
+                    len(fixed_code), len(full_file_content),
+                )
 
             return None
 
