@@ -100,8 +100,52 @@ def emit_to_dashboard(event: str, data: dict[str, Any]) -> None:
 # Namespace handlers
 # ---------------------------------------------------------------------------
 
+def _auth_dashboard_client() -> bool:
+    """
+    Validate the connecting dashboard client.
+
+    Accepted via query-string:  ?token=<MASTER_API_TOKEN>
+
+    Behaviour when MASTER_API_TOKEN is not set:
+    - development / testing: open (returns True) so the console works without config
+    - production: closed (returns False) — no unauthenticated clients allowed
+    """
+    import hmac
+    from config.settings import settings as _s
+    from config.environments import Environment
+
+    master_token = getattr(_s, "master_api_token", "") or ""
+
+    if not master_token:
+        env = Environment.from_string(getattr(_s, "environment", "production"))
+        if env.is_production:
+            logger.warning(
+                "Dashboard: MASTER_API_TOKEN not set in production — "
+                "rejecting SocketIO connection for security."
+            )
+            return False
+        # Development / testing: allow without a token so the console works
+        return True
+
+    from flask import request as _req
+    token = ""
+    try:
+        token = _req.args.get("token", "")
+    except Exception:
+        pass
+
+    if not token:
+        return False
+
+    return hmac.compare_digest(token, master_token)
+
+
 @socketio.on("connect", namespace="/dashboard")
 def on_connect():
+    if not _auth_dashboard_client():
+        logger.warning("Dashboard: rejected unauthenticated SocketIO connection")
+        return False   # flask-socketio: returning False rejects the connection
+
     increment("active_connections")
     logger.info("Dashboard client connected  (total=%d)", _counters["active_connections"])
     # Push current stats snapshot immediately on connect

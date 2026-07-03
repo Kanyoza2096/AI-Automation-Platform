@@ -137,3 +137,9 @@ Guidelines:
             "message_count": self._message_count,
             "last_transition": self._last_transition.isoformat() if self._last_transition else None,
         }
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton — imported by ai_runtime and other callers
+# ---------------------------------------------------------------------------
+bot_persona = BotPersona()

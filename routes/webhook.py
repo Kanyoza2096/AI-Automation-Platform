@@ -108,6 +108,32 @@ def register_webhook_routes(app):
         if not data:
             logger.warning("Webhook POST received with no parseable JSON body")
             return "EVENT_RECEIVED", 200
+
+        # ── Live Payload Inspector: emit sanitized inbound webhook payload ───
+        try:
+            from core.socket_server import emit_to_dashboard
+            # Build a schema-safe summary — never emit raw PSIDs or message text.
+            _entries = data.get("entry", [])
+            _event_count = sum(len(e.get("messaging", [])) for e in _entries)
+            _event_types = list({
+                next(iter({k for k in ev if k not in ("sender", "recipient", "timestamp")}), "unknown")
+                for e in _entries
+                for ev in e.get("messaging", [])
+            })
+            emit_to_dashboard("payload_inbound", {
+                "direction": "inbound",
+                "source": "facebook_webhook",
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "object": data.get("object", ""),
+                "entry_count": len(_entries),
+                "event_count": _event_count,
+                "event_types": _event_types,
+                "size_bytes": len(request.data),
+            })
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────────────────────
+
         try:
             for entry in data.get("entry", []):
                 for event in entry.get("messaging", []):

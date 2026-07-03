@@ -134,6 +134,65 @@ def _register_request_hooks(app: Flask) -> None:
         # Security headers (relaxed X-Frame-Options so the console iframe can embed)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+
+        # ── Live Payload Inspector: emit sanitized API summary to dashboard ──
+        # Only emit for /api/v1/* routes; skip OPTIONS and SocketIO upgrades.
+        if (
+            request.method != "OPTIONS"
+            and request.path.startswith("/api/v1/")
+            and "text/event-stream" not in response.content_type
+        ):
+            try:
+                from core.socket_server import emit_to_dashboard
+                from datetime import datetime, timezone as _tz
+                import json as _json
+
+                # Build a safe request body summary — redact credential fields.
+                req_keys: list = []
+                try:
+                    raw = request.get_data(as_text=True)
+                    if raw:
+                        parsed = _json.loads(raw)
+                        if isinstance(parsed, dict):
+                            _REDACT = {
+                                "token", "password", "secret", "key", "api_key",
+                                "access_token", "bearer", "authorization",
+                                "system_prompt_override",   # may contain sensitive instructions
+                            }
+                            req_keys = [
+                                k for k in parsed
+                                if k.lower() not in _REDACT
+                            ]
+                except Exception:
+                    pass
+
+                # For response — emit only status + top-level keys, never values.
+                resp_keys: list = []
+                resp_ok: bool | None = None
+                try:
+                    if response.is_json or response.content_type.startswith("application/json"):
+                        resp_parsed = _json.loads(response.get_data(as_text=True))
+                        if isinstance(resp_parsed, dict):
+                            resp_keys = list(resp_parsed.keys())[:20]
+                            resp_ok = resp_parsed.get("ok")
+                except Exception:
+                    pass
+
+                emit_to_dashboard("api_payload", {
+                    "direction": "api",
+                    "method": request.method,
+                    "path": request.path,
+                    "status": response.status_code,
+                    "ts": datetime.now(_tz.utc).isoformat(),
+                    "request_keys": req_keys,   # field names only — no values
+                    "response_keys": resp_keys,
+                    "response_ok": resp_ok,
+                    "correlation_id": cid or "",
+                })
+            except Exception:
+                pass
+        # ─────────────────────────────────────────────────────────────────────
+
         return response
 
 

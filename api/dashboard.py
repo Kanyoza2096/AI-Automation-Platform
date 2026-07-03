@@ -223,8 +223,18 @@ def ws_info():
     return jsonify({
         "namespace": "/dashboard",
         "events": {
-            "subscribe": ["stats", "new_message", "post_published", "scan_complete",
-                          "provider_failed", "post_generated", "image_rendered", "worker_error"],
+            "subscribe": [
+                # Core telemetry
+                "stats",
+                # Domain events
+                "new_message", "post_published", "scan_complete",
+                "provider_failed", "post_generated", "image_rendered", "worker_error",
+                # Workflow Engine — step-level progress (base.py)
+                "workflow_started", "workflow_step_started", "workflow_step_done", "workflow_done",
+                # Live Payload Inspector — raw request/response payloads
+                "payload_inbound",   # inbound Facebook webhook payload
+                "api_payload",       # REST API request/response pairs
+            ],
             "emit": ["request_stats", "ping"],
         },
         "hint": "Connect to /dashboard namespace. On connect you receive an immediate 'stats' event.",

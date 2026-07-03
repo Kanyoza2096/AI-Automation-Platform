@@ -100,6 +100,18 @@ def _err(msg: str, status: int = 400):
 
 
 # ---------------------------------------------------------------------------
+# Content Studio — in-memory draft store
+# ---------------------------------------------------------------------------
+
+import uuid as _uuid_mod
+import threading as _threading_mod
+
+_draft_lock = _threading_mod.Lock()
+# id -> {"id", "caption", "topic", "category", "state", "created_at"}
+_draft_store: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
 # Posts
 # ---------------------------------------------------------------------------
 
@@ -111,8 +123,23 @@ def get_posts():
     try:
         page = max(1, int(request.args.get("page", 1)))
         per_page = min(100, max(1, int(request.args.get("per_page", 20))))
+        state_filter = request.args.get("state", "").lower()   # "draft" | "published" | ""
+
         stats = analytics.get_stats()
-        all_posts = stats.get("recent_posts", [])
+        published_posts = [
+            {**p, "state": "published"} for p in stats.get("recent_posts", [])
+        ]
+
+        with _draft_lock:
+            drafts = list(_draft_store.values())
+
+        if state_filter == "draft":
+            all_posts = drafts
+        elif state_filter == "published":
+            all_posts = published_posts
+        else:
+            all_posts = drafts + published_posts
+
         start = (page - 1) * per_page
         posts = all_posts[start: start + per_page]
         return _ok({
@@ -120,6 +147,7 @@ def get_posts():
             "page": page,
             "per_page": per_page,
             "total": len(all_posts),
+            "drafts": len(drafts),
         })
     except Exception as exc:
         logger.error("GET /api/v1/posts error: %s", exc)
@@ -131,6 +159,25 @@ def get_posts():
 def create_post():
     from scheduler.post_scheduler import scheduler
     try:
+        data = request.get_json(force=True, silent=True) or {}
+        state = data.get("state", "publish").lower()
+
+        if state == "draft":
+            # Store as a draft — does not trigger the scheduler
+            draft_id = str(_uuid_mod.uuid4())
+            draft = {
+                "id": draft_id,
+                "caption": data.get("caption", ""),
+                "topic": data.get("topic", ""),
+                "category": data.get("category", ""),
+                "state": "draft",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with _draft_lock:
+                _draft_store[draft_id] = draft
+            return _ok({"draft": True, "draft_id": draft_id, "post": draft}, 201)
+
+        # Default: queue an immediate post via the scheduler
         queued = scheduler.force_post()
         return _ok({"queued": queued, "message": "Post queued" if queued else "Queue full — try again"}, 202)
     except Exception as exc:
@@ -392,9 +439,12 @@ def get_metrics():
 @api_v1_bp.route("/ai/config", methods=["GET"])
 @_auth_required
 def get_ai_config():
-    """Return current AI model, provider, and temperature settings."""
+    """Return current AI model, provider, temperature, and personality settings."""
     from config.settings import settings as _s
+    from api.ai_runtime import get as _rt_get, VALID_MOODS
+    rt = _rt_get()
     return _ok({
+        # Model / provider (from Settings, mutable at runtime)
         "provider": _s.ai_provider,
         "model": _s.gemini_model,
         "chat_temperature": _s.gemini_chat_temperature,
@@ -407,21 +457,32 @@ def get_ai_config():
             "gemini-1.5-flash",
         ],
         "available_providers": ["gemini", "huggingface"],
+        # Personality (from runtime store, not persisted to env)
+        "system_prompt_override": rt["system_prompt_override"],
+        "persona_mood": rt["persona_mood"],
+        "tone_assertiveness": rt["tone_assertiveness"],
+        "tone_humor": rt["tone_humor"],
+        "tone_formality": rt["tone_formality"],
+        "available_moods": sorted(VALID_MOODS),
     })
 
 
 @api_v1_bp.route("/ai/config", methods=["PUT"])
 @_auth_required
 def update_ai_config():
-    """Update AI model, temperature, or safety level at runtime."""
+    """Update AI model, temperature, safety level, or personality at runtime."""
     from config.settings import settings as _s
+    from api.ai_runtime import update as _rt_update
     try:
         data = request.get_json(force=True, silent=True) or {}
-        allowed = {"model", "chat_temperature", "post_temperature", "safety_level", "provider"}
-        unknown = set(data.keys()) - allowed
+        settings_keys = {"model", "chat_temperature", "post_temperature", "safety_level", "provider"}
+        runtime_keys = {"system_prompt_override", "persona_mood",
+                        "tone_assertiveness", "tone_humor", "tone_formality"}
+        unknown = set(data.keys()) - settings_keys - runtime_keys
         if unknown:
             return _err(f"Unknown keys: {sorted(unknown)}", 400)
 
+        # --- Settings-level fields ---
         if "provider" in data:
             valid = {"gemini", "huggingface"}
             if data["provider"] not in valid:
@@ -444,6 +505,16 @@ def update_ai_config():
                 return _err(f"safety_level must be one of {sorted(valid)}", 400)
             _s.gemini_safety_level = data["safety_level"]
 
+        # --- Runtime personality fields ---
+        rt_updates = {k: v for k, v in data.items() if k in runtime_keys}
+        if rt_updates:
+            try:
+                _rt_update(**rt_updates)
+            except ValueError as exc:
+                return _err(str(exc), 400)
+
+        from api.ai_runtime import get as _rt_get
+        rt = _rt_get()
         return _ok({
             "updated": True,
             "config": {
@@ -452,10 +523,50 @@ def update_ai_config():
                 "chat_temperature": _s.gemini_chat_temperature,
                 "post_temperature": _s.gemini_post_temperature,
                 "safety_level": _s.gemini_safety_level,
+                "system_prompt_override": rt["system_prompt_override"],
+                "persona_mood": rt["persona_mood"],
+                "tone_assertiveness": rt["tone_assertiveness"],
+                "tone_humor": rt["tone_humor"],
+                "tone_formality": rt["tone_formality"],
             },
         })
     except Exception as exc:
         logger.error("PUT /api/v1/ai/config error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/ai/persona", methods=["GET"])
+@_auth_required
+def get_ai_persona():
+    """Return the live persona state (mood history, message count, tone)."""
+    from api.ai_runtime import get as _rt_get
+    rt = _rt_get()
+    try:
+        from core.persona import bot_persona
+        persona_state = bot_persona.to_dict()
+    except Exception:
+        persona_state = {}
+    return _ok({**rt, **persona_state})
+
+
+@api_v1_bp.route("/ai/persona", methods=["PUT"])
+@_auth_required
+def update_ai_persona():
+    """Update personality sliders and mood. Alias for PUT /ai/config (personality fields only)."""
+    from api.ai_runtime import update as _rt_update, VALID_MOODS
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        allowed = {"persona_mood", "tone_assertiveness", "tone_humor", "tone_formality",
+                   "system_prompt_override"}
+        unknown = set(data.keys()) - allowed
+        if unknown:
+            return _err(f"Unknown keys: {sorted(unknown)}", 400)
+        rt = _rt_update(**{k: v for k, v in data.items() if k in allowed})
+        return _ok({"updated": True, "persona": rt})
+    except ValueError as exc:
+        return _err(str(exc), 400)
+    except Exception as exc:
+        logger.error("PUT /api/v1/ai/persona error: %s", exc)
         return _err(str(exc), 500)
 
 
@@ -468,11 +579,17 @@ def update_ai_config():
 @_auth_required
 def delete_post(post_id):
     try:
+        # Check in-memory drafts first — no Supabase needed
+        with _draft_lock:
+            if post_id in _draft_store:
+                del _draft_store[post_id]
+                return _ok({"deleted": True, "post_id": post_id, "source": "draft"})
+
         from services.supabase import supabase_service
         if supabase_service and supabase_service.client:
             supabase_service.client.table("post_history").delete().eq("id", post_id).execute()
-            return _ok({"deleted": True, "post_id": post_id})
-        return _err("Supabase not configured — cannot delete post", 503)
+            return _ok({"deleted": True, "post_id": post_id, "source": "published"})
+        return _err("Supabase not configured — cannot delete published post", 503)
     except Exception as exc:
         logger.error("DELETE /api/v1/posts/%s error: %s", post_id, exc)
         return _err(str(exc), 500)
