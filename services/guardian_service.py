@@ -69,6 +69,7 @@ class GuardianService:
         self._bus = event_bus
         self._fb = facebook_svc
         self._last_report: Optional[dict] = None
+        self._last_issues: list = []
         self._last_scan_at: Optional[datetime] = None
         self._scan_count: int = 0
 
@@ -98,10 +99,15 @@ class GuardianService:
     def get_status(self) -> dict:
         return {
             "configured": self.is_configured,
+            "auto_fix_enabled": _settings.guardian_auto_fix,
             "scan_count": self._scan_count,
             "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
             "last_report": self._last_report,
         }
+
+    def get_issues(self) -> list:
+        """Return the full issue list from the last scan (for the /api/v1/guardian/issues endpoint)."""
+        return list(self._last_issues)
 
     # ── Internal scan logic ────────────────────────────────────────────────────
 
@@ -139,8 +145,10 @@ class GuardianService:
         issues = self._scanner.scan_repos(repo_paths)
         report = self._scanner.build_report(issues, len(repos), total_files)
 
-        # 6 — Auto-fix fixable issues (creates GitHub PRs)
-        if self._auto_fix.is_configured and report["total_issues"] > 0:
+        # 6 — Auto-fix fixable issues (creates GitHub PRs) — opt-in via GUARDIAN_AUTO_FIX
+        if (self._auto_fix.is_configured
+                and _settings.guardian_auto_fix
+                and report["total_issues"] > 0):
             self._run_auto_fix(repos, report)
 
         # 7 — Notify owner via Messenger
@@ -164,7 +172,8 @@ class GuardianService:
         except Exception as exc:
             logger.debug("Guardian: analytics record failed: %s", exc)
 
-        # 10 — Cache result
+        # 10 — Cache result (keep issues separately for /api/v1/guardian/issues)
+        self._last_issues = report.get("issues", [])
         self._last_report = {k: v for k, v in report.items() if k != "issues"}
         self._last_scan_at = datetime.now(timezone.utc)
         self._scan_count += 1

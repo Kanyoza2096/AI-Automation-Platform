@@ -26,12 +26,18 @@ class SecurityIssue:
     line_number: int
     snippet: str
     suggestion: str = ""
+    repo_name: str = ""   # set by scan_repos() so filtering/auto-fix works
 
     def to_dict(self) -> dict:
         return {
             "severity": self.severity.lower(),
             "rule_id": self.rule_id,
             "description": self.description,
+            # ── aliases expected by AutoFixEngine & owner commands ──────
+            "message": self.description,
+            "recommendation": self.suggestion,
+            "repo": self.repo_name,
+            # ── original fields ─────────────────────────────────────────
             "file": self.file_path,
             "line": self.line_number,
             "snippet": self.snippet[:200],
@@ -181,11 +187,14 @@ class CodeGuardianScanner:
         """
         Scan multiple repositories. Called by bot.py.
         repo_paths: [{"name": str, "local_path": str}, ...]
-        Returns list of SecurityIssue objects.
+        Returns list of SecurityIssue objects, each tagged with repo_name.
         """
         all_issues = []
         for rp in repo_paths:
             result = self.scan_directory(rp["local_path"], rp["name"])
+            # Tag every issue with the repo name so AutoFixEngine can filter by repo
+            for issue in result.issues:
+                issue.repo_name = rp["name"]
             all_issues.extend(result.issues)
             self._last_results.append(result)
         return all_issues

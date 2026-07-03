@@ -56,8 +56,8 @@ class AutoFixEngine:
             'Bare except clause',
             'Mutable default argument',
         ]
-
-        message = issue.get('message', '')
+        # Support both 'message' (legacy) and 'description' (v10 scanner field name)
+        message = issue.get('message') or issue.get('description', '')
         return any(pattern in message for pattern in auto_fixable_patterns)
 
     # ------------------------------------------------------------------

@@ -109,6 +109,7 @@ class Settings(BaseSettings):
     guardian_enabled: bool = Field(default=False)
     guardian_scan_hours: int = Field(default=24, ge=1)
     guardian_exclude_repos: List[str] = Field(default_factory=list)
+    guardian_auto_fix: bool = Field(default=False, description="Enable auto-fix PR creation for fixable issues")
 
     # -------------------------------------------------------------------------
     # Server

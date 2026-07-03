@@ -242,6 +242,47 @@ def guardian_status():
         return _err(str(exc), 500)
 
 
+@api_v1_bp.route("/guardian/issues", methods=["GET"])
+@_auth_required
+def guardian_issues():
+    """Return the full issue list from the last scan, with optional severity filter."""
+    try:
+        from services.guardian_service import GuardianService
+        from flask import current_app
+        container = current_app.extensions.get("service_container")
+        if not container:
+            return _ok({"issues": [], "message": "Guardian not available"})
+        svc = container.try_resolve(GuardianService)
+        if not svc:
+            return _ok({"issues": [], "message": "Guardian not configured"})
+
+        issues = svc.get_issues()
+
+        # Optional severity filter: ?severity=critical or ?severity=critical,high
+        sev_filter = request.args.get("severity", "").lower()
+        if sev_filter:
+            allowed = {s.strip() for s in sev_filter.split(",")}
+            issues = [i for i in issues if isinstance(i, dict) and i.get("severity", "").lower() in allowed]
+
+        # Optional repo filter: ?repo=AI-Automation-Platform
+        repo_filter = request.args.get("repo", "").strip()
+        if repo_filter:
+            issues = [i for i in issues if isinstance(i, dict) and i.get("repo", "") == repo_filter]
+
+        # Sort critical/high first
+        _order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        issues = sorted(issues, key=lambda i: _order.get(i.get("severity", "").lower(), 9) if isinstance(i, dict) else 9)
+
+        return _ok({
+            "issues": issues,
+            "count": len(issues),
+            "auto_fix_enabled": getattr(__import__("config.settings", fromlist=["settings"]).settings, "guardian_auto_fix", False),
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/guardian/issues error: %s", exc)
+        return _err(str(exc), 500)
+
+
 @api_v1_bp.route("/guardian/scan", methods=["POST"])
 @_auth_required
 def trigger_scan():
