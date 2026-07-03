@@ -1,0 +1,73 @@
+The card rendering quality is not production-ready. Refactor the rendering pipeline to produce crisp, professional, social-media-quality images.
+
+Requirements:
+
+1. Typography
+- Make all text razor sharp.
+- Ensure custom fonts are fully loaded before taking the Playwright screenshot.
+- Increase rendering quality using an appropriate device_scale_factor (2 or 3).
+- Improve font hierarchy:
+  - Title: 56–64px
+  - Section headings: 34–38px
+  - Bullet text: 26–30px
+  - Winner banner: 30–34px
+
+2. Automatic Text Fitting
+- No text may overflow or be truncated.
+- Implement automatic text wrapping.
+- Implement automatic font scaling if content exceeds its container.
+- Support a maximum of 3 wrapped lines per bullet.
+- Gracefully truncate only as a last resort.
+
+3. Layout Improvements
+- Increase whitespace throughout the card.
+- Add consistent padding and margins.
+- Improve spacing between:
+  - Title
+  - Columns
+  - Bullet points
+  - Footer
+- Ensure the layout feels balanced and premium.
+
+4. Bullet Content
+- Display concise bullet points (3–6 words each).
+- Long explanations belong in the Facebook caption, not on the image.
+- Never allow paragraphs inside comparison cards.
+
+5. Winner Banner
+- Redesign the winner section.
+- It should contain only:
+  - Winner label
+  - Winner name
+  - Optional one-line reason
+- Prevent overflow regardless of winner text length.
+
+6. Rendering Pipeline
+- Keep using:
+  SVG → Jinja2 → Playwright → PNG
+- Do not rasterize text inside SVG.
+- Render text as HTML whenever possible.
+- Use SVG only for diagrams, icons, and decorative graphics.
+
+7. Playwright Improvements
+- Wait for:
+  - document.fonts.ready
+  - networkidle
+before taking the screenshot.
+- Capture the image at full 1080×1080 resolution with maximum sharpness.
+
+8. Responsive Card Engine
+- The renderer should automatically adapt to varying title lengths and bullet counts.
+- Avoid hard-coded positioning that causes clipping.
+
+9. Professional Polish
+- Improve shadows, border radius, gradients, and spacing.
+- Aim for a premium design comparable to modern design systems used by companies like Stripe, Linear, Vercel, or GitHub.
+
+10. Code Quality
+- Refactor the renderer cleanly.
+- Separate typography, layout, sizing, and rendering logic into reusable helper functions.
+- Preserve the existing rendering pipeline and public API.
+- Do not change business logic or content generation—only improve visual rendering quality.
+
+The final output should consistently produce crisp, readable, professional social media cards suitable for Facebook and LinkedIn without broken text, blurry fonts, or layout overflow.

@@ -197,7 +197,7 @@ def _register_plugins(c: ServiceContainer) -> None:
     from plugins.base import PluginRegistry
 
     def _build_registry_with_plugins():
-        registry = c.resolve(PluginRegistry)
+        registry = PluginRegistry()
 
         # Facebook (always primary)
         try:

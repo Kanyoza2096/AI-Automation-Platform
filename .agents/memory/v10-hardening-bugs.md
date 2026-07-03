@@ -17,6 +17,7 @@ description: All bugs found and fixed during the production hardening pass with 
 | analytics/tracker.py | __import__('uuid') inline on every event | Top-level import uuid |
 | core/memory.py | __import__('uuid') inline | Top-level import uuid |
 | lifecycle.py | Shutdown iterated all 3 attr names per module | Explicit (module, attr) tuple pairs |
+| dependency_registry.py | `_build_registry_with_plugins()` factory for PluginRegistry called `c.resolve(PluginRegistry)` on itself — deadlocked forever on the non-reentrant `threading.Lock` in `_Registration.resolve()`, hanging the whole app on first boot (worker never finishes loading, every HTTP request times out) | Build `PluginRegistry()` directly instead of resolving it from within its own factory |
 
 ## Bugs found during live integration testing (real keys)
 
