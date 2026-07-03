@@ -218,6 +218,16 @@ def _start_v9_post_scheduler(container: ServiceContainer) -> None:
         except Exception:
             pass
 
+        # M6: inject the PostPublishWorkflow factory so the scheduler uses the
+        # full pipeline (topic selection → generation → render → all plugins →
+        # analytics → event bus) instead of calling Facebook directly.
+        try:
+            from workflows.post_workflow import PostPublishWorkflow
+            post_scheduler.workflow_factory = lambda: container.resolve(PostPublishWorkflow)
+            logger.info("PostPublishWorkflow wired into scheduler.")
+        except Exception as exc:
+            logger.warning("Could not wire PostPublishWorkflow into scheduler: %s", exc)
+
         post_scheduler.start()
         logger.info("v9 post scheduler started.")
     except Exception as exc:

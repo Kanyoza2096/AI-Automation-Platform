@@ -186,10 +186,7 @@ class HuggingFaceService:
                 "Image prompt (one detailed sentence describing the visual scene):"
             )
 
-            image_prompt = gemini._call_gemini(
-                prompt=prompt, temperature=0.7,
-                max_output_tokens=120, top_p=0.9, timeout=20,
-            )
+            image_prompt = gemini.generate_raw(prompt, temperature=0.7)
 
             if image_prompt:
                 image_prompt = image_prompt.strip().strip('"').strip("'")

@@ -32,7 +32,8 @@ class TwitterPlugin(Plugin):
         if not self._active:
             return {"ok": False, "error": "plugin not started"}
         try:
-            result = self._svc.cross_post(content, image_url=image_url)
+            image_bytes: Optional[bytes] = kwargs.get("image_bytes")
+            result = self._svc.cross_post(content, image_bytes=image_bytes)
             return {"ok": bool(result), "platform": "twitter", "result": result}
         except Exception as exc:
             logger.error("TwitterPlugin.publish: %s", exc)

@@ -55,6 +55,9 @@ class PostScheduler:
 
     def __init__(self, supabase_client=None):
         self.supabase = supabase_client
+        # Injected by lifecycle.py at startup — returns a fresh PostPublishWorkflow.
+        # If None the scheduler falls back to the legacy direct-Facebook path.
+        self.workflow_factory = None
         self.last_post_time: Optional[datetime] = None
         # 90-min gap prevents double-firing if the process restarts mid-slot
         self.min_interval = timedelta(minutes=90)
@@ -327,7 +330,24 @@ class PostScheduler:
     # ── Publishers ─────────────────────────────────────────────────────────────
 
     def _publish_content(self):
-        """Generate and post one comparison card to Facebook."""
+        """Generate and post one comparison card via PostPublishWorkflow (or legacy fallback)."""
+        # ── v10 path: delegate to the full PostPublishWorkflow ─────────────────
+        if self.workflow_factory is not None:
+            try:
+                workflow = self.workflow_factory()
+                wf_result = workflow.run()
+                if wf_result.success:
+                    self.last_post_time = datetime.now(timezone.utc)
+                    self._save_state('last_post_time', self.last_post_time.isoformat())
+                    logger.info("PostPublishWorkflow completed successfully (%.0fms)", wf_result.total_ms)
+                else:
+                    failed = [s.step_name for s in wf_result.steps if not s.ok and s.status.value != "skipped"]
+                    logger.warning("PostPublishWorkflow finished with failures: %s", failed)
+                return
+            except Exception as exc:
+                logger.error("PostPublishWorkflow raised unexpectedly: %s — falling back to legacy path", exc)
+
+        # ── Legacy fallback: direct Facebook call (used when workflow not injected) ─
         result = content_engine.generate_post()
         caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
         image_bytes = result.get("image_bytes") if isinstance(result, dict) else (result[1] if len(result) > 1 else None)
@@ -342,7 +362,7 @@ class PostScheduler:
             self._save_state('last_post_time', self.last_post_time.isoformat())
             category = result.get("category", "") if isinstance(result, dict) else ""
             logger.info(
-                "Post published successfully  category='%s'  image=%s",
+                "Post published successfully (legacy)  category='%s'  image=%s",
                 category,
                 f"{len(image_bytes)} bytes" if image_bytes else "none",
             )

@@ -138,7 +138,11 @@ class GitHubClient:
         if result.returncode == 0:
             logger.info("Cloned: %s", local_path)
             return local_path
-        logger.error("git clone failed: %s", result.stderr[:300])
+        # Mask any embedded token before logging (token may appear in git error output)
+        safe_stderr = result.stderr[:300]
+        if self._token:
+            safe_stderr = safe_stderr.replace(self._token, "***")
+        logger.error("git clone failed: %s", safe_stderr)
         return None
 
     def _pull(self, local_path: str, branch: str) -> Optional[str]:
