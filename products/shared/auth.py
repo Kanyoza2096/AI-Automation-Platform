@@ -70,8 +70,8 @@ def _validate_key(api_key: str) -> bool:
     key_hash = hash_api_key(api_key)
 
     try:
-        from services.supabase import get_service_client
-        client = get_service_client()
+        from services.supabase import get_service_client_from_settings
+        client = get_service_client_from_settings()
         if client is None:
             logger.warning(
                 "auth: Supabase unavailable — rejecting API key request "

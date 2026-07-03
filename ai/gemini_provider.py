@@ -41,7 +41,7 @@ class GeminiProvider(AIProvider):
 
     def is_available(self) -> bool:
         try:
-            return bool(self._svc and self._svc._api_key)
+            return bool(self._svc and self._svc.api_key)
         except Exception:
             return False
 

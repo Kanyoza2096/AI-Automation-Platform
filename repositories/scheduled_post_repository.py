@@ -21,8 +21,8 @@ class ScheduledPostRepository(Repository[dict]):
     def _get_client(self):
         if self._client is None:
             try:
-                from services.supabase import get_service_client
-                self._client = get_service_client()
+                from services.supabase import get_service_client_from_settings
+                self._client = get_service_client_from_settings()
             except Exception:
                 pass
         return self._client

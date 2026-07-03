@@ -12,7 +12,7 @@ from scheduler.post_scheduler import scheduler
 from core.memory import memory
 from config.settings import settings
 from utils.rate_limiter import rate_limiter
-from utils.metrics import metrics
+from utils.metrics import metrics as metrics_collector
 
 logger = logging.getLogger("kanyoza.routes.api")
 
@@ -396,7 +396,7 @@ def register_api_routes(app):
         """JSON snapshot of all in-process operational metrics (auth required)."""
         if not _require_auth():
             return jsonify({"error": "Unauthorized"}), 401
-        return jsonify(metrics.get_snapshot())
+        return jsonify(metrics_collector.get_snapshot())
 
     @app.route("/api/unblock", methods=["POST"])
     def unblock_user():

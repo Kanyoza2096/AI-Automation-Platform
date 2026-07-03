@@ -84,3 +84,22 @@ class _SupabaseServiceShim:
 
 
 supabase_service = _SupabaseServiceShim()
+
+
+# ---------------------------------------------------------------------------
+# Zero-arg convenience accessors — read credentials from Settings so new
+# modules (repositories, auth) don't need to thread URLs through every call.
+# ---------------------------------------------------------------------------
+
+def get_anon_client_from_settings():
+    """Return the anon client using credentials from Settings. Returns None
+    when Supabase is not configured (graceful degradation)."""
+    from config.settings import settings
+    return get_anon_client(settings.supabase_url, settings.supabase_anon_key)
+
+
+def get_service_client_from_settings():
+    """Return the service-role client using credentials from Settings.
+    Returns None when Supabase is not configured (graceful degradation)."""
+    from config.settings import settings
+    return get_service_client(settings.supabase_url, settings.supabase_service_role_key)
