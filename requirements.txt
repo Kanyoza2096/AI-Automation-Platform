@@ -5,7 +5,7 @@ gunicorn==23.0.0
 
 # WebSocket / real-time (SocketIO + eventlet async worker)
 flask-socketio==5.5.1
-eventlet==0.40.0
+
 
 # HTTP
 requests==2.32.3
