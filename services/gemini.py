@@ -25,7 +25,7 @@ logger = logging.getLogger("kanyoza.services.gemini")
 
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 _REQUEST_TIMEOUT = 45
-RATE_LIMIT_BACKOFF_SECONDS = 30
+RATE_LIMIT_BACKOFF_SECONDS = 65  # Gemini free-tier quota window is 60 s; 65 s adds a small buffer
 
 TECH_KEYWORDS = [
     "python", "react", "database", "api", "linux", "server",
@@ -405,7 +405,7 @@ Generate the COMPLETE post now:
         except Exception:
             return self._fallback_response(language)
 
-    @smart_retry(max_retries=2, base_delay=2.0)
+    @smart_retry(max_retries=2, base_delay=2.0, no_retry_exceptions=(GeminiRateLimited,))
     def generate_content_post(self, topic: str, template_type: str = "deep_dive") -> Optional[str]:
         if not self.api_key:
             return None
@@ -428,7 +428,11 @@ Generate the COMPLETE post now:
                     prompt = self._strengthen_prompt(prompt, len(post.split()))
                 elif len(post.split()) >= MIN_POST_WORDS * 0.6:
                     return post
-            except (GeminiRateLimited, GeminiServiceError):
+            except GeminiRateLimited:
+                # Quota exhausted — propagate immediately so callers can skip the post
+                # rather than retrying during an active quota window.
+                raise
+            except GeminiServiceError:
                 if attempt >= MAX_QUALITY_RETRIES:
                     return None
             except Exception:
@@ -477,7 +481,7 @@ Generate the COMPLETE post now:
         lines = [f"{'User' if m.get('role')=='user' else 'Bot'}: {m.get('text','')}" for m in messages]
         return self.generate_raw("Summarize this in 3-4 sentences:\n" + "\n".join(lines), temperature=0.3)
 
-    @smart_retry(max_retries=2, base_delay=2.0)
+    @smart_retry(max_retries=2, base_delay=2.0, no_retry_exceptions=(GeminiRateLimited,))
     def generate_structured_post(self, topic: str, theme: str = "comparison") -> Optional[dict]:
         """
         Call Gemini ONCE and return a structured JSON post payload.
@@ -542,6 +546,11 @@ RULES:
             if not data.get("title") or not data.get("caption"):
                 return None
             return data
+        except GeminiRateLimited:
+            # Quota exhausted — re-raise so smart_retry does NOT retry (no_retry_exceptions)
+            # and the content engine can skip this post cycle entirely.
+            logger.warning("generate_structured_post failed: Rate limited")
+            raise
         except (json.JSONDecodeError, Exception) as exc:
             logger.warning("generate_structured_post failed: %s", exc)
             return None

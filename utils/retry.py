@@ -18,6 +18,7 @@ def smart_retry(
     backoff_factor: float = 2.0,
     fallback_value: Any = None,
     use_fallback: bool = False,
+    no_retry_exceptions: Tuple[Type[Exception], ...] = (),
 ):
     """
     Retry a function on failure with exponential backoff + jitter.
@@ -29,6 +30,9 @@ def smart_retry(
         backoff_factor: Delay multiplier per retry.
         fallback_value: Return value when all retries fail (requires use_fallback=True).
         use_fallback: Return fallback_value instead of re-raising on total failure.
+        no_retry_exceptions: Exception types that are re-raised immediately without
+            retrying (e.g. GeminiRateLimited — retrying during a quota window wastes
+            time and quota).
     """
     def decorator(func):
         @wraps(func)
@@ -37,6 +41,10 @@ def smart_retry(
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
+                except no_retry_exceptions:
+                    # Do not retry quota / rate-limit errors — propagate immediately
+                    # so the caller can decide whether to skip or wait.
+                    raise
                 except exceptions as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
