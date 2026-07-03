@@ -191,8 +191,7 @@ class Settings(BaseSettings):
 
     @property
     def guardian_configured(self) -> bool:
-        return self.guardian_enabled and bool(self.github_username and self.github_token)
-
+        return False #Disable temporarily 
     # -------------------------------------------------------------------------
     # Startup validation
     # -------------------------------------------------------------------------
