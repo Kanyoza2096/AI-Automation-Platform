@@ -7,9 +7,17 @@ Gunicorn / Flask dev server imports `app` from this module.
 Run locally:
     python main.py
 
-Run with Gunicorn (production):
-    gunicorn main:app
+Run with Gunicorn + eventlet (required for WebSocket support):
+    gunicorn main:app --worker-class eventlet --workers 1
+
+IMPORTANT: eventlet.monkey_patch() MUST be the very first thing that runs so
+that the stdlib networking layer is patched before any other import.
 """
+
+# ── Eventlet monkey-patch — must precede every other import ─────────────────
+import eventlet
+eventlet.monkey_patch()
+# ─────────────────────────────────────────────────────────────────────────────
 
 from bootstrap import bootstrap
 

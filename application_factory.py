@@ -81,6 +81,7 @@ def create_app(
     # ------------------------------------------------------------------
     _register_v9_routes(app)
     _register_product_routes(app)
+    _register_socketio(app)
 
     logger.info("Flask application created (env=%s)", settings.environment)
     return app
@@ -233,3 +234,22 @@ def _register_product_routes(app: Flask) -> None:
         logger.info("Converter API registered at /api/v1")
     except Exception as exc:
         logger.warning("Converter blueprint skipped: %s", exc)
+
+
+def _register_socketio(app: Flask) -> None:
+    """Attach the SocketIO singleton to the Flask app and register the dashboard API."""
+    try:
+        from core.socket_server import init_app as socketio_init
+        socketio_init(app)
+    except Exception as exc:
+        # SocketIO failure is not silent — WebSocket will be completely broken
+        logger.error(
+            "SocketIO init FAILED — WebSocket/real-time dashboard will not work: %s", exc
+        )
+
+    try:
+        from api.dashboard import dashboard_bp
+        app.register_blueprint(dashboard_bp)
+        logger.info("Dashboard API registered at /api/v1/dashboard")
+    except Exception as exc:
+        logger.error("Dashboard blueprint registration FAILED: %s", exc)

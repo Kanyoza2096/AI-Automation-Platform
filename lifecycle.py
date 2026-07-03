@@ -101,6 +101,100 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("BrowserManager boot failed (card rendering will use one-shot fallback): %s", exc)
 
+    # SocketIO event bridge — subscribe EventBus events → push to /dashboard
+    # Must use the DI-resolved bus (same instance used by workflows/services)
+    _wire_socket_events(container)
+
+
+# ---------------------------------------------------------------------------
+# EventBus → SocketIO bridge
+# ---------------------------------------------------------------------------
+
+
+def _wire_socket_events(container: ServiceContainer) -> None:
+    """
+    Subscribe to every domain event on the EventBus and forward it as a
+    SocketIO emission to the /dashboard namespace.
+
+    IMPORTANT: Uses the DI-resolved EventBus (same instance used by workflows,
+    the EventRecorder, and all services) — NOT the get_event_bus() module
+    singleton which is a separate instance and would miss all DI-published events.
+    """
+    try:
+        from core.event_bus import EventBus
+        from core.events import EventType
+        from core.socket_server import emit_to_dashboard, increment
+
+        # Resolve the same bus the rest of the app uses
+        bus = container.resolve(EventBus)
+
+        def _safe_payload(event) -> dict:
+            """Convert a DomainEvent to a JSON-safe dict."""
+            return {
+                "event_id": event.event_id,
+                "occurred_at": event.occurred_at.isoformat(),
+                "source": event.source,
+                **event.payload,
+            }
+
+        def on_message_received(event):
+            try:
+                increment("messages_today")
+                emit_to_dashboard("new_message", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (new_message): %s", exc)
+
+        def on_post_published(event):
+            try:
+                increment("posts_today")
+                emit_to_dashboard("post_published", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (post_published): %s", exc)
+
+        def on_scan_completed(event):
+            try:
+                emit_to_dashboard("scan_complete", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (scan_complete): %s", exc)
+
+        def on_provider_failed(event):
+            try:
+                emit_to_dashboard("provider_failed", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (provider_failed): %s", exc)
+
+        def on_post_generated(event):
+            try:
+                emit_to_dashboard("post_generated", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (post_generated): %s", exc)
+
+        def on_image_rendered(event):
+            try:
+                emit_to_dashboard("image_rendered", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (image_rendered): %s", exc)
+
+        def on_worker_error(event):
+            try:
+                emit_to_dashboard("worker_error", _safe_payload(event))
+            except Exception as exc:
+                logger.debug("socket bridge error (worker_error): %s", exc)
+
+        bus.subscribe(EventType.MESSAGE_RECEIVED, on_message_received)
+        bus.subscribe(EventType.POST_PUBLISHED,   on_post_published)
+        bus.subscribe(EventType.SCAN_COMPLETED,   on_scan_completed)
+        bus.subscribe(EventType.PROVIDER_FAILED,  on_provider_failed)
+        bus.subscribe(EventType.POST_GENERATED,   on_post_generated)
+        bus.subscribe(EventType.IMAGE_RENDERED,   on_image_rendered)
+        bus.subscribe(EventType.WORKER_ERROR,     on_worker_error)
+
+        logger.info(
+            "SocketIO event bridge wired — 7 EventBus subscriptions active."
+        )
+    except Exception as exc:
+        logger.warning("SocketIO event bridge skipped: %s", exc)
+
 
 # ---------------------------------------------------------------------------
 # Scheduler startup
