@@ -25,9 +25,7 @@ def create_app(
     container: ServiceContainer,
     test_config: Optional[dict] = None,
 ) -> Flask:
-    """
-    Construct and return a configured Flask application.
-    """
+    """Construct and return a configured Flask application."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
     # ------------------------------------------------------------------
@@ -38,16 +36,12 @@ def create_app(
     if not _secret_key:
         if settings.env.is_production:
             import sys
-            logger.critical(
-                "SESSION_SECRET is not set — refusing to start in production."
-            )
+            logger.critical("SESSION_SECRET is not set — refusing to start in production.")
             sys.exit(1)
         else:
             import secrets
             _secret_key = secrets.token_hex(32)
-            logger.warning(
-                "SESSION_SECRET not set — using ephemeral key (development only)."
-            )
+            logger.warning("SESSION_SECRET not set — using ephemeral key (development only).")
 
     app.config.update(
         ENV=settings.environment,
@@ -62,23 +56,11 @@ def create_app(
     app.extensions["service_container"] = container
 
     # ------------------------------------------------------------------
-    # Middleware
+    # Middleware, error handlers, routes
     # ------------------------------------------------------------------
     _register_request_hooks(app)
-
-    # ------------------------------------------------------------------
-    # Error handlers
-    # ------------------------------------------------------------------
     _register_error_handlers(app)
-
-    # ------------------------------------------------------------------
-    # System routes
-    # ------------------------------------------------------------------
     _register_system_routes(app, settings)
-
-    # ------------------------------------------------------------------
-    # Application blueprints
-    # ------------------------------------------------------------------
     _register_webhook_routes(app)
     _register_product_routes(app)
     _register_socketio(app)
@@ -92,16 +74,11 @@ def create_app(
 # ---------------------------------------------------------------------------
 
 def _register_request_hooks(app: Flask) -> None:
-    # ------------------------------------------------------------------
-    # CORS — allow the React frontend (any origin) to call REST endpoints.
-    # SocketIO already has cors_allowed_origins="*"; this covers HTTP routes.
-    # ------------------------------------------------------------------
     _CORS_HEADERS = "Content-Type, Authorization, X-API-Key, X-Correlation-ID"
     _CORS_METHODS = "GET, POST, PUT, DELETE, OPTIONS"
 
     @app.before_request
     def handle_preflight():
-        """Return 200 for CORS preflight OPTIONS requests immediately."""
         if request.method == "OPTIONS":
             resp = app.make_default_options_response()
             origin = request.headers.get("Origin", "*")
@@ -120,23 +97,18 @@ def _register_request_hooks(app: Flask) -> None:
 
     @app.after_request
     def add_cors_and_security_headers(response):
-        # CORS
         origin = request.headers.get("Origin", "")
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
             response.headers["Access-Control-Allow-Methods"] = _CORS_METHODS
             response.headers["Access-Control-Allow-Headers"] = _CORS_HEADERS
-        # Correlation ID
         cid = get_current_correlation_id()
         if cid:
             response.headers["X-Correlation-ID"] = cid
-        # Security headers (relaxed X-Frame-Options so the console iframe can embed)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
 
-        # ── Live Payload Inspector: emit sanitized API summary to dashboard ──
-        # Only emit for /api/v1/* routes; skip OPTIONS and SocketIO upgrades.
         if (
             request.method != "OPTIONS"
             and request.path.startswith("/api/v1/")
@@ -147,7 +119,6 @@ def _register_request_hooks(app: Flask) -> None:
                 from datetime import datetime, timezone as _tz
                 import json as _json
 
-                # Build a safe request body summary — redact credential fields.
                 req_keys: list = []
                 try:
                     raw = request.get_data(as_text=True)
@@ -157,16 +128,12 @@ def _register_request_hooks(app: Flask) -> None:
                             _REDACT = {
                                 "token", "password", "secret", "key", "api_key",
                                 "access_token", "bearer", "authorization",
-                                "system_prompt_override",   # may contain sensitive instructions
+                                "system_prompt_override",
                             }
-                            req_keys = [
-                                k for k in parsed
-                                if k.lower() not in _REDACT
-                            ]
+                            req_keys = [k for k in parsed if k.lower() not in _REDACT]
                 except Exception:
                     pass
 
-                # For response — emit only status + top-level keys, never values.
                 resp_keys: list = []
                 resp_ok: bool | None = None
                 try:
@@ -184,14 +151,13 @@ def _register_request_hooks(app: Flask) -> None:
                     "path": request.path,
                     "status": response.status_code,
                     "ts": datetime.now(_tz.utc).isoformat(),
-                    "request_keys": req_keys,   # field names only — no values
+                    "request_keys": req_keys,
                     "response_keys": resp_keys,
                     "response_ok": resp_ok,
                     "correlation_id": cid or "",
                 })
             except Exception:
                 pass
-        # ─────────────────────────────────────────────────────────────────────
 
         return response
 
@@ -228,6 +194,7 @@ def _register_error_handlers(app: Flask) -> None:
 # ---------------------------------------------------------------------------
 
 def _register_system_routes(app: Flask, settings: Settings) -> None:
+
     @app.route("/")
     def root():
         return jsonify({
@@ -248,7 +215,6 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 
     @app.route("/status")
     def status_legacy():
-        """Legacy /status endpoint — returns online flag with service availability."""
         return jsonify({
             "status": "online",
             "version": "10.0",
@@ -256,6 +222,43 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             "facebook": bool(getattr(settings, "page_access_token", "")),
             "supabase": settings.supabase_enabled,
             "guardian": settings.guardian_configured,
+        })
+
+    @app.route("/api/v1")
+    def api_root():
+        return jsonify({
+            "service": "Kanyoza Systems AI Platform",
+            "version": "10.0",
+            "endpoints": [
+                "GET  /api/v1/currencies",
+                "GET  /api/v1/convert",
+                "GET  /api/v1/health/deep",
+                "GET  /api/v1/status",
+                "GET  /api/v1/dashboard/live",
+            ]
+        })
+
+    @app.route("/api/v1/dashboard/live")
+    def dashboard_live():
+        try:
+            from analytics.tracker import analytics
+            stats = analytics.get_stats()
+            overview = stats.get("overview", {})
+        except Exception:
+            overview = {}
+
+        return jsonify({
+            "messages_today": overview.get("messages_received", 0),
+            "posts_published": overview.get("posts_published", 0),
+            "active_users": overview.get("active_users_24h", 0),
+            "api_calls_today": 0,
+            "guardian_issues": 0,
+            "services": {
+                "gemini": bool(getattr(settings, "gemini_key", "")),
+                "facebook": bool(getattr(settings, "page_access_token", "")),
+                "supabase": settings.supabase_enabled,
+                "converter": True,
+            }
         })
 
     @app.route("/api/v1/status")
@@ -271,7 +274,6 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
         results = {}
         overall = "ok"
 
-        # Gemini
         gemini_key = getattr(settings, "gemini_key", "") or ""
         if not gemini_key:
             results["gemini"] = {"status": "skip", "reason": "GEMINI_KEY not set"}
@@ -286,7 +288,6 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
                 results["gemini"] = {"status": "error", "reason": str(exc)[:120]}
                 overall = "degraded"
 
-        # Facebook
         fb_token = getattr(settings, "page_access_token", "") or ""
         if not fb_token:
             results["facebook"] = {"status": "skip", "reason": "PAGE_ACCESS_TOKEN not set"}
@@ -310,7 +311,6 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 
     @app.route("/metrics")
     def prometheus_metrics():
-        """Prometheus-compatible plaintext metrics."""
         try:
             from analytics.tracker import analytics as _analytics
             o = _analytics.get_stats().get("overview", {})
@@ -339,7 +339,6 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 # ---------------------------------------------------------------------------
 
 def _register_webhook_routes(app: Flask) -> None:
-    """Register the Facebook Messenger webhook routes."""
     try:
         from routes.webhook import register_webhook_routes
         register_webhook_routes(app)
@@ -349,7 +348,6 @@ def _register_webhook_routes(app: Flask) -> None:
 
 
 def _register_product_routes(app: Flask) -> None:
-    """Register product API blueprints."""
     try:
         from products.converter.routes import converter_bp
         app.register_blueprint(converter_bp)
@@ -359,15 +357,11 @@ def _register_product_routes(app: Flask) -> None:
 
 
 def _register_socketio(app: Flask) -> None:
-    """Attach the SocketIO singleton to the Flask app and register the dashboard API."""
     try:
         from core.socket_server import init_app as socketio_init
         socketio_init(app)
     except Exception as exc:
-        # SocketIO failure is not silent — WebSocket will be completely broken
-        logger.error(
-            "SocketIO init FAILED — WebSocket/real-time dashboard will not work: %s", exc
-        )
+        logger.error("SocketIO init FAILED: %s", exc)
 
     try:
         from api.dashboard import dashboard_bp
@@ -376,7 +370,6 @@ def _register_socketio(app: Flask) -> None:
     except Exception as exc:
         logger.error("Dashboard blueprint registration FAILED: %s", exc)
 
-    # M8: versioned REST API
     try:
         from api.v1 import api_v1_bp
         app.register_blueprint(api_v1_bp)
