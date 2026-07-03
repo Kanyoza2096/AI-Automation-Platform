@@ -8,13 +8,14 @@
 | `PAGE_ACCESS_TOKEN` | Facebook Page access token | `EAA...` |
 | `PAGE_ID` | Facebook Page ID | `123456789` |
 | `VERIFY_TOKEN` | Facebook webhook verify token | `my-secret-token` |
+| `APP_SECRET` | Facebook app HMAC secret (webhook signature verification) | `abc123...` |
+| `SESSION_SECRET` | Flask session signing secret | any random string |
 
 ## Recommended
 
 | Variable | Description | Default |
 |---|---|---|
 | `GEMINI_MODEL` | Gemini model to use | `gemini-2.5-pro` |
-| `APP_SECRET` | Facebook app secret | — |
 | `OWNER_PSID` | Your Messenger PSID | — |
 | `HF_TOKEN` | Hugging Face API token | — |
 | `SUPABASE_URL` | Supabase project URL | — |
