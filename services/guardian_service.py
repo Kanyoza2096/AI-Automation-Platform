@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
@@ -72,6 +73,9 @@ class GuardianService:
         self._last_issues: list = []
         self._last_scan_at: Optional[datetime] = None
         self._scan_count: int = 0
+        self._scan_lock = threading.Lock()   # prevents concurrent scan runs
+        self._state_lock = threading.Lock()  # guards reads/writes of result state
+        self._scanning: bool = False
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -85,29 +89,50 @@ class GuardianService:
 
         Safe to call from a background thread.  All exceptions are caught so
         the ScanScheduler never loses its next scheduled run.
+
+        A threading lock prevents concurrent scans (scheduler + slash command
+        overlap). If a scan is already in progress the call returns immediately
+        with a ``{"skipped": "scan_in_progress"}`` sentinel so callers can
+        distinguish a skip from an actual zero-issue result.
         """
+        if not self._scan_lock.acquire(blocking=False):
+            logger.info(
+                "Code Guardian: scan already in progress — skipping duplicate trigger."
+            )
+            return {"skipped": "scan_in_progress", "total_issues": 0}
+
+        # Lock acquired — everything from here runs inside the finally so the
+        # lock and the _scanning flag are ALWAYS released, even if mkdtemp fails.
+        self._scanning = True
         logger.info("Code Guardian: starting scan cycle...")
-        temp_dir = tempfile.mkdtemp(prefix="guardian_")
+        temp_dir: Optional[str] = None
         try:
+            temp_dir = tempfile.mkdtemp(prefix="guardian_")
             return self._run_scan(temp_dir)
         except Exception as exc:
             logger.error("Guardian scan cycle failed: %s", exc)
             return {"error": str(exc), "total_issues": 0}
         finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            self._scanning = False
+            self._scan_lock.release()
 
     def get_status(self) -> dict:
-        return {
-            "configured": self.is_configured,
-            "auto_fix_enabled": _settings.guardian_auto_fix,
-            "scan_count": self._scan_count,
-            "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
-            "last_report": self._last_report,
-        }
+        with self._state_lock:
+            return {
+                "configured": self.is_configured,
+                "auto_fix_enabled": _settings.guardian_auto_fix,
+                "scan_count": self._scan_count,
+                "scanning": self._scanning,
+                "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
+                "last_report": dict(self._last_report) if self._last_report else None,
+            }
 
     def get_issues(self) -> list:
         """Return the full issue list from the last scan (for the /api/v1/guardian/issues endpoint)."""
-        return list(self._last_issues)
+        with self._state_lock:
+            return list(self._last_issues)
 
     # ── Internal scan logic ────────────────────────────────────────────────────
 
@@ -173,10 +198,11 @@ class GuardianService:
             logger.debug("Guardian: analytics record failed: %s", exc)
 
         # 10 — Cache result (keep issues separately for /api/v1/guardian/issues)
-        self._last_issues = report.get("issues", [])
-        self._last_report = {k: v for k, v in report.items() if k != "issues"}
-        self._last_scan_at = datetime.now(timezone.utc)
-        self._scan_count += 1
+        with self._state_lock:
+            self._last_issues = report.get("issues", [])
+            self._last_report = {k: v for k, v in report.items() if k != "issues"}
+            self._last_scan_at = datetime.now(timezone.utc)
+            self._scan_count += 1
 
         logger.info(
             "Guardian scan complete — repos=%d  files=%d  issues=%d  critical=%d",
