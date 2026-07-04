@@ -1,119 +1,32 @@
+# products/shared/auth.py
 """
-MWK Converter API endpoints.
-GET /api/v1/convert          — Authenticated (API key required)
-GET /api/v1/convert/public   — Public (rate limited, no key)
-GET /api/v1/currencies       — Public
+API key authentication helpers for product routes.
 """
 
 import logging
-from flask import Blueprint, request, jsonify
+from functools import wraps
+from flask import request, jsonify
+from config.settings import settings
 
-from products.converter.models import ConversionRequest
-from products.converter.service import CurrencyService
-from products.shared.auth import require_api_key
-from products.shared.rate_limiter import check_rate_limit
-
-logger = logging.getLogger("kanyoza.products.converter.routes")
-
-converter_bp = Blueprint("converter", __name__, url_prefix="/api/v1")
-converter_service = CurrencyService()
+logger = logging.getLogger("kanyoza.products.shared.auth")
 
 
-# ==================================================================
-# PUBLIC — No API key needed
-# ==================================================================
-
-@converter_bp.route("/currencies", methods=["GET"])
-def list_currencies():
-    """List all supported currencies. Public, no auth required."""
-    return jsonify({
-        "currencies": converter_service.get_supported_currencies(),
-        "count": len(converter_service.get_supported_currencies()),
-    })
-
-
-@converter_bp.route("/convert/public", methods=["GET"])
-def convert_currency_public():
+def require_api_key(f):
     """
-    Public converter for demo/product pages.
-    Rate limited per IP. No API key required.
+    Decorator that enforces Bearer token authentication.
+    Checks Authorization: Bearer <token> header against MASTER_API_TOKEN.
     """
-    client_ip = request.remote_addr or "unknown"
-    if not check_rate_limit(client_ip, "converter_public", max_requests=30, window_seconds=3600):
-        return jsonify({
-            "error": "Rate limit exceeded. Get a free API key for unlimited access."
-        }), 429
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header.replace("Bearer ", "").strip()
 
-    try:
-        conversion_request = ConversionRequest(
-            **{k: v for k, v in request.args.items()}
-        )
-    except Exception as e:
-        return jsonify({"error": f"Invalid request: {str(e)}"}), 400
+        if not token:
+            return jsonify({"error": "Missing API key. Use Authorization: Bearer <key>"}), 401
 
-    result = converter_service.convert(conversion_request)
+        master = settings.master_api_token
+        if master and token != master:
+            return jsonify({"error": "Invalid API key."}), 403
 
-    if result is None:
-        return jsonify({
-            "error": "Conversion failed. Check currency codes and try again."
-        }), 400
-
-    return jsonify(result.model_dump())
-
-
-# ==================================================================
-# AUTHENTICATED — API key required
-# ==================================================================
-
-@converter_bp.route("/convert", methods=["GET"])
-@require_api_key
-def convert_currency():
-    """
-    Convert currency. Requires valid API key.
-    
-    Query params:
-        from: Source currency (e.g., USD)
-        to: Target currency (e.g., MWK)
-        amount: Amount to convert (e.g., 100)
-    
-    Headers:
-        Authorization: Bearer kny_xxxxx
-    """
-    api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
-    if not check_rate_limit(api_key, "converter", max_requests=100, window_seconds=3600):
-        return jsonify({
-            "error": "Rate limit exceeded. Upgrade your plan for more requests."
-        }), 429
-
-    try:
-        conversion_request = ConversionRequest(
-            **{k: v for k, v in request.args.items()}
-        )
-    except Exception as e:
-        return jsonify({"error": f"Invalid request: {str(e)}"}), 400
-
-    result = converter_service.convert(conversion_request)
-
-    if result is None:
-        return jsonify({
-            "error": "Conversion failed. Check currency codes and try again."
-        }), 400
-
-    # Track usage for billing
-    from products.shared.billing import track_usage
-    track_usage(api_key, "converter")
-
-    return jsonify(result.model_dump())
-
-
-# ==================================================================
-# HEALTH
-# ==================================================================
-
-@converter_bp.route("/health/converter", methods=["GET"])
-def health():
-    """Health check for converter service."""
-    return jsonify({
-        "service": "converter",
-        "status": "healthy" if converter_service.health_check() else "degraded",
-    })
+        return f(*args, **kwargs)
+    return decorated
