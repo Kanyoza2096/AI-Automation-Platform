@@ -40,5 +40,12 @@ Multi-item flex containers (`.vs-bullets`, `.ba-bullets`, `.list-layout`) use `j
 
 **Why:** at 1080×1080 with content-driven (not fixed) item counts, `center` looked fine with many items but badly empty with 2-3 — `space-evenly` is robust across counts.
 
+## Structured comparison schema bypasses the content-aware classifier
+Comparison-theme posts can arrive in two schemas: legacy (option_a/option_b/winner/points_a/points_b) or the newer balanced 6-section schema (left_title/left_content/right_title/right_content/tradeoff/best_for/verdict/recommendation_title/recommendation). `TechPost.is_structured_comparison` (true when tradeoff+best_for+verdict are all present) forces `layout_kind = "comparison_matrix"` directly in `card_renderer._build_context`, skipping `pick_layout_kind()` entirely — the two schemas render via completely different template branches (`comparison_matrix` vs vs/grid/etc), and `CaptionBuilder.build()` branches the same way for the Facebook caption text.
+
+**Why:** the new schema has no free-form `caption` key (only structured fields) and needs all 6 sections rendered distinctly (no bullet compression) to preserve the "balanced both sides, no repeated info" rule from the generation prompt — cramming it into the old vs/grid bullet layouts would lose section identity.
+
+**How to apply:** `from_gemini_response` detects schema by presence of `"tradeoff"` or `"left_content"` in the raw dict; `option_a`/`option_b` are reused as left_title/right_title for backward compat with `is_debate`.
+
 ## Background pattern varies per theme, chosen via palette
 `services/svg_renderer.py` builds one of 6 text-free pattern generators (dots/grid/hex/nodes/mesh/topology) selected by `THEME_PALETTES[theme]["pattern"]` in `rendering/layout.py` — e.g. AI→mesh, database/backend→nodes, cloud/devops→topology, security→hex, architecture→grid. Kept at very low opacity (~0.02-0.05) so it never competes with foreground content.

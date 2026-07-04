@@ -137,12 +137,17 @@ class CardRenderer:
         points_a = self._safe_points(post.points_a)
         points_b = self._safe_points(post.points_b)
 
-        layout_kind = pick_layout_kind(
-            theme_val,
-            is_debate=post.is_debate,
-            points_a=points_a,
-            points_b=points_b,
-            winner=post.winner or "",
+        is_structured_comparison = getattr(post, "is_structured_comparison", False)
+
+        layout_kind = (
+            "comparison_matrix" if is_structured_comparison else
+            pick_layout_kind(
+                theme_val,
+                is_debate=post.is_debate,
+                points_a=points_a,
+                points_b=points_b,
+                winner=post.winner or "",
+            )
         )
 
         palette = dict(palette_for(theme_val))          # mutable copy
@@ -164,14 +169,35 @@ class CardRenderer:
             "brand_name":    _settings.brand_name,
             "icon_svg":      icon_svg,
             # Populated below by layout branch
-            "columns":  [],
-            "cells":    [],
-            "items":    [],
-            "winner":   None,
+            "columns":         [],
+            "cells":           [],
+            "items":           [],
+            "winner":          None,
+            "cm_left":         None,
+            "cm_right":        None,
+            "cm_facts":        [],
+            "cm_recommendation": None,
         }
 
         # ── Layout-specific data ─────────────────────────────────────────────
-        if layout_kind in ("vs", "before_after"):
+        if layout_kind == "comparison_matrix":
+            name_a = truncate_chars(post.option_a, 22) or "Option A"
+            name_b = truncate_chars(post.option_b, 22) or "Option B"
+            ctx["cm_left"] = {
+                "title":   name_a,
+                "content": truncate_chars(post.left_content, 140),
+            }
+            ctx["cm_right"] = {
+                "title":   name_b,
+                "content": truncate_chars(post.right_content, 140),
+            }
+            ctx["cm_facts"] = [
+                {"label": "TRADE-OFF", "text": truncate_chars(post.tradeoff, 130)},
+                {"label": "BEST FOR",  "text": truncate_chars(post.best_for, 130)},
+                {"label": "VERDICT",   "text": truncate_chars(post.verdict, 130)},
+            ]
+
+        elif layout_kind in ("vs", "before_after"):
             name_a = truncate_chars(post.option_a, 22) or "Option A"
             name_b = truncate_chars(post.option_b, 22) or "Option B"
             bullets_a = fit_bullets_dynamic(points_a, max_count=4, min_count=2, max_words=5)
@@ -221,7 +247,13 @@ class CardRenderer:
             ctx["items"] = [{"num": i + 1, "text": txt} for i, txt in enumerate(pool)]
 
         # ── Winner / recommendation ──────────────────────────────────────────
-        if post.winner:
+        if layout_kind == "comparison_matrix":
+            if post.recommendation:
+                ctx["cm_recommendation"] = {
+                    "label": (post.recommendation_title or "Recommendation").upper(),
+                    "text":  truncate_chars(post.recommendation, 220),
+                }
+        elif post.winner:
             name, reason = parse_winner(post.winner, post.option_a, post.option_b)
             if name:
                 ctx["winner"] = {

@@ -60,6 +60,18 @@ class TechPost(KanyozaModel):
     points_b: List[str] = Field(default_factory=list, description="Arguments for option B")
     hashtags: List[str] = Field(default_factory=list, description="Hashtags without #")
 
+    # Structured balanced-comparison fields (six-section engineering comparison
+    # card: left / right / trade-off / best-for / verdict / recommendation).
+    # Populated only when the comparison prompt returns this richer schema —
+    # option_a/option_b double as left_title/right_title in that case.
+    left_content: str = Field(default="", description="What makes option A unique")
+    right_content: str = Field(default="", description="What makes option B unique")
+    tradeoff: str = Field(default="", description="Biggest engineering compromise between the two")
+    best_for: str = Field(default="", description="Which users/use-cases each option serves best")
+    verdict: str = Field(default="", description="Objective conclusion, no repetition of earlier points")
+    recommendation_title: str = Field(default="Recommendation", description="Label for the recommendation box")
+    recommendation: str = Field(default="", description="Recommended option, or 'depends on priorities'")
+
     # Rendering metadata
     theme: PostTheme = Field(default=PostTheme.AI)
     format: PostFormat = Field(default=PostFormat.IMAGE)
@@ -91,6 +103,15 @@ class TechPost(KanyozaModel):
         return bool(self.option_a and self.option_b)
 
     @property
+    def is_structured_comparison(self) -> bool:
+        """
+        True when this post used the balanced six-section comparison schema
+        (left/right/trade-off/best-for/verdict/recommendation) rather than
+        the older free-form points_a/points_b + winner schema.
+        """
+        return bool(self.tradeoff and self.best_for and self.verdict)
+
+    @property
     def is_published(self) -> bool:
         return self.post_id is not None
 
@@ -104,9 +125,49 @@ class TechPost(KanyozaModel):
         """
         Parse a raw Gemini structured JSON dict into a TechPost.
 
-        Expected keys: title, caption, option_a, option_b, winner,
-                       points_a, points_b, hashtags
+        Supports two schemas:
+
+        1. Legacy free-form schema — keys: title, caption, option_a, option_b,
+           winner, points_a, points_b, hashtags.
+
+        2. Balanced structured-comparison schema — keys: title, left_title,
+           left_content, right_title, right_content, tradeoff, best_for,
+           verdict, recommendation_title, recommendation, hashtags. This
+           schema has no "caption" key, so one is synthesized from the
+           structured fields to satisfy the required `caption` field and
+           feed CaptionBuilder / non-image distribution paths.
         """
+        is_structured = "tradeoff" in data or "left_content" in data
+
+        if is_structured:
+            left_title = data.get("left_title", "") or data.get("option_a", "")
+            right_title = data.get("right_title", "") or data.get("option_b", "")
+            left_content = data.get("left_content", "")
+            right_content = data.get("right_content", "")
+            tradeoff = data.get("tradeoff", "")
+            best_for = data.get("best_for", "")
+            verdict = data.get("verdict", "")
+            recommendation = data.get("recommendation", "")
+            caption = data.get("caption") or " ".join(
+                p for p in (left_content, right_content, tradeoff, verdict) if p
+            )
+            return cls(
+                title=data.get("title", ""),
+                caption=caption,
+                option_a=left_title,
+                option_b=right_title,
+                left_content=left_content,
+                right_content=right_content,
+                tradeoff=tradeoff,
+                best_for=best_for,
+                verdict=verdict,
+                recommendation_title=data.get("recommendation_title", "Recommendation"),
+                recommendation=recommendation,
+                hashtags=data.get("hashtags", []),
+                theme=theme,
+                correlation_id=correlation_id,
+            )
+
         return cls(
             title=data.get("title", ""),
             caption=data.get("caption", ""),

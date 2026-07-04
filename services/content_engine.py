@@ -343,21 +343,41 @@ class CaptionBuilder:
             lines.append(f"🔥 {post.title}")
             lines.append("")
 
-        if post.caption:
-            lines.append(post.caption)
-            lines.append("")
+        if post.is_structured_comparison:
+            if post.option_a and post.left_content:
+                lines.append(f"◀️ {post.option_a}: {post.left_content}")
+                lines.append("")
+            if post.option_b and post.right_content:
+                lines.append(f"▶️ {post.option_b}: {post.right_content}")
+                lines.append("")
+            if post.tradeoff:
+                lines.append(f"⚖️ Trade-off: {post.tradeoff}")
+                lines.append("")
+            if post.best_for:
+                lines.append(f"🎯 Best for: {post.best_for}")
+                lines.append("")
+            if post.verdict:
+                lines.append(f"🧭 Verdict: {post.verdict}")
+                lines.append("")
+            if post.recommendation:
+                lines.append(f"✅ {post.recommendation_title}: {post.recommendation}")
+                lines.append("")
+        else:
+            if post.caption:
+                lines.append(post.caption)
+                lines.append("")
 
-        if post.is_debate and post.option_a and post.option_b:
-            lines.append(f"⚡ {post.option_a} vs {post.option_b}:")
-            for pt in post.points_a[:3]:
-                lines.append(f"  • {post.option_a}: {pt}")
-            for pt in post.points_b[:3]:
-                lines.append(f"  • {post.option_b}: {pt}")
-            lines.append("")
+            if post.is_debate and post.option_a and post.option_b:
+                lines.append(f"⚡ {post.option_a} vs {post.option_b}:")
+                for pt in post.points_a[:3]:
+                    lines.append(f"  • {post.option_a}: {pt}")
+                for pt in post.points_b[:3]:
+                    lines.append(f"  • {post.option_b}: {pt}")
+                lines.append("")
 
-        if post.winner:
-            lines.append(f"🏆 Winner: {post.winner}")
-            lines.append("")
+            if post.winner:
+                lines.append(f"🏆 Winner: {post.winner}")
+                lines.append("")
 
         lines.append(engagement)
         lines.append("")

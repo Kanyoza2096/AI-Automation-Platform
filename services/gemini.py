@@ -513,9 +513,96 @@ Generate the COMPLETE post now:
             "frontend": "Compare two frontend approaches or patterns.",
             "cloud": "Compare two cloud/DevOps approaches.",
         }
-        instruction = theme_instructions.get(theme, theme_instructions["comparison"])
 
-        prompt = f"""You are writing an expert tech post for Facebook. {instruction}
+        if theme == "comparison":
+            prompt = f"""You are generating structured data for a professional engineering comparison card.
+
+Your goal is NOT to summarize one side of the debate.
+
+Instead, produce a balanced comparison between BOTH technologies.
+
+Topic: {topic}
+
+Rules:
+
+1. The title must clearly identify the comparison.
+
+2. Each section must answer a different question.
+
+- LEFT CARD:
+  Explain what makes Option A unique.
+
+- RIGHT CARD:
+  Explain what makes Option B unique.
+
+- TRADE-OFF:
+  Explain the biggest engineering compromise between the two.
+
+- BEST FOR:
+  Describe which users or use-cases each option serves best.
+
+- VERDICT:
+  Provide an objective conclusion without repeating earlier points.
+
+- RECOMMENDATION:
+  Recommend one option only if there is a clear engineering advantage; otherwise state that the best choice depends on priorities.
+
+3. Never repeat information between sections.
+
+4. Never place information about one technology into the wrong section.
+
+5. If the title is "X vs Y", every section must reference BOTH X and Y where appropriate.
+
+6. Avoid marketing language such as:
+- "wins because..."
+- "best ever..."
+- "ultimate..."
+
+Prefer engineering reasoning.
+
+7. Each field must be concise.
+
+Limits:
+Title: ≤ 12 words
+Section title: fixed
+Section content: ≤ 18 words
+Recommendation: ≤ 35 words
+
+8. Prioritize technical accuracy over popularity.
+
+9. The final output MUST be JSON exactly like — no markdown fences, no explanation, no extra text:
+{{
+  "title": "...",
+  "left_title": "Option A",
+  "left_content": "...",
+  "right_title": "Option B",
+  "right_content": "...",
+  "tradeoff": "...",
+  "best_for": "...",
+  "verdict": "...",
+  "recommendation_title": "Recommendation",
+  "recommendation": "...",
+  "hashtags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
+}}
+
+For example:
+{{
+  "title": "iPhone vs Android",
+  "left_title": "iPhone",
+  "left_content": "Optimized hardware-software integration delivers consistent performance and long software support.",
+  "right_title": "Android",
+  "right_content": "Open ecosystem offers extensive customization and broad hardware choices.",
+  "tradeoff": "iPhone prioritizes consistency; Android prioritizes flexibility.",
+  "best_for": "iPhone: ecosystem users. Android: power users and budget-conscious buyers.",
+  "verdict": "Neither is universally superior; the right choice depends on priorities.",
+  "recommendation_title": "Recommendation",
+  "recommendation": "Choose iPhone for longevity and integration. Choose Android for customization and device diversity.",
+  "hashtags": ["iPhone", "Android", "MobileTech", "Smartphones", "TechCompare"]
+}}
+"""
+        else:
+            instruction = theme_instructions.get(theme, theme_instructions["comparison"])
+            prompt = f"""You are writing an expert tech post for Facebook. {instruction}
 
 Topic: {topic}
 
@@ -553,7 +640,8 @@ RULES:
                 return None
             json_str = raw[start:end + 1]
             data = json.loads(json_str)
-            if not data.get("title") or not data.get("caption"):
+            has_body = data.get("caption") or (data.get("left_content") and data.get("tradeoff"))
+            if not data.get("title") or not has_body:
                 return None
             return data
         except GeminiRateLimited:
