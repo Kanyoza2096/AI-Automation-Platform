@@ -42,5 +42,5 @@ externalPort = 80
 ENVIRONMENT = "development"
 LOG_LEVEL = "INFO"
 PORT = "5000"
-GUARDIAN_ENABLED = "true"
-GUARDIAN_AUTO_FIX = "true"
+GUARDIAN_ENABLED = "false"
+GUARDIAN_AUTO_FIX = "false"

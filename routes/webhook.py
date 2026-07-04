@@ -5,7 +5,7 @@ Kanyoza Systems AI Platform v10 — Facebook Messenger Webhook Handler.
 - Rate limiting per sender
 - Analytics tracking
 - Domain event emission via EventBus
-- Slash commands (/help, /status, /post, /scan …) for the bot owner
+- Slash commands (/help, /status, /post, /ratelimit …) for the bot owner
 - Bang commands (!post, !news, !pause …) for the bot owner
 """
 

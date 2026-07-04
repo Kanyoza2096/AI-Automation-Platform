@@ -19,7 +19,6 @@ COMMANDS = {
     "/reload": "Hot-reload environment settings",
     "/mood": "Show current persona mood",
     "/ping": "Liveness check",
-    "/scan": "Run Code Guardian security scan (if configured)",
     "/ratelimit": "Show Gemini AI quota status and seconds until reset",
 }
 
