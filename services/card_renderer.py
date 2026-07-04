@@ -239,12 +239,17 @@ class CardRenderer:
     # ── Step 3a: Playwright screenshot ───────────────────────────────────────
 
     def _screenshot_playwright(self, html: str) -> Optional[bytes]:
-        # Fast path — pooled page from BrowserManager
+        # Fast path — BrowserManager's dedicated Playwright thread.
+        # render_with_page() submits the entire acquire→render→return cycle
+        # to the dedicated OS thread that owns all Playwright objects, avoiding
+        # the asyncio/eventlet hub conflict that occurs when Playwright is called
+        # from a green thread.
         try:
             from services.browser_manager import browser_manager
             if browser_manager.is_running:
-                with browser_manager.acquire_page() as page:
-                    png = self._render_on_page(page, html)
+                png = browser_manager.render_with_page(
+                    lambda page: self._render_on_page(page, html)
+                )
                 logger.info(
                     "BrowserManager rendered card (%d bytes, %dx%d physical px)",
                     len(png), CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
@@ -253,20 +258,33 @@ class CardRenderer:
         except Exception as exc:
             logger.warning("BrowserManager render failed (%s) — one-shot fallback", exc)
 
-        # Fallback — launch a one-shot Chromium instance
+        # Fallback — one-shot Chromium instance, also via call_in_thread so
+        # all Playwright operations run in the dedicated OS thread.
         try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(
-                    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-                    headless=True,
-                )
-                page = browser.new_page(
-                    viewport={"width": CARD_W, "height": CARD_H},
-                    device_scale_factor=DEVICE_SCALE_FACTOR,
-                )
-                png = self._render_on_page(page, html)
-                browser.close()
+            from services.browser_manager import browser_manager as _bm
+
+            def _one_shot() -> bytes:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as pw:
+                    browser = pw.chromium.launch(
+                        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+                        headless=True,
+                    )
+                    page = browser.new_page(
+                        viewport={"width": CARD_W, "height": CARD_H},
+                        device_scale_factor=DEVICE_SCALE_FACTOR,
+                    )
+                    png = self._render_on_page(page, html)
+                    browser.close()
+                    return png
+
+            # Route through the BrowserManager's worker thread if available,
+            # otherwise fall back to a direct call (e.g. in tests without eventlet).
+            if _bm._started:
+                png = _bm.call_in_thread(_one_shot, timeout=60.0)
+            else:
+                png = _one_shot()
+
             logger.info(
                 "One-shot Playwright rendered card (%d bytes, %dx%d physical px)",
                 len(png), CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
