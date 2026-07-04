@@ -232,6 +232,7 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             "endpoints": [
                 "GET  /api/v1/currencies",
                 "GET  /api/v1/convert",
+                "GET  /api/v1/convert/public",
                 "GET  /api/v1/health/deep",
                 "GET  /api/v1/status",
                 "GET  /api/v1/dashboard/live",
@@ -268,44 +269,32 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             "config": settings.to_safe_dict(),
         })
 
+    # ── Health check — NO live API calls ──────────────────────────────────
+    # Previously called Gemini + Facebook on every request, which consumed
+    # free-tier quotas and caused 429 rate-limiting when dashboards polled
+    # this endpoint every 30 s.
     @app.route("/api/v1/health/deep")
     def health_deep():
-        import time
         results = {}
         overall = "ok"
 
         gemini_key = getattr(settings, "gemini_key", "") or ""
-        if not gemini_key:
-            results["gemini"] = {"status": "skip", "reason": "GEMINI_KEY not set"}
-        else:
-            try:
-                from services.gemini import gemini as gemini_svc
-                t0 = time.monotonic()
-                reply = gemini_svc._call(prompt="Reply with exactly one word: ok", temperature=0.0, max_tokens=8)
-                ms = round((time.monotonic() - t0) * 1000)
-                results["gemini"] = {"status": "ok", "latency_ms": ms} if reply else {"status": "error", "reason": "empty response"}
-            except Exception as exc:
-                results["gemini"] = {"status": "error", "reason": str(exc)[:120]}
-                overall = "degraded"
+        results["gemini"] = {
+            "status": "ok" if gemini_key else "skip",
+            "reason": None if gemini_key else "GEMINI_KEY not set",
+        }
 
         fb_token = getattr(settings, "page_access_token", "") or ""
-        if not fb_token:
-            results["facebook"] = {"status": "skip", "reason": "PAGE_ACCESS_TOKEN not set"}
-        else:
-            try:
-                import requests as _req
-                t0 = time.monotonic()
-                r = _req.get("https://graph.facebook.com/me", params={"fields": "id,name", "access_token": fb_token}, timeout=8)
-                ms = round((time.monotonic() - t0) * 1000)
-                if r.status_code == 200:
-                    data = r.json()
-                    results["facebook"] = {"status": "ok", "latency_ms": ms, "page_id": data.get("id"), "page_name": data.get("name")}
-                else:
-                    results["facebook"] = {"status": "error", "http": r.status_code}
-                    overall = "degraded"
-            except Exception as exc:
-                results["facebook"] = {"status": "error", "reason": str(exc)[:120]}
-                overall = "degraded"
+        results["facebook"] = {
+            "status": "ok" if fb_token else "skip",
+            "reason": None if fb_token else "PAGE_ACCESS_TOKEN not set",
+        }
+
+        results["supabase"] = {
+            "status": "ok" if settings.supabase_enabled else "skip",
+        }
+
+        results["converter"] = {"status": "ok"}
 
         return jsonify({"status": overall, "version": "10.0", "services": results})
 
