@@ -1,114 +1,119 @@
 """
-API Key authentication.
-Validates Bearer tokens against the Supabase api_keys table using SHA-256 hashing.
-In development without Supabase, validation is strict-off (returns 401) so the
-behaviour is always explicit — there is no mode that accepts forged tokens.
+MWK Converter API endpoints.
+GET /api/v1/convert          — Authenticated (API key required)
+GET /api/v1/convert/public   — Public (rate limited, no key)
+GET /api/v1/currencies       — Public
 """
 
-import hashlib
 import logging
-import secrets
-from functools import wraps
-from typing import Optional
+from flask import Blueprint, request, jsonify
 
-from flask import request, jsonify
+from products.converter.models import ConversionRequest
+from products.converter.service import CurrencyService
+from products.shared.auth import require_api_key
+from products.shared.rate_limiter import check_rate_limit
 
-logger = logging.getLogger("kanyoza.products.shared.auth")
+logger = logging.getLogger("kanyoza.products.converter.routes")
 
-_FORMAT_PREFIX = "kny_"
-_FORMAT_MIN_LEN = 51  # "kny_" + 48 hex chars (secrets.token_hex(24))
+converter_bp = Blueprint("converter", __name__, url_prefix="/api/v1")
+converter_service = CurrencyService()
 
 
-def require_api_key(f):
-    """Decorator that requires a valid API key in the Authorization header.
+# ==================================================================
+# PUBLIC — No API key needed
+# ==================================================================
 
-    Header format: ``Authorization: Bearer kny_<48-hex-chars>``
+@converter_bp.route("/currencies", methods=["GET"])
+def list_currencies():
+    """List all supported currencies. Public, no auth required."""
+    return jsonify({
+        "currencies": converter_service.get_supported_currencies(),
+        "count": len(converter_service.get_supported_currencies()),
+    })
 
-    The key is hashed with SHA-256 before the database lookup so the raw
-    secret is never stored or logged.
+
+@converter_bp.route("/convert/public", methods=["GET"])
+def convert_currency_public():
     """
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "Missing or invalid Authorization header"}), 401
-
-        api_key = auth_header[len("Bearer "):]
-
-        if not _well_formed(api_key):
-            return jsonify({"error": "Invalid API key format"}), 401
-
-        if not _validate_key(api_key):
-            return jsonify({"error": "Invalid or expired API key"}), 401
-
-        return f(*args, **kwargs)
-
-    return decorated
-
-
-def _well_formed(api_key: str) -> bool:
-    """Return True only when the key matches the expected format.
-
-    Format: ``kny_`` followed by exactly 48 lowercase hex characters.
+    Public converter for demo/product pages.
+    Rate limited per IP. No API key required.
     """
-    return (
-        isinstance(api_key, str)
-        and api_key.startswith(_FORMAT_PREFIX)
-        and len(api_key) == _FORMAT_MIN_LEN
-        and all(c in "0123456789abcdef" for c in api_key[len(_FORMAT_PREFIX):])
-    )
-
-
-def _validate_key(api_key: str) -> bool:
-    """Validate an API key by hashing it and checking against Supabase.
-
-    Returns False (deny) when Supabase is unavailable so there is no
-    open backdoor in degraded mode — callers receive a 401.
-    """
-    key_hash = hash_api_key(api_key)
+    client_ip = request.remote_addr or "unknown"
+    if not check_rate_limit(client_ip, "converter_public", max_requests=30, window_seconds=3600):
+        return jsonify({
+            "error": "Rate limit exceeded. Get a free API key for unlimited access."
+        }), 429
 
     try:
-        from services.supabase import get_service_client_from_settings
-        client = get_service_client_from_settings()
-        if client is None:
-            logger.warning(
-                "auth: Supabase unavailable — rejecting API key request "
-                "(set SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY to enable)"
-            )
-            return False
-
-        result = (
-            client.table("api_keys")
-            .select("id, revoked")
-            .eq("key_hash", key_hash)
-            .maybe_single()
-            .execute()
+        conversion_request = ConversionRequest(
+            **{k: v for k, v in request.args.items()}
         )
-        if result and result.data:
-            if result.data.get("revoked"):
-                logger.warning("auth: revoked API key presented (hash=%s…)", key_hash[:8])
-                return False
-            return True
+    except Exception as e:
+        return jsonify({"error": f"Invalid request: {str(e)}"}), 400
 
-        logger.warning("auth: unknown API key (hash=%s…)", key_hash[:8])
-        return False
+    result = converter_service.convert(conversion_request)
 
-    except Exception as exc:
-        logger.error("auth: key validation error — denying request: %s", exc)
-        return False
+    if result is None:
+        return jsonify({
+            "error": "Conversion failed. Check currency codes and try again."
+        }), 400
+
+    return jsonify(result.model_dump())
 
 
-def generate_api_key() -> str:
-    """Generate a new cryptographically-random API key.
+# ==================================================================
+# AUTHENTICATED — API key required
+# ==================================================================
 
-    Store only the hash (``hash_api_key(key)``) in the database.
-    Return the raw key to the user exactly once.
+@converter_bp.route("/convert", methods=["GET"])
+@require_api_key
+def convert_currency():
     """
-    return f"{_FORMAT_PREFIX}{secrets.token_hex(24)}"
+    Convert currency. Requires valid API key.
+    
+    Query params:
+        from: Source currency (e.g., USD)
+        to: Target currency (e.g., MWK)
+        amount: Amount to convert (e.g., 100)
+    
+    Headers:
+        Authorization: Bearer kny_xxxxx
+    """
+    api_key = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not check_rate_limit(api_key, "converter", max_requests=100, window_seconds=3600):
+        return jsonify({
+            "error": "Rate limit exceeded. Upgrade your plan for more requests."
+        }), 429
+
+    try:
+        conversion_request = ConversionRequest(
+            **{k: v for k, v in request.args.items()}
+        )
+    except Exception as e:
+        return jsonify({"error": f"Invalid request: {str(e)}"}), 400
+
+    result = converter_service.convert(conversion_request)
+
+    if result is None:
+        return jsonify({
+            "error": "Conversion failed. Check currency codes and try again."
+        }), 400
+
+    # Track usage for billing
+    from products.shared.billing import track_usage
+    track_usage(api_key, "converter")
+
+    return jsonify(result.model_dump())
 
 
-def hash_api_key(api_key: str) -> str:
-    """Return the SHA-256 hex digest of *api_key*. Used for storage and lookup."""
-    return hashlib.sha256(api_key.encode()).hexdigest()
+# ==================================================================
+# HEALTH
+# ==================================================================
+
+@converter_bp.route("/health/converter", methods=["GET"])
+def health():
+    """Health check for converter service."""
+    return jsonify({
+        "service": "converter",
+        "status": "healthy" if converter_service.health_check() else "degraded",
+    })
