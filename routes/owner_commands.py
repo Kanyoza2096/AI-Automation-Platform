@@ -20,6 +20,7 @@ COMMANDS = {
     "/mood": "Show current persona mood",
     "/ping": "Liveness check",
     "/scan": "Run Code Guardian security scan (if configured)",
+    "/ratelimit": "Show Gemini AI quota status and seconds until reset",
 }
 
 
@@ -66,6 +67,7 @@ class OwnerCommands:
             "/mood": self._cmd_mood,
             "/ping": self._cmd_ping,
             "/scan": self._cmd_scan,
+            "/ratelimit": self._cmd_ratelimit,
         }.get(cmd)
 
         if handler:
@@ -210,6 +212,44 @@ class OwnerCommands:
             self._reply(sender_id, f"✅ Scan complete: {result}")
         except Exception as exc:
             self._reply(sender_id, f"❌ Scan failed: {exc}")
+
+    def _cmd_ratelimit(self, sender_id: str, _args: str) -> None:
+        import time as _time
+        lines = ["⏱ Gemini AI Quota Status\n"]
+        try:
+            from services.gemini import gemini as _gemini, RATE_LIMIT_BACKOFF_SECONDS
+            elapsed = _time.time() - _gemini._last_rate_limit_time
+            if _gemini._last_rate_limit_time == 0.0:
+                lines.append("✅ No rate limit hit since startup — quota is clear")
+            elif elapsed >= RATE_LIMIT_BACKOFF_SECONDS:
+                lines.append(f"✅ Quota clear (last hit {int(elapsed)}s ago)")
+            else:
+                remaining = int(RATE_LIMIT_BACKOFF_SECONDS - elapsed) + 1
+                lines.append(f"🚫 Rate limited — resets in {remaining}s")
+                lines.append(f"   (backoff window: {RATE_LIMIT_BACKOFF_SECONDS}s)")
+            lines.append(f"   Last hit: {int(elapsed)}s ago" if _gemini._last_rate_limit_time else "")
+        except Exception as exc:
+            lines.append(f"⚠️ Could not read Gemini state: {exc}")
+
+        try:
+            from scheduler.post_scheduler import scheduler as _sched
+            locked = not _sched._lock.acquire(blocking=False)
+            if locked:
+                lines.append("\n🔒 Publish lock: HELD (post in progress)")
+            else:
+                _sched._lock.release()
+                lines.append("\n🔓 Publish lock: free")
+            wf = "✅ wired" if _sched.workflow_factory is not None else "❌ not wired"
+            lines.append(f"   Workflow factory: {wf}")
+            if _sched.last_post_time:
+                ago = int((_time.time() - _sched.last_post_time.timestamp()))
+                lines.append(f"   Last post: {ago}s ago")
+            else:
+                lines.append("   Last post: never")
+        except Exception as exc:
+            lines.append(f"\n⚠️ Could not read scheduler state: {exc}")
+
+        self._reply(sender_id, "\n".join(l for l in lines if l))
 
     # ------------------------------------------------------------------
     # Helpers
