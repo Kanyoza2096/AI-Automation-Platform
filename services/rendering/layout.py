@@ -1,13 +1,16 @@
 """
-Design tokens — spacing, type scale, semantic palettes, and autofit JS.
+Design tokens — spacing, type scale, semantic palettes, background patterns,
+and autofit JS. This is the single source of truth for the visual language
+of every generated card.
 
-Semantic colour system (v12):
-  database  → emerald green      backend   → cyan
-  ai        → violet/purple      frontend  → orange
-  cloud     → blue               devops    → teal
-  security  → red                networking → slate
-  architecture → indigo          code_tips → amber
-  comparison → indigo+sky        system_design → violet
+Semantic colour system (v13):
+  database    → emerald green      backend    → cyan
+  ai          → violet/purple      frontend   → orange
+  cloud       → blue               devops     → teal
+  security    → red                networking → blue-grey (slate)
+  architecture → indigo            code_tips  → amber
+  comparison  → indigo+sky         system_design → violet
+  tutorial/checklist → emerald
 
 hex_to_rgba() lets the template compose CSS rgba() strings from palette
 hex values without any extra library — used for glow box-shadows.
@@ -30,23 +33,50 @@ SPACE = {
 }
 
 
-# ── Type scale ───────────────────────────────────────────────────────────────
+# ── Modular type scale ───────────────────────────────────────────────────────
+# A fluid scale (ratio ≈ 1.19, "minor third" adjacent) instead of arbitrary
+# fixed sizes. Each role has a max (ideal, plenty of room) and a min (the
+# floor the autofit JS may shrink to before we consider rewriting content).
 FONT_SIZE = {
-    "title_max":   56,
-    "title_min":   34,
-    "heading_max": 30,
+    "title_max":   54,
+    "title_min":   32,
+    "heading_max": 28,
     "heading_min": 18,
-    "bullet_max":  24,
+    "bullet_max":  23,
     "bullet_min":  15,
-    "winner_max":  36,
-    "winner_min":  22,
-    "reason":      17,
-    "badge":       13,
-    "footer":      16,
+    "winner_max":  40,
+    "winner_min":  24,
+    "reason_max":  19,
+    "reason_min":  15,
+    "badge":       12,
+    "footer":      15,
+    "label":       11,
 }
 
 BULLET_MAX_LINES = 2
 TITLE_MAX_LINES  = 2
+
+# Weight scale — used consistently instead of ad-hoc numbers.
+WEIGHT = {
+    "black":    800,
+    "bold":     700,
+    "semibold": 600,
+    "medium":   500,
+    "regular":  400,
+}
+
+
+def scale_for_density(item_count: int, base_max: int, base_min: int, step: int = 3) -> int:
+    """
+    Return a font size between base_min and base_max, stepping down as
+    *item_count* (bullets, cells, etc.) grows — a lightweight density-aware
+    sizing pass that runs BEFORE the browser ever sees the content, so the
+    in-browser autofit JS only has to correct small residual overflow.
+    """
+    if item_count <= 2:
+        return base_max
+    reduction = (item_count - 2) * step
+    return max(base_min, base_max - reduction)
 
 
 # ── Semantic palettes ────────────────────────────────────────────────────────
@@ -57,6 +87,7 @@ TITLE_MAX_LINES  = 2
 #   badge_text  — badge pill text
 #   tagline     — footer tagline / cell label colour
 #   glow_a/b    — hex colours fed to the SVG radial-gradient glows
+#   pattern     — background pattern id used by SvgRenderer (see svg_renderer.py)
 THEME_PALETTES: dict[str, dict] = {
     "database": {
         "a": "#10B981", "b": "#059669",
@@ -64,6 +95,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#064E3B", "badge_text": "#6EE7B7",
         "tagline": "#34D399",
         "glow_a": "#10B981", "glow_b": "#34D399",
+        "pattern": "nodes",
     },
     "ai": {
         "a": "#8B5CF6", "b": "#7C3AED",
@@ -71,6 +103,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#2E1065", "badge_text": "#C4B5FD",
         "tagline": "#A78BFA",
         "glow_a": "#7C3AED", "glow_b": "#6D28D9",
+        "pattern": "mesh",
     },
     "cloud": {
         "a": "#3B82F6", "b": "#2563EB",
@@ -78,6 +111,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#1E3A8A", "badge_text": "#93C5FD",
         "tagline": "#60A5FA",
         "glow_a": "#3B82F6", "glow_b": "#0EA5E9",
+        "pattern": "topology",
     },
     "security": {
         "a": "#EF4444", "b": "#DC2626",
@@ -85,6 +119,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#7F1D1D", "badge_text": "#FCA5A5",
         "tagline": "#F87171",
         "glow_a": "#EF4444", "glow_b": "#DC2626",
+        "pattern": "hex",
     },
     "architecture": {
         "a": "#6366F1", "b": "#4F46E5",
@@ -92,6 +127,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#1E1B4B", "badge_text": "#A5B4FC",
         "tagline": "#818CF8",
         "glow_a": "#6366F1", "glow_b": "#4F46E5",
+        "pattern": "grid",
     },
     "backend": {
         "a": "#06B6D4", "b": "#0891B2",
@@ -99,6 +135,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#164E63", "badge_text": "#67E8F9",
         "tagline": "#22D3EE",
         "glow_a": "#06B6D4", "glow_b": "#0EA5E9",
+        "pattern": "nodes",
     },
     "frontend": {
         "a": "#F97316", "b": "#EA580C",
@@ -106,6 +143,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#431407", "badge_text": "#FDBA74",
         "tagline": "#FB923C",
         "glow_a": "#F97316", "glow_b": "#EF4444",
+        "pattern": "dots",
     },
     "comparison": {
         "a": "#6366F1", "b": "#0EA5E9",
@@ -113,6 +151,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#1E1B4B", "badge_text": "#A5B4FC",
         "tagline": "#818CF8",
         "glow_a": "#6366F1", "glow_b": "#0EA5E9",
+        "pattern": "dots",
     },
     "code_tips": {
         "a": "#F59E0B", "b": "#D97706",
@@ -120,6 +159,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#451A03", "badge_text": "#FDE68A",
         "tagline": "#FBBF24",
         "glow_a": "#F59E0B", "glow_b": "#EF4444",
+        "pattern": "dots",
     },
     "system_design": {
         "a": "#6366F1", "b": "#7C3AED",
@@ -127,6 +167,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#1E1B4B", "badge_text": "#C4B5FD",
         "tagline": "#A78BFA",
         "glow_a": "#6366F1", "glow_b": "#7C3AED",
+        "pattern": "grid",
     },
     "tutorial": {
         "a": "#10B981", "b": "#059669",
@@ -134,6 +175,7 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#022C22", "badge_text": "#6EE7B7",
         "tagline": "#34D399",
         "glow_a": "#10B981", "glow_b": "#0EA5E9",
+        "pattern": "dots",
     },
     "checklist": {
         "a": "#10B981", "b": "#059669",
@@ -141,6 +183,23 @@ THEME_PALETTES: dict[str, dict] = {
         "badge_bg": "#022C22", "badge_text": "#6EE7B7",
         "tagline": "#34D399",
         "glow_a": "#10B981", "glow_b": "#059669",
+        "pattern": "dots",
+    },
+    "devops": {
+        "a": "#14B8A6", "b": "#0D9488",
+        "accent": "#5EEAD4",
+        "badge_bg": "#042F2E", "badge_text": "#5EEAD4",
+        "tagline": "#2DD4BF",
+        "glow_a": "#14B8A6", "glow_b": "#0D9488",
+        "pattern": "topology",
+    },
+    "networking": {
+        "a": "#64748B", "b": "#475569",
+        "accent": "#94A3B8",
+        "badge_bg": "#1E293B", "badge_text": "#CBD5E1",
+        "tagline": "#94A3B8",
+        "glow_a": "#3B82F6", "glow_b": "#64748B",
+        "pattern": "nodes",
     },
 }
 DEFAULT_PALETTE = THEME_PALETTES["comparison"]
@@ -172,23 +231,44 @@ SURFACE = {
 }
 
 
-# ── In-browser autofit (safety net) ─────────────────────────────────────────
-# Shrinks any [data-autofit] element in 1-px steps until it no longer
-# overflows its container, down to data-autofit-min (default 15px).
+# ── In-browser autofit (safety net, not primary fitting mechanism) ─────────
+# Shrinks any [data-autofit] element in 0.5-px steps until it no longer
+# overflows its container, down to data-autofit-min. Runs AFTER Python-side
+# density-aware sizing and word-count capping, so it rarely needs to move
+# more than a couple of px — this keeps typography predictable card-to-card
+# while still guaranteeing zero clipping/overflow as a last resort.
 AUTOFIT_JS = """
 (() => {
+  const fits = (el) =>
+    el.scrollHeight <= el.clientHeight + 2 &&
+    el.scrollWidth  <= el.clientWidth  + 2;
+
   document.querySelectorAll('[data-autofit]').forEach(el => {
     const min = parseFloat(el.dataset.autofitMin || '15');
     let size = parseFloat(getComputedStyle(el).fontSize);
     let guard = 0;
-    const fits = () =>
-      el.scrollHeight <= el.clientHeight + 2 &&
-      el.scrollWidth  <= el.clientWidth  + 2;
-    while (!fits() && size > min && guard < 80) {
+    while (!fits(el) && size > min && guard < 100) {
       size -= 0.5;
       el.style.fontSize = size + 'px';
       guard++;
     }
+  });
+
+  // Second pass: panels that must stay visually balanced in height —
+  // if one sibling panel is much taller than another, nudge padding.
+  document.querySelectorAll('[data-balance-group]').forEach(group => {
+    const panels = Array.from(group.querySelectorAll('[data-balance-item]'));
+    if (panels.length < 2) return;
+    const heights = panels.map(p => p.getBoundingClientRect().height);
+    const max = Math.max(...heights);
+    panels.forEach((p, i) => {
+      const diff = max - heights[i];
+      if (diff > 4) {
+        const pad = parseFloat(getComputedStyle(p).paddingTop) + diff / 2;
+        p.style.paddingTop = pad + 'px';
+        p.style.paddingBottom = pad + 'px';
+      }
+    });
   });
 })();
 """

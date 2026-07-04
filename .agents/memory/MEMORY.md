@@ -3,7 +3,7 @@
 - [gemini-2.5-flash thinking tokens](gemini-thinking-model.md) — parts[0] may be a thought block; use next((p for p in parts if "text" in p)) not parts[0]["text"]
 - [playwright-nix-deps](playwright-nix-deps.md) — Playwright Chromium needs Nix system packages; full list of 20+ packages required
 - [v10 hardening bugs fixed](v10-hardening-bugs.md) — full list of all 15 bugs found and fixed during live testing with real API keys
-- [card rendering pipeline](card-rendering-pipeline.md) — text-in-HTML-not-SVG rule, base64 font embedding, autofit-as-safety-net, unified template
+- [card rendering pipeline](card-rendering-pipeline.md) — text-in-HTML rule, font embedding, autofit safety net, content-aware layout classifier, per-theme background patterns, space-evenly not center
 - [m6 scheduling decisions](m6-scheduling-decisions.md) — fired_slots 3-tuple rule, topic_selector singleton, generate_post dict return, FacebookPlugin message= kwarg
 - [websocket-dashboard](websocket-dashboard.md) — eventlet monkey-patch placement, DI bus vs module singleton, service health probe attribute names
 - [m7-m9-wiring](m7-m9-wiring.md) — GuardianService DI wiring, API v1 blueprint, test conftest patterns

@@ -1,19 +1,23 @@
 """
-Card Renderer v12 — design-system upgrade.
+Card Renderer v13 — production-quality design-system engine.
 
 Pipeline (per render call):
   0. RenderCache    — return cached PNG immediately on hit
-  1. SvgRenderer    — theme-aware decorative background SVG
-  2. HtmlRenderer   — Jinja2 template with semantic layout + icon injection
+  1. SvgRenderer    — theme-aware decorative background SVG (varied pattern)
+  2. HtmlRenderer   — Jinja2 template with adaptive layout + icon injection
   3. BrowserManager — pooled Playwright page (no Chromium launch per call)
      └─ HCTI fallback — htmlcsstoimage.com if BrowserManager is unavailable
 
-Layout selection (theme → layout kind):
-  vs          — comparison / security / database / ai
-  before_after — code_tips / backend / frontend
-  grid        — architecture / cloud
-  pipeline    — system_design
-  list        — tutorial / checklist
+Layout selection is now content-aware (see typography.pick_layout_kind):
+it inspects bullet counts, sequence-signal words, and debate structure —
+not just the theme label — so posts of the same theme can still render
+with different, better-fitted layouts (vs / before_after / grid / pipeline
+/ list).
+
+Rendering is supersampled: Playwright captures the 1080×1080 CSS viewport
+at device_scale_factor=2 → a 2160×2160 physical PNG, which is dramatically
+sharper than a native 1080 render, especially for text edges and hairline
+borders.
 """
 
 import logging
@@ -24,8 +28,14 @@ from typing import Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from services.rendering.fonts import font_face_css
-from services.rendering.layout import AUTOFIT_JS, FONT_SIZE, palette_for, hex_to_rgba
-from services.rendering.typography import parse_winner, prepare_bullets, truncate_chars
+from services.rendering.layout import AUTOFIT_JS, FONT_SIZE, palette_for, hex_to_rgba, scale_for_density
+from services.rendering.typography import (
+    parse_winner,
+    prepare_bullets,
+    fit_bullets_dynamic,
+    truncate_chars,
+    pick_layout_kind,
+)
 from services.rendering.icon_library import get_icon_svg
 
 logger = logging.getLogger("kanyoza.services.card_renderer")
@@ -36,22 +46,6 @@ CARD_W = 1080
 CARD_H = 1080
 DEVICE_SCALE_FACTOR = 2          # physical render = 2160×2160 → sharp output
 
-# ── Theme → layout kind ─────────────────────────────────────────────────────
-THEME_LAYOUT_MAP: dict = {
-    "comparison":    "vs",
-    "security":      "vs",
-    "database":      "vs",
-    "ai":            "vs",
-    "code_tips":     "before_after",
-    "backend":       "before_after",
-    "frontend":      "before_after",
-    "architecture":  "grid",
-    "system_design": "pipeline",
-    "cloud":         "grid",
-    "tutorial":      "list",
-    "checklist":     "list",
-}
-
 WINNER_LABEL_BY_LAYOUT = {
     "vs":           "WINNER",
     "before_after": "BOTTOM LINE",
@@ -59,6 +53,11 @@ WINNER_LABEL_BY_LAYOUT = {
     "list":         "PRO TIP",
     "pipeline":     "KEY INSIGHT",
 }
+
+# Structural labels per grid/pipeline cell — used only when the content
+# doesn't supply its own natural label (kept short, all-caps, scannable).
+GRID_LABELS = ["APPROACH", "TRADE-OFF", "BEST FOR", "VERDICT"]
+PIPELINE_LABELS = ["STEP 1", "STEP 2", "STEP 3", "STEP 4"]
 
 
 class CardRenderer:
@@ -135,22 +134,26 @@ class CardRenderer:
     # ── Step 2: build Jinja2 context ─────────────────────────────────────────
 
     def _build_context(self, post, bg_decoration: str, theme_val: str) -> dict:
-        layout_kind = THEME_LAYOUT_MAP.get(theme_val, "vs")
-        palette     = dict(palette_for(theme_val))          # mutable copy
-
-        # Pre-compute rgba glow string for CSS box-shadow / no extra lib needed
-        palette["glow_rgba"] = hex_to_rgba(palette["a"], 0.18)
-
         points_a = self._safe_points(post.points_a)
         points_b = self._safe_points(post.points_b)
 
+        layout_kind = pick_layout_kind(
+            theme_val,
+            is_debate=post.is_debate,
+            points_a=points_a,
+            points_b=points_b,
+            winner=post.winner or "",
+        )
+
+        palette = dict(palette_for(theme_val))          # mutable copy
+        palette["glow_rgba"] = hex_to_rgba(palette["a"], 0.18)
+
         from config.settings import settings as _settings
 
-        # Topic icon — inline SVG scaled for the card header
         icon_svg = get_icon_svg(theme_val, color=palette["accent"], size=20)
 
         ctx: dict = {
-            "title":         truncate_chars(post.title, 100),
+            "title":         truncate_chars(post.title, 90),
             "theme_label":   theme_val.replace("_", " ").upper(),
             "hashtags":      (post.hashtags or [])[:4],
             "bg_decoration": bg_decoration,
@@ -169,41 +172,55 @@ class CardRenderer:
 
         # ── Layout-specific data ─────────────────────────────────────────────
         if layout_kind in ("vs", "before_after"):
-            name_a = truncate_chars(post.option_a, 24) or "Option A"
-            name_b = truncate_chars(post.option_b, 24) or "Option B"
+            name_a = truncate_chars(post.option_a, 22) or "Option A"
+            name_b = truncate_chars(post.option_b, 22) or "Option B"
+            bullets_a = fit_bullets_dynamic(points_a, max_count=4, min_count=2, max_words=5)
+            bullets_b = fit_bullets_dynamic(points_b, max_count=4, min_count=2, max_words=5)
+            bullet_font = scale_for_density(
+                max(len(bullets_a), len(bullets_b)),
+                FONT_SIZE["bullet_max"], FONT_SIZE["bullet_min"],
+            )
+            ctx["bullet_font"] = bullet_font
             ctx["columns"] = [
                 {
                     "name":    name_a,
                     "side":    "left",
                     "color":   palette["a"],
-                    "bullets": prepare_bullets(points_a, limit=4),
+                    "bullets": bullets_a,
+                    "strength_label": "STRENGTHS" if layout_kind == "vs" else "BEFORE",
                 },
                 {
                     "name":    name_b,
                     "side":    "right",
                     "color":   palette["b"],
-                    "bullets": prepare_bullets(points_b, limit=4),
+                    "bullets": bullets_b,
+                    "strength_label": "STRENGTHS" if layout_kind == "vs" else "AFTER",
                 },
             ]
 
         elif layout_kind in ("grid", "pipeline"):
-            labels = {
-                "grid":     ["APPROACH", "TRADE-OFF", "BEST FOR", "VERDICT"],
-                "pipeline": ["STEP 1", "STEP 2", "STEP 3", "STEP 4"],
-            }[layout_kind]
-            pool = prepare_bullets((points_a + points_b), limit=4, max_words=8)
+            labels = PIPELINE_LABELS if layout_kind == "pipeline" else GRID_LABELS
+            pool = fit_bullets_dynamic(
+                (points_a + points_b), max_count=4, min_count=3, max_words=8,
+            )
             while len(pool) < 4:
                 pool.append("\u2014")
+            cell_font = scale_for_density(len(pool), 24, 17, step=2)
+            ctx["cell_font"] = cell_font
             ctx["cells"] = [
                 {"label": lbl, "text": txt, "accent": idx == 0}
                 for idx, (lbl, txt) in enumerate(zip(labels, pool))
             ]
 
         else:  # list / checklist / tutorial
-            pool = prepare_bullets((points_a + points_b), limit=6, max_words=6)
+            pool = fit_bullets_dynamic(
+                (points_a + points_b), max_count=6, min_count=3, max_words=6,
+            )
+            item_font = scale_for_density(len(pool), 24, 16, step=2)
+            ctx["item_font"] = item_font
             ctx["items"] = [{"num": i + 1, "text": txt} for i, txt in enumerate(pool)]
 
-        # ── Winner ───────────────────────────────────────────────────────────
+        # ── Winner / recommendation ──────────────────────────────────────────
         if post.winner:
             name, reason = parse_winner(post.winner, post.option_a, post.option_b)
             if name:
@@ -297,8 +314,8 @@ class CardRenderer:
     @staticmethod
     def _render_on_page(page, html: str) -> bytes:
         """
-        Load HTML, wait for fonts, run autofit JS safety net, capture PNG.
-        Shared by pooled and one-shot paths.
+        Load HTML, wait for fonts, run autofit + quality-control JS safety
+        net, capture PNG. Shared by pooled and one-shot paths.
         """
         page.set_content(html, wait_until="networkidle")
         try:

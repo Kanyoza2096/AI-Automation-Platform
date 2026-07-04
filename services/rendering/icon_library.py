@@ -1,9 +1,7 @@
 """
-SVG Icon Library — topic-aware inline icons for card headers.
-
-Each icon is a complete <svg> element using viewBox="0 0 24 24" with
-stroke-based rendering (no fill) so it inherits its colour from CSS
-`color` or an explicit `stroke` attribute passed at render time.
+SVG Icon Library — topic-aware inline icons for card headers, panels, and
+decorative elements. Lucide-style: stroke-based, viewBox 0 0 24 24, 1.5-1.8px
+stroke weight, rounded caps/joins — crisp at any size, no rasterization.
 
 Usage:
     from services.rendering.icon_library import get_icon_svg, THEME_ICONS
@@ -14,20 +12,20 @@ from __future__ import annotations
 
 # Map theme → canonical icon name (also accepts the icon name directly)
 THEME_ICONS: dict[str, str] = {
-    "database":    "database",
-    "ai":          "ai",
-    "cloud":       "cloud",
-    "security":    "shield",
-    "architecture":"blocks",
-    "backend":     "server",
-    "frontend":    "browser",
-    "comparison":  "scale",
-    "code_tips":   "code",
-    "system_design": "cog",
-    "tutorial":    "book",
-    "checklist":   "checklist",
-    "devops":      "cog",
-    "networking":  "network",
+    "database":      "database",
+    "ai":             "ai",
+    "cloud":          "cloud",
+    "security":       "shield",
+    "architecture":   "blocks",
+    "backend":        "server",
+    "frontend":       "browser",
+    "comparison":     "scale",
+    "code_tips":      "code",
+    "system_design":  "cog",
+    "tutorial":       "book",
+    "checklist":      "checklist",
+    "devops":         "infinity",
+    "networking":     "network",
 }
 
 # SVG path/shape definitions (viewBox 0 0 24 24, stroke-based)
@@ -116,6 +114,78 @@ _PATHS: dict[str, str] = {
         '<path stroke-width="1.2" d="M6 6.5l4.5 4.5M18 6.5l-4.5 4.5'
         'M6 17.5l4.5-4.5M18 17.5l-4.5-4.5"/>'
     ),
+    "infinity": (
+        '<path stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M18.2 8.4a3.6 3.6 0 100 7.2 3.6 3.6 0 002.9-1.46L12 12'
+        ' l-9.1 1.34A3.6 3.6 0 105.8 15.6 3.6 3.6 0 108.9 14.14L12 12'
+        ' l6.2-2.68z"/>'
+    ),
+    "trophy": (
+        '<path stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M7 4h10v4.2a5 5 0 01-10 0V4z"/>'
+        '<path stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M7 5.2H4.2v1.1A3.4 3.4 0 007.6 9.7M17 5.2h2.8v1.1a3.4 3.4 0 01-3.4 3.4"/>'
+        '<path stroke-width="1.6" stroke-linecap="round" d="M12 13.2v3.6M8.6 20h6.8"/>'
+    ),
+    "target": (
+        '<circle cx="12" cy="12" r="9" stroke-width="1.5"/>'
+        '<circle cx="12" cy="12" r="5" stroke-width="1.5"/>'
+        '<circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/>'
+    ),
+    "zap": (
+        '<path stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+        ' fill="currentColor" fill-opacity="0.12"'
+        ' d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/>'
+    ),
+    "layers": (
+        '<path stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M12 2.5l9 4.6-9 4.6-9-4.6 9-4.6z"/>'
+        '<path stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M3 12.1l9 4.6 9-4.6"/>'
+        '<path stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M3 16.7l9 4.6 9-4.6"/>'
+    ),
+    "cpu": (
+        '<rect x="6" y="6" width="12" height="12" rx="2" stroke-width="1.5"/>'
+        '<rect x="9.5" y="9.5" width="5" height="5" rx="1" stroke-width="1.4"/>'
+        '<path stroke-width="1.4" stroke-linecap="round" d="M9 2v3M12 2v3M15 2v3'
+        'M9 19v3M12 19v3M15 19v3M2 9h3M2 12h3M2 15h3M19 9h3M19 12h3M19 15h3"/>'
+    ),
+    "route": (
+        '<circle cx="5" cy="18" r="2.3" stroke-width="1.5"/>'
+        '<circle cx="19" cy="6" r="2.3" stroke-width="1.5"/>'
+        '<path stroke-width="1.5" stroke-linecap="round"'
+        ' d="M7.3 18H15a4 4 0 004-4v-.5a4 4 0 00-4-4H9a4 4 0 01-4-4v-.5"/>'
+    ),
+    "users": (
+        '<circle cx="9" cy="8" r="3.2" stroke-width="1.5"/>'
+        '<path stroke-width="1.5" stroke-linecap="round" d="M3.5 20a5.5 5.5 0 0111 0"/>'
+        '<path stroke-width="1.5" stroke-linecap="round"'
+        ' d="M16 5.5a3.2 3.2 0 010 6M20.5 20a5 5 0 00-4.5-5.6"/>'
+    ),
+    "globe": (
+        '<circle cx="12" cy="12" r="9" stroke-width="1.5"/>'
+        '<path stroke-width="1.3" d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>'
+    ),
+    "check-badge": (
+        '<path stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
+        ' d="M12 2.5l2.2 1.6 2.7-.2 1 2.5 2.3 1.4-.6 2.6.6 2.6-2.3 1.4-1 2.5-2.7-.2L12 21.5l-2.2-1.6-2.7.2-1-2.5-2.3-1.4.6-2.6-.6-2.6 2.3-1.4 1-2.5 2.7.2z"/>'
+        '<path stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4.5"/>'
+    ),
+    "arrow-flow": (
+        '<path stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 12h14M13 6l6 6-6 6"/>'
+    ),
+    "lock": (
+        '<rect x="4.5" y="10.5" width="15" height="10" rx="2.2" stroke-width="1.5"/>'
+        '<path stroke-width="1.5" stroke-linecap="round" d="M7.5 10.5V7a4.5 4.5 0 019 0v3.5"/>'
+        '<circle cx="12" cy="15.3" r="1.4" fill="currentColor" stroke="none"/>'
+    ),
+    "gateway": (
+        '<rect x="3" y="9" width="6" height="6" rx="1.4" stroke-width="1.5"/>'
+        '<rect x="15" y="9" width="6" height="6" rx="1.4" stroke-width="1.5"/>'
+        '<circle cx="12" cy="4.5" r="2" stroke-width="1.4"/>'
+        '<path stroke-width="1.4" stroke-linecap="round" d="M9 12h-3M15 12h3M12 6.5v3.5M9 9.6l1.8-2.8M15 9.6l-1.8-2.8"/>'
+    ),
 }
 
 
@@ -130,14 +200,16 @@ def get_icon_svg(
     size: int = 20,
 ) -> str:
     """
-    Return a complete inline <svg> element for the given *theme*.
+    Return a complete inline <svg> element for the given *theme* or explicit
+    icon name (falls back to "cog" for unknown values).
 
     Args:
-        theme:  PostTheme value string (e.g. "database", "ai").
+        theme:  PostTheme value string (e.g. "database", "ai") or a direct
+                icon key from _PATHS (e.g. "trophy", "route").
         color:  CSS colour for the stroke/fill (default "currentColor").
         size:   Width and height in px (default 20).
     """
-    icon_name = get_icon_name(theme)
+    icon_name = theme if theme in _PATHS else get_icon_name(theme)
     paths = _PATHS.get(icon_name, _PATHS["cog"])
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
