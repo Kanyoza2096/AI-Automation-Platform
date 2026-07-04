@@ -104,7 +104,19 @@ class PublishStep(Step):
 
         results = self._registry.publish_all(caption, image_bytes=image_bytes)
         context["publish_results"] = results
-        logger.info("PostWorkflow: published to %s", list(results.keys()))
+
+        if not results:
+            raise RuntimeError(
+                "No plugins registered in PluginRegistry — "
+                "FacebookPlugin may have failed to start (check startup logs)"
+            )
+
+        failed_all = all(not r.get("ok") for r in results.values())
+        if failed_all:
+            errors = {k: v.get("error", "unknown") for k, v in results.items()}
+            raise RuntimeError(f"All plugins failed to publish: {errors}")
+
+        logger.info("PostWorkflow: published to %s", [k for k, v in results.items() if v.get("ok")])
         return results
 
 

@@ -216,17 +216,19 @@ class HttpClient:
 
                 self._log(method, full_url, resp.status_code, ms, attempt)
 
-                # ── 429 Rate Limited — DO NOT RETRY ──────────────────────
+                # ── 429 Rate Limited — raise immediately, no sleep ───────
+                # The GeminiService layer owns the backoff window via
+                # _last_rate_limit_time / RATE_LIMIT_BACKOFF_SECONDS.
+                # Sleeping here as well would cause 60 s+ hangs on every
+                # interactive command (e.g. the /post owner slash command).
                 if resp.status_code == 429:
                     retry_after = float(resp.headers.get("Retry-After", 60))
-                    delay = max(retry_after, 30.0)
                     logger.warning(
-                        "[%s] HTTP 429 — backing off %.0fs before next request",
-                        self.name, delay,
+                        "[%s] HTTP 429 — rate limited (Retry-After: %.0fs)",
+                        self.name, retry_after,
                     )
-                    time.sleep(delay)
                     raise CircuitOpenError(
-                        f"[{self.name}] Rate limited — backed off {delay:.0f}s"
+                        f"[{self.name}] Rate limited — backed off {retry_after:.0f}s"
                     )
 
                 # ── 5xx Server Errors — retry with backoff ────────────────

@@ -10,3 +10,4 @@
 - [v10-migration](v10-migration.md) — files deleted, renames in lifecycle.py, new api/v1 endpoints, scheduler get_config/update_config
 - [eventlet-subprocess-git](eventlet-subprocess-git.md) — GreenFileIO/_isatty_open_only crash: wrap git subprocess.run in tpool.execute
 - [playwright-eventlet-thread-fix](playwright-eventlet-thread-fix.md) — Playwright must run on a dedicated OS thread when eventlet is active; Procfile needs --worker-class eventlet
+- [post-slash-command-bugs](post-slash-command-bugs.md) — 4 bugs found: strict wf.success gate, PublishStep silent empty, http_client 60s sleep on 429, no pre-flight rate-limit check

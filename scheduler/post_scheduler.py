@@ -336,14 +336,24 @@ class PostScheduler:
             try:
                 workflow = self.workflow_factory()
                 wf_result = workflow.run()
-                if wf_result.success:
+                # Gate on the publish step result — NOT wf_result.success.
+                # Soft steps (record_analytics, emit_event) use
+                # continue_on_failure=True; their failures must not mask a
+                # real successful publish.
+                publish_ok = any(
+                    s.step_name == "publish" and s.ok for s in wf_result.steps
+                )
+                if publish_ok:
                     self.last_post_time = datetime.now(timezone.utc)
                     self._save_state('last_post_time', self.last_post_time.isoformat())
                     logger.info("PostPublishWorkflow completed successfully (%.0fms)", wf_result.total_ms)
-                else:
-                    failed = [s.step_name for s in wf_result.steps if not s.ok and s.status.value != "skipped"]
-                    logger.warning("PostPublishWorkflow finished with failures: %s", failed)
-                return
+                    return
+                # Publish step failed — fall through to legacy path
+                failed = [s.step_name for s in wf_result.steps if not s.ok]
+                logger.warning(
+                    "PostPublishWorkflow publish step failed %s — falling back to legacy path",
+                    failed,
+                )
             except Exception as exc:
                 logger.error("PostPublishWorkflow raised unexpectedly: %s — falling back to legacy path", exc)
 
@@ -409,52 +419,110 @@ class PostScheduler:
         with a scheduled worker publish — preserving the "one publish at a time"
         invariant the worker thread was designed to enforce.
         """
+        # ── Pre-flight: fail fast if Gemini is currently rate-limited ─────────
+        # Without this check, the workflow would block for 60–120 s waiting for
+        # Gemini backoffs, and the owner would see no reply in Messenger.
+        try:
+            import time as _time
+            from services.gemini import gemini as _gemini
+            from services.gemini import RATE_LIMIT_BACKOFF_SECONDS
+            elapsed = _time.time() - _gemini._last_rate_limit_time
+            if elapsed < RATE_LIMIT_BACKOFF_SECONDS:
+                wait_s = int(RATE_LIMIT_BACKOFF_SECONDS - elapsed) + 1
+                return {
+                    "ok": False,
+                    "error": f"Gemini AI is rate-limited — try again in {wait_s}s",
+                }
+        except Exception:
+            pass  # If the check itself fails, proceed normally
+
         if not self._lock.acquire(blocking=False):
             return {"ok": False, "error": "a publish is already in progress — try again shortly"}
 
         try:
             if self.workflow_factory is not None:
-                workflow = self.workflow_factory()
-                wf_result = workflow.run()
+                try:
+                    workflow = self.workflow_factory()
+                    wf_result = workflow.run()
 
-                # Pull topic and platform results from individual step outputs.
-                # StepResult fields: step_name, status, output, error, latency_ms, ok
-                topic = ""
-                publish_results = {}
-                for step in wf_result.steps:
-                    if step.step_name == "select_topic" and step.ok:
-                        topic = (step.output or {}).get("topic", "")
-                    elif step.step_name == "publish" and step.ok:
-                        publish_results = step.output if isinstance(step.output, dict) else {}
+                    # ── Determine success from the publish step, NOT overall
+                    # wf_result.success.  Soft steps (record_analytics,
+                    # emit_event) have continue_on_failure=True; if they fail
+                    # the post still went out — treat that as OK.
+                    topic = ""
+                    publish_step_ok = False
+                    publish_results = {}
+                    for step in wf_result.steps:
+                        if step.step_name == "select_topic" and step.ok:
+                            topic = (step.output or {}).get("topic", "")
+                        elif step.step_name == "publish":
+                            publish_step_ok = step.ok
+                            if step.ok:
+                                publish_results = (
+                                    step.output if isinstance(step.output, dict) else {}
+                                )
+                            else:
+                                logger.warning(
+                                    "run_content_now: publish step failed — %s",
+                                    step.error,
+                                )
 
-                if wf_result.success:
-                    self.last_post_time = datetime.now(timezone.utc)
-                    self._save_state("last_post_time", self.last_post_time.isoformat())
-                    return {
-                        "ok": True,
-                        "topic": topic,
-                        "platforms": list(publish_results.keys()),
-                        "results": publish_results,
-                        "duration_ms": round(wf_result.total_ms),
-                    }
-                else:
+                    if publish_step_ok:
+                        self.last_post_time = datetime.now(timezone.utc)
+                        self._save_state("last_post_time", self.last_post_time.isoformat())
+                        successful_platforms = [
+                            k for k, v in publish_results.items() if v.get("ok")
+                        ]
+                        return {
+                            "ok": True,
+                            "topic": topic,
+                            "platforms": successful_platforms,
+                            "results": publish_results,
+                            "duration_ms": round(wf_result.total_ms),
+                        }
+
+                    # Publish step failed — note soft-step failures for context
                     failed = [s.step_name for s in wf_result.steps if not s.ok]
-                    return {"ok": False, "failed_steps": failed, "topic": topic}
-            else:
-                # Legacy path — no workflow factory injected yet
-                result = content_engine.generate_post()
-                caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
-                image_bytes = result.get("image_bytes") if isinstance(result, dict) else None
-                if not caption:
-                    return {"ok": False, "error": "ContentEngine returned empty caption"}
-                success = facebook.post_to_page(caption, image_bytes=image_bytes)
-                if success:
-                    self.last_post_time = datetime.now(timezone.utc)
-                    self._save_state("last_post_time", self.last_post_time.isoformat())
-                    return {"ok": True, "platforms": ["facebook"]}
-                return {"ok": False, "error": "facebook.post_to_page returned False"}
+                    publish_err = next(
+                        (s.error for s in wf_result.steps if s.step_name == "publish"),
+                        "publish step not reached",
+                    )
+                    logger.warning(
+                        "run_content_now: workflow publish failed (%s) — trying legacy path",
+                        publish_err,
+                    )
+                    # Fall through to legacy path below
+
+                except Exception as wf_exc:
+                    logger.error(
+                        "run_content_now: workflow raised unexpectedly (%s) — trying legacy path",
+                        wf_exc,
+                    )
+                    # Fall through to legacy path below
+
+            # ── Legacy path: direct Facebook call ─────────────────────────────
+            # Used when (a) workflow_factory is None, (b) the publish step
+            # failed, or (c) the workflow raised an exception.
+            logger.info("run_content_now: running legacy direct-publish path")
+            result = content_engine.generate_post()
+            caption = (
+                result.get("caption", "") if isinstance(result, dict)
+                else (result[0] if result else "")
+            )
+            image_bytes = (
+                result.get("image_bytes") if isinstance(result, dict) else None
+            )
+            if not caption:
+                return {"ok": False, "error": "ContentEngine returned empty caption"}
+            post_id = facebook.post_to_page(caption, image_bytes=image_bytes)
+            if post_id:
+                self.last_post_time = datetime.now(timezone.utc)
+                self._save_state("last_post_time", self.last_post_time.isoformat())
+                return {"ok": True, "platforms": ["facebook"], "topic": ""}
+            return {"ok": False, "error": "facebook.post_to_page returned falsy — check PAGE_ACCESS_TOKEN"}
+
         except Exception as exc:
-            logger.error("run_content_now failed: %s", exc)
+            logger.error("run_content_now failed: %s", exc, exc_info=True)
             return {"ok": False, "error": str(exc)}
         finally:
             self._lock.release()
