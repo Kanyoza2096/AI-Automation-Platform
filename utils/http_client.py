@@ -6,8 +6,9 @@ platform.  Replaces the scatter of bare ``requests.get / post`` calls with:
 
   - Connection pooling       (persistent Session, configurable pool size)
   - Configurable timeouts    (per-client defaults, per-call overrides)
-  - Automatic retry          (429, 5xx, connection resets — with backoff)
-  - Retry-After support      (honours the header on 429 responses)
+  - Automatic retry          (5xx, connection resets — with backoff)
+  - 429 Rate-limit handling  (backoff + raise — does NOT retry)
+  - Retry-After support      (honours the header on 429 and 503 responses)
   - Circuit breaker          (opens after N consecutive failures, resets after TTL)
   - Structured request logs  (method, url, status, latency_ms, attempt)
   - Metrics emission         (feeds MetricsCollector for /api/metrics)
@@ -42,8 +43,8 @@ from urllib3.util.retry import Retry
 
 logger = logging.getLogger("kanyoza.utils.http_client")
 
-# HTTP status codes that are safe to retry automatically
-_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# HTTP status codes safe to retry (NOT 429 — that gets special handling)
+_RETRY_STATUSES = frozenset({500, 502, 503, 504})
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +56,7 @@ class CircuitOpenError(Exception):
 
 
 class _CircuitBreaker:
-    """
-    Three-state circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED.
-
-    Thread-safe.  Does NOT implement the HALF_OPEN probe retry — instead the
-    breaker returns to CLOSED automatically after ``ttl`` seconds so that the
-    next real call acts as the probe.  This simpler model is sufficient for
-    our use-case and avoids extra locking complexity.
-    """
+    """Three-state circuit breaker: CLOSED → OPEN → HALF_OPEN → CLOSED."""
 
     _CLOSED = "closed"
     _OPEN   = "open"
@@ -76,17 +70,15 @@ class _CircuitBreaker:
         self._lock      = threading.Lock()
 
     def before_call(self, name: str) -> None:
-        """Raise CircuitOpenError if circuit is open; otherwise allow the call."""
         with self._lock:
             if self._state == self._OPEN:
                 if time.monotonic() - self._opened_at >= self._ttl:
-                    # Auto-reset: half-open — let the call through
                     self._state  = self._CLOSED
                     self._streak = 0
                     logger.info("[%s] Circuit breaker reset to CLOSED after TTL", name)
                 else:
                     raise CircuitOpenError(
-                        f"Circuit '{name}' is OPEN — refusing call to protect downstream service"
+                        f"Circuit '{name}' is OPEN — refusing call"
                     )
 
     def on_success(self) -> None:
@@ -119,8 +111,7 @@ class _CircuitBreaker:
 
 class HttpClient:
     """
-    Policy-enforced HTTP client.  Drop-in replacement for ``requests.Session``
-    in the subset of methods used by this platform.
+    Policy-enforced HTTP client.
 
     Parameters
     ----------
@@ -129,11 +120,11 @@ class HttpClient:
     base_url : str
         Optional base URL prepended to relative paths.
     default_timeout : float
-        Seconds to wait for a response.  Individual calls may override.
+        Seconds to wait for a response.
     default_headers : dict | None
         Session-level headers merged into every request.
     max_retries : int
-        Number of *extra* attempts after the first (total = max_retries + 1).
+        Number of extra attempts after the first (total = max_retries + 1).
     backoff_base : float
         Base delay in seconds for exponential backoff between retries.
     circuit_breaker_threshold : int
@@ -153,21 +144,22 @@ class HttpClient:
         circuit_breaker_threshold: int = 10,
         circuit_breaker_ttl: float = 30.0,
     ):
-        self.name            = name
-        self.base_url        = base_url.rstrip("/")
+        self.name             = name
+        self.base_url         = base_url.rstrip("/")
         self._default_timeout = default_timeout
-        self._max_retries    = max_retries
-        self._backoff_base   = backoff_base
-        self._cb             = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_ttl)
+        self._max_retries     = max_retries
+        self._backoff_base    = backoff_base
+        self._cb              = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_ttl)
 
         self._session = requests.Session()
         if default_headers:
             self._session.headers.update(default_headers)
 
-        # urllib3 handles TCP-level connection retries only; HTTP-status retries
-        # are managed manually below so we can log, honour Retry-After, etc.
         _adapter = HTTPAdapter(
-            max_retries=Retry(total=1, connect=1, read=0, backoff_factor=0.3, status_forcelist=set()),
+            max_retries=Retry(
+                total=1, connect=1, read=0,
+                backoff_factor=0.3, status_forcelist=set(),
+            ),
             pool_connections=4,
             pool_maxsize=10,
         )
@@ -175,12 +167,11 @@ class HttpClient:
         self._session.mount("http://",  _adapter)
 
     # ------------------------------------------------------------------
-    # Public interface — mirrors requests.Session
+    # Public interface
     # ------------------------------------------------------------------
 
     @property
-    def headers(self) -> requests.structures.CaseInsensitiveDict:
-        """Session-level headers dict (mutable).  Supports .update(...)."""
+    def headers(self):
         return self._session.headers
 
     def get(self, url: str, **kwargs) -> requests.Response:
@@ -224,8 +215,21 @@ class HttpClient:
                 ms   = (time.monotonic() - t0) * 1000
 
                 self._log(method, full_url, resp.status_code, ms, attempt)
-                self._emit_metrics(resp.status_code, ms)
 
+                # ── 429 Rate Limited — DO NOT RETRY ──────────────────────
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("Retry-After", 60))
+                    delay = max(retry_after, 30.0)
+                    logger.warning(
+                        "[%s] HTTP 429 — backing off %.0fs before next request",
+                        self.name, delay,
+                    )
+                    time.sleep(delay)
+                    raise CircuitOpenError(
+                        f"[{self.name}] Rate limited — backed off {delay:.0f}s"
+                    )
+
+                # ── 5xx Server Errors — retry with backoff ────────────────
                 if resp.status_code in _RETRY_STATUSES and attempt < self._max_retries:
                     delay = max(
                         float(resp.headers.get("Retry-After", 0)),
@@ -238,6 +242,7 @@ class HttpClient:
                     time.sleep(delay)
                     continue
 
+                # ── Track circuit state ──────────────────────────────────
                 if resp.status_code >= 500:
                     self._cb.on_failure(self.name)
                 else:
@@ -253,19 +258,28 @@ class HttpClient:
                 self._cb.on_failure(self.name)
                 if attempt < self._max_retries:
                     delay = self._backoff_base * (2 ** attempt)
-                    logger.warning("[%s] ConnectionError — retrying in %.1fs: %s", self.name, delay, exc)
+                    logger.warning(
+                        "[%s] ConnectionError — retrying in %.1fs: %s",
+                        self.name, delay, exc,
+                    )
                     time.sleep(delay)
 
             except requests.exceptions.Timeout as exc:
                 last_exc = exc
                 self._cb.on_failure(self.name)
-                logger.warning("[%s] Timeout (%.1fs) on %s %s", self.name, timeout, method, full_url)
+                logger.warning(
+                    "[%s] Timeout (%.1fs) on %s %s",
+                    self.name, timeout, method, full_url,
+                )
                 if attempt < self._max_retries:
                     time.sleep(self._backoff_base * (2 ** attempt))
 
             except Exception as exc:
                 self._cb.on_failure(self.name)
-                logger.error("[%s] Unexpected error on %s %s: %s", self.name, method, full_url, exc)
+                logger.error(
+                    "[%s] Unexpected error on %s %s: %s",
+                    self.name, method, full_url, exc,
+                )
                 raise
 
         raise requests.exceptions.RequestException(
@@ -275,12 +289,8 @@ class HttpClient:
     def _log(self, method: str, url: str, status: int, ms: float, attempt: int) -> None:
         level = logging.WARNING if status >= 400 else logging.DEBUG
         retry_note = f" [retry {attempt}]" if attempt else ""
-        logger.log(level, "[%s] %s %s → %d (%.0f ms)%s", self.name, method, url, status, ms, retry_note)
-
-    def _emit_metrics(self, status: int, ms: float) -> None:
-        # Lazy import to avoid circular dependency during startup
-        try:
-            from utils.metrics import metrics
-            metrics.record_http(self.name, status, ms)
-        except Exception:
-            pass
+        logger.log(
+            level,
+            "[%s] %s %s → %d (%.0f ms)%s",
+            self.name, method, url, status, ms, retry_note,
+        )
