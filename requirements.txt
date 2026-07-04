@@ -3,9 +3,10 @@
 flask==3.1.1
 gunicorn==23.0.0
 
-# WebSocket / real-time (SocketIO + eventlet async worker)
+# WebSocket / real-time (SocketIO + threading async worker)
 flask-socketio==5.5.1
-
+python-socketio==5.15.1
+python-engineio==4.11.1
 
 # HTTP
 requests==2.32.3
@@ -31,4 +32,3 @@ playwright>=1.49.0
 pytest==8.3.4
 pytest-mock==3.14.0
 google-genai
-eventlet
