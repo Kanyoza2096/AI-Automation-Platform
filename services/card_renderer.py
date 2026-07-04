@@ -1,28 +1,19 @@
 """
-Card Renderer v11.1 — SVG + Jinja2 + Playwright pipeline (M5 upgrade).
+Card Renderer v12 — design-system upgrade.
 
 Pipeline (per render call):
-  0. RenderCache    — return cached PNG immediately on hit (keyed by HTML hash)
-  1. SvgRenderer    — builds a decorative (text-free) background SVG
-  2. HtmlRenderer   — renders a Jinja2 template; all copy is real HTML/CSS text
-  3. BrowserManager — borrows a pooled Playwright page (no Chromium launch per call)
+  0. RenderCache    — return cached PNG immediately on hit
+  1. SvgRenderer    — theme-aware decorative background SVG
+  2. HtmlRenderer   — Jinja2 template with semantic layout + icon injection
+  3. BrowserManager — pooled Playwright page (no Chromium launch per call)
      └─ HCTI fallback — htmlcsstoimage.com if BrowserManager is unavailable
 
-The card is always 1080x1080 pixels (square — optimal for Facebook / Instagram).
-
-Typography, spacing, and palette decisions live in services/rendering/*
-so this module stays focused on orchestration: build context → render
-template → screenshot → return bytes. See services/rendering/layout.py
-for design tokens and services/rendering/typography.py for text prep.
-
-M5 changes
-----------
-- BrowserManager replaces the per-render `with sync_playwright()` context.
-  Pages are reused across renders; Chromium is launched once at boot.
-- RenderCache wraps the full pipeline: identical HTML → instant bytes.
-- _screenshot_playwright() gracefully falls back to the old one-shot
-  Playwright path when BrowserManager has not been started yet (e.g.
-  during unit tests that don't boot the full lifecycle).
+Layout selection (theme → layout kind):
+  vs          — comparison / security / database / ai
+  before_after — code_tips / backend / frontend
+  grid        — architecture / cloud
+  pipeline    — system_design
+  list        — tutorial / checklist
 """
 
 import logging
@@ -33,8 +24,9 @@ from typing import Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from services.rendering.fonts import font_face_css
-from services.rendering.layout import AUTOFIT_JS, FONT_SIZE, palette_for
+from services.rendering.layout import AUTOFIT_JS, FONT_SIZE, palette_for, hex_to_rgba
 from services.rendering.typography import parse_winner, prepare_bullets, truncate_chars
+from services.rendering.icon_library import get_icon_svg
 
 logger = logging.getLogger("kanyoza.services.card_renderer")
 
@@ -42,11 +34,9 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "cards"
 
 CARD_W = 1080
 CARD_H = 1080
-DEVICE_SCALE_FACTOR = 2
+DEVICE_SCALE_FACTOR = 2          # physical render = 2160×2160 → sharp output
 
-# Maps content theme -> visual layout kind. Kept separate from the theme
-# palette (services/rendering/layout.THEME_PALETTES) so adding a new
-# theme never requires touching layout logic.
+# ── Theme → layout kind ─────────────────────────────────────────────────────
 THEME_LAYOUT_MAP: dict = {
     "comparison":    "vs",
     "security":      "vs",
@@ -56,7 +46,7 @@ THEME_LAYOUT_MAP: dict = {
     "backend":       "before_after",
     "frontend":      "before_after",
     "architecture":  "grid",
-    "system_design": "grid",
+    "system_design": "pipeline",
     "cloud":         "grid",
     "tutorial":      "list",
     "checklist":     "list",
@@ -67,27 +57,26 @@ WINNER_LABEL_BY_LAYOUT = {
     "before_after": "BOTTOM LINE",
     "grid":         "RECOMMENDATION",
     "list":         "PRO TIP",
+    "pipeline":     "KEY INSIGHT",
 }
 
 
 class CardRenderer:
     """
-    Renders a TechPost to a 1080x1080 PNG using:
-      SVGRenderer (decorative bg) → Jinja2 HTML template → Playwright screenshot.
+    Renders a TechPost to a 2160×2160 PNG (1080 CSS px × 2× device scale).
 
-    Falls back to HCTI if Playwright is not available.
-    Never raises — always returns None on total failure.
+    Always returns None on total failure — never raises.
     """
 
     def __init__(self):
         self._jinja: Optional[Environment] = None
         self._playwright_ok: Optional[bool] = None
         self._hcti_user: str = ""
-        self._hcti_key: str = ""
+        self._hcti_key:  str = ""
         self._init_jinja()
         self._init_hcti()
 
-    # ── Cache helpers ────────────────────────────────────────────────────────────
+    # ── Cache helpers ────────────────────────────────────────────────────────
 
     @staticmethod
     def _cache_get(html: str) -> Optional[bytes]:
@@ -105,7 +94,7 @@ class CardRenderer:
         except Exception:
             pass
 
-    # ── Init ────────────────────────────────────────────────────────────────────
+    # ── Init ─────────────────────────────────────────────────────────────────
 
     def _init_jinja(self) -> None:
         if not TEMPLATES_DIR.exists():
@@ -119,7 +108,7 @@ class CardRenderer:
 
     def _init_hcti(self) -> None:
         self._hcti_user = os.environ.get("HCTI_USER_ID", "")
-        self._hcti_key  = os.environ.get("HCTI_API_KEY", "")
+        self._hcti_key  = os.environ.get("HCTI_API_KEY",  "")
 
     def _check_playwright(self) -> bool:
         if self._playwright_ok is None:
@@ -129,64 +118,79 @@ class CardRenderer:
             except ImportError:
                 self._playwright_ok = False
                 logger.warning("Playwright not available — will try HCTI fallback")
-        return self._playwright_ok
+        return self._playwright_ok  # type: ignore[return-value]
 
-    # ── Step 1: SVG Renderer (decorative background only) ─────────────────────
+    # ── Step 1: background SVG ───────────────────────────────────────────────
 
     def _build_svg(self, post) -> str:
         from services.svg_renderer import svg_renderer
         return svg_renderer.render(post)
 
-    # ── Content shaping (typography + layout tokens, no business logic) ───────
+    # ── Helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def _safe_points(points) -> list:
         return [p for p in (points or []) if p]
 
+    # ── Step 2: build Jinja2 context ─────────────────────────────────────────
+
     def _build_context(self, post, bg_decoration: str, theme_val: str) -> dict:
         layout_kind = THEME_LAYOUT_MAP.get(theme_val, "vs")
-        palette = palette_for(theme_val)
+        palette     = dict(palette_for(theme_val))          # mutable copy
+
+        # Pre-compute rgba glow string for CSS box-shadow / no extra lib needed
+        palette["glow_rgba"] = hex_to_rgba(palette["a"], 0.18)
 
         points_a = self._safe_points(post.points_a)
         points_b = self._safe_points(post.points_b)
 
         from config.settings import settings as _settings
-        ctx = {
-            "title":        truncate_chars(post.title, 110),
-            "theme_label":  theme_val.replace("_", " ").title(),
-            "hashtags":     (post.hashtags or [])[:5],
+
+        # Topic icon — inline SVG scaled for the card header
+        icon_svg = get_icon_svg(theme_val, color=palette["accent"], size=20)
+
+        ctx: dict = {
+            "title":         truncate_chars(post.title, 100),
+            "theme_label":   theme_val.replace("_", " ").upper(),
+            "hashtags":      (post.hashtags or [])[:4],
             "bg_decoration": bg_decoration,
             "font_face_css": font_face_css(),
-            "autofit_js":    AUTOFIT_JS,
             "font_size":     FONT_SIZE,
             "palette":       palette,
             "layout_kind":   layout_kind,
             "brand_name":    _settings.brand_name,
-            "columns":      [],
-            "cells":        [],
-            "items":        [],
-            "winner":       None,
+            "icon_svg":      icon_svg,
+            # Populated below by layout branch
+            "columns":  [],
+            "cells":    [],
+            "items":    [],
+            "winner":   None,
         }
 
+        # ── Layout-specific data ─────────────────────────────────────────────
         if layout_kind in ("vs", "before_after"):
-            name_a = truncate_chars(post.option_a, 26) or "Option A"
-            name_b = truncate_chars(post.option_b, 26) or "Option B"
+            name_a = truncate_chars(post.option_a, 24) or "Option A"
+            name_b = truncate_chars(post.option_b, 24) or "Option B"
             ctx["columns"] = [
                 {
-                    "name": name_a,
-                    "kind": "bad" if layout_kind == "before_after" else "a",
-                    "color": palette["a"],
+                    "name":    name_a,
+                    "side":    "left",
+                    "color":   palette["a"],
                     "bullets": prepare_bullets(points_a, limit=4),
                 },
                 {
-                    "name": name_b,
-                    "kind": "good" if layout_kind == "before_after" else "b",
-                    "color": palette["b"],
+                    "name":    name_b,
+                    "side":    "right",
+                    "color":   palette["b"],
                     "bullets": prepare_bullets(points_b, limit=4),
                 },
             ]
-        elif layout_kind == "grid":
-            labels = ["APPROACH", "TRADE-OFF", "BEST FOR", "RECOMMENDATION"]
+
+        elif layout_kind in ("grid", "pipeline"):
+            labels = {
+                "grid":     ["APPROACH", "TRADE-OFF", "BEST FOR", "VERDICT"],
+                "pipeline": ["STEP 1", "STEP 2", "STEP 3", "STEP 4"],
+            }[layout_kind]
             pool = prepare_bullets((points_a + points_b), limit=4, max_words=8)
             while len(pool) < 4:
                 pool.append("\u2014")
@@ -194,25 +198,26 @@ class CardRenderer:
                 {"label": lbl, "text": txt, "accent": idx == 0}
                 for idx, (lbl, txt) in enumerate(zip(labels, pool))
             ]
+
         else:  # list / checklist / tutorial
-            pool = prepare_bullets((points_a + points_b), limit=6, max_words=8)
+            pool = prepare_bullets((points_a + points_b), limit=6, max_words=6)
             ctx["items"] = [{"num": i + 1, "text": txt} for i, txt in enumerate(pool)]
 
+        # ── Winner ───────────────────────────────────────────────────────────
         if post.winner:
             name, reason = parse_winner(post.winner, post.option_a, post.option_b)
             if name:
                 ctx["winner"] = {
-                    "label": WINNER_LABEL_BY_LAYOUT.get(layout_kind, "WINNER"),
-                    "name": name,
+                    "label":  WINNER_LABEL_BY_LAYOUT.get(layout_kind, "WINNER"),
+                    "name":   name,
                     "reason": reason,
                 }
 
         return ctx
 
-    # ── Step 2: HTML Renderer (Jinja2) ─────────────────────────────────────────
+    # ── Step 2: render Jinja2 template ───────────────────────────────────────
 
     def _build_html(self, post, svg_chart: str) -> Optional[str]:
-        """Render the unified card.html template with shaped content."""
         if not self._jinja:
             return None
 
@@ -221,46 +226,34 @@ class CardRenderer:
         try:
             tmpl = self._jinja.get_template("card.html")
         except Exception as exc:
-            logger.error("card.html template not found (%s)", exc)
+            logger.error("card.html not found: %s", exc)
             return None
 
         ctx = self._build_context(post, svg_chart, theme_val)
-
         try:
             return tmpl.render(**ctx)
         except Exception as exc:
             logger.error("Jinja2 render error: %s", exc)
             return None
 
-    # ── Step 3a: Playwright Screenshot ─────────────────────────────────────────
+    # ── Step 3a: Playwright screenshot ───────────────────────────────────────
 
     def _screenshot_playwright(self, html: str) -> Optional[bytes]:
-        """
-        Render HTML → PNG via Playwright.
-
-        Preferred path: borrow a page from BrowserManager's pool (fast — no
-        new Chromium process).  Fallback: launch a one-shot browser (used when
-        BrowserManager has not been started, e.g. in isolated unit tests).
-        """
-        # ── Fast path: pooled page via BrowserManager ──────────────────────────
+        # Fast path — pooled page from BrowserManager
         try:
             from services.browser_manager import browser_manager
             if browser_manager.is_running:
                 with browser_manager.acquire_page() as page:
                     png = self._render_on_page(page, html)
                 logger.info(
-                    "BrowserManager rendered card: %dx%d px at %sx device scale (%d bytes)",
-                    CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
-                    DEVICE_SCALE_FACTOR, len(png),
+                    "BrowserManager rendered card (%d bytes, %dx%d physical px)",
+                    len(png), CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
                 )
                 return png
         except Exception as exc:
-            logger.warning(
-                "BrowserManager render failed (%s) — falling back to one-shot Playwright.",
-                exc,
-            )
+            logger.warning("BrowserManager render failed (%s) — one-shot fallback", exc)
 
-        # ── Fallback path: one-shot Playwright launch ──────────────────────────
+        # Fallback — launch a one-shot Chromium instance
         try:
             from playwright.sync_api import sync_playwright
             with sync_playwright() as pw:
@@ -275,9 +268,8 @@ class CardRenderer:
                 png = self._render_on_page(page, html)
                 browser.close()
             logger.info(
-                "One-shot Playwright rendered card: %dx%d px at %sx device scale (%d bytes)",
-                CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
-                DEVICE_SCALE_FACTOR, len(png),
+                "One-shot Playwright rendered card (%d bytes, %dx%d physical px)",
+                len(png), CARD_W * DEVICE_SCALE_FACTOR, CARD_H * DEVICE_SCALE_FACTOR,
             )
             return png
         except Exception as exc:
@@ -287,43 +279,38 @@ class CardRenderer:
     @staticmethod
     def _render_on_page(page, html: str) -> bytes:
         """
-        Set HTML content on *page*, wait for fonts + networkidle,
-        run the autofit JS safety net, and capture a PNG screenshot.
-
-        Shared by both the pooled and one-shot Playwright paths.
+        Load HTML, wait for fonts, run autofit JS safety net, capture PNG.
+        Shared by pooled and one-shot paths.
         """
         page.set_content(html, wait_until="networkidle")
-        # Ensure the embedded webfont is fully loaded before measuring layout
         try:
             page.evaluate("document.fonts.ready.then(() => true)")
         except Exception:
             pass
         page.wait_for_load_state("networkidle")
-        # Autofit safety net — shrinks overflowing [data-autofit] elements
         try:
             page.evaluate(AUTOFIT_JS)
         except Exception as exc:
-            logger.debug("Autofit script failed (non-fatal): %s", exc)
-        # No clip — the viewport IS exactly 1080×1080, so a plain full_page=False
-        # screenshot captures the whole canvas without relying on page-coordinate
-        # arithmetic that can be offset if <html> is wider than the body.
+            logger.debug("Autofit JS failed (non-fatal): %s", exc)
+        # full_page=False → screenshot the viewport exactly (1080×1080 CSS px
+        # → 2160×2160 physical px with DEVICE_SCALE_FACTOR=2)
         return page.screenshot(type="png", full_page=False)
 
-    # ── Step 3b: HCTI Fallback ──────────────────────────────────────────────────
+    # ── Step 3b: HCTI fallback ───────────────────────────────────────────────
 
     def _screenshot_hcti(self, html: str) -> Optional[bytes]:
         if not (self._hcti_user and self._hcti_key):
             return None
         try:
             from utils.http_client import HttpClient as _HC
-            _hcti_http = _HC("hcti_renderer", default_timeout=30)
-            resp = _hcti_http.post(
+            hcti = _HC("hcti", default_timeout=30)
+            resp = hcti.post(
                 "https://hcti.io/v1/image",
                 data={
                     "html": html,
-                    "viewport_width": CARD_W,
+                    "viewport_width":  CARD_W,
                     "viewport_height": CARD_H,
-                    "device_scale": DEVICE_SCALE_FACTOR,
+                    "device_scale":    DEVICE_SCALE_FACTOR,
                 },
                 auth=(self._hcti_user, self._hcti_key),
             )
@@ -333,7 +320,7 @@ class CardRenderer:
             url = resp.json().get("url", "")
             if not url:
                 return None
-            img = _hcti_http.get(url, timeout=20)
+            img = hcti.get(url, timeout=20)
             if img.status_code == 200:
                 logger.info("HCTI fallback rendered card (%d bytes)", len(img.content))
                 return img.content
@@ -341,18 +328,13 @@ class CardRenderer:
             logger.warning("HCTI fallback failed: %s", exc)
         return None
 
-    # ── Public API ──────────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────────────
 
     def render(self, post) -> Optional[bytes]:
         """
-        Full pipeline:
-          TechPost
-            ├── RenderCache   → return cached PNG immediately on hit
-            ├── SVG Renderer  → decorative background SVG (no text)
-            └── HTML Renderer → Jinja2 template (real HTML/CSS text)
-                     └── BrowserManager (pooled) / one-shot Playwright / HCTI → PNG 1080x1080
+        Full pipeline: TechPost → PNG bytes (2160×2160) or None on total failure.
 
-        Returns PNG bytes, or None if all backends fail.
+        Cache → SVG bg → Jinja2 HTML → BrowserManager / one-shot Playwright / HCTI
         """
         svg  = self._build_svg(post)
         html = self._build_html(post, svg)
@@ -360,30 +342,24 @@ class CardRenderer:
             logger.debug("HTML render produced nothing — skipping screenshot")
             return None
 
-        # ── Cache check (L1 memory → L2 disk) ─────────────────────────────────
         cached = self._cache_get(html)
         if cached is not None:
             logger.debug("Returning cached PNG (%d bytes)", len(cached))
             return cached
 
-        # ── Playwright (pooled or one-shot) ────────────────────────────────────
         if self._check_playwright():
             png = self._screenshot_playwright(html)
             if png:
                 self._cache_set(html, png)
                 return png
 
-        # ── HCTI fallback ──────────────────────────────────────────────────────
         png = self._screenshot_hcti(html)
         if png:
             self._cache_set(html, png)
-            return png
-
-        logger.debug("All PNG backends failed (Playwright + HCTI)")
-        return None
+        return png
 
     def render_html_only(self, post) -> Optional[str]:
-        """Return the rendered HTML string — useful for debugging."""
+        """Return the rendered HTML string (useful for debugging)."""
         svg = self._build_svg(post)
         return self._build_html(post, svg)
 

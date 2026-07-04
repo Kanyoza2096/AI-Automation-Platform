@@ -163,12 +163,42 @@ class AutoFixEngine:
     # GITHUB PR CREATION
     # ------------------------------------------------------------------
 
+    def _fetch_file(
+        self,
+        repo_full_name: str,
+        file_path: str,
+    ) -> tuple[str, str]:
+        """
+        Fetch a file from GitHub and return (decoded_content, blob_sha).
+        Returns ("", "") on failure.
+        """
+        url = f"{self.api_base}/repos/{repo_full_name}/contents/{file_path}"
+        resp = _http.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code != 200:
+            logger.error(
+                "_fetch_file: GitHub returned %s for %s/%s",
+                resp.status_code, repo_full_name, file_path,
+            )
+            return "", ""
+        data = resp.json()
+        encoded = data.get("content", "")
+        sha = data.get("sha", "")
+        if not encoded:
+            return "", sha
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except Exception as exc:
+            logger.error("_fetch_file: base64 decode failed for %s: %s", file_path, exc)
+            return "", sha
+        return decoded, sha
+
     def create_fix_pr(
         self,
         repo_full_name: str,
         issue: dict,
         file_path: str,
-        fixed_content: str
+        fixed_content: str,
+        file_sha: str = "",
     ) -> Optional[str]:
         """
         Create a GitHub Pull Request with the fix.
@@ -196,18 +226,16 @@ class AutoFixEngine:
 
             repo_data = repo_response.json()
             default_branch = repo_data.get('default_branch', 'main')
-            owner_login = repo_data.get('owner', {}).get('login', '')
 
-            # Step 2: Get the current file to get its SHA
-            file_url = f"{repo_url}/contents/{file_path}"
-            file_response = _http.get(file_url, headers=self._headers(), timeout=10)
-
-            if file_response.status_code != 200:
-                logger.error(f"Failed to get file: {file_response.status_code}")
-                return None
-
-            file_data = file_response.json()
-            file_sha = file_data.get('sha', '')
+            # Step 2: Get the current file SHA (skip full content fetch if caller
+            # already fetched the file via _fetch_file() — re-use supplied sha)
+            if not file_sha:
+                file_url = f"{repo_url}/contents/{file_path}"
+                file_response = _http.get(file_url, headers=self._headers(), timeout=10)
+                if file_response.status_code != 200:
+                    logger.error(f"Failed to get file: {file_response.status_code}")
+                    return None
+                file_sha = file_response.json().get('sha', '')
 
             # Step 3: Get the latest commit SHA on the default branch
             ref_url = f"{repo_url}/git/ref/heads/{default_branch}"
@@ -367,15 +395,31 @@ class AutoFixEngine:
     def auto_fix_all(self, repo_full_name: str, issues: list) -> dict:
         """
         Attempt to auto-fix all fixable issues in a scan.
-        Returns summary of created PRs.
+
+        For each fixable issue:
+          1. Fetch the FULL file content from GitHub (required by generate_fix).
+          2. Pass full content to Gemini → get complete corrected file back.
+          3. Create a GitHub PR with the corrected file.
+          The file SHA from step 1 is threaded to create_fix_pr() so the
+          GitHub Contents API GET is not repeated.
+
+        Returns summary dict with keys: total, fixable, fixed, failed, pr_urls.
         """
-        results = {
-            'total': len(issues),
+        results: dict = {
+            'total':   len(issues),
             'fixable': 0,
-            'fixed': 0,
-            'failed': 0,
+            'fixed':   0,
+            'failed':  0,
             'pr_urls': [],
         }
+
+        if not self.is_configured:
+            logger.warning("auto_fix_all: GitHub token not configured — skipping")
+            return results
+
+        # Cache fetched file content within one batch to avoid re-fetching
+        # the same file multiple times when several issues hit the same path.
+        _file_cache: dict[str, tuple[str, str]] = {}  # path -> (content, sha)
 
         for issue in issues:
             if not self.can_auto_fix(issue):
@@ -383,27 +427,50 @@ class AutoFixEngine:
 
             results['fixable'] += 1
             file_path = issue.get('file', '')
-            snippet = issue.get('snippet', '')
-
-            if not file_path or not snippet:
+            if not file_path:
+                logger.warning("auto_fix_all: issue has no 'file' field — skipping")
                 results['failed'] += 1
                 continue
 
-            # Generate the fix
-            fixed_code = self.generate_fix(issue, snippet)
+            # Step 1 — fetch full file (use cache to avoid duplicate API calls)
+            if file_path not in _file_cache:
+                full_content, sha = self._fetch_file(repo_full_name, file_path)
+                _file_cache[file_path] = (full_content, sha)
+            else:
+                full_content, sha = _file_cache[file_path]
+
+            if not full_content:
+                logger.warning(
+                    "auto_fix_all: could not fetch full content for %s — skipping",
+                    file_path,
+                )
+                results['failed'] += 1
+                continue
+
+            # Step 2 — ask Gemini to rewrite the full file with the fix applied
+            fixed_code = self.generate_fix(issue, full_content)
             if not fixed_code:
+                logger.warning(
+                    "auto_fix_all: generate_fix returned nothing for %s line %s",
+                    file_path, issue.get('line', '?'),
+                )
                 results['failed'] += 1
                 continue
 
-            # Create the PR
-            pr_url = self.create_fix_pr(repo_full_name, issue, file_path, fixed_code)
+            # Step 3 — open PR (pass sha so create_fix_pr skips the second GET)
+            pr_url = self.create_fix_pr(
+                repo_full_name, issue, file_path, fixed_code, file_sha=sha
+            )
             if pr_url:
                 results['fixed'] += 1
                 results['pr_urls'].append(pr_url)
+                # Invalidate cache entry — the file has changed on the branch;
+                # future issues on the same file should re-fetch from main.
+                _file_cache.pop(file_path, None)
             else:
                 results['failed'] += 1
 
-        logger.info(f"Auto-fix complete: {results}")
+        logger.info("auto_fix_all complete: %s", results)
         return results
 
 
