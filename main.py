@@ -14,10 +14,6 @@ IMPORTANT: eventlet.monkey_patch() MUST be the very first thing that runs so
 that the stdlib networking layer is patched before any other import.
 """
 
-# ── Eventlet monkey-patch — must precede every other import ─────────────────
-import eventlet
-eventlet.monkey_patch()
-# ─────────────────────────────────────────────────────────────────────────────
 
 from bootstrap import bootstrap
 
