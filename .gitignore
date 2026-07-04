@@ -2,6 +2,9 @@
 # Kanyoza Systems AI Platform v10 — .gitignore
 # =============================================================================
 
+# Scheduler runtime state (persists slot history across restarts)
+scheduler_state.json
+
 # ---------------------------------------------------------------------------
 # Python bytecode and caches
 # ---------------------------------------------------------------------------

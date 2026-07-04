@@ -1,31 +1,27 @@
 """
-Automated Facebook post scheduler v8.0 — 10 posts/day, mixed topics.
+Automated Facebook post scheduler v8.1 — 10 posts/day, mixed topics.
+
+Bug fixes in v8.1
+-----------------
+* File-based state persistence: _fired_slots and last_post_time are written to
+  scheduler_state.json so app restarts do not re-fire already-executed slots.
+* Publish lock: _publish_lock prevents concurrent publishes between the
+  scheduled worker and a manual /post command.
+* News/content overlap: if content fires at a given hour, news is skipped that
+  cycle so two posts never go out simultaneously.
+* Default news hours (6, 14, 20) no longer overlap with content hours.
 
 Scheduling model
 ----------------
 * 10 evenly-spaced UTC hour slots are read from settings.content_posting_hours_utc
   (default: 1, 3, 5, 7, 9, 11, 13, 15, 17, 19 — one slot every ~2 h).
 * Each slot fires ONCE per calendar day: the scheduler tracks fired (date, hour)
-  pairs in ``_fired_slots`` and skips any slot already executed today.
-* The 70 % random roll and the narrow 20–40 min window are removed — posts
-  fire reliably within the first 15 minutes of each hour slot.
-* A 90-minute minimum gap between posts prevents back-to-back firing if the
-  clock drifts or the process restarts mid-slot.
-
-Post content
-------------
-* Topics rotate across 15+ categories (programming, phones, computers, OS,
-  gaming, AI, cloud, databases, gadgets, apps…) via TopicSelector.
-* ContentEngine picks from its own parallel bank and produces a caption +
-  1080×1080 PNG via Gemini → TechPost → CardRenderer.
-
-Architecture
-------------
-Producer thread checks the schedule every 60 s and enqueues jobs.
-Worker thread processes jobs serially so Facebook never receives concurrent posts.
-Engagement thread checks unreplied comments every ~30 min.
+  pairs in _fired_slots (persisted to disk) and skips any slot already executed.
+* A 90-minute minimum gap between posts prevents back-to-back firing.
 """
 
+import json
+import os
 import time
 import random
 import logging
@@ -49,17 +45,16 @@ MAX_JOB_QUEUE_SIZE = 10
 MAX_REPLIED_COMMENTS = 500
 MAX_COMMENTS_PER_POST = 3
 
+_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "scheduler_state.json")
+
 
 class PostScheduler:
     """10-posts-per-day scheduler with per-slot deduplication."""
 
     def __init__(self, supabase_client=None):
         self.supabase = supabase_client
-        # Injected by lifecycle.py at startup — returns a fresh PostPublishWorkflow.
-        # If None the scheduler falls back to the legacy direct-Facebook path.
         self.workflow_factory = None
         self.last_post_time: Optional[datetime] = None
-        # 90-min gap prevents double-firing if the process restarts mid-slot
         self.min_interval = timedelta(minutes=90)
         self.last_news_post_time: Optional[datetime] = None
         self.last_engagement_check: Optional[datetime] = None
@@ -69,46 +64,109 @@ class PostScheduler:
 
         # Track which slots have already been posted today.
         # Format: set of 3-tuples (datetime.date, int hour, str kind)
-        # where kind is "content" or "news".  Uniform shape avoids
-        # ValueError when iterating with `for d, h in _fired_slots`.
         self._fired_slots: set = set()
 
         self._job_queue: queue.Queue = queue.Queue(maxsize=MAX_JOB_QUEUE_SIZE)
         self._running = False
+
+        # _lock protects _fired_slots and scheduling state.
+        # _publish_lock ensures only one publish runs at a time (scheduled OR manual).
         self._lock = threading.Lock()
+        self._publish_lock = threading.Lock()
+
         self._scheduler_thread: Optional[threading.Thread] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._engagement_thread: Optional[threading.Thread] = None
+
         self._load_state()
 
-    # ── State persistence (Supabase) ───────────────────────────────────────────
+    # ── State persistence ──────────────────────────────────────────────────────
 
     def _load_state(self):
-        if not self.supabase:
-            return
+        """Load persisted state from Supabase (preferred) or local JSON file."""
+        # Try Supabase first
+        if self.supabase:
+            try:
+                result = self.supabase.table('scheduler_state').select('*').execute()
+                if result.data:
+                    for row in result.data:
+                        if row['key'] == 'last_post_time' and row['value']:
+                            self.last_post_time = datetime.fromisoformat(row['value'])
+                        elif row['key'] == 'last_news_post_time' and row['value']:
+                            self.last_news_post_time = datetime.fromisoformat(row['value'])
+                        elif row['key'] == 'last_engagement_check' and row['value']:
+                            self.last_engagement_check = datetime.fromisoformat(row['value'])
+                return
+            except Exception as e:
+                logger.error("Failed to load scheduler state from Supabase: %s", e)
+
+        # Fallback: local JSON file — survives restarts without Supabase
         try:
-            result = self.supabase.table('scheduler_state').select('*').execute()
-            if result.data:
-                for row in result.data:
-                    if row['key'] == 'last_post_time' and row['value']:
-                        self.last_post_time = datetime.fromisoformat(row['value'])
-                    elif row['key'] == 'last_news_post_time' and row['value']:
-                        self.last_news_post_time = datetime.fromisoformat(row['value'])
-                    elif row['key'] == 'last_engagement_check' and row['value']:
-                        self.last_engagement_check = datetime.fromisoformat(row['value'])
+            state_path = os.path.abspath(_STATE_FILE)
+            if not os.path.exists(state_path):
+                return
+            with open(state_path, "r") as f:
+                data = json.load(f)
+
+            if data.get("last_post_time"):
+                self.last_post_time = datetime.fromisoformat(data["last_post_time"])
+            if data.get("last_news_post_time"):
+                self.last_news_post_time = datetime.fromisoformat(data["last_news_post_time"])
+
+            # Restore fired slots for today only
+            today = datetime.now(timezone.utc).date()
+            for entry in data.get("fired_slots", []):
+                try:
+                    d = date.fromisoformat(entry[0])
+                    h = int(entry[1])
+                    k = str(entry[2])
+                    if d == today:  # Only restore today's slots
+                        self._fired_slots.add((d, h, k))
+                except Exception:
+                    pass
+
+            logger.info(
+                "Scheduler state loaded from file: last_post=%s  fired_today=%d",
+                self.last_post_time, len(self._fired_slots),
+            )
         except Exception as e:
-            logger.error("Failed to load scheduler state: %s", e)
+            logger.warning("Could not load scheduler state file: %s", e)
 
     def _save_state(self, key: str, value: str):
-        if not self.supabase:
-            return
+        """Persist state to Supabase (if available) and local JSON file."""
+        if self.supabase:
+            try:
+                self.supabase.table('scheduler_state').upsert({
+                    'key': key, 'value': value,
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }).execute()
+            except Exception as e:
+                logger.error("Failed to save scheduler state to Supabase: %s", e)
+
+        # Always write the JSON file as the reliable fallback
+        self._flush_state_file()
+
+    def _flush_state_file(self):
+        """Write current in-memory state to the local JSON file."""
         try:
-            self.supabase.table('scheduler_state').upsert({
-                'key': key, 'value': value,
-                'updated_at': datetime.now(timezone.utc).isoformat(),
-            }).execute()
+            state_path = os.path.abspath(_STATE_FILE)
+            with self._lock:
+                slots_snapshot = list(self._fired_slots)
+                last_post = self.last_post_time
+                last_news = self.last_news_post_time
+
+            data = {
+                "last_post_time": last_post.isoformat() if last_post else None,
+                "last_news_post_time": last_news.isoformat() if last_news else None,
+                "fired_slots": [
+                    [d.isoformat(), h, k] for d, h, k in slots_snapshot
+                ],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with open(state_path, "w") as f:
+                json.dump(data, f, indent=2)
         except Exception as e:
-            logger.error("Failed to save scheduler state: %s", e)
+            logger.warning("Could not write scheduler state file: %s", e)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -188,6 +246,9 @@ class PostScheduler:
                 enqueue_content = False
 
             # ── News posts (3/day) ─────────────────────────────────────────────
+            # IMPORTANT: if content is also firing this cycle, skip news to prevent
+            # two posts going out simultaneously. News slot is NOT added to
+            # _fired_slots so it can fire later (once content post is done).
             news_slot = (today, now.hour, "news")
             news_due = now.hour in self.news_hours_utc
             news_already_fired = news_slot in self._fired_slots
@@ -195,16 +256,21 @@ class PostScheduler:
                 self.last_news_post_time is None
                 or (now - self.last_news_post_time) >= timedelta(hours=3)
             )
-            if news_due and not news_already_fired and news_gap_ok:
+            # Skip news if content is firing this cycle — prevents simultaneous posts
+            if news_due and not news_already_fired and news_gap_ok and not enqueue_content:
                 self._fired_slots.add(news_slot)
                 enqueue_news = True
                 news_category = (
                     "technology" if now.hour == 6
-                    else ("malawi" if now.hour == 13 else None)
+                    else ("malawi" if now.hour == 14 else None)
                 )
             else:
                 enqueue_news = False
                 news_category = None
+
+        # Flush state to disk whenever slots change
+        if enqueue_content or enqueue_news:
+            self._flush_state_file()
 
         # Enqueue outside the lock so we don't hold it during a blocking put()
         if enqueue_content:
@@ -330,16 +396,28 @@ class PostScheduler:
     # ── Publishers ─────────────────────────────────────────────────────────────
 
     def _publish_content(self):
-        """Generate and post one comparison card via PostPublishWorkflow (or legacy fallback)."""
+        """
+        Generate and post one comparison card via PostPublishWorkflow (or legacy fallback).
+
+        Acquires _publish_lock so only ONE publish can run at a time —
+        prevents a manual /post command from racing with a scheduled post.
+        """
+        if not self._publish_lock.acquire(blocking=True, timeout=300):
+            logger.warning("_publish_content: could not acquire publish lock within 300 s — skipping")
+            return
+
+        try:
+            self._do_publish_content()
+        finally:
+            self._publish_lock.release()
+
+    def _do_publish_content(self):
+        """Inner publish logic — must only be called while _publish_lock is held."""
         # ── v10 path: delegate to the full PostPublishWorkflow ─────────────────
         if self.workflow_factory is not None:
             try:
                 workflow = self.workflow_factory()
                 wf_result = workflow.run()
-                # Gate on the publish step result — NOT wf_result.success.
-                # Soft steps (record_analytics, emit_event) use
-                # continue_on_failure=True; their failures must not mask a
-                # real successful publish.
                 publish_ok = any(
                     s.step_name == "publish" and s.ok for s in wf_result.steps
                 )
@@ -348,7 +426,6 @@ class PostScheduler:
                     self._save_state('last_post_time', self.last_post_time.isoformat())
                     logger.info("PostPublishWorkflow completed successfully (%.0fms)", wf_result.total_ms)
                     return
-                # Publish step failed — fall through to legacy path
                 failed = [s.step_name for s in wf_result.steps if not s.ok]
                 logger.warning(
                     "PostPublishWorkflow publish step failed %s — falling back to legacy path",
@@ -357,7 +434,7 @@ class PostScheduler:
             except Exception as exc:
                 logger.error("PostPublishWorkflow raised unexpectedly: %s — falling back to legacy path", exc)
 
-        # ── Legacy fallback: direct Facebook call (used when workflow not injected) ─
+        # ── Legacy fallback: direct Facebook call ──────────────────────────────
         result = content_engine.generate_post()
         caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
         image_bytes = result.get("image_bytes") if isinstance(result, dict) else (result[1] if len(result) > 1 else None)
@@ -412,16 +489,11 @@ class PostScheduler:
 
         Unlike post_now() / force_post(), this BLOCKS until the workflow
         completes (or fails) and returns a dict describing the outcome.
-        Use this from the /post owner command so the owner gets real feedback
-        instead of "queued" before the actual publish finishes.
 
-        Shares _lock with _publish_content() so a manual /post cannot overlap
-        with a scheduled worker publish — preserving the "one publish at a time"
-        invariant the worker thread was designed to enforce.
+        Uses _publish_lock so a manual /post cannot overlap with a scheduled
+        worker publish — only one publish can run at a time.
         """
         # ── Pre-flight: fail fast if Gemini is currently rate-limited ─────────
-        # Without this check, the workflow would block for 60–120 s waiting for
-        # Gemini backoffs, and the owner would see no reply in Messenger.
         try:
             import time as _time
             from services.gemini import gemini as _gemini
@@ -434,9 +506,9 @@ class PostScheduler:
                     "error": f"Gemini AI is rate-limited — try again in {wait_s}s",
                 }
         except Exception:
-            pass  # If the check itself fails, proceed normally
+            pass
 
-        if not self._lock.acquire(blocking=False):
+        if not self._publish_lock.acquire(blocking=False):
             return {"ok": False, "error": "a publish is already in progress — try again shortly"}
 
         try:
@@ -445,10 +517,6 @@ class PostScheduler:
                     workflow = self.workflow_factory()
                     wf_result = workflow.run()
 
-                    # ── Determine success from the publish step, NOT overall
-                    # wf_result.success.  Soft steps (record_analytics,
-                    # emit_event) have continue_on_failure=True; if they fail
-                    # the post still went out — treat that as OK.
                     topic = ""
                     publish_step_ok = False
                     publish_results = {}
@@ -481,7 +549,6 @@ class PostScheduler:
                             "duration_ms": round(wf_result.total_ms),
                         }
 
-                    # Publish step failed — note soft-step failures for context
                     failed = [s.step_name for s in wf_result.steps if not s.ok]
                     publish_err = next(
                         (s.error for s in wf_result.steps if s.step_name == "publish"),
@@ -491,18 +558,14 @@ class PostScheduler:
                         "run_content_now: workflow publish failed (%s) — trying legacy path",
                         publish_err,
                     )
-                    # Fall through to legacy path below
 
                 except Exception as wf_exc:
                     logger.error(
                         "run_content_now: workflow raised unexpectedly (%s) — trying legacy path",
                         wf_exc,
                     )
-                    # Fall through to legacy path below
 
             # ── Legacy path: direct Facebook call ─────────────────────────────
-            # Used when (a) workflow_factory is None, (b) the publish step
-            # failed, or (c) the workflow raised an exception.
             logger.info("run_content_now: running legacy direct-publish path")
             result = content_engine.generate_post()
             caption = (
@@ -525,7 +588,7 @@ class PostScheduler:
             logger.error("run_content_now failed: %s", exc, exc_info=True)
             return {"ok": False, "error": str(exc)}
         finally:
-            self._lock.release()
+            self._publish_lock.release()
 
     def post_news_now(self) -> str:
         """Alias for force_news() — used by OwnerCommands /news slash command."""
@@ -566,7 +629,6 @@ class PostScheduler:
                 ):
                     raise ValueError(f"{hour_key} must be a list of integers in 0–23")
                 setattr(self, hour_key, sorted(set(hours)))
-        # Scalar config fields stored on the instance for API round-trip
         for key in ("post_interval_hours", "news_interval_hours", "enabled"):
             if key in kwargs:
                 setattr(self, key, kwargs[key])
@@ -578,7 +640,6 @@ class PostScheduler:
         now = datetime.now(timezone.utc)
         today = now.date()
         with self._lock:
-            # Snapshot under lock — all entries are 3-tuples (date, hour, kind)
             posts_today = sum(
                 1 for d, h, k in self._fired_slots
                 if d == today and k == "content"
@@ -593,6 +654,7 @@ class PostScheduler:
             "target_posts_per_day": len(self.content_hours_utc),
             "queue_size": self._job_queue.qsize(),
             "running": self._running,
+            "publish_busy": self._publish_lock.locked(),
         }
 
 
