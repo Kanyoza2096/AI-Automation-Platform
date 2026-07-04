@@ -780,3 +780,368 @@ def unblock_user():
     except Exception as exc:
         logger.error("POST /api/v1/rate-limits/unblock error: %s", exc)
         return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Persona  (top-level — no /ai/ prefix)
+# GET  /api/v1/persona          — public  — returns bot identity + live mood
+# PUT  /api/v1/persona          — auth    — update mood / tone sliders
+# POST /api/v1/persona/reset    — auth    — reset to defaults
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/persona", methods=["GET"])
+def get_persona():
+    """Return the live bot persona — public, no auth required."""
+    try:
+        from core.persona import bot_persona, MOODS, PERSONA_PROMPTS
+        from api.ai_runtime import get as _rt_get, VALID_MOODS
+        rt = _rt_get()
+        state = bot_persona.to_dict()
+        return _ok({
+            "name": bot_persona.name,
+            "tagline": bot_persona.tagline,
+            "current_mood": state.get("current_mood", "professional"),
+            "prompt_suffix": bot_persona.prompt_suffix,
+            "message_count": state.get("message_count", 0),
+            "last_transition": state.get("last_transition"),
+            "mood_history": bot_persona._mood_history[-10:],
+            "available_moods": sorted(VALID_MOODS),
+            "tone_assertiveness": rt["tone_assertiveness"],
+            "tone_humor": rt["tone_humor"],
+            "tone_formality": rt["tone_formality"],
+            "system_prompt_override": rt["system_prompt_override"],
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/persona error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/persona", methods=["PUT"])
+@_auth_required
+def update_persona():
+    """Update mood and tone sliders. Alias for PUT /api/v1/ai/persona."""
+    from api.ai_runtime import update as _rt_update, VALID_MOODS
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        allowed = {"persona_mood", "tone_assertiveness", "tone_humor",
+                   "tone_formality", "system_prompt_override"}
+        unknown = set(data.keys()) - allowed
+        if unknown:
+            return _err(f"Unknown keys: {sorted(unknown)}", 400)
+        rt = _rt_update(**{k: v for k, v in data.items() if k in allowed})
+        return _ok({"updated": True, "persona": rt})
+    except ValueError as exc:
+        return _err(str(exc), 400)
+    except Exception as exc:
+        logger.error("PUT /api/v1/persona error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/persona/reset", methods=["POST"])
+@_auth_required
+def reset_persona():
+    """Reset persona to professional defaults."""
+    from api.ai_runtime import update as _rt_update
+    try:
+        rt = _rt_update(
+            persona_mood="professional",
+            tone_assertiveness=0.7,
+            tone_humor=0.2,
+            tone_formality=0.6,
+            system_prompt_override=None,
+        )
+        return _ok({"reset": True, "persona": rt})
+    except Exception as exc:
+        logger.error("POST /api/v1/persona/reset error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Workflows  /api/v1/workflow/*
+# GET  /api/v1/workflow           — list available workflows + their last run
+# POST /api/v1/workflow/run       — run a named workflow immediately
+# GET  /api/v1/workflow/history   — recent workflow execution history (last 20)
+# ---------------------------------------------------------------------------
+
+import collections as _collections_mod
+
+_workflow_history: _collections_mod.deque = _collections_mod.deque(maxlen=20)
+_workflow_history_lock = _threading_mod.Lock()
+
+_AVAILABLE_WORKFLOWS = {
+    "post_publish": {
+        "description": "Select topic → Generate caption → Render card → Publish to Facebook",
+        "steps": ["select_topic", "generate", "render", "publish", "analytics", "event"],
+        "trigger": "scheduler (10 ×/day) or manual",
+    },
+}
+
+
+@api_v1_bp.route("/workflow", methods=["GET"])
+@_auth_required
+def list_workflows():
+    """Return all registered workflow definitions and their last run summary."""
+    with _workflow_history_lock:
+        history = list(_workflow_history)
+
+    last_runs: dict = {}
+    for entry in reversed(history):
+        name = entry.get("workflow")
+        if name and name not in last_runs:
+            last_runs[name] = entry
+
+    workflows = []
+    for name, meta in _AVAILABLE_WORKFLOWS.items():
+        workflows.append({
+            "name": name,
+            **meta,
+            "last_run": last_runs.get(name),
+        })
+    return _ok({"workflows": workflows, "count": len(workflows)})
+
+
+@api_v1_bp.route("/workflow/run", methods=["POST"])
+@_auth_required
+def run_workflow():
+    """
+    Run a named workflow synchronously and return the result.
+
+    Body (JSON):
+      { "workflow": "post_publish", "params": {} }
+
+    Only "post_publish" is supported today. Returns the step-by-step result.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        name = data.get("workflow", "post_publish").strip().lower()
+
+        if name not in _AVAILABLE_WORKFLOWS:
+            available = sorted(_AVAILABLE_WORKFLOWS.keys())
+            return _err(f"Unknown workflow '{name}'. Available: {available}", 400)
+
+        if name == "post_publish":
+            from scheduler.post_scheduler import scheduler
+            result = scheduler.run_content_now()
+            entry = {
+                "workflow": name,
+                "triggered_by": "api",
+                "ok": result.get("ok", False),
+                "duration_ms": result.get("duration_ms"),
+                "topic": result.get("topic"),
+                "platforms": result.get("platforms"),
+                "error": result.get("error"),
+                "ran_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with _workflow_history_lock:
+                _workflow_history.append(entry)
+            status = 200 if result.get("ok") else 500
+            return _ok({"workflow": name, "result": result, "ran_at": entry["ran_at"]}), status
+
+        return _err(f"Workflow '{name}' runner not implemented", 501)
+
+    except Exception as exc:
+        logger.error("POST /api/v1/workflow/run error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/workflow/history", methods=["GET"])
+@_auth_required
+def workflow_history():
+    """Return the last 20 workflow executions (in-memory, resets on restart)."""
+    try:
+        limit = min(20, max(1, int(request.args.get("limit", 20))))
+        with _workflow_history_lock:
+            entries = list(_workflow_history)[-limit:]
+        return _ok({"history": list(reversed(entries)), "count": len(entries)})
+    except Exception as exc:
+        logger.error("GET /api/v1/workflow/history error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Scan  (top-level shortcut for /guardian/scan)
+# POST /api/v1/scan        — trigger a code guardian scan in the background
+# GET  /api/v1/scan        — return the last scan report (status + issues)
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/scan", methods=["POST"])
+@_auth_required
+def trigger_scan_shortcut():
+    """
+    Trigger a Code Guardian scan.  Top-level alias for POST /api/v1/guardian/scan.
+
+    Does not require GitHub to be configured — returns a 503 with a clear message
+    if Guardian is unavailable, so clients can detect the feature gracefully.
+    """
+    try:
+        from services.guardian_service import GuardianService
+        from flask import current_app
+        container = current_app.extensions.get("service_container")
+        if not container:
+            return _err("Guardian not available — DI container not attached", 503)
+        svc = container.try_resolve(GuardianService)
+        if not svc:
+            return _err("Guardian not configured (install GuardianService in DI container)", 503)
+        if not svc.is_configured:
+            return _err(
+                "Guardian requires GitHub credentials (GITHUB_TOKEN + GITHUB_REPO). "
+                "Set them in environment variables and restart.", 503
+            )
+        import threading
+        t = threading.Thread(target=svc.scan_all, daemon=True, name="api-scan-shortcut")
+        t.start()
+        return _ok({"started": True, "message": "Code Guardian scan started in background"}, 202)
+    except Exception as exc:
+        logger.error("POST /api/v1/scan error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/scan", methods=["GET"])
+def get_scan_status():
+    """
+    Return the last Guardian scan report.
+    Top-level alias for GET /api/v1/guardian/status + issues combined.
+    Public — no auth required.
+    """
+    try:
+        from services.guardian_service import GuardianService
+        from flask import current_app
+        container = current_app.extensions.get("service_container")
+        if not container:
+            return _ok({"configured": False, "issues": []})
+        svc = container.try_resolve(GuardianService)
+        if not svc:
+            return _ok({"configured": False, "issues": []})
+        status = svc.get_status()
+        issues = svc.get_issues() if hasattr(svc, "get_issues") else []
+        return _ok({**status, "issues": issues[:50]})
+    except Exception as exc:
+        logger.error("GET /api/v1/scan error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Metrics — public lightweight snapshot (no auth)
+# GET /api/v1/metrics/public   — key counters only, safe to expose
+# (The full snapshot at GET /api/v1/metrics still requires auth.)
+# ---------------------------------------------------------------------------
+
+
+@api_v1_bp.route("/metrics/public", methods=["GET"])
+def get_public_metrics():
+    """
+    Return a safe subset of in-process metrics — no auth required.
+
+    Exposes: uptime_seconds, request_count, total_posts, total_messages.
+    Sensitive latency details remain auth-gated at GET /api/v1/metrics.
+    """
+    try:
+        from utils.metrics import metrics as _m
+        snap = _m.get_snapshot()
+        counters = snap.get("counters", {})
+        return _ok({
+            "uptime_seconds": snap.get("uptime_seconds"),
+            "total_posts": counters.get("posts_published", 0),
+            "total_messages": counters.get("messages_received", 0),
+            "total_errors": counters.get("errors", 0),
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/metrics/public error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# API Key management
+# POST /api/v1/keys/generate   — generate a new signed API token
+# GET  /api/v1/keys            — list active key metadata (no secrets)
+# DELETE /api/v1/keys/<key_id> — revoke a key
+# ---------------------------------------------------------------------------
+
+import secrets as _secrets_mod
+import hashlib as _hashlib_mod
+
+_keys_lock = _threading_mod.Lock()
+# key_id -> {"id", "label", "prefix", "hashed", "created_at", "last_used", "revoked"}
+_active_keys: dict[str, dict] = {}
+
+
+@api_v1_bp.route("/keys/generate", methods=["POST"])
+@_auth_required
+def generate_api_key():
+    """
+    Generate a new API token.
+
+    Body (JSON, all optional):
+      { "label": "my-dashboard-client" }
+
+    Returns the full token ONCE — it is never stored in plain text.
+    Subsequent calls to GET /api/v1/keys return only the prefix + metadata.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        label = str(data.get("label", "api-key")).strip()[:64] or "api-key"
+
+        raw_token = "kz_" + _secrets_mod.token_urlsafe(32)
+        key_id = _uuid_mod.uuid4().hex[:12]
+        hashed = _hashlib_mod.sha256(raw_token.encode()).hexdigest()
+        prefix = raw_token[:10] + "…"
+
+        entry = {
+            "id": key_id,
+            "label": label,
+            "prefix": prefix,
+            "hashed": hashed,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_used": None,
+            "revoked": False,
+        }
+        with _keys_lock:
+            _active_keys[key_id] = entry
+
+        return _ok({
+            "key_id": key_id,
+            "token": raw_token,
+            "prefix": prefix,
+            "label": label,
+            "created_at": entry["created_at"],
+            "note": "Store this token securely — it will not be shown again.",
+        }, 201)
+    except Exception as exc:
+        logger.error("POST /api/v1/keys/generate error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/keys", methods=["GET"])
+@_auth_required
+def list_api_keys():
+    """List active API key metadata. Tokens are never returned after creation."""
+    try:
+        with _keys_lock:
+            keys = [
+                {k: v for k, v in entry.items() if k != "hashed"}
+                for entry in _active_keys.values()
+                if not entry.get("revoked")
+            ]
+        return _ok({"keys": keys, "count": len(keys)})
+    except Exception as exc:
+        logger.error("GET /api/v1/keys error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/keys/<key_id>", methods=["DELETE"])
+@_auth_required
+def revoke_api_key(key_id: str):
+    """Revoke an API key by ID."""
+    try:
+        with _keys_lock:
+            entry = _active_keys.get(key_id)
+            if not entry:
+                return _err(f"Key '{key_id}' not found", 404)
+            _active_keys[key_id]["revoked"] = True
+        return _ok({"revoked": True, "key_id": key_id})
+    except Exception as exc:
+        logger.error("DELETE /api/v1/keys/%s error: %s", key_id, exc)
+        return _err(str(exc), 500)
