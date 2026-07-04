@@ -18,6 +18,9 @@ Design
 * In-memory session counters track real-time connection counts and
   event throughput without touching Supabase.
 
+* Uses async_mode='threading' — compatible with gunicorn sync workers.
+  Eventlet removed due to Python 3.14 asyncio conflicts.
+
 EventBus → SocketIO mapping
 ---------------------------
   MessageReceivedEvent  →  ``new_message``
@@ -47,7 +50,7 @@ logger = logging.getLogger("kanyoza.socket")
 
 socketio = SocketIO(
     cors_allowed_origins="*",
-    async_mode="eventlet",
+    async_mode="threading",
     logger=False,
     engineio_logger=False,
     ping_timeout=60,
@@ -101,15 +104,7 @@ def emit_to_dashboard(event: str, data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _auth_dashboard_client() -> bool:
-    """
-    Validate the connecting dashboard client.
-
-    Accepted via query-string:  ?token=<MASTER_API_TOKEN>
-
-    Behaviour when MASTER_API_TOKEN is not set:
-    - development / testing: open (returns True) so the console works without config
-    - production: closed (returns False) — no unauthenticated clients allowed
-    """
+    """Validate the connecting dashboard client via MASTER_API_TOKEN."""
     import hmac
     from config.settings import settings as _s
     from config.environments import Environment
@@ -124,7 +119,6 @@ def _auth_dashboard_client() -> bool:
                 "rejecting SocketIO connection for security."
             )
             return False
-        # Development / testing: allow without a token so the console works
         return True
 
     from flask import request as _req
@@ -144,11 +138,11 @@ def _auth_dashboard_client() -> bool:
 def on_connect():
     if not _auth_dashboard_client():
         logger.warning("Dashboard: rejected unauthenticated SocketIO connection")
-        return False   # flask-socketio: returning False rejects the connection
+        return False
 
     increment("active_connections")
-    logger.info("Dashboard client connected  (total=%d)", _counters["active_connections"])
-    # Push current stats snapshot immediately on connect
+    logger.info("Dashboard client connected (total=%d)", _counters["active_connections"])
+
     from api.dashboard import build_live_stats
     emit("stats", build_live_stats(), namespace="/dashboard")
 
@@ -157,12 +151,11 @@ def on_connect():
 def on_disconnect():
     with _lock:
         _counters["active_connections"] = max(0, _counters["active_connections"] - 1)
-    logger.info("Dashboard client disconnected  (total=%d)", _counters["active_connections"])
+    logger.info("Dashboard client disconnected (total=%d)", _counters["active_connections"])
 
 
 @socketio.on("request_stats", namespace="/dashboard")
 def on_request_stats(data=None):
-    """Client can request a fresh stats snapshot at any time."""
     from api.dashboard import build_live_stats
     emit("stats", build_live_stats(), namespace="/dashboard")
 
@@ -177,6 +170,6 @@ def on_ping(data=None):
 # ---------------------------------------------------------------------------
 
 def init_app(app: Flask) -> None:
-    """Attach SocketIO to the Flask app.  Call once during bootstrap."""
+    """Attach SocketIO to the Flask app. Call once during bootstrap."""
     socketio.init_app(app)
-    logger.info("SocketIO initialised (async_mode=eventlet, namespace=/dashboard)")
+    logger.info("SocketIO initialised (async_mode=threading, namespace=/dashboard)")
