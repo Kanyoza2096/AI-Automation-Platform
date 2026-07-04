@@ -20,23 +20,21 @@ body {
     align-items: center;
     justify-content: center;
     font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
     overflow: hidden;
-    position: relative;
 }
 
 .bg-decoration {
     position: absolute;
     inset: 0;
     z-index: 0;
+    pointer-events: none;
 }
 .bg-decoration svg { display: block; width: 100%; height: 100%; }
 
 .card {
     position: relative;
     z-index: 1;
-    background: linear-gradient(180deg, #141C2E 0%, #10182A 100%);
+    background: #141C2E;
     width: 1000px;
     height: 1000px;
     border-radius: 32px;
@@ -44,43 +42,32 @@ body {
     display: flex;
     flex-direction: column;
     border: 1px solid #26324A;
-    box-shadow: 0 40px 100px rgba(0,0,0,0.55), 0 2px 0 rgba(255,255,255,0.04) inset;
-    /* auto margins cooperate with the parent flex centering: flex alignment
-       centres the card first; auto margins act as a secondary mechanism that
-       also centres it if flex alignment is ever absent (e.g. non-flex fallback).
-       Note: margin:auto alone centres horizontally in block layout but NOT
-       vertically — the flex align-items:center on body is still the vertical
-       anchor, so both rules together are required for a guaranteed (40px,40px)
-       position on all sides. */
-    margin: auto;
+    box-shadow: 0 40px 100px rgba(0,0,0,0.55);
+    flex-shrink: 0;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 .header { flex-shrink: 0; }
 .badge {
-    background: linear-gradient(135deg, {{ palette.badge[0] }}, {{ palette.badge[1] }});
+    background: {{ palette.badge[0] }};
     color: #fff;
     padding: 8px 20px;
     border-radius: 999px;
-    font-size: {{ font_size.badge }}px;
+    font-size: 18px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     display: inline-block;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.25);
 }
 h1 {
     color: #F8FAFC;
     font-size: {{ font_size.title_max }}px;
     font-weight: 800;
     margin-top: 22px;
-    line-height: 1.18;
+    line-height: 1.15;
     letter-spacing: -0.01em;
-    max-height: {{ (font_size.title_max * 1.18 * 2) | round | int }}px;
+    max-height: {{ (font_size.title_max * 1.15 * 2) | round | int }}px;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
 }
 
 /* ── Content area ───────────────────────────────────────────────────────── */
@@ -90,11 +77,10 @@ h1 {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    margin-top: 36px;
-    margin-bottom: 36px;
+    margin: 36px 0;
 }
 
-/* Two-column layouts (vs / before_after) */
+/* Two-column layouts */
 .columns {
     display: flex;
     gap: 28px;
@@ -106,7 +92,7 @@ h1 {
     flex: 1;
     display: flex;
     flex-direction: column;
-    background: rgba(255,255,255,0.02);
+    background: rgba(255,255,255,0.03);
     border: 1px solid #26324A;
     border-radius: 22px;
     padding: 28px 26px;
@@ -136,41 +122,38 @@ h1 {
     color: #F1F5F9;
     font-size: {{ font_size.heading_max }}px;
     font-weight: 700;
-    line-height: 1.25;
-    max-height: {{ (font_size.heading_max * 1.25 * 2) | round | int }}px;
+    line-height: 1.2;
+    max-height: {{ (font_size.heading_max * 1.2 * 2) | round | int }}px;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
 }
 .bullets {
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
     flex: 1;
     min-height: 0;
     overflow: hidden;
-    font-size: {{ font_size.bullet_max }}px;
 }
-.bullet { display: flex; align-items: flex-start; gap: 12px; }
+.bullet {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+}
 .bullet-dot {
     flex-shrink: 0;
     width: 8px;
     height: 8px;
     border-radius: 999px;
-    margin-top: 0.37em;
+    margin-top: 7px;
 }
 .bullet-text {
     color: #CBD5E1;
-    font-size: inherit;
+    font-size: {{ font_size.bullet_max }}px;
     font-weight: 500;
     line-height: 1.35;
-    max-height: {{ (font_size.bullet_max * 1.35 * 3) | round | int }}px;
+    max-height: {{ (font_size.bullet_max * 1.35 * 2) | round | int }}px;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
     word-break: break-word;
 }
 
@@ -195,7 +178,7 @@ h1 {
     font-weight: 900;
 }
 
-/* Grid layout (architecture) */
+/* Grid layout */
 .grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -204,16 +187,19 @@ h1 {
     height: 100%;
 }
 .cell {
-    background: rgba(255,255,255,0.02);
+    background: rgba(255,255,255,0.03);
     border: 1px solid #26324A;
     border-radius: 20px;
-    padding: 26px 26px;
+    padding: 26px;
     display: flex;
     flex-direction: column;
     justify-content: center;
     min-width: 0;
 }
-.cell.accent { border-color: {{ palette.a }}; background: rgba(255,255,255,0.035); }
+.cell.accent {
+    border-color: {{ palette.a }};
+    background: rgba(255,255,255,0.05);
+}
 .cell-label {
     font-size: 13px;
     font-weight: 700;
@@ -224,24 +210,27 @@ h1 {
 }
 .cell-text {
     color: #E2E8F0;
-    font-size: {{ font_size.heading_min + 4 }}px;
+    font-size: 24px;
     font-weight: 600;
-    line-height: 1.35;
-    max-height: {{ ((font_size.heading_min + 4) * 1.35 * 3) | round | int }}px;
+    line-height: 1.3;
+    max-height: 94px;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
     word-break: break-word;
 }
 
-/* List layout (tutorial / checklist) */
-.list { display: flex; flex-direction: column; gap: 16px; height: 100%; justify-content: center; }
+/* List layout */
+.list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    height: 100%;
+    justify-content: center;
+}
 .list-item {
     display: flex;
     align-items: center;
     gap: 18px;
-    background: rgba(255,255,255,0.02);
+    background: rgba(255,255,255,0.03);
     border: 1px solid #26324A;
     border-radius: 18px;
     padding: 18px 24px;
@@ -251,7 +240,7 @@ h1 {
     width: 38px;
     height: 38px;
     border-radius: 999px;
-    background: linear-gradient(135deg, {{ palette.a }}, {{ palette.b }});
+    background: {{ palette.a }};
     color: #fff;
     font-size: 16px;
     font-weight: 800;
@@ -266,9 +255,6 @@ h1 {
     line-height: 1.3;
     max-height: {{ (font_size.bullet_max * 1.3 * 2) | round | int }}px;
     overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
     word-break: break-word;
 }
 
@@ -278,7 +264,7 @@ h1 {
     display: flex;
     align-items: center;
     gap: 18px;
-    background: linear-gradient(135deg, {{ palette.badge[0] }}, {{ palette.badge[1] }});
+    background: {{ palette.badge[0] }};
     border-radius: 20px;
     padding: 20px 28px;
     box-shadow: 0 16px 40px rgba(0,0,0,0.3);
@@ -315,7 +301,7 @@ h1 {
 }
 .winner-reason {
     color: rgba(255,255,255,0.85);
-    font-size: {{ font_size.reason }}px;
+    font-size: 16px;
     font-weight: 500;
     margin-top: 4px;
     white-space: nowrap;
@@ -333,13 +319,8 @@ h1 {
     padding-top: 22px;
     border-top: 1px solid #26324A;
 }
-.brand { color: #64748B; font-size: {{ font_size.footer }}px; font-weight: 600; }
-.hashtags {
-    color: #475569;
-    font-size: 13px;
-    margin-top: 6px;
-    line-height: 1.4;
-}
+.brand { color: #64748B; font-size: 18px; font-weight: 600; }
+.hashtags { color: #475569; font-size: 13px; margin-top: 6px; }
 .tagline { color: {{ palette.tagline }}; font-size: 15px; font-weight: 600; }
 </style>
 </head>
@@ -348,7 +329,7 @@ h1 {
 <div class="card">
     <div class="header">
         <span class="badge">{{ theme_label }}</span>
-        <h1 data-autofit data-autofit-min="{{ font_size.title_min }}">{{ title }}</h1>
+        <h1>{{ title }}</h1>
     </div>
 
     <div class="content">
@@ -366,9 +347,9 @@ h1 {
                         <svg viewBox="0 0 24 24" fill="white"><circle cx="12" cy="12" r="6"/></svg>
                         {% endif %}
                     </span>
-                    <span class="column-name" data-autofit data-autofit-min="{{ font_size.heading_min }}">{{ col.name }}</span>
+                    <span class="column-name">{{ col.name }}</span>
                 </div>
-                <ul class="bullets" data-autofit data-autofit-min="{{ font_size.bullet_min }}">
+                <ul class="bullets">
                     {% for b in col.bullets %}
                     <li class="bullet">
                         <span class="bullet-dot" style="background: {{ col.color }};"></span>
@@ -388,7 +369,7 @@ h1 {
             {% for cell in cells %}
             <div class="cell{% if cell.accent %} accent{% endif %}">
                 <div class="cell-label">{{ cell.label }}</div>
-                <div class="cell-text" data-autofit data-autofit-min="18">{{ cell.text }}</div>
+                <div class="cell-text">{{ cell.text }}</div>
             </div>
             {% endfor %}
         </div>
@@ -412,7 +393,7 @@ h1 {
         </span>
         <div class="winner-body">
             <div class="winner-label">{{ winner.label }}</div>
-            <div class="winner-name" data-autofit data-autofit-min="{{ font_size.winner_min }}">{{ winner.name }}</div>
+            <div class="winner-name">{{ winner.name }}</div>
             {% if winner.reason %}
             <div class="winner-reason">{{ winner.reason }}</div>
             {% endif %}
