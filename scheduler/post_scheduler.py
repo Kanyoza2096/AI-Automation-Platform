@@ -245,42 +245,14 @@ class PostScheduler:
             else:
                 enqueue_content = False
 
-            # ── News posts (3/day) ─────────────────────────────────────────────
-            # IMPORTANT: if content is also firing this cycle, skip news to prevent
-            # two posts going out simultaneously. News slot is NOT added to
-            # _fired_slots so it can fire later (once content post is done).
-            news_slot = (today, now.hour, "news")
-            news_due = now.hour in self.news_hours_utc
-            news_already_fired = news_slot in self._fired_slots
-            news_gap_ok = (
-                self.last_news_post_time is None
-                or (now - self.last_news_post_time) >= timedelta(hours=3)
-            )
-            # Skip news if content is firing this cycle — prevents simultaneous posts
-            if news_due and not news_already_fired and news_gap_ok and not enqueue_content:
-                self._fired_slots.add(news_slot)
-                enqueue_news = True
-                news_category = (
-                    "technology" if now.hour == 6
-                    else ("malawi" if now.hour == 14 else None)
-                )
-            else:
-                enqueue_news = False
-                news_category = None
-
-        # Flush state to disk whenever slots change
-        if enqueue_content or enqueue_news:
-            self._flush_state_file()
-
-        # Enqueue outside the lock so we don't hold it during a blocking put()
+        # Flush state to disk when a slot is claimed
         if enqueue_content:
+            self._flush_state_file()
             self._enqueue_job("content")
             logger.info(
                 "Scheduled content post enqueued for slot UTC %02d:xx (%s)",
                 now.hour, today,
             )
-        if enqueue_news:
-            self._enqueue_job("news", category=news_category)
 
     def _enqueue_job(self, job_type: str, **kwargs):
         try:
