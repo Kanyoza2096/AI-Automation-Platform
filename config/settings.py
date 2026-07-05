@@ -33,7 +33,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",          # Silently ignore unknown env vars
+        extra="ignore",
         validate_default=True,
     )
 
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", description="Anthropic API key (optional)")
     hf_token: str = Field(default="", description="Hugging Face token (optional)")
 
-    # Active AI provider — determines which backend is used
+    # Active AI provider
     ai_provider: str = Field(
         default="gemini",
         description="Active AI provider: gemini | openai | anthropic | huggingface",
@@ -76,6 +76,20 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     whatsapp_token: str = Field(default="")
     whatsapp_phone_id: str = Field(default="")
+
+    # -------------------------------------------------------------------------
+    # Twitter/X
+    # -------------------------------------------------------------------------
+    twitter_api_key: str = Field(default="", description="Twitter API Key (Consumer Key)")
+    twitter_api_secret: str = Field(default="", description="Twitter API Secret")
+    twitter_access_token: str = Field(default="", description="Twitter OAuth 2.0 Access Token")
+    twitter_refresh_token: str = Field(default="", description="Twitter OAuth 2.0 Refresh Token")
+
+    # -------------------------------------------------------------------------
+    # LinkedIn (future)
+    # -------------------------------------------------------------------------
+    linkedin_access_token: str = Field(default="", description="LinkedIn OAuth 2.0 Access Token")
+    linkedin_person_urn: str = Field(default="", description="LinkedIn Person URN")
 
     # -------------------------------------------------------------------------
     # Supabase
@@ -191,7 +205,8 @@ class Settings(BaseSettings):
 
     @property
     def guardian_configured(self) -> bool:
-        return False #Disable temporarily 
+        return False  # Disable temporarily
+
     # -------------------------------------------------------------------------
     # Startup validation
     # -------------------------------------------------------------------------
@@ -201,7 +216,7 @@ class Settings(BaseSettings):
         "page_access_token",
         "page_id",
         "verify_token",
-        "app_secret",   # Required for webhook HMAC signature verification
+        "app_secret",
     )
 
     def missing_required(self) -> List[str]:
@@ -220,14 +235,7 @@ class Settings(BaseSettings):
         ]
 
     def validate_required(self) -> None:
-        """
-        Validate required environment variables.
-
-        - Production: raises SystemExit — the process will not start.
-        - Development / Testing: logs a critical warning and continues in
-          degraded mode so the architecture can be exercised without live
-          credentials.
-        """
+        """Validate required environment variables."""
         missing = self.missing_required()
         if not missing:
             return
@@ -255,6 +263,8 @@ class Settings(BaseSettings):
             "facebook_configured": bool(self.page_access_token and self.page_id),
             "supabase_enabled": self.supabase_enabled,
             "guardian_enabled": self.guardian_configured,
+            "twitter_configured": bool(self.twitter_access_token),
+            "linkedin_configured": bool(self.linkedin_access_token),
             "environment": self.environment,
             "log_level": self.log_level,
             "rate_limit_per_user": self.rate_limit_per_user,
@@ -262,17 +272,13 @@ class Settings(BaseSettings):
             "news_posting_hours_utc": self.news_posting_hours_utc,
         }
 
-    # -------------------------------------------------------------------------
-    # Backward-compatibility shim (used by v9 code paths)
-    # -------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Module-level singleton — import this everywhere
+# Module-level singleton
 # ---------------------------------------------------------------------------
 settings = Settings()
 
 
 def get_settings() -> Settings:
-    """Return the module-level Settings singleton. Use this in type-annotated
-    code where you want an explicit factory call rather than a bare import."""
+    """Return the module-level Settings singleton."""
     return settings
