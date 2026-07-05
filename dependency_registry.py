@@ -25,12 +25,7 @@ logger = logging.getLogger("kanyoza.registry")
 
 
 def build_container() -> ServiceContainer:
-    """
-    Construct and populate the application service container.
-
-    Returns a fully-wired ServiceContainer ready for use by the
-    application factory.  Called once at bootstrap.
-    """
+    """Construct and populate the application service container."""
     container = ServiceContainer()
     _register_infrastructure(container)
     _register_repositories(container)
@@ -46,33 +41,25 @@ def build_container() -> ServiceContainer:
 
 
 # ---------------------------------------------------------------------------
-# Infrastructure (low-level, no business logic)
+# Infrastructure
 # ---------------------------------------------------------------------------
 
-
 def _register_infrastructure(c: ServiceContainer) -> None:
-    """Register config and cross-cutting infrastructure services."""
-
     from config.settings import Settings
     c.register_instance(Settings, settings)
 
-    # Event Bus — singleton in-process pub/sub
     from core.event_bus import EventBus
     c.register(EventBus, lambda: _build_event_bus(), singleton=True)
 
-    # Task Queue — background worker pool
     from workers.task_queue import TaskQueue
     c.register(TaskQueue, lambda: _build_task_queue(), singleton=True)
 
-    # Plugin Registry
     from plugins.base import PluginRegistry
     c.register(PluginRegistry, lambda: _build_plugin_registry(), singleton=True)
 
-    # Replay Guard — webhook replay protection
     from domain.security.replay_guard import ReplayGuard
     c.register(ReplayGuard, lambda: ReplayGuard(ttl_seconds=300), singleton=True)
 
-    # Supabase (optional)
     _register_supabase(c)
 
 
@@ -104,13 +91,13 @@ def _register_supabase(c: ServiceContainer) -> None:
         return
 
     def _factory():
-        from supabase import create_client  # type: ignore[import-untyped]
+        from supabase import create_client
         client = create_client(settings.supabase_url, settings.supabase_anon_key)
         logger.info("Supabase client created.")
         return client
 
     try:
-        from supabase import Client as SupabaseClient  # type: ignore[import-untyped]
+        from supabase import Client as SupabaseClient
         c.register(SupabaseClient, _factory, singleton=True)
         logger.info("Supabase client registered.")
     except ImportError:
@@ -120,7 +107,6 @@ def _register_supabase(c: ServiceContainer) -> None:
 # ---------------------------------------------------------------------------
 # Repositories
 # ---------------------------------------------------------------------------
-
 
 def _register_repositories(c: ServiceContainer) -> None:
     from repositories.profile_repository import ProfileRepository
@@ -139,7 +125,6 @@ def _register_repositories(c: ServiceContainer) -> None:
 # ---------------------------------------------------------------------------
 # AI Layer
 # ---------------------------------------------------------------------------
-
 
 def _register_ai_layer(c: ServiceContainer) -> None:
     from ai.orchestrator import AIOrchestrator
@@ -168,11 +153,7 @@ def _register_ai_layer(c: ServiceContainer) -> None:
 # Application services
 # ---------------------------------------------------------------------------
 
-
 def _register_services(c: ServiceContainer) -> None:
-    """Register application-layer services."""
-
-    # Analytics event recorder — wired to EventBus
     from domain.analytics.event_recorder import EventRecorder
     from core.event_bus import EventBus
     from repositories.analytics_repository import AnalyticsRepository
@@ -187,18 +168,14 @@ def _register_services(c: ServiceContainer) -> None:
 
     c.register(EventRecorder, _build_recorder, singleton=True)
 
-    # BrowserManager (M5) — register the module singleton so all DI consumers
-    # share the same lifecycle-managed instance that lifecycle.py starts/stops.
     from services.browser_manager import BrowserManager, browser_manager as _bm
     c.register_instance(BrowserManager, _bm)
     logger.info("BrowserManager registered (module singleton).")
 
-    # RenderCache (M5) — register the module singleton for consistency.
     from services.render_cache import RenderCache, render_cache as _rc
     c.register_instance(RenderCache, _rc)
     logger.info("RenderCache registered (module singleton).")
 
-    # GuardianService (M7) — only registered when guardian is configured
     if settings.guardian_configured:
         from services.guardian_service import GuardianService
 
@@ -227,7 +204,6 @@ def _register_services(c: ServiceContainer) -> None:
 # Plugins
 # ---------------------------------------------------------------------------
 
-
 def _register_plugins(c: ServiceContainer) -> None:
     from plugins.base import PluginRegistry
 
@@ -242,33 +218,55 @@ def _register_plugins(c: ServiceContainer) -> None:
         except Exception as exc:
             logger.warning("FacebookPlugin could not register: %s", exc)
 
-        # LinkedIn (optional)
-        try:
-            from plugins.linkedin.plugin import LinkedInPlugin
-            from services.linkedIn import LinkedInService
-            registry.register(LinkedInPlugin(LinkedInService()))
-        except Exception as exc:
-            logger.debug("LinkedInPlugin skipped: %s", exc)
+        # Twitter/X (OAuth 2.0)
+        if settings.twitter_access_token:
+            try:
+                from plugins.twitter.plugin import TwitterPlugin
+                from plugins.base import PluginConfig
 
-        # Twitter (optional)
-        try:
-            from plugins.twitter.plugin import TwitterPlugin
-            from services.twitter import TwitterService
-            registry.register(TwitterPlugin(TwitterService()))
-        except Exception as exc:
-            logger.debug("TwitterPlugin skipped: %s", exc)
+                twitter_plugin = TwitterPlugin(
+                    PluginConfig(
+                        name="twitter",
+                        settings={
+                            "access_token": settings.twitter_access_token,
+                            "refresh_token": settings.twitter_refresh_token,
+                        }
+                    )
+                )
+                registry.register(twitter_plugin)
+                logger.info("TwitterPlugin registered.")
+            except Exception as exc:
+                logger.warning("TwitterPlugin could not register: %s", exc)
+
+        # LinkedIn (optional)
+        if settings.linkedin_access_token:
+            try:
+                from plugins.linkedin.plugin import LinkedInPlugin
+                from plugins.base import PluginConfig
+
+                linkedin_plugin = LinkedInPlugin(
+                    PluginConfig(
+                        name="linkedin",
+                        settings={
+                            "access_token": settings.linkedin_access_token,
+                            "person_urn": settings.linkedin_person_urn,
+                        }
+                    )
+                )
+                registry.register(linkedin_plugin)
+                logger.info("LinkedInPlugin registered.")
+            except Exception as exc:
+                logger.warning("LinkedInPlugin could not register: %s", exc)
 
         registry.start_all()
         return registry
 
-    # Override the lazy PluginRegistry registration to include plugins
     c.register(PluginRegistry, _build_registry_with_plugins, singleton=True)
 
 
 # ---------------------------------------------------------------------------
 # Workflows
 # ---------------------------------------------------------------------------
-
 
 def _register_workflows(c: ServiceContainer) -> None:
     from workflows.post_workflow import PostPublishWorkflow
