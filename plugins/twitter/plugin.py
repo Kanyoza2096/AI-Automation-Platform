@@ -1,49 +1,71 @@
-from __future__ import annotations
+"""
+Twitter/X Plugin v1.1 — OAuth 2.0
+Cross-posts content to Twitter/X using Bearer token.
+"""
 
 import logging
-from typing import Any, Optional, TYPE_CHECKING
+import requests
+from typing import Optional
 
-from plugins.base import Plugin
+from plugins.base import Plugin, PluginConfig
 
-if TYPE_CHECKING:
-    from services.twitter import TwitterService
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("kanyoza.plugins.twitter")
 
 
 class TwitterPlugin(Plugin):
+    """Publishes posts to Twitter/X via OAuth 2.0."""
 
-    def __init__(self, twitter_service: "TwitterService") -> None:
-        self._svc = twitter_service
-        self._active = False
+    def __init__(self, config: PluginConfig):
+        super().__init__(config)
+        self.access_token = config.settings.get("access_token", "")
+        self.api_base = "https://api.twitter.com/2"
 
     @property
-    def name(self) -> str:
-        return "twitter"
+    def is_configured(self) -> bool:
+        return bool(self.access_token)
 
-    def start(self) -> None:
-        self._active = True
-        logger.info("TwitterPlugin: started")
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
 
-    def stop(self) -> None:
-        self._active = False
-
-    def publish(self, content: str, image_url: Optional[str] = None, **kwargs) -> dict[str, Any]:
-        if not self._active:
-            return {"ok": False, "error": "plugin not started"}
+    def health(self) -> dict:
+        if not self.is_configured:
+            return {"ok": False, "reason": "Not configured"}
         try:
-            image_bytes: Optional[bytes] = kwargs.get("image_bytes")
-            result = self._svc.cross_post(content, image_bytes=image_bytes)
-            return {"ok": bool(result), "platform": "twitter", "result": result}
-        except Exception as exc:
-            logger.error("TwitterPlugin.publish: %s", exc)
-            return {"ok": False, "error": str(exc), "platform": "twitter"}
+            resp = requests.get(
+                f"{self.api_base}/users/me",
+                headers=self._headers(),
+                timeout=10,
+            )
+            return {"ok": resp.status_code == 200}
+        except Exception as e:
+            return {"ok": False, "reason": str(e)[:120]}
 
-    def health(self) -> dict[str, Any]:
+    def publish(self, content: str, image_bytes: Optional[bytes] = None) -> dict:
+        """Publish a tweet."""
+        if not self.is_configured:
+            return {"ok": False, "reason": "Not configured"}
+
         try:
-            from config.settings import get_settings
-            s = get_settings()
-            ok = bool(getattr(s, "twitter_api_key", None))
-        except Exception:
-            ok = False
-        return {"ok": ok, "platform": "twitter", "active": self._active}
+            tweet_text = content[:280]
+
+            resp = requests.post(
+                f"{self.api_base}/tweets",
+                headers=self._headers(),
+                json={"text": tweet_text},
+                timeout=15,
+            )
+
+            if resp.status_code == 201:
+                tweet_id = resp.json().get("data", {}).get("id")
+                logger.info(f"✅ Tweet posted: {tweet_id}")
+                return {"ok": True, "tweet_id": tweet_id}
+
+            logger.error(f"Twitter error: {resp.status_code} {resp.text[:200]}")
+            return {"ok": False, "reason": f"HTTP {resp.status_code}"}
+
+        except Exception as e:
+            logger.error(f"Twitter error: {e}")
+            return {"ok": False, "reason": str(e)[:120]}
