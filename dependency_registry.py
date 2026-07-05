@@ -2,16 +2,7 @@
 Kanyoza Systems AI Platform v10 — Dependency Registry.
 
 This is the ONLY place where concrete implementations are wired to their
-interfaces inside the service container. Import nothing here except:
-  - the ServiceContainer
-  - the Settings singleton
-  - concrete service classes (lazily, inside register lambdas to avoid
-    circular imports at module load time)
-
-Add a new service in three steps:
-  1. Define the interface (ABC / Protocol) in its module.
-  2. Create the concrete implementation.
-  3. Add a register() call in the appropriate section below.
+interfaces inside the service container.
 """
 
 from __future__ import annotations
@@ -222,16 +213,10 @@ def _register_plugins(c: ServiceContainer) -> None:
         if settings.twitter_access_token:
             try:
                 from plugins.twitter.plugin import TwitterPlugin
-                from plugins.base import PluginConfig
 
-                twitter_plugin = TwitterPlugin(
-                    PluginConfig(
-                        name="twitter",
-                        settings={
-                            "access_token": settings.twitter_access_token,
-                            "refresh_token": settings.twitter_refresh_token,
-                        }
-                    )
+                twitter_plugin = TwitterPlugin()
+                twitter_plugin.configure(
+                    access_token=settings.twitter_access_token,
                 )
                 registry.register(twitter_plugin)
                 logger.info("TwitterPlugin registered.")
@@ -242,16 +227,11 @@ def _register_plugins(c: ServiceContainer) -> None:
         if settings.linkedin_access_token:
             try:
                 from plugins.linkedin.plugin import LinkedInPlugin
-                from plugins.base import PluginConfig
 
-                linkedin_plugin = LinkedInPlugin(
-                    PluginConfig(
-                        name="linkedin",
-                        settings={
-                            "access_token": settings.linkedin_access_token,
-                            "person_urn": settings.linkedin_person_urn,
-                        }
-                    )
+                linkedin_plugin = LinkedInPlugin()
+                linkedin_plugin.configure(
+                    access_token=settings.linkedin_access_token,
+                    person_urn=settings.linkedin_person_urn,
                 )
                 registry.register(linkedin_plugin)
                 logger.info("LinkedInPlugin registered.")
