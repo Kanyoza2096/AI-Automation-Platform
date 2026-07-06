@@ -145,7 +145,7 @@ def _register_request_hooks(app: Flask) -> None:
                 except Exception:
                     pass
 
-                emit_to_dashboard("api_payload", {
+                _payload = {
                     "direction": "api",
                     "method": request.method,
                     "path": request.path,
@@ -155,7 +155,19 @@ def _register_request_hooks(app: Flask) -> None:
                     "response_keys": resp_keys,
                     "response_ok": resp_ok,
                     "correlation_id": cid or "",
-                })
+                    # Payload-Inspector compatible fields
+                    "id": f"req_{int(datetime.now(_tz.utc).timestamp() * 1000) % 900000 + 100000}",
+                    "time": datetime.now(_tz.utc).strftime("%H:%M:%S"),
+                    "endpoint": request.path,
+                    "latency": "",
+                    "type": "outbound" if request.method in ("GET",) else "inbound",
+                    "request": {},
+                    "response": {},
+                }
+                # "api_payload" — canonical event name (matches /dashboard/ws-info)
+                emit_to_dashboard("api_payload", _payload)
+                # "api_call"    — alias consumed by the Prometheus frontend store
+                emit_to_dashboard("api_call", _payload)
             except Exception:
                 pass
 
@@ -262,41 +274,10 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             }
         })
 
-    @app.route("/api/v1/status")
-    def status():
-        return jsonify({
-            "version": "10.0",
-            "config": settings.to_safe_dict(),
-        })
-
-    # ── Health check — NO live API calls ──────────────────────────────────
-    # Previously called Gemini + Facebook on every request, which consumed
-    # free-tier quotas and caused 429 rate-limiting when dashboards polled
-    # this endpoint every 30 s.
-    @app.route("/api/v1/health/deep")
-    def health_deep():
-        results = {}
-        overall = "ok"
-
-        gemini_key = getattr(settings, "gemini_key", "") or ""
-        results["gemini"] = {
-            "status": "ok" if gemini_key else "skip",
-            "reason": None if gemini_key else "GEMINI_KEY not set",
-        }
-
-        fb_token = getattr(settings, "page_access_token", "") or ""
-        results["facebook"] = {
-            "status": "ok" if fb_token else "skip",
-            "reason": None if fb_token else "PAGE_ACCESS_TOKEN not set",
-        }
-
-        results["supabase"] = {
-            "status": "ok" if settings.supabase_enabled else "skip",
-        }
-
-        results["converter"] = {"status": "ok"}
-
-        return jsonify({"status": overall, "version": "10.0", "services": results})
+    # NOTE: /api/v1/status and /api/v1/health/deep are intentionally handled by
+    # the api_v1 blueprint (api/v1.py) with proper authentication.
+    # The duplicate unauthenticated app-level routes have been removed to prevent
+    # them from shadowing the secured blueprint endpoints.
 
     @app.route("/metrics")
     def prometheus_metrics():

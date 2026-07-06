@@ -25,6 +25,9 @@ supabase==2.15.2
 # Environment
 python-dotenv==1.1.0
 
+# Async worker (required by gunicorn --worker-class eventlet for WebSocket support)
+eventlet>=0.38.2
+
 # Headless browser (card rendering — 1080x1080 PNG)
 playwright>=1.49.0
 

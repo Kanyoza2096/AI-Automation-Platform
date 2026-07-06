@@ -197,6 +197,19 @@ def build_live_stats() -> dict:
         stats["guardian"] = {"ok": False, "last_scan": None}
 
     stats["services"] = services
+
+    # ── Top-level aliases for frontend field-name compatibility ─────────────
+    # The Prometheus frontend reads flat keys (d.messages_today, d.posts_published,
+    # etc.) from this endpoint.  analytics.get_stats() returns these under
+    # analytics["overview"]; counters track in-memory session data.
+    _counters = stats.get("counters", {})
+    _overview  = stats.get("analytics", {}).get("overview", {})
+    stats["messages_today"]   = _overview.get("messages_received",  _counters.get("messages_today",   0))
+    stats["posts_published"]  = _overview.get("posts_published",    _counters.get("posts_today",      0))
+    stats["active_users"]     = _overview.get("active_users_24h",   _counters.get("active_connections", 0))
+    stats["api_calls_today"]  = _counters.get("events_emitted",     0)
+    stats["guardian_issues"]  = (stats.get("guardian") or {}).get("open_issues", 0)
+
     return stats
 
 

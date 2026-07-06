@@ -1145,3 +1145,270 @@ def revoke_api_key(key_id: str):
     except Exception as exc:
         logger.error("DELETE /api/v1/keys/%s error: %s", key_id, exc)
         return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Status / Config — GET /api/v1/status
+# Polled by the Prometheus frontend on every tab focus & on startup.
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/status", methods=["GET"])
+@_auth_required
+def get_status():
+    """
+    Return current server config and version.
+
+    Called by the Prometheus frontend via ``${restEndpoint}/status``
+    (restEndpoint already ends with ``/api/v1``).
+    """
+    try:
+        from config.settings import settings as _s
+        return _ok({
+            "version": "10.0.0",
+            "environment": getattr(_s, "environment", "production"),
+            "config": {
+                "ai_provider":               getattr(_s, "ai_provider", "gemini"),
+                "content_posting_hours_utc": getattr(_s, "content_posting_hours_utc", []),
+                "news_posting_hours_utc":    getattr(_s, "news_posting_hours_utc", []),
+                "environment":               getattr(_s, "environment", "production"),
+                "facebook_configured":       bool(getattr(_s, "page_access_token", "")),
+                "gemini_key_configured":     bool(getattr(_s, "gemini_key", "")),
+                "gemini_model":              getattr(_s, "gemini_model", "gemini-2.5-pro"),
+                "guardian_enabled":          bool(getattr(_s, "guardian_enabled", False)),
+                "rate_limit_per_user":       getattr(_s, "rate_limit_per_user", 10),
+                "supabase_enabled":          bool(getattr(_s, "supabase_enabled", False)),
+            },
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/status error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Health — GET /api/v1/health/deep
+# Returns service health in the shape the Prometheus frontend expects.
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/health/deep", methods=["GET"])
+@_auth_required
+def health_deep():
+    """
+    Deep health check — returns per-service latency and status.
+
+    Shape consumed by the Prometheus frontend healthMatrix mapping:
+      { status, version, services: { <name>: { status, latency_ms, page_name } } }
+    """
+    try:
+        import time as _time
+        from config.settings import settings as _s
+
+        services: dict = {}
+
+        # Gemini
+        gemini_ok = bool(getattr(_s, "gemini_key", ""))
+        services["gemini"] = {
+            "status": "ok" if gemini_ok else "error",
+            "latency_ms": 0,
+            "page_name": "Gemini AI",
+            "configured": gemini_ok,
+        }
+
+        # Facebook
+        fb_ok = bool(getattr(_s, "page_access_token", "")) and bool(getattr(_s, "page_id", ""))
+        services["facebook"] = {
+            "status": "ok" if fb_ok else "error",
+            "latency_ms": 0,
+            "page_name": "Facebook API",
+            "configured": fb_ok,
+        }
+
+        # Supabase
+        supa_ok = bool(getattr(_s, "supabase_enabled", False))
+        services["supabase"] = {
+            "status": "ok" if supa_ok else "degraded",
+            "latency_ms": 0,
+            "page_name": "Supabase",
+            "configured": supa_ok,
+        }
+
+        # Playwright (card renderer)
+        try:
+            from renderer.card_renderer import CardRenderer  # noqa: F401
+            services["playwright"] = {"status": "ok", "latency_ms": 0, "page_name": "Playwright"}
+        except Exception:
+            services["playwright"] = {"status": "degraded", "latency_ms": 0, "page_name": "Playwright"}
+
+        # Code Guardian
+        guardian_enabled = bool(getattr(_s, "guardian_enabled", False))
+        services["guardian"] = {
+            "status": "ok" if guardian_enabled else "degraded",
+            "latency_ms": 0,
+            "page_name": "Code Guardian",
+        }
+
+        # MWK Converter
+        try:
+            from products.converter.service import CurrencyService  # noqa: F401
+            services["converter"] = {"status": "ok", "latency_ms": 0, "page_name": "MWK Converter"}
+        except Exception:
+            services["converter"] = {"status": "degraded", "latency_ms": 0, "page_name": "MWK Converter"}
+
+        overall = "ok" if all(s["status"] == "ok" for s in services.values()) else "degraded"
+
+        return jsonify({
+            "status": overall,
+            "version": "10.0.0",
+            "services": services,
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/health/deep error: %s", exc)
+        return jsonify({"status": "error", "version": "10.0.0", "services": {}, "error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Workflow aliases — the Prometheus frontend uses paths that differ slightly
+# from the backend's canonical names.
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/workflow/status", methods=["GET"])
+@_auth_required
+def workflow_status():
+    """
+    Return current workflow engine status.
+
+    Shape consumed by the Prometheus frontend:
+      { status: 'running'|'paused'|'idle'|'error', progress, current_step }
+    """
+    try:
+        from scheduler.post_scheduler import scheduler
+        sched = scheduler.get_status()
+        running = sched.get("running", False)
+        return _ok({
+            "status": "running" if running else "idle",
+            "progress": 100 if running else 0,
+            "current_step": "Scheduler active" if running else "Idle",
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/workflow/status error: %s", exc)
+        return _ok({"status": "idle", "progress": 0, "current_step": str(exc)})
+
+
+@api_v1_bp.route("/workflow/pause", methods=["POST"])
+@_auth_required
+def workflow_pause():
+    """Pause the post scheduler."""
+    try:
+        from scheduler.post_scheduler import scheduler
+        scheduler.stop()
+        return _ok({"ok": True, "status": "paused"})
+    except Exception as exc:
+        logger.error("POST /api/v1/workflow/pause error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/workflow/resume", methods=["POST"])
+@_auth_required
+def workflow_resume():
+    """Resume the post scheduler."""
+    try:
+        from scheduler.post_scheduler import scheduler
+        scheduler.start()
+        return _ok({"ok": True, "status": "running"})
+    except Exception as exc:
+        logger.error("POST /api/v1/workflow/resume error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/workflow/trigger", methods=["POST"])
+@_auth_required
+def workflow_trigger():
+    """Trigger an immediate post — alias for /workflow/run with post_publish."""
+    try:
+        from scheduler.post_scheduler import scheduler
+        result = scheduler.run_content_now()
+        return _ok({"ok": result.get("ok", False), "job_id": result.get("topic", "manual")})
+    except Exception as exc:
+        logger.error("POST /api/v1/workflow/trigger error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Resource metrics — GET /api/v1/metrics/resources
+# Returns CPU/memory/disk/network utilisation consumed by ResourceUtilization
+# component in the Prometheus frontend.
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/metrics/resources", methods=["GET"])
+@_auth_required
+def get_resource_metrics():
+    """Return current process resource utilisation."""
+    try:
+        import os as _os
+        cpu_percent: float = 0.0
+        mem_percent: float = 0.0
+        disk_percent: float = 0.0
+
+        try:
+            import psutil as _ps
+            cpu_percent  = _ps.cpu_percent(interval=None)
+            mem_percent  = _ps.virtual_memory().percent
+            disk_percent = _ps.disk_usage("/").percent
+            net_io       = _ps.net_io_counters()
+            net_in_kbps  = round(net_io.bytes_recv / 1024, 1)
+            net_out_kbps = round(net_io.bytes_sent / 1024, 1)
+        except Exception:
+            net_in_kbps  = 0.0
+            net_out_kbps = 0.0
+
+        return _ok({
+            "cpu_percent":      cpu_percent,
+            "memory_percent":   mem_percent,
+            "disk_percent":     disk_percent,
+            "network_in_kbps":  net_in_kbps,
+            "network_out_kbps": net_out_kbps,
+            "workers_active":   1,
+            "queue_depth":      0,
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/metrics/resources error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# PromQL-style query — GET /api/v1/metrics/query?q=<expr>
+# Minimal shim so the PrometheusMetrics page doesn't hard-error on 404.
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/metrics/query", methods=["GET"])
+@_auth_required
+def metrics_query():
+    """
+    Accept a PromQL-like query string and return a minimal result envelope.
+    Real Prometheus scraping is not implemented; this returns in-process counters
+    shaped like a Prometheus instant-query response so frontend charts render.
+    """
+    try:
+        from utils.metrics import metrics as _m
+        snap = _m.get_snapshot()
+        q = request.args.get("q", "")
+        value = 0
+        if "cpu" in q.lower():
+            value = 0
+        elif "memory" in q.lower() or "mem" in q.lower():
+            value = 0
+        elif "rps" in q.lower() or "request" in q.lower():
+            value = snap.get("counters", {}).get("requests_total", 0)
+        elif "error" in q.lower():
+            value = snap.get("counters", {}).get("errors", 0)
+        return jsonify({
+            "status": "success",
+            "data": {
+                "result": [{
+                    "metric": {"__name__": q or "kanyoza_metric"},
+                    "value": [int(datetime.now(timezone.utc).timestamp()), str(value)],
+                }]
+            },
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/metrics/query error: %s", exc)
+        return jsonify({"status": "error", "error": str(exc), "data": {"result": []}}), 500

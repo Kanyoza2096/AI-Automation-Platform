@@ -18,8 +18,8 @@ Design
 * In-memory session counters track real-time connection counts and
   event throughput without touching Supabase.
 
-* Uses async_mode='threading' — compatible with gunicorn sync workers.
-  Eventlet removed due to Python 3.14 asyncio conflicts.
+* Uses async_mode='eventlet' — required by gunicorn ``--worker-class eventlet``
+  for HTTP→WebSocket upgrade support.  eventlet must be in requirements.txt.
 
 EventBus → SocketIO mapping
 ---------------------------
@@ -50,7 +50,7 @@ logger = logging.getLogger("kanyoza.socket")
 
 socketio = SocketIO(
     cors_allowed_origins="*",
-    async_mode="threading",
+    async_mode="eventlet",
     logger=False,
     engineio_logger=False,
     ping_timeout=60,
@@ -103,8 +103,15 @@ def emit_to_dashboard(event: str, data: dict[str, Any]) -> None:
 # Namespace handlers
 # ---------------------------------------------------------------------------
 
-def _auth_dashboard_client() -> bool:
-    """Validate the connecting dashboard client via MASTER_API_TOKEN."""
+def _auth_dashboard_client(auth: dict | None = None) -> bool:
+    """
+    Validate the connecting dashboard client via MASTER_API_TOKEN.
+
+    Token lookup order (most-to-least preferred):
+    1. Socket.IO ``auth`` dict — { "token": "<value>" }  (sent by socket.io-client v4 via
+       ``io(url, { auth: { token } })``)
+    2. HTTP query string — ``?token=<value>``  (legacy / curl-friendly fallback)
+    """
     import hmac
     from config.settings import settings as _s
     from config.environments import Environment
@@ -121,12 +128,18 @@ def _auth_dashboard_client() -> bool:
             return False
         return True
 
-    from flask import request as _req
+    # 1. Socket.IO auth dict (preferred — never leaks into URLs or server logs)
     token = ""
-    try:
-        token = _req.args.get("token", "")
-    except Exception:
-        pass
+    if isinstance(auth, dict):
+        token = str(auth.get("token", "") or "")
+
+    # 2. Query-string fallback (backward compat)
+    if not token:
+        from flask import request as _req
+        try:
+            token = _req.args.get("token", "")
+        except Exception:
+            pass
 
     if not token:
         return False
@@ -135,8 +148,10 @@ def _auth_dashboard_client() -> bool:
 
 
 @socketio.on("connect", namespace="/dashboard")
-def on_connect():
-    if not _auth_dashboard_client():
+def on_connect(auth=None):
+    # ``auth`` is the dict passed by socket.io-client v4 via ``io(url, { auth: {...} })``.
+    # Flask-SocketIO delivers it as the first positional argument of the connect handler.
+    if not _auth_dashboard_client(auth):
         logger.warning("Dashboard: rejected unauthenticated SocketIO connection")
         return False
 
@@ -172,4 +187,4 @@ def on_ping(data=None):
 def init_app(app: Flask) -> None:
     """Attach SocketIO to the Flask app. Call once during bootstrap."""
     socketio.init_app(app)
-    logger.info("SocketIO initialised (async_mode=threading, namespace=/dashboard)")
+    logger.info("SocketIO initialised (async_mode=eventlet, namespace=/dashboard)")
