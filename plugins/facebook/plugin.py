@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional, TYPE_CHECKING
+
+from plugins.base import Plugin
+
+if TYPE_CHECKING:
+    from services.facebook import FacebookService
+
+logger = logging.getLogger(__name__)
+
+
+class FacebookPlugin(Plugin):
+    """Wraps FacebookService behind the Plugin interface so the platform can
+    publish to Facebook without knowing its implementation details."""
+
+    def __init__(self, facebook_service: "FacebookService", social_repo: "SocialAccountRepository" = None) -> None:
+        self._svc = facebook_service
+        self._social_repo = social_repo
+        self._active = False
+
+    @property
+    def name(self) -> str:
+        return "facebook"
+
+    def start(self) -> None:
+        self._active = True
+        logger.info("FacebookPlugin: started")
+
+    def stop(self) -> None:
+        self._active = False
+        logger.info("FacebookPlugin: stopped")
+
+    def publish(
+        self,
+        content: str,
+        image_url: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
+        brand: Optional[Any] = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        if not self._active:
+            return {"ok": False, "error": "plugin not started"}
+            
+        page_id = None
+        page_token = None
+        
+        if brand and self._social_repo:
+            try:
+                account = self._social_repo.find_by_brand_and_platform(brand.id, "facebook")
+                if account and account.access_token:
+                    page_id = account.provider_account_id
+                    page_token = account.access_token
+            except Exception as exc:
+                logger.error("FacebookPlugin: failed to load credentials for brand '%s': %s", brand.name, exc)
+                
+        try:
+            post_id = self._svc.post_to_page(
+                message=content,
+                image_bytes=image_bytes or None,
+                image_url=image_url if not image_bytes else None,
+                page_id=page_id,
+                page_token=page_token,
+            )
+            return {"ok": bool(post_id), "post_id": post_id, "platform": "facebook"}
+        except Exception as exc:
+            logger.error("FacebookPlugin.publish: %s", exc)
+            return {"ok": False, "error": str(exc), "platform": "facebook"}
+
+    def health(self) -> dict[str, Any]:
+        try:
+            ok = self._svc is not None and self._svc.is_configured
+        except Exception:
+            ok = False
+        return {"ok": ok, "platform": "facebook", "active": self._active}
+
+    @property
+    def connector(self) -> Optional[Any]:
+        from services.connectors.facebook_connector import FacebookConnector
+        return FacebookConnector(self._svc)
