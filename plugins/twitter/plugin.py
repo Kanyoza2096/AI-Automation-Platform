@@ -1,6 +1,7 @@
 """
-Twitter/X Plugin v1.2
+Twitter/X Plugin v1.3
 Cross-posts content to Twitter/X via OAuth 2.0 Bearer token.
+Smart truncation for 280-character limit.
 """
 
 import logging
@@ -64,12 +65,40 @@ class TwitterPlugin(Plugin):
         image_bytes: Optional[bytes] = None,
         **kwargs,
     ) -> dict[str, Any]:
-        """Publish a tweet."""
+        """Publish a tweet with smart truncation for 280-char limit."""
         if not self.is_configured:
-            return {"ok": False, "reason": "Not configured"}
+            return {"ok": False, "platform": "twitter", "reason": "Not configured"}
 
         try:
-            tweet_text = content[:280]
+            max_len = 280
+
+            # Smart truncation — keep hook and body, skip hashtags
+            lines = content.split('\n')
+            tweet_parts = []
+            char_count = 0
+
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    if tweet_parts:
+                        tweet_parts.append('')
+                    continue
+                # Stop before hashtags (they take too much space)
+                if stripped.startswith('#'):
+                    break
+                if char_count + len(stripped) + 1 <= max_len - 3:
+                    tweet_parts.append(stripped)
+                    char_count += len(stripped) + 1
+                else:
+                    break
+
+            tweet_text = '\n'.join(tweet_parts).strip()
+
+            # Truncate with ellipsis if still too long
+            if len(tweet_text) > max_len:
+                tweet_text = tweet_text[:max_len - 3] + "..."
+
+            logger.info("Tweet: %d chars", len(tweet_text))
 
             resp = requests.post(
                 f"{self.api_base}/tweets",
@@ -86,8 +115,16 @@ class TwitterPlugin(Plugin):
                 logger.info("✅ Tweet posted: %s", tweet_id)
                 return {"ok": True, "platform": "twitter", "tweet_id": tweet_id}
 
-            logger.error("Twitter error: %s %s", resp.status_code, resp.text[:200])
-            return {"ok": False, "platform": "twitter", "reason": f"HTTP {resp.status_code}"}
+            logger.error(
+                "Twitter error: %s %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+            return {
+                "ok": False,
+                "platform": "twitter",
+                "reason": f"HTTP {resp.status_code}",
+            }
 
         except Exception as e:
             logger.error("Twitter error: %s", e)
