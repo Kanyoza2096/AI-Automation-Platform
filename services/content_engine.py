@@ -504,3 +504,6 @@ class ContentEngine:
         except Exception as exc:
             logger.warning("image_engine fallback also failed: %s", exc)
         return None
+
+         # Singleton
+         content_engine = ContentEngine()
