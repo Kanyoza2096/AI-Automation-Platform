@@ -16,42 +16,24 @@ logger = logging.getLogger("kanyoza.guardian.github")
 
 
 def _run_git(cmd: list, timeout: int) -> subprocess.CompletedProcess:
-    """Run a git subprocess safely under eventlet.
+    """Run a git subprocess with byte-mode pipes to avoid TextIOWrapper issues.
 
-    Root cause: eventlet.monkey_patch() replaces Python's file I/O classes
-    with GreenFileIO at import time.  When subprocess.run() uses
-    ``text=True`` (or ``capture_output=True, text=True``), Python wraps the
-    raw pipe in a TextIOWrapper, which internally calls ``_isatty_open_only``
-    — a method that GreenFileIO does not implement.  This raises AttributeError
-    for every git call, even when run inside an eventlet tpool thread, because
-    the monkey-patched classes are already in memory.
-
-    Fix: use raw byte-mode pipes (no ``text=True``, no ``capture_output``),
-    then decode stdout/stderr manually.  This avoids TextIOWrapper entirely,
-    so ``_isatty_open_only`` is never reached, regardless of eventlet state.
-    We still wrap in ``tpool.execute`` as a defence-in-depth measure for
-    blocking I/O.
+    Uses raw byte pipes (no ``text=True``, no ``capture_output``) and decodes
+    manually.  This is safe under all WSGI concurrency models (gthread, sync,
+    gevent) because it never touches Python's TextIOWrapper layer.
     """
-    def _call() -> subprocess.CompletedProcess:
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,   # bytes — avoids TextIOWrapper
-            stderr=subprocess.PIPE,   # bytes — avoids TextIOWrapper
-            timeout=timeout,
-        )
-        # Decode manually; replace undecodable bytes rather than raising
-        return subprocess.CompletedProcess(
-            args=proc.args,
-            returncode=proc.returncode,
-            stdout=(proc.stdout or b"").decode("utf-8", errors="replace"),
-            stderr=(proc.stderr or b"").decode("utf-8", errors="replace"),
-        )
-
-    try:
-        from eventlet import tpool
-        return tpool.execute(_call)
-    except ImportError:
-        return _call()
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,   # bytes — avoids TextIOWrapper
+        stderr=subprocess.PIPE,   # bytes — avoids TextIOWrapper
+        timeout=timeout,
+    )
+    return subprocess.CompletedProcess(
+        args=proc.args,
+        returncode=proc.returncode,
+        stdout=(proc.stdout or b"").decode("utf-8", errors="replace"),
+        stderr=(proc.stderr or b"").decode("utf-8", errors="replace"),
+    )
 
 GITHUB_API = "https://api.github.com"
 _REQUEST_TIMEOUT = 20

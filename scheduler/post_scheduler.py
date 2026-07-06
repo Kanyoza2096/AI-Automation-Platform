@@ -42,27 +42,6 @@ from utils.rate_limiter import rate_limiter
 logger = logging.getLogger("kanyoza.scheduler")
 
 MAX_JOB_QUEUE_SIZE = 10
-
-
-def _sb(fn):
-    """Run a supabase .execute() call on a real OS thread.
-
-    Root cause: eventlet.monkey_patch() replaces Python's low-level socket
-    primitives.  supabase-py uses httpx → httpcore → h11 for its HTTP
-    transport.  h11 constructs the raw HTTP/1.1 request line internally; when
-    its socket is a greenlet-patched object the byte stream gets corrupted,
-    producing ``httpx.RemoteProtocolError: illegal request line``.
-
-    Fix: push every .execute() call onto a native OS thread via
-    ``eventlet.tpool.execute``, identical to the pattern used for git
-    subprocess calls.  tpool bypasses the monkey-patched socket layer
-    entirely so httpx/h11 sees a real socket.
-    """
-    try:
-        from eventlet import tpool  # noqa: PLC0415
-        return tpool.execute(fn)
-    except ImportError:
-        return fn()
 MAX_REPLIED_COMMENTS = 500
 MAX_COMMENTS_PER_POST = 3
 
@@ -108,7 +87,7 @@ class PostScheduler:
         # Try Supabase first
         if self.supabase:
             try:
-                result = _sb(lambda: self.supabase.table('scheduler_state').select('*').execute())
+                result = self.supabase.table('scheduler_state').select('*').execute()
                 if result.data:
                     for row in result.data:
                         if row['key'] == 'last_post_time' and row['value']:
@@ -157,10 +136,10 @@ class PostScheduler:
         """Persist state to Supabase (if available) and local JSON file."""
         if self.supabase:
             try:
-                _key, _val, _ts = key, value, datetime.now(timezone.utc).isoformat()
-                _sb(lambda: self.supabase.table('scheduler_state').upsert({
-                    'key': _key, 'value': _val, 'updated_at': _ts,
-                }).execute())
+                self.supabase.table('scheduler_state').upsert({
+                    'key': key, 'value': value,
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }).execute()
             except Exception as e:
                 logger.error("Failed to save scheduler state to Supabase: %s", e)
 
@@ -351,11 +330,10 @@ class PostScheduler:
             return True
         if self.supabase:
             try:
-                _cid = comment_id
-                result = _sb(lambda: (
+                result = (
                     self.supabase.table('replied_comments')
-                    .select('id').eq('comment_id', _cid).maybe_single().execute()
-                ))
+                    .select('id').eq('comment_id', comment_id).maybe_single().execute()
+                )
                 if result.data:
                     self.replied_comments.add(comment_id)
                     return True
@@ -368,13 +346,12 @@ class PostScheduler:
             self.replied_comments.add(comment_id)
         if self.supabase:
             try:
-                _row = {
+                self.supabase.table('replied_comments').upsert({
                     'id': f"rc-{comment_id}", 'comment_id': comment_id,
                     'post_id': post_id, 'commenter_name': username,
                     'commenter_id': commenter_id, 'reply_text': reply[:500],
                     'replied_at': datetime.now(timezone.utc).isoformat(),
-                }
-                _sb(lambda: self.supabase.table('replied_comments').upsert(_row).execute())
+                }).execute()
             except Exception as e:
                 logger.error("Failed to save replied comment: %s", e)
 

@@ -18,8 +18,9 @@ Design
 * In-memory session counters track real-time connection counts and
   event throughput without touching Supabase.
 
-* Uses async_mode='eventlet' — required by gunicorn ``--worker-class eventlet``
-  for HTTP→WebSocket upgrade support.  eventlet must be in requirements.txt.
+* Uses async_mode='threading' — compatible with gunicorn ``--worker-class gthread``
+  on Render free tier.  No monkey-patching; WebSocket upgrades work via
+  standard Python threads.  eventlet is NOT required.
 
 EventBus → SocketIO mapping
 ---------------------------
@@ -50,7 +51,7 @@ logger = logging.getLogger("kanyoza.socket")
 
 socketio = SocketIO(
     cors_allowed_origins="*",
-    async_mode="eventlet",
+    async_mode="threading",
     logger=False,
     engineio_logger=False,
     ping_timeout=60,
@@ -187,4 +188,4 @@ def on_ping(data=None):
 def init_app(app: Flask) -> None:
     """Attach SocketIO to the Flask app. Call once during bootstrap."""
     socketio.init_app(app)
-    logger.info("SocketIO initialised (async_mode=eventlet, namespace=/dashboard)")
+    logger.info("SocketIO initialised (async_mode=threading, namespace=/dashboard)")

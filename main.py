@@ -7,11 +7,8 @@ Gunicorn / Flask dev server imports `app` from this module.
 Run locally:
     python main.py
 
-Run with Gunicorn + eventlet (required for WebSocket support):
-    gunicorn main:app --worker-class eventlet --workers 1
-
-IMPORTANT: eventlet.monkey_patch() MUST be the very first thing that runs so
-that the stdlib networking layer is patched before any other import.
+Run with Gunicorn + gthread workers (WebSocket support without eventlet):
+    gunicorn main:app --worker-class gthread --workers 1 --threads 4
 """
 
 
