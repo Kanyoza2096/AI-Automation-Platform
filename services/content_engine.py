@@ -34,9 +34,8 @@ Caption Builder  HTML Renderer   SVG Renderer
 
 import random
 import logging
-import threading
 import time
-from typing import Tuple, Optional, List
+from typing import Optional, List
 
 from models.content import TechPost, PostTheme
 from services.gemini import gemini
@@ -148,8 +147,6 @@ TOPICS = {
         "Code bootcamp vs university for tech careers",
         "Reading docs vs watching tutorials",
     ],
-
-    # ── Smartphones ────────────────────────────────────────────────────────────
     "smartphones": [
         "iPhone 16 vs Samsung Galaxy S25",
         "Google Pixel vs OnePlus in 2025",
@@ -160,8 +157,6 @@ TOPICS = {
         "iPhone battery vs Android battery in 2025",
         "Foldable phones vs traditional slabs",
     ],
-
-    # ── Computers & Laptops ────────────────────────────────────────────────────
     "computers_laptops": [
         "MacBook vs Windows laptop for developers",
         "MacBook Air vs MacBook Pro: which to buy",
@@ -172,8 +167,6 @@ TOPICS = {
         "Laptop vs Desktop for software development",
         "MacBook vs Dell XPS vs Lenovo ThinkPad",
     ],
-
-    # ── Operating Systems ──────────────────────────────────────────────────────
     "operating_systems": [
         "Windows vs macOS for developers",
         "Linux vs Windows for software engineering",
@@ -184,8 +177,6 @@ TOPICS = {
         "WSL2 vs dual-boot Linux on Windows",
         "ChromeOS vs Windows for students",
     ],
-
-    # ── Gaming ─────────────────────────────────────────────────────────────────
     "gaming": [
         "PC gaming vs Console gaming in 2025",
         "PlayStation 5 vs Xbox Series X",
@@ -196,8 +187,6 @@ TOPICS = {
         "Wired vs Wireless gaming peripherals",
         "Gaming laptop vs Gaming desktop",
     ],
-
-    # ── Gadgets & Consumer Tech ────────────────────────────────────────────────
     "gadgets_tech": [
         "AirPods Pro vs Sony WH-1000XM5",
         "Apple Watch vs Samsung Galaxy Watch",
@@ -208,8 +197,6 @@ TOPICS = {
         "Mechanical keyboard vs membrane keyboard",
         "NAS vs Cloud storage for home backups",
     ],
-
-    # ── Apps & Productivity ────────────────────────────────────────────────────
     "apps_productivity": [
         "Notion vs Obsidian for developers",
         "VS Code vs JetBrains IDEs",
@@ -233,7 +220,6 @@ CATEGORY_THEMES: dict = {
     "system_design_patterns": PostTheme.SYSTEM_DESIGN,
     "malawi_tech":            PostTheme.COMPARISON,
     "career_growth":          PostTheme.TUTORIAL,
-    # New comparison categories
     "smartphones":            PostTheme.COMPARISON,
     "computers_laptops":      PostTheme.COMPARISON,
     "operating_systems":      PostTheme.COMPARISON,
@@ -253,7 +239,6 @@ HASHTAGS: dict = {
     "system_design_patterns": "#SystemDesign #DistributedSystems #Architecture #ScalableSystems",
     "malawi_tech":            "#MalawiTech #AfricaTech #DigitalAfrica #TechAfrica",
     "career_growth":          "#SoftwareEngineering #CareerAdvice #DevLife #CodingCareer",
-    # New comparison categories
     "smartphones":            "#Smartphones #iPhone #Android #Samsung #TechReview",
     "computers_laptops":      "#Laptops #MacBook #Windows #Apple #PCSetup",
     "operating_systems":      "#Windows #macOS #Linux #Android #iOS #TechTips",
@@ -319,21 +304,15 @@ FALLBACK_POSTS: list = [
 
 
 # ── Caption Builder ─────────────────────────────────────────────────────────────
-#
-# Receives a fully-populated TechPost (from the single Gemini call) and
-# assembles the Facebook caption.  No second Gemini call is made here.
 
 class CaptionBuilder:
-    """
-    Builds a Facebook-ready caption from a TechPost and its category metadata.
-    All content comes from the TechPost model — zero additional AI calls.
-    """
+    """Builds a Facebook-ready caption from a TechPost. Zero additional AI calls."""
 
     @staticmethod
-    def build(post: TechPost, category: str, brand: Optional[Brand] = None) -> str:
+    def build(post: TechPost, category: str, brand: Optional["Brand"] = None) -> str:
         viral_hook = random.choice(VIRAL_HOOKS)
         engagement = random.choice(ENGAGEMENT_HOOKS)
-        
+
         if brand and brand.hashtags:
             tags = brand.formatted_hashtags
         else:
@@ -393,10 +372,7 @@ class CaptionBuilder:
 # ── Content Engine ──────────────────────────────────────────────────────────────
 
 class ContentEngine:
-    """
-    Brand-aware Content Engine. Orchestrates the full post pipeline.
-    Stateless implementation.
-    """
+    """Brand-aware Content Engine. Orchestrates the full post pipeline."""
 
     def __init__(self):
         self._caption_builder = CaptionBuilder()
@@ -414,11 +390,8 @@ class ContentEngine:
         caption = random.choice(FALLBACK_POSTS)
         return {"caption": caption, "image_bytes": None, "topic": "", "category": ""}
 
-    def generate_post_raw(self, topic: str, base_prompt: str, brand: Optional[Brand] = None) -> Optional[dict]:
-        """
-        Generates post content using a pre-built base prompt.
-        Skips the prompt building step inside ContentEngine.
-        """
+    def generate_post_raw(self, topic: str, base_prompt: str, brand: Optional["Brand"] = None) -> Optional[dict]:
+        """Generates post content using a pre-built base prompt."""
         _t0 = time.monotonic()
         category = "system_architecture"
         for cat, topics in TOPICS.items():
@@ -426,7 +399,7 @@ class ContentEngine:
                 category = cat
                 break
         theme = self.get_theme(category)
-        
+
         try:
             structured = gemini.generate_structured_post(topic, theme.value, base_prompt=base_prompt)
             if structured:
@@ -443,22 +416,22 @@ class ContentEngine:
                 fallback_caption = random.choice(FALLBACK_POSTS)
                 return {"caption": fallback_caption, "image_bytes": None, "topic": topic, "category": category}
 
-            viral_hook  = random.choice(VIRAL_HOOKS)
-            engagement  = random.choice(ENGAGEMENT_HOOKS)
-            tags        = brand.formatted_hashtags if (brand and brand.hashtags) else self.get_hashtags(category)
-            caption     = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
+            viral_hook = random.choice(VIRAL_HOOKS)
+            engagement = random.choice(ENGAGEMENT_HOOKS)
+            tags = brand.formatted_hashtags if (brand and brand.hashtags) else self.get_hashtags(category)
+            caption = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
             return {"caption": caption, "image_bytes": None, "topic": topic, "category": category}
         except Exception as exc:
             logger.error("generate_post_raw crashed: %s", exc)
             fallback_caption = random.choice(FALLBACK_POSTS)
             return {"caption": fallback_caption, "image_bytes": None, "topic": topic, "category": category}
 
-    def generate_post(self, brand: Brand, ai_profile: AIProfile, topic: Optional[str] = None) -> dict:
+    def generate_post(self, brand: "Brand", ai_profile: "AIProfile", topic: Optional[str] = None) -> dict:
         _t0 = time.monotonic()
         category = "system_architecture"
         try:
             from domain.content.topic_selector import TopicSelector
-            
+
             if not topic:
                 selector = TopicSelector(brand=brand)
                 topic, category = selector.pick()
@@ -467,9 +440,8 @@ class ContentEngine:
                     if topic in topics:
                         category = cat
                         break
-            
-            theme = self.get_theme(category)
 
+            theme = self.get_theme(category)
             logger.info("Pipeline start: brand='%s' category='%s' topic='%s' theme='%s'", brand.name, category, topic[:60], theme.value)
 
             from services.prompt_builder import prompt_builder
@@ -480,13 +452,12 @@ class ContentEngine:
         except Exception as exc:
             logger.error("Post generation crashed: %s", exc)
             metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, False)
-            fallback_caption, fallback_bytes = random.choice(FALLBACK_POSTS), None
-            return {"caption": fallback_caption, "image_bytes": fallback_bytes, "topic": "", "category": ""}
+            fallback_caption = random.choice(FALLBACK_POSTS)
+            return {"caption": fallback_caption, "image_bytes": None, "topic": "", "category": ""}
 
-    def _render_image(self, post: TechPost, topic: str, brand: Brand) -> Optional[bytes]:
+    def _render_image(self, post: TechPost, topic: str, brand: "Brand") -> Optional[bytes]:
         try:
             from services.card_renderer import card_renderer
-            # Pass brand to renderer if it supports it
             png = card_renderer.render(post)
             if png:
                 logger.info("Card renderer produced PNG (%d bytes)", len(png))
@@ -505,5 +476,6 @@ class ContentEngine:
             logger.warning("image_engine fallback also failed: %s", exc)
         return None
 
-         # Singleton
-         content_engine = ContentEngine()
+
+# Singleton
+content_engine = ContentEngine()
