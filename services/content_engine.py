@@ -1,15 +1,14 @@
 """
-Content Engine v10.0 — Canonical Image Post Pipeline
+Content Engine v11.0 — Brand-Aware Image Post Pipeline
 
-Pipeline (matches architecture diagram exactly):
-
+Pipeline:
     Scheduler
         │
         ▼
-    ContentEngine.generate_post()
+    ContentEngine.generate_post(brand, ai_profile)
         │
         ▼
-    Gemini (ONE API CALL)
+    Gemini (ONE API CALL with brand-aware prompt)
         │
         ▼
     TechPost (dataclass)
@@ -25,11 +24,8 @@ Caption Builder  HTML Renderer   SVG Renderer
                     ▼
          Facebook Publisher
 
-- One Gemini call returns full structured JSON → TechPost model
-- CaptionBuilder assembles the Facebook caption text from TechPost fields
-- SvgRenderer generates an inline SVG chart from TechPost data
-- CardRenderer embeds SVG into Jinja2 HTML, screenshots via Playwright
-- Falls back to static text + None image if the AI call fails
+- Brand-aware: each brand has its own tone, hashtags, and AI personality
+- generate_post_legacy() provides v10 backwards compatibility
 """
 
 import random
@@ -309,12 +305,12 @@ class CaptionBuilder:
     """Builds a Facebook-ready caption from a TechPost. Zero additional AI calls."""
 
     @staticmethod
-    def build(post: TechPost, category: str, brand: Optional["Brand"] = None) -> str:
+    def build(post: TechPost, category: str, brand=None) -> str:
         viral_hook = random.choice(VIRAL_HOOKS)
         engagement = random.choice(ENGAGEMENT_HOOKS)
 
-        if brand and brand.hashtags:
-            tags = brand.formatted_hashtags
+        if brand and getattr(brand, 'hashtags', None):
+            tags = brand.formatted_hashtags if hasattr(brand, 'formatted_hashtags') else " ".join(brand.hashtags)
         else:
             tags = post.formatted_hashtags or HASHTAGS.get(
                 category, "#TechTips #Coding #SoftwareEngineering"
@@ -326,41 +322,21 @@ class CaptionBuilder:
             lines.append(f"🔥 {post.title}")
             lines.append("")
 
-        if post.is_structured_comparison:
-            if post.option_a and post.left_content:
-                lines.append(f"◀️ {post.option_a}: {post.left_content}")
-                lines.append("")
-            if post.option_b and post.right_content:
-                lines.append(f"▶️ {post.option_b}: {post.right_content}")
-                lines.append("")
-            if post.tradeoff:
-                lines.append(f"⚖️ Trade-off: {post.tradeoff}")
-                lines.append("")
-            if post.best_for:
-                lines.append(f"🎯 Best for: {post.best_for}")
-                lines.append("")
-            if post.verdict:
-                lines.append(f"🧭 Verdict: {post.verdict}")
-                lines.append("")
-            if post.recommendation:
-                lines.append(f"✅ {post.recommendation_title}: {post.recommendation}")
-                lines.append("")
-        else:
-            if post.caption:
-                lines.append(post.caption)
-                lines.append("")
+        if post.caption:
+            lines.append(post.caption)
+            lines.append("")
 
-            if post.is_debate and post.option_a and post.option_b:
-                lines.append(f"⚡ {post.option_a} vs {post.option_b}:")
-                for pt in post.points_a[:3]:
-                    lines.append(f"  • {post.option_a}: {pt}")
-                for pt in post.points_b[:3]:
-                    lines.append(f"  • {post.option_b}: {pt}")
-                lines.append("")
+        if post.is_debate and post.option_a and post.option_b:
+            lines.append(f"⚡ {post.option_a} vs {post.option_b}:")
+            for pt in post.points_a[:3]:
+                lines.append(f"  • {post.option_a}: {pt}")
+            for pt in post.points_b[:3]:
+                lines.append(f"  • {post.option_b}: {pt}")
+            lines.append("")
 
-            if post.winner:
-                lines.append(f"🏆 Winner: {post.winner}")
-                lines.append("")
+        if post.winner:
+            lines.append(f"🏆 Winner: {post.winner}")
+            lines.append("")
 
         lines.append(engagement)
         lines.append("")
@@ -390,45 +366,16 @@ class ContentEngine:
         caption = random.choice(FALLBACK_POSTS)
         return {"caption": caption, "image_bytes": None, "topic": "", "category": ""}
 
-    def generate_post_raw(self, topic: str, base_prompt: str, brand: Optional["Brand"] = None) -> Optional[dict]:
-        """Generates post content using a pre-built base prompt."""
+    # ── v11: Brand-aware generation ─────────────────────────────────────────
+
+    def generate_post(self, brand=None, ai_profile=None, topic: Optional[str] = None) -> dict:
+        """
+        v11 Brand-aware post generation.
+        Falls back to defaults if brand/ai_profile not provided.
+        """
         _t0 = time.monotonic()
         category = "system_architecture"
-        for cat, topics in TOPICS.items():
-            if topic in topics:
-                category = cat
-                break
-        theme = self.get_theme(category)
 
-        try:
-            structured = gemini.generate_structured_post(topic, theme.value, base_prompt=base_prompt)
-            if structured:
-                try:
-                    post = TechPost.from_gemini_response(structured, theme=theme)
-                    caption = CaptionBuilder.build(post, category, brand=brand)
-                    image_bytes = self._render_image(post, topic, brand)
-                    return {"caption": caption, "image_bytes": image_bytes, "topic": topic, "category": category}
-                except Exception as exc:
-                    logger.warning("TechPost parse/render failed — falling back: %s", exc)
-
-            post_body = gemini.generate_content_post(topic=topic, template_type="deep_dive", base_prompt=base_prompt)
-            if not post_body:
-                fallback_caption = random.choice(FALLBACK_POSTS)
-                return {"caption": fallback_caption, "image_bytes": None, "topic": topic, "category": category}
-
-            viral_hook = random.choice(VIRAL_HOOKS)
-            engagement = random.choice(ENGAGEMENT_HOOKS)
-            tags = brand.formatted_hashtags if (brand and brand.hashtags) else self.get_hashtags(category)
-            caption = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
-            return {"caption": caption, "image_bytes": None, "topic": topic, "category": category}
-        except Exception as exc:
-            logger.error("generate_post_raw crashed: %s", exc)
-            fallback_caption = random.choice(FALLBACK_POSTS)
-            return {"caption": fallback_caption, "image_bytes": None, "topic": topic, "category": category}
-
-    def generate_post(self, brand: "Brand", ai_profile: "AIProfile", topic: Optional[str] = None) -> dict:
-        _t0 = time.monotonic()
-        category = "system_architecture"
         try:
             from domain.content.topic_selector import TopicSelector
 
@@ -442,20 +389,75 @@ class ContentEngine:
                         break
 
             theme = self.get_theme(category)
-            logger.info("Pipeline start: brand='%s' category='%s' topic='%s' theme='%s'", brand.name, category, topic[:60], theme.value)
+            brand_name = getattr(brand, 'name', 'Default') if brand else 'Default'
+            logger.info(
+                "Pipeline start: brand='%s' category='%s' topic='%s' theme='%s'",
+                brand_name, category, topic[:60], theme.value,
+            )
 
             from services.prompt_builder import prompt_builder
             base_prompt = prompt_builder.build_post_prompt(brand, ai_profile, topic)
 
-            return self.generate_post_raw(topic, base_prompt, brand)
+            structured = gemini.generate_structured_post(topic, theme.value, base_prompt=base_prompt)
+            if structured:
+                try:
+                    post = TechPost.from_gemini_response(structured, theme=theme)
+                    caption = CaptionBuilder.build(post, category, brand=brand)
+                    image_bytes = self._render_image(post, topic, brand)
+                    logger.info(
+                        "Pipeline complete: caption=%d words image=%s",
+                        len(caption.split()),
+                        f"{len(image_bytes)} bytes" if image_bytes else "None",
+                    )
+                    metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, True)
+                    return {"caption": caption, "image_bytes": image_bytes, "topic": topic, "category": category}
+                except Exception as exc:
+                    logger.warning("TechPost parse/render failed — falling back: %s", exc)
+
+            # Fallback to legacy text
+            post_body = gemini.generate_content_post(topic=topic, template_type="deep_dive")
+            if not post_body:
+                logger.warning("Both pipelines failed — using static fallback")
+                return self.get_fallback_post()
+
+            viral_hook = random.choice(VIRAL_HOOKS)
+            engagement = random.choice(ENGAGEMENT_HOOKS)
+            tags = self.get_hashtags(category)
+            caption = f"{viral_hook}\n\n{post_body}\n\n{engagement}\n\n{tags}"
+            return {"caption": caption, "image_bytes": None, "topic": topic, "category": category}
 
         except Exception as exc:
             logger.error("Post generation crashed: %s", exc)
             metrics.record_ai("content_engine", "generate_post", (time.monotonic() - _t0) * 1000, False)
-            fallback_caption = random.choice(FALLBACK_POSTS)
-            return {"caption": fallback_caption, "image_bytes": None, "topic": "", "category": ""}
+            return self.get_fallback_post()
 
-    def _render_image(self, post: TechPost, topic: str, brand: "Brand") -> Optional[bytes]:
+    # ── v10 Legacy: Backwards-compatible method ────────────────────────────
+
+    def generate_post_legacy(self, topic: Optional[str] = None) -> dict:
+        """
+        Backwards-compatible method for v10 scheduler.
+        Uses default workspace brand and AI profile.
+        """
+        try:
+            from models.brand import Brand
+            from models.ai_profile import AIProfile
+
+            default_brand = Brand.default()
+            default_profile = AIProfile.default()
+
+            return self.generate_post(
+                brand=default_brand,
+                ai_profile=default_profile,
+                topic=topic,
+            )
+        except Exception as e:
+            logger.warning("Default brand/profile failed: %s — using fallback", e)
+            return self.get_fallback_post()
+
+    # ── Image rendering ────────────────────────────────────────────────────
+
+    def _render_image(self, post: TechPost, topic: str, brand=None) -> Optional[bytes]:
+        """Card rendering: SVG → HTML → Playwright → PNG."""
         try:
             from services.card_renderer import card_renderer
             png = card_renderer.render(post)
