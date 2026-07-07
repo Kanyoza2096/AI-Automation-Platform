@@ -374,3 +374,27 @@ def _register_workflows(c: ServiceContainer) -> None:
     c.register("PostPublishWorkflowFactory", _build_post_workflow_factory, singleton=True)
     c.register("ContentGenerationPipelineFactory", _build_post_workflow_factory, singleton=True)
     logger.info("ContentGenerationPipelineFactory and legacy PostPublishWorkflowFactory registered.")
+
+    # Register PostPublishWorkflow as a resolvable type (transient — fresh instance per
+    # resolve) so lifecycle.py can wire it directly into the scheduler.
+    # Uses Brand.create_default / AIProfile.create_default for the legacy single-tenant path.
+    def _build_default_post_workflow():
+        from models.brand import Brand
+        from models.ai_profile import AIProfile
+        from services.content_engine import ContentEngine
+        brand       = Brand.create_default("default")
+        ai_profile  = AIProfile.create_default("default")
+        registry    = c.resolve(PluginRegistry)
+        an_repo     = c.resolve(AnalyticsRepository)
+        bus         = c.resolve(EventBus)
+        return PostPublishWorkflow(
+            content_engine=ContentEngine(),
+            registry=registry,
+            analytics_repo=an_repo,
+            bus=bus,
+            brand=brand,
+            ai_profile=ai_profile,
+        )
+
+    c.register(PostPublishWorkflow, _build_default_post_workflow, singleton=False)
+    logger.info("PostPublishWorkflow registered as resolvable transient binding.")

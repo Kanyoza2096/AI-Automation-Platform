@@ -14,33 +14,59 @@ class PromptBuilder:
         # We can add an LRU cache here later for performance
         pass
 
+    @staticmethod
+    def _default_brand() -> "Brand":
+        from models.brand import Brand as _Brand
+        return _Brand.create_default("default")
+
+    @staticmethod
+    def _default_ai_profile() -> "AIProfile":
+        from models.ai_profile import AIProfile as _AIProfile
+        return _AIProfile.create_default("default")
+
     def build_post_prompt(
-        self, 
-        brand: Brand, 
-        ai_profile: AIProfile, 
-        topic: Optional[str] = None, 
+        self,
+        brand: Optional["Brand"] = None,
+        ai_profile: Optional["AIProfile"] = None,
+        topic: Optional[str] = None,
         knowledge_context: Optional[str] = None
     ) -> str:
-        """Builds a comprehensive prompt for generating a social media post."""
-        
+        """Builds a comprehensive prompt for generating a social media post.
+
+        Both brand and ai_profile are optional — when None, canonical defaults
+        are used so this method never crashes on the legacy single-tenant path.
+        """
+        if brand is None:
+            brand = self._default_brand()
+        if ai_profile is None:
+            ai_profile = self._default_ai_profile()
+
         # Base Persona from AI Profile
         system_prompt = ai_profile.build_system_prompt(
-            brand_name=brand.name, 
-            audience=brand.audience_description
+            brand_name=brand.name,
+            audience=brand.audience_description,
         )
-        
+
         # Brand strategy context
         brand_context = f"Brand Tone: {brand.tone}\n"
         brand_context += f"Brand Language: {brand.language}\n"
-        if brand.hashtags:
+        if getattr(brand, "hashtags", None):
             brand_context += f"Default Hashtags: {brand.formatted_hashtags}\n"
-        
+
         # Topic
-        topic_str = f"Topic: {topic}" if topic else "Topic: Please select an engaging and highly relevant topic for the audience."
-        
+        topic_str = (
+            f"Topic: {topic}"
+            if topic
+            else "Topic: Please select an engaging and highly relevant topic for the audience."
+        )
+
         # Knowledge Context
-        knowledge_str = f"\nUse the following knowledge base facts if relevant:\n{knowledge_context}\n" if knowledge_context else ""
-        
+        knowledge_str = (
+            f"\nUse the following knowledge base facts if relevant:\n{knowledge_context}\n"
+            if knowledge_context
+            else ""
+        )
+
         # Actionable Task
         task = f"""
 Task:
@@ -60,20 +86,31 @@ Guidelines:
         return f"{system_prompt}\n\n{task}"
 
     def build_chat_prompt(
-        self, 
-        brand: Brand, 
-        ai_profile: AIProfile, 
-        user_profile: Dict[str, Any], 
-        conversation_history: List[Dict[str, str]]
+        self,
+        brand: Optional["Brand"] = None,
+        ai_profile: Optional["AIProfile"] = None,
+        user_profile: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
-        """Builds a prompt for engaging in conversational chat (e.g., Messenger)."""
+        """Builds a prompt for engaging in conversational chat (e.g., Messenger).
+
+        Both brand and ai_profile are optional — when None, canonical defaults
+        are used so this method never crashes on the legacy single-tenant path.
+        """
+        if brand is None:
+            brand = self._default_brand()
+        if ai_profile is None:
+            ai_profile = self._default_ai_profile()
+        if user_profile is None:
+            user_profile = {}
+
         system_prompt = ai_profile.build_system_prompt(
-            brand_name=brand.name, 
-            audience=brand.audience_description
+            brand_name=brand.name,
+            audience=brand.audience_description,
         )
-        
-        user_name = user_profile.get('name', 'User')
-        
+
+        user_name = user_profile.get("name", "User")
+
         chat_context = f"""
 Task Context:
 You are conversing directly with {user_name} in a chat interface.

@@ -298,8 +298,8 @@ class GeminiService:
 
     def _fallback_response(self, language: str) -> str:
         if language == "chichewa":
-            return "Pepani, netiweki ikuvuta pang'ono pano. Tiyezanso pakadali pano."
-        return "Ah, my connection is acting up. Give me a sec to retry?"
+            return "Pepani, ndikupitilira malire a zopempha za AI panopa. Yesaninso patangopita mphindi imodzi."
+        return "I'm temporarily over my AI request limit — please try again in a minute."
 
     def _validate_chat_quality(self, reply: str, language: str) -> str:
         patterns = [
