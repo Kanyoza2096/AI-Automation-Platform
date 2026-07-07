@@ -80,7 +80,7 @@ def _get_slash_handler() -> "_SlashCommands":
 
 
 def calculate_typing_delay(msg, length):
-    return _humanizer.pick_response_delay(len(msg))
+    return _humanizer.pick_response_delay(length)
 
 
 def should_split_message(msg):

@@ -47,9 +47,10 @@ def create_app(
         ENV=settings.environment,
         TESTING=settings.env.is_testing,
         SECRET_KEY=_secret_key,
-        JSON_SORT_KEYS=False,
         MAX_CONTENT_LENGTH=16 * 1024 * 1024,
     )
+    # Flask 3 removed JSON_SORT_KEYS from app.config; set via the json provider instead
+    app.json.sort_keys = False
     if test_config:
         app.config.update(test_config)
 
@@ -253,6 +254,21 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
 
     @app.route("/api/v1/dashboard/live")
     def dashboard_live():
+        # Require auth — live dashboard data is sensitive
+        import hmac as _hmac
+        _s = settings
+        master = getattr(_s, "master_api_token", "") or ""
+        api_secret = getattr(_s, "app_secret", "") or ""
+        auth_hdr = request.headers.get("Authorization", "").strip()
+        api_key = request.headers.get("X-API-Key", "").strip()
+        authed = False
+        if auth_hdr.startswith("Bearer ") and master:
+            authed = _hmac.compare_digest(auth_hdr[len("Bearer "):], master)
+        if not authed and api_key and api_secret:
+            authed = _hmac.compare_digest(api_key, api_secret)
+        if not authed:
+            return jsonify({"error": "unauthorized", "message": "Authentication required"}), 401
+
         try:
             from analytics.tracker import analytics
             stats = analytics.get_stats()

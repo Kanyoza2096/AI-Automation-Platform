@@ -223,8 +223,14 @@ def _start_post_scheduler(container: ServiceContainer) -> None:
         # analytics → event bus) instead of calling Facebook directly.
         try:
             from workflows.post_workflow import PostPublishWorkflow
-            post_scheduler.workflow_factory = lambda: container.resolve(PostPublishWorkflow)
-            logger.info("PostPublishWorkflow wired into scheduler.")
+            if container.is_registered(PostPublishWorkflow):
+                post_scheduler.workflow_factory = lambda: container.resolve(PostPublishWorkflow)
+                logger.info("PostPublishWorkflow wired into scheduler.")
+            else:
+                logger.info(
+                    "PostPublishWorkflow not registered in DI container — "
+                    "scheduler will use the legacy direct-publish path."
+                )
         except Exception as exc:
             logger.warning("Could not wire PostPublishWorkflow into scheduler: %s", exc)
 

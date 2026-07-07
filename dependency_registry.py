@@ -211,9 +211,6 @@ def _register_services(c: ServiceContainer) -> None:
     c.register_instance(RenderCache, _rc)
     logger.info("RenderCache registered (module singleton).")
 
-    if settings.guardian_configured:
-        from services.guardian_service import GuardianService
-
     # ── Phase 5: Security & Reliability ──────────────────────────────
     from core.credential_vault import CredentialVault
     c.register(CredentialVault, lambda: CredentialVault(), singleton=True)
@@ -249,7 +246,8 @@ def _register_services(c: ServiceContainer) -> None:
     c.register(DeadLetterQueue, lambda: DeadLetterQueue(), singleton=True)
 
     def _build_health_checker():
-        registry = c.resolve(PluginRegistry)
+        from plugins.base import PluginRegistry as _PluginRegistry
+        registry = c.resolve(_PluginRegistry)
         return HealthChecker(registry)
 
     c.register(HealthChecker, _build_health_checker, singleton=True)

@@ -165,7 +165,15 @@ class DeadLetterQueue:
         try:
             with open(self.file_path, "r") as f:
                 return json.load(f)
-        except Exception:
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "DeadLetterQueue: '%s' is corrupted (JSONDecodeError: %s) — "
+                "returning empty list. Corrupt file will be overwritten on next enqueue.",
+                self.file_path, exc,
+            )
+            return []
+        except Exception as exc:
+            logger.warning("DeadLetterQueue: could not read '%s': %s", self.file_path, exc)
             return []
 
     def remove_job(self, job_id: str) -> bool:

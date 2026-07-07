@@ -44,10 +44,11 @@ class AnalyticsTracker:
     def record_message_received(self, sender_id: str):
         self._track('message_events', {'sender_id': sender_id, 'event_type': 'received'})
 
-    def record_message_sent(self, sender_id: str, response_time_ms: float):
+    def record_message_sent(self, sender_id: str, response_time_s: float):
+        """Record a sent message. response_time_s is elapsed wall-clock time in seconds."""
         self._track('message_events', {
             'sender_id': sender_id, 'event_type': 'sent',
-            'response_time_ms': int(response_time_ms * 1000),
+            'response_time_ms': int(response_time_s * 1000),
         })
 
     def record_message_failed(self, sender_id: str, error: str):

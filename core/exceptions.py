@@ -137,17 +137,20 @@ class MessageDeliveryError(PlatformError):
 # ---------------------------------------------------------------------------
 
 
-class MemoryError(KanyozaError):
-    """Base for memory system errors."""
+class MemorySystemError(KanyozaError):
+    """Base for memory system errors (renamed to avoid shadowing Python built-in MemoryError)."""
     error_code = "MEMORY_ERROR"
 
+# Alias so any code importing MemoryError still works
+MemoryError = MemorySystemError  # noqa: F811
 
-class MemoryReadError(MemoryError):
+
+class MemoryReadError(MemorySystemError):
     """Failed to read from the memory store."""
     error_code = "MEMORY_READ_ERROR"
 
 
-class MemoryWriteError(MemoryError):
+class MemoryWriteError(MemorySystemError):
     """Failed to write to the memory store."""
     error_code = "MEMORY_WRITE_ERROR"
 

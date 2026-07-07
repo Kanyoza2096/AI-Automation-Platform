@@ -935,8 +935,9 @@ def run_workflow():
             }
             with _workflow_history_lock:
                 _workflow_history.append(entry)
-            status = 200 if result.get("ok") else 500
-            return _ok({"workflow": name, "result": result, "ran_at": entry["ran_at"]}), status
+            if result.get("ok"):
+                return _ok({"workflow": name, "result": result, "ran_at": entry["ran_at"]})
+            return _err(result.get("error", "Workflow failed"), 500)
 
         return _err(f"Workflow '{name}' runner not implemented", 501)
 
@@ -1153,7 +1154,6 @@ def revoke_api_key(key_id: str):
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/status", methods=["GET"])
-@_auth_required
 def get_status():
     """
     Return current server config and version.
@@ -1190,7 +1190,6 @@ def get_status():
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/health/deep", methods=["GET"])
-@_auth_required
 def health_deep():
     """
     Deep health check — returns per-service latency and status.

@@ -3,6 +3,7 @@ Smart retry decorator with exponential backoff and jitter.
 """
 
 import random
+import sys
 import time
 import logging
 from functools import wraps
@@ -60,7 +61,7 @@ def smart_retry(
                     breaker._on_success()
                     return result
                 except no_retry_exceptions:
-                    breaker._on_failure(sys.exc_info()[1] if 'sys' in globals() else Exception("No-retry exception"))
+                    breaker._on_failure(sys.exc_info()[1] or Exception("no-retry exception"))
                     raise
                 except exceptions as exc:
                     last_exc = exc

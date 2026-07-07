@@ -217,7 +217,7 @@ class Settings(BaseSettings):
 
     @property
     def guardian_configured(self) -> bool:
-        return False  # Disable temporarily
+        return bool(self.github_token and self.github_username and self.guardian_enabled)
 
     # -------------------------------------------------------------------------
     # Startup validation
@@ -225,6 +225,7 @@ class Settings(BaseSettings):
 
     REQUIRED_VARS: ClassVar[tuple] = (
         "gemini_key",
+        "page_access_token",
         "verify_token",
         "app_secret",
     )
@@ -233,6 +234,7 @@ class Settings(BaseSettings):
         """Return names of required variables that are empty."""
         env_names = {
             "gemini_key": "GEMINI_KEY",
+            "page_access_token": "PAGE_ACCESS_TOKEN",
             "verify_token": "VERIFY_TOKEN",
             "app_secret": "APP_SECRET",
         }

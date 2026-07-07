@@ -182,11 +182,40 @@ class OwnerCommands:
             self._reply(sender_id, f"❌ News post failed: {exc}")
 
     def _cmd_reload(self, sender_id: str, _args: str) -> None:
+        """Hot-reload mutable config fields from environment variables.
+
+        pydantic-settings BaseSettings has no .reload() method — we manually
+        refresh the fields that can meaningfully change at runtime without a
+        full process restart (API keys, tokens, model name).
+        """
         if not self._settings:
             self._reply(sender_id, "Settings not available.")
             return
-        self._settings.reload()
-        self._reply(sender_id, "✅ Settings reloaded from environment.")
+        import os
+        try:
+            reloaded = []
+            fields = {
+                "gemini_key": "GEMINI_KEY",
+                "page_access_token": "PAGE_ACCESS_TOKEN",
+                "page_id": "PAGE_ID",
+                "master_api_token": "MASTER_API_TOKEN",
+                "owner_psid": "OWNER_PSID",
+                "gemini_model": "GEMINI_MODEL",
+                "hf_token": "HF_TOKEN",
+            }
+            for attr, env_var in fields.items():
+                new_val = os.getenv(env_var, "")
+                if new_val and new_val != getattr(self._settings, attr, ""):
+                    object.__setattr__(self._settings, attr, new_val)
+                    reloaded.append(env_var)
+            msg = (
+                f"✅ Settings reloaded: {', '.join(reloaded)}"
+                if reloaded
+                else "✅ Settings reloaded — no changes detected."
+            )
+            self._reply(sender_id, msg)
+        except Exception as exc:
+            self._reply(sender_id, f"⚠️ Reload failed: {exc}")
 
     def _cmd_mood(self, sender_id: str, _args: str) -> None:
         if not self._persona:
