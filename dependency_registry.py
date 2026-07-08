@@ -246,12 +246,6 @@ def _register_services(c: ServiceContainer) -> None:
     c.register_instance(RenderCache, _rc)
     logger.info("RenderCache registered (module singleton).")
 
-    # ── Rate Limiter (uses Redis when available) ─────────────────
-    _register_rate_limiter(c)
-
-    # ── Prompt Cache (uses Redis when available) ─────────────────
-    _register_prompt_cache(c)
-
     # ── Phase 5: Security & Reliability ──────────────────────────
     from core.credential_vault import CredentialVault
     c.register(CredentialVault, lambda: CredentialVault(), singleton=True)
@@ -321,50 +315,6 @@ def _register_services(c: ServiceContainer) -> None:
 # ---------------------------------------------------------------------------
 # Redis-dependent Services (graceful fallback)
 # ---------------------------------------------------------------------------
-
-def _register_rate_limiter(c: ServiceContainer) -> None:
-    """
-    Register rate limiter with Redis backend when available.
-    Falls back to in-memory rate limiting if Redis is not configured.
-    """
-    from core.rate_limiter import rate_limiter as RateLimiter
-
-    def _build():
-        try:
-            from core.redis_client import UpstashRedisClient
-            redis = c.resolve(UpstashRedisClient)
-            logger.info("RateLimiter using Redis backend.")
-            return RateLimiter(redis=redis)
-        except Exception:
-            logger.info("RateLimiter using in-memory backend (Redis unavailable).")
-            return RateLimiter(redis=None)
-
-    c.register(RateLimiter, _build, singleton=True)
-    logger.info("RateLimiter registered.")
-
-
-def _register_prompt_cache(c: ServiceContainer) -> None:
-    """
-    Register prompt cache with Redis backend when available.
-    Falls back to in-memory LRU cache if Redis is not configured.
-    """
-    from services.prompt_cache import PromptCache
-
-    def _build():
-        try:
-            from core.redis_client import UpstashRedisClient
-            redis = c.resolve(UpstashRedisClient)
-            if redis.is_available:
-                logger.info("PromptCache using Redis backend.")
-                return PromptCache(redis=redis)
-        except Exception:
-            pass
-        
-        logger.info("PromptCache using in-memory backend (Redis unavailable).")
-        return PromptCache(redis=None)
-
-    c.register(PromptCache, _build, singleton=True)
-    logger.info("PromptCache registered.")
 
 
 # ---------------------------------------------------------------------------
