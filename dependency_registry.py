@@ -56,20 +56,8 @@ def _register_infrastructure(c: ServiceContainer) -> None:
 
     _register_supabase(c)
 
-
 def _register_redis(c: ServiceContainer) -> None:
-    """
-    Register Upstash Redis client.
-    
-    Redis is OPTIONAL — the system works fully without it.
-    When available, it enhances caching, rate limiting, and idempotency.
-    When unavailable, services gracefully fall back to in-memory storage.
-    """
-    # DEBUG: Log exactly what settings sees
     url = getattr(settings, 'upstash_redis_rest_url', None)
-    token = getattr(settings, 'upstash_redis_rest_token', None)
-    logger.info("Redis DEBUG — URL: '%s' (len=%s)", url[:50] + "..." if url and len(url) > 50 else url, len(url) if url else 0)
-    logger.info("Redis DEBUG — Token: '%s' (len=%s)", token[:15] + "..." if token and len(token) > 15 else token, len(token) if token else 0)
     
     if not url:
         logger.info("Redis not configured — UPSTASH_REDIS_REST_URL not set.")
@@ -77,23 +65,18 @@ def _register_redis(c: ServiceContainer) -> None:
 
     from core.redis_client import UpstashRedisClient
 
-    def _build_redis():
-        client = UpstashRedisClient()
-        health = client.health_check()
-        status = health.get("redis", "unknown")
-        if status == "healthy":
-            logger.info(
-                "Redis connected — %s (%.2fms)",
-                health.get("url", "unknown"),
-                health.get("latency_ms", 0),
-            )
-        else:
-            logger.warning("Redis unavailable (%s) — using in-memory fallback.", status)
-        return client
+    # Eagerly initialize so health check works immediately
+    client = UpstashRedisClient()
+    health = client.health_check()
+    status = health.get("redis", "unknown")
+    
+    if status == "healthy":
+        logger.info("Redis connected — %s (%.2fms)", health.get("url", "unknown"), health.get("latency_ms", 0))
+    else:
+        logger.warning("Redis unavailable (%s) — using in-memory fallback.", status)
 
-    c.register(UpstashRedisClient, _build_redis, singleton=True)
+    c.register_instance(UpstashRedisClient, client)
     logger.info("UpstashRedisClient registered.")
-
 
 def _build_event_bus():
     from core.event_bus import EventBus
