@@ -327,7 +327,7 @@ def _register_rate_limiter(c: ServiceContainer) -> None:
     Register rate limiter with Redis backend when available.
     Falls back to in-memory rate limiting if Redis is not configured.
     """
-    from core.rate_limiter import RateLimiter
+    from core.rate_limiter import rate_limiter as RateLimiter
 
     def _build():
         try:
