@@ -1,32 +1,55 @@
 # core/redis_client.py
+"""
+Upstash Redis REST API client for Kanyoza Systems AI Platform v10.
+
+Uses Upstash's HTTPS REST API instead of native Redis protocol.
+This avoids adding redis-py as a dependency.
+
+Credentials resolved from Settings (Pydantic v2).
+Graceful fallback to in-memory storage when Redis is unreachable.
+"""
+
+from __future__ import annotations
+
 import json
-import time
+import logging
 import threading
-from typing import Optional, Any, Dict
-import requests
+import time
 from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+import requests
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RedisConfig:
-    """Configuration for Upstash Redis REST API"""
+    """Configuration for Upstash Redis REST API."""
     url: str
     token: str
     enabled: bool = True
     timeout: float = 5.0
     max_retries: int = 2
 
+
+class RedisConnectionError(Exception):
+    """Redis is unreachable — system will use in-memory fallback."""
+    pass
+
+
 class UpstashRedisClient:
     """
     Upstash Redis client using REST API.
-    
-    Upstash provides both:
-    - Native Redis protocol (redis://) — requires `redis-py`
-    - REST API (https://) — works with plain HTTP requests
-    
-    We use REST API to avoid adding another dependency.
+
+    Features:
+    - Automatic in-memory fallback when Redis is unreachable
+    - Lazy health checking (cached is_available flag)
+    - Thread-safe fallback operations
+    - Graceful degradation — system works without Redis
     """
-    
-    def __init__(self, config: RedisConfig):
+
+    def __init__(self, config: RedisConfig) -> None:
         self.config = config
         self._session = requests.Session()
         self._session.headers.update({
@@ -35,326 +58,280 @@ class UpstashRedisClient:
         })
         self._in_memory_fallback: Dict[str, Any] = {}
         self._in_memory_expiry: Dict[str, float] = {}
+        self._in_memory_lists: Dict[str, list] = {}
         self._lock = threading.Lock()
-        self._available = None  # Lazily checked
-    
+        self._available: Optional[bool] = None
+
+        # Eagerly test connection on init
+        if self.config.enabled:
+            try:
+                self.ping()
+                self._available = True
+                logger.info("Redis connected — %s", self._mask_url())
+            except Exception as e:
+                logger.warning("Redis unavailable (%s) — using in-memory fallback: %s", self._mask_url(), e)
+                self._available = False
+
+    def _mask_url(self) -> str:
+        """Mask the URL for safe logging."""
+        if not self.config.url:
+            return "not-configured"
+        parts = self.config.url.replace("https://", "").split(".")
+        if len(parts) >= 2:
+            return f"{parts[0]}.***"
+        return "***"
+
+    # ------------------------------------------------------------------
+    # HTTP Request Layer
+    # ------------------------------------------------------------------
+
     def _request(self, method: str, path: str, json_data: Optional[dict] = None) -> dict:
-        """Make a request to Upstash REST API"""
+        """Make a request to Upstash REST API with retry logic."""
         url = f"{self.config.url}{path}"
-        
+
         for attempt in range(self.config.max_retries + 1):
             try:
-                response = self._session.request(
-                    method=method,
-                    url=url,
-                    json=json_data,
-                    timeout=self.config.timeout
-                )
-                
+                if method == "GET":
+                    response = self._session.get(url, timeout=self.config.timeout)
+                elif method == "POST":
+                    response = self._session.post(url, json=json_data, timeout=self.config.timeout)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
                 if response.status_code == 200:
                     return response.json()
-                
-                # Rate limited — wait and retry
+
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 1))
+                    retry_after = int(response.headers.get("Retry-After", 1))
                     time.sleep(retry_after)
                     continue
-                
-                # Other error
-                logger.warning(f"Redis API error: {response.status_code} - {response.text}")
-                raise RedisConnectionError(f"HTTP {response.status_code}: {response.text}")
-                
+
+                logger.warning("Redis API error: HTTP %s — %s", response.status_code, response.text[:200])
+                raise RedisConnectionError(f"HTTP {response.status_code}: {response.text[:200]}")
+
             except requests.RequestException as e:
                 if attempt < self.config.max_retries:
                     time.sleep(2 ** attempt)
                     continue
-                raise RedisConnectionError(f"Connection failed after {self.config.max_retries} retries: {e}")
-        
-        raise RedisConnectionError("Max retries exceeded")
-    
+                raise RedisConnectionError(f"Connection failed after {self.config.max_retries + 1} attempts: {e}")
+
+        raise RedisConnectionError("Max retries exhausted")
+
+    # ------------------------------------------------------------------
+    # Availability
+    # ------------------------------------------------------------------
+
     @property
     def is_available(self) -> bool:
-        """Check if Redis is reachable — cached to avoid hammering the API"""
+        """Check if Redis is reachable (cached)."""
         if not self.config.enabled:
             return False
-        
         if self._available is None:
             try:
                 self.ping()
                 self._available = True
             except Exception:
                 self._available = False
-        
         return self._available
-    
+
     def ping(self) -> bool:
-        """Test connection to Redis"""
+        """PING the Redis server."""
         result = self._request("GET", "/ping")
         return result.get("result") == "PONG"
-    
-    # ============================================================
-    # String Operations (Cache, Sessions, Rate Limiting)
-    # ============================================================
-    
+
+    def health_check(self) -> dict:
+        """Health status for /api/v1/health/deep."""
+        if not self.config.enabled:
+            return {"redis": "disabled", "url": self._mask_url(), "fallback_active": True}
+
+        try:
+            start = time.time()
+            is_alive = self.ping()
+            latency_ms = round((time.time() - start) * 1000, 2)
+
+            return {
+                "redis": "healthy" if is_alive else "unhealthy",
+                "latency_ms": latency_ms,
+                "url": self._mask_url(),
+                "fallback_active": not self._available,
+            }
+        except Exception as e:
+            return {
+                "redis": "degraded",
+                "error": str(e)[:200],
+                "url": self._mask_url(),
+                "fallback_active": True,
+            }
+
+    # ------------------------------------------------------------------
+    # String Operations
+    # ------------------------------------------------------------------
+
     def get(self, key: str) -> Optional[str]:
-        """GET a value — with automatic in-memory fallback"""
         if not self.is_available:
-            return self._memory_fallback_get(key)
-        
+            return self._fallback_get(key)
         try:
             result = self._request("GET", f"/get/{key}")
-            return result.get("result")
+            value = result.get("result")
+            return value if value != "null" else None
         except RedisConnectionError:
-            logger.warning(f"Redis unavailable for GET {key}, using fallback")
             self._available = False
-            return self._memory_fallback_get(key)
-    
+            return self._fallback_get(key)
+
     def set(self, key: str, value: str, ex: Optional[int] = None) -> bool:
-        """SET a value with optional expiry in seconds"""
         if not self.is_available:
-            self._memory_fallback_set(key, value, ex)
+            self._fallback_set(key, value, ex)
             return True
-        
         try:
             path = f"/set/{key}/{value}"
-            if ex:
+            if ex is not None:
                 path = f"/set/{key}/{value}/ex/{ex}"
             result = self._request("GET", path)
             return result.get("result") == "OK"
         except RedisConnectionError:
             self._available = False
-            self._memory_fallback_set(key, value, ex)
+            self._fallback_set(key, value, ex)
             return False
-    
+
     def delete(self, key: str) -> bool:
-        """DELETE a key"""
         if not self.is_available:
-            self._memory_fallback.pop(key, None)
-            self._memory_expiry.pop(key, None)
-            return True
-        
+            return self._fallback_delete(key)
         try:
             result = self._request("GET", f"/del/{key}")
             return result.get("result", 0) > 0
         except RedisConnectionError:
             self._available = False
-            self._memory_fallback.pop(key, None)
-            return False
-    
-    def exists(self, key: str) -> bool:
-        """Check if key exists"""
-        if not self.is_available:
-            return key in self._memory_fallback
-        
-        try:
-            result = self._request("GET", f"/exists/{key}")
-            return result.get("result", 0) == 1
-        except RedisConnectionError:
-            self._available = False
-            return key in self._memory_fallback
-    
+            return self._fallback_delete(key)
+
     def set_json(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
-        """SET a JSON-serializable value"""
         return self.set(key, json.dumps(value, default=str), ex)
-    
+
     def get_json(self, key: str) -> Optional[Any]:
-        """GET and deserialize a JSON value"""
         value = self.get(key)
         if value is None:
             return None
         try:
             return json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             return value
-    
-    # ============================================================
-    # Atomic Operations (Rate Limiting, Counters)
-    # ============================================================
-    
+
+    # ------------------------------------------------------------------
+    # Atomic Operations
+    # ------------------------------------------------------------------
+
     def incr(self, key: str) -> int:
-        """INCR — atomic increment, perfect for rate limiting"""
         if not self.is_available:
-            return self._memory_fallback_incr(key)
-        
+            return self._fallback_incr(key)
         try:
             result = self._request("GET", f"/incr/{key}")
             return result.get("result", 0)
         except RedisConnectionError:
             self._available = False
-            return self._memory_fallback_incr(key)
-    
-    def incrby(self, key: str, amount: int) -> int:
-        """INCRBY — increment by specific amount"""
-        if not self.is_available:
-            return self._memory_fallback_incrby(key, amount)
-        
-        try:
-            result = self._request("GET", f"/incrby/{key}/{amount}")
-            return result.get("result", 0)
-        except RedisConnectionError:
-            self._available = False
-            return self._memory_fallback_incrby(key, amount)
-    
+            return self._fallback_incr(key)
+
     def expire(self, key: str, seconds: int) -> bool:
-        """EXPIRE — set TTL on a key"""
         if not self.is_available:
-            self._memory_expiry[key] = time.time() + seconds
+            self._fallback_set_expiry(key, seconds)
             return True
-        
         try:
             result = self._request("GET", f"/expire/{key}/{seconds}")
             return result.get("result", 0) == 1
         except RedisConnectionError:
             self._available = False
-            self._memory_expiry[key] = time.time() + seconds
+            self._fallback_set_expiry(key, seconds)
             return False
-    
+
     def setnx(self, key: str, value: str) -> bool:
-        """SETNX — set only if not exists (perfect for idempotency)"""
         if not self.is_available:
-            if key not in self._memory_fallback:
-                self._memory_fallback[key] = value
-                return True
-            return False
-        
+            return self._fallback_setnx(key, value)
         try:
-            path = f"/setnx/{key}/{value}"
-            result = self._request("GET", path)
+            result = self._request("GET", f"/setnx/{key}/{value}")
             return result.get("result", 0) == 1
         except RedisConnectionError:
             self._available = False
-            if key not in self._memory_fallback:
-                self._memory_fallback[key] = value
-                return True
-            return False
-    
-    # ============================================================
-    # List Operations (Task Queue)
-    # ============================================================
-    
+            return self._fallback_setnx(key, value)
+
+    # ------------------------------------------------------------------
+    # List Operations
+    # ------------------------------------------------------------------
+
     def lpush(self, key: str, value: str) -> int:
-        """LPUSH — push to left of list (task queue)"""
         if not self.is_available:
-            return self._memory_fallback_list_push(key, value, left=True)
-        
+            return self._fallback_lpush(key, value)
         try:
             result = self._request("GET", f"/lpush/{key}/{value}")
             return result.get("result", 0)
         except RedisConnectionError:
             self._available = False
-            return self._memory_fallback_list_push(key, value, left=True)
-    
+            return self._fallback_lpush(key, value)
+
     def rpop(self, key: str) -> Optional[str]:
-        """RPOP — pop from right of list (FIFO queue)"""
         if not self.is_available:
-            return self._memory_fallback_list_pop(key)
-        
+            return self._fallback_rpop(key)
         try:
             result = self._request("GET", f"/rpop/{key}")
-            return result.get("result")
+            value = result.get("result")
+            return value if value != "null" else None
         except RedisConnectionError:
             self._available = False
-            return self._memory_fallback_list_pop(key)
-    
-    def llen(self, key: str) -> int:
-        """LLEN — length of list (queue depth)"""
-        if not self.is_available:
-            return len(self._memory_fallback.get(f"_list:{key}", []))
-        
-        try:
-            result = self._request("GET", f"/llen/{key}")
-            return result.get("result", 0)
-        except RedisConnectionError:
-            return len(self._memory_fallback.get(f"_list:{key}", []))
-    
-    # ============================================================
-    # In-Memory Fallback (Graceful Degradation)
-    # ============================================================
-    
-    def _memory_fallback_get(self, key: str) -> Optional[str]:
-        """In-memory GET with expiry check"""
+            return self._fallback_rpop(key)
+
+    # ------------------------------------------------------------------
+    # In-Memory Fallback
+    # ------------------------------------------------------------------
+
+    def _fallback_get(self, key: str) -> Optional[str]:
         with self._lock:
-            expiry = self._memory_expiry.get(key)
+            expiry = self._in_memory_expiry.get(key)
             if expiry and time.time() > expiry:
-                self._memory_fallback.pop(key, None)
-                self._memory_expiry.pop(key, None)
+                self._in_memory_fallback.pop(key, None)
+                self._in_memory_expiry.pop(key, None)
                 return None
-            return self._memory_fallback.get(key)
-    
-    def _memory_fallback_set(self, key: str, value: str, ex: Optional[int] = None):
-        """In-memory SET with optional expiry"""
+            return self._in_memory_fallback.get(key)
+
+    def _fallback_set(self, key: str, value: str, ex: Optional[int] = None) -> None:
         with self._lock:
-            self._memory_fallback[key] = value
-            if ex:
-                self._memory_expiry[key] = time.time() + ex
-    
-    def _memory_fallback_incr(self, key: str) -> int:
-        """In-memory INCR"""
+            self._in_memory_fallback[key] = value
+            if ex is not None:
+                self._in_memory_expiry[key] = time.time() + ex
+
+    def _fallback_delete(self, key: str) -> bool:
         with self._lock:
-            current = int(self._memory_fallback.get(key, 0))
+            existed = key in self._in_memory_fallback
+            self._in_memory_fallback.pop(key, None)
+            self._in_memory_expiry.pop(key, None)
+            return existed
+
+    def _fallback_incr(self, key: str) -> int:
+        with self._lock:
+            current = int(self._in_memory_fallback.get(key, 0))
             current += 1
-            self._memory_fallback[key] = str(current)
+            self._in_memory_fallback[key] = str(current)
             return current
-    
-    def _memory_fallback_incrby(self, key: str, amount: int) -> int:
-        """In-memory INCRBY"""
+
+    def _fallback_set_expiry(self, key: str, seconds: int) -> None:
         with self._lock:
-            current = int(self._memory_fallback.get(key, 0))
-            current += amount
-            self._memory_fallback[key] = str(current)
-            return current
-    
-    def _memory_fallback_list_push(self, key: str, value: str, left: bool = True) -> int:
-        """In-memory list push"""
+            if key in self._in_memory_fallback:
+                self._in_memory_expiry[key] = time.time() + seconds
+
+    def _fallback_setnx(self, key: str, value: str) -> bool:
+        with self._lock:
+            if key not in self._in_memory_fallback:
+                self._in_memory_fallback[key] = value
+                return True
+            return False
+
+    def _fallback_lpush(self, key: str, value: str) -> int:
         list_key = f"_list:{key}"
         with self._lock:
-            if list_key not in self._memory_fallback:
-                self._memory_fallback[list_key] = []
-            if left:
-                self._memory_fallback[list_key].insert(0, value)
-            else:
-                self._memory_fallback[list_key].append(value)
-            return len(self._memory_fallback[list_key])
-    
-    def _memory_fallback_list_pop(self, key: str) -> Optional[str]:
-        """In-memory list pop (FIFO)"""
+            if list_key not in self._in_memory_lists:
+                self._in_memory_lists[list_key] = []
+            self._in_memory_lists[list_key].insert(0, value)
+            return len(self._in_memory_lists[list_key])
+
+    def _fallback_rpop(self, key: str) -> Optional[str]:
         list_key = f"_list:{key}"
         with self._lock:
-            if list_key in self._memory_fallback and self._memory_fallback[list_key]:
-                return self._memory_fallback[list_key].pop()
+            if list_key in self._in_memory_lists and self._in_memory_lists[list_key]:
+                return self._in_memory_lists[list_key].pop()
             return None
-    
-    # ============================================================
-    # Health Check
-    # ============================================================
-    
-    def health_check(self) -> dict:
-        """For your /api/v1/health/deep endpoint"""
-        if not self.config.enabled:
-            return {'redis': 'disabled'}
-        
-        try:
-            start = time.time()
-            self.ping()
-            latency_ms = (time.time() - start) * 1000
-            
-            # Get memory info
-            info = self._request("GET", "/info/memory")
-            
-            return {
-                'redis': 'healthy',
-                'latency_ms': round(latency_ms, 2),
-                'used_memory_mb': round(info.get('result', {}).get('used_memory', 0) / 1024 / 1024, 2),
-                'fallback_active': not self._available,
-            }
-        except Exception as e:
-            return {
-                'redis': 'degraded',
-                'error': str(e),
-                'fallback_active': True,
-            }
-
-
-class RedisConnectionError(Exception):
-    """Redis is unreachable — system will use fallback"""
-    pass
