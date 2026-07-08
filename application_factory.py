@@ -252,43 +252,10 @@ def _register_system_routes(app: Flask, settings: Settings) -> None:
             ]
         })
 
-    @app.route("/api/v1/dashboard/live")
-    def dashboard_live():
-        # Require auth — live dashboard data is sensitive
-        import hmac as _hmac
-        _s = settings
-        master = getattr(_s, "master_api_token", "") or ""
-        api_secret = getattr(_s, "app_secret", "") or ""
-        auth_hdr = request.headers.get("Authorization", "").strip()
-        api_key = request.headers.get("X-API-Key", "").strip()
-        authed = False
-        if auth_hdr.startswith("Bearer ") and master:
-            authed = _hmac.compare_digest(auth_hdr[len("Bearer "):], master)
-        if not authed and api_key and api_secret:
-            authed = _hmac.compare_digest(api_key, api_secret)
-        if not authed:
-            return jsonify({"error": "unauthorized", "message": "Authentication required"}), 401
-
-        try:
-            from analytics.tracker import analytics
-            stats = analytics.get_stats()
-            overview = stats.get("overview", {})
-        except Exception:
-            overview = {}
-
-        return jsonify({
-            "messages_today": overview.get("messages_received", 0),
-            "posts_published": overview.get("posts_published", 0),
-            "active_users": overview.get("active_users_24h", 0),
-            "api_calls_today": 0,
-            "guardian_issues": 0,
-            "services": {
-                "gemini": bool(getattr(settings, "gemini_key", "")),
-                "facebook": bool(getattr(settings, "page_access_token", "")),
-                "supabase": settings.supabase_enabled,
-                "converter": True,
-            }
-        })
+    # NOTE: /api/v1/dashboard/live is handled exclusively by the dashboard_bp
+    # blueprint (api/dashboard.py) via build_live_stats().  The app-level
+    # duplicate has been removed to prevent it shadowing the richer blueprint
+    # implementation that returns the full stats shape the frontend expects.
 
     # NOTE: /api/v1/status and /api/v1/health/deep are intentionally handled by
     # the api_v1 blueprint (api/v1.py) with proper authentication.

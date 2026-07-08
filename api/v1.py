@@ -538,31 +538,103 @@ def update_ai_config():
 @api_v1_bp.route("/ai/persona", methods=["GET"])
 @_auth_required
 def get_ai_persona():
-    """Return the live persona state (mood history, message count, tone)."""
+    """
+    Return the live persona state in the shape the Prometheus frontend expects.
+
+    Frontend PersonaPayload:
+      { tone: 0-100, aggression: 0-100, humor: 0-100, model: str, system_prompt: str }
+
+    Internal backend uses 0.0-1.0 floats with different field names:
+      tone_formality      → tone        (×100)
+      tone_assertiveness  → aggression  (×100)
+      tone_humor          → humor       (×100)
+      gemini_model        → model
+      system_prompt_override → system_prompt
+    """
     from api.ai_runtime import get as _rt_get
+    from config.settings import settings as _s
     rt = _rt_get()
-    try:
-        from core.persona import bot_persona
-        persona_state = bot_persona.to_dict()
-    except Exception:
-        persona_state = {}
-    return _ok({**rt, **persona_state})
+    return _ok({
+        # Frontend-facing field names (0–100 integer scale)
+        "tone":          int(round(rt.get("tone_formality", 0.6) * 100)),
+        "aggression":    int(round(rt.get("tone_assertiveness", 0.7) * 100)),
+        "humor":         int(round(rt.get("tone_humor", 0.2) * 100)),
+        "model":         getattr(_s, "gemini_model", "gemini-2.5-flash"),
+        "system_prompt": rt.get("system_prompt_override") or "",
+        # Also expose internal fields so advanced clients can read them
+        "persona_mood":       rt.get("persona_mood", "professional"),
+        "tone_formality":     rt.get("tone_formality", 0.6),
+        "tone_assertiveness": rt.get("tone_assertiveness", 0.7),
+        "tone_humor":         rt.get("tone_humor", 0.2),
+    })
 
 
 @api_v1_bp.route("/ai/persona", methods=["PUT"])
 @_auth_required
 def update_ai_persona():
-    """Update personality sliders and mood. Alias for PUT /ai/config (personality fields only)."""
+    """
+    Update personality sliders and mood.
+
+    Accepts BOTH the frontend-native field names (tone/aggression/humor/model/system_prompt)
+    AND the internal backend field names (tone_formality/tone_assertiveness/tone_humor/…)
+    so that the Prometheus dashboard and any direct API callers both work.
+    """
     from api.ai_runtime import update as _rt_update, VALID_MOODS
+    from config.settings import settings as _s
     try:
         data = request.get_json(force=True, silent=True) or {}
-        allowed = {"persona_mood", "tone_assertiveness", "tone_humor", "tone_formality",
-                   "system_prompt_override"}
-        unknown = set(data.keys()) - allowed
-        if unknown:
-            return _err(f"Unknown keys: {sorted(unknown)}", 400)
-        rt = _rt_update(**{k: v for k, v in data.items() if k in allowed})
-        return _ok({"updated": True, "persona": rt})
+
+        # --- Translate frontend field names to internal names ---
+        rt_updates: dict = {}
+
+        # tone (0-100) → tone_formality (0.0-1.0)
+        if "tone" in data:
+            val = data["tone"]
+            if not isinstance(val, (int, float)) or not 0 <= val <= 100:
+                return _err("tone must be an integer in 0–100", 400)
+            rt_updates["tone_formality"] = round(float(val) / 100.0, 4)
+
+        # aggression (0-100) → tone_assertiveness (0.0-1.0)
+        if "aggression" in data:
+            val = data["aggression"]
+            if not isinstance(val, (int, float)) or not 0 <= val <= 100:
+                return _err("aggression must be an integer in 0–100", 400)
+            rt_updates["tone_assertiveness"] = round(float(val) / 100.0, 4)
+
+        # humor (0-100) → tone_humor (0.0-1.0)
+        if "humor" in data:
+            val = data["humor"]
+            if not isinstance(val, (int, float)) or not 0 <= val <= 100:
+                return _err("humor must be an integer in 0–100", 400)
+            rt_updates["tone_humor"] = round(float(val) / 100.0, 4)
+
+        # model / gemini_model → settings.gemini_model (not an ai_runtime field)
+        for _model_key in ("model", "gemini_model"):
+            if _model_key in data:
+                _s.gemini_model = str(data[_model_key])
+                break
+
+        # system_prompt → system_prompt_override
+        if "system_prompt" in data:
+            rt_updates["system_prompt_override"] = data["system_prompt"] or None
+
+        # Pass-through internal field names unchanged
+        for internal_key in ("tone_formality", "tone_assertiveness", "tone_humor",
+                             "persona_mood", "system_prompt_override"):
+            if internal_key in data and internal_key not in rt_updates:
+                rt_updates[internal_key] = data[internal_key]
+
+        if rt_updates:
+            rt = _rt_update(**rt_updates)
+        else:
+            from api.ai_runtime import get as _rt_get
+            rt = _rt_get()
+
+        return _ok({
+            "updated": True,
+            "ok": True,
+            "persona": rt,
+        })
     except ValueError as exc:
         return _err(str(exc), 400)
     except Exception as exc:
@@ -1923,5 +1995,448 @@ def get_system_connectors():
         })
     except Exception as exc:
         logger.error("GET /api/v1/system/connectors error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# AI Chat  — POST /api/v1/ai/chat
+# Real-time chat with the Gemini AI backend (used by the AI Chat page).
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/ai/chat", methods=["POST"])
+@_auth_required
+def ai_chat():
+    """
+    Send a message to the Gemini AI and return a response.
+
+    Body (JSON):
+      { "message": "Hello!", "history": [...], "system_prompt": "..." }
+
+    Returns:
+      { "reply": "...", "model": "...", "tokens_used": N }
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        message = str(data.get("message", "")).strip()
+        if not message:
+            return _err("message field is required", 400)
+
+        history = data.get("history", [])  # list of {role, content} dicts
+        system_prompt_override = data.get("system_prompt", "")
+
+        from api.ai_runtime import get_effective_system_prompt
+        from config.settings import settings as _s
+
+        # Inject prior history into the in-process memory so Gemini picks it up
+        if history:
+            from core.memory import memory as _mem
+            for turn in history[-10:]:
+                role    = str(turn.get("role", "user"))
+                content = str(turn.get("content", ""))
+                if role == "user":
+                    _mem.add_message("api_chat_user", "user", content)
+                elif role in ("assistant", "bot"):
+                    _mem.add_message("api_chat_user", "assistant", content)
+
+        # Try Gemini with the correct service contract
+        try:
+            from services.gemini import GeminiService
+            gemini = GeminiService()
+            # generate_chat_response(sender_id, user_message, language, sentiment)
+            reply = gemini.generate_chat_response(
+                sender_id="api_chat_user",
+                user_message=message,
+            )
+            return _ok({
+                "reply": reply,
+                "model": _s.gemini_model,
+                "tokens_used": len(reply.split()),
+            })
+        except Exception as exc:
+            logger.warning("Gemini chat failed: %s", exc)
+            return _ok({
+                "reply": "The AI service is temporarily unavailable. Please check your GEMINI_KEY configuration and try again.",
+                "model": "unavailable",
+                "tokens_used": 0,
+            })
+    except Exception as exc:
+        logger.error("POST /api/v1/ai/chat error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs  — GET /api/v1/audit-logs
+# Returns recent audit/event log entries from analytics or Supabase.
+# ---------------------------------------------------------------------------
+
+# In-process audit log ring-buffer (supplements Supabase when not configured)
+import collections as _audit_collections
+_audit_log: _collections_mod.deque = _collections_mod.deque(maxlen=200)
+_audit_log_lock = _threading_mod.Lock()
+
+
+def _append_audit(action: str, resource: str, user: str = "system",
+                   status: str = "success", detail: str = "") -> None:
+    """Append a structured entry to the in-process audit ring-buffer."""
+    entry = {
+        "id": _uuid_mod.uuid4().hex[:16],
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "user": user,
+        "action": action,
+        "resource": resource,
+        "status": status,
+        "detail": detail,
+    }
+    with _audit_log_lock:
+        _audit_log.appendleft(entry)
+
+
+@api_v1_bp.route("/audit-logs", methods=["GET"])
+@_auth_required
+def get_audit_logs():
+    """
+    Return recent audit log entries.
+
+    Query params:
+      limit  — max entries to return (default 50, max 200)
+      action — filter by action type
+      user   — filter by user
+    """
+    try:
+        limit  = min(200, max(1, int(request.args.get("limit", 50))))
+        action = request.args.get("action", "").strip().lower()
+        user   = request.args.get("user", "").strip().lower()
+
+        # Try Supabase first
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                q = (
+                    supabase_service.client.table("audit_logs")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                )
+                result = q.execute()
+                logs = result.data or []
+                return _ok({"logs": logs, "count": len(logs), "source": "supabase"})
+            except Exception:
+                pass  # fall through to in-process buffer
+
+        # Fall back to in-process ring buffer
+        with _audit_log_lock:
+            logs = list(_audit_log)
+
+        if action:
+            logs = [l for l in logs if action in l.get("action", "").lower()]
+        if user:
+            logs = [l for l in logs if user in l.get("user", "").lower()]
+
+        logs = logs[:limit]
+
+        # If nothing in buffer yet, seed with server start entry
+        if not logs:
+            from config.settings import settings as _s
+            logs = [{
+                "id": "seed-0",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "user": "system",
+                "action": "server_start",
+                "resource": "application",
+                "status": "success",
+                "detail": f"Kanyoza Systems v10 started (env={_s.environment})",
+            }]
+
+        return _ok({"logs": logs, "count": len(logs), "source": "memory"})
+    except Exception as exc:
+        logger.error("GET /api/v1/audit-logs error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base — flat endpoints (no brand scoping)
+# GET  /api/v1/knowledge           — list all entries (Supabase or empty)
+# POST /api/v1/knowledge           — create a new entry
+# GET  /api/v1/knowledge/search    — keyword search
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/knowledge", methods=["GET"])
+@_auth_required
+def list_knowledge():
+    """List knowledge-base documents without brand scoping (admin view)."""
+    try:
+        limit  = min(200, max(1, int(request.args.get("limit", 50))))
+        search = request.args.get("q", "").strip().lower()
+
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                result = (
+                    supabase_service.client.table("knowledge_entries")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                docs = result.data or []
+                if search:
+                    docs = [d for d in docs if search in (d.get("content") or "").lower()
+                            or search in (d.get("title") or "").lower()]
+                return _ok({"documents": docs, "count": len(docs), "source": "supabase"})
+            except Exception:
+                pass
+
+        return _ok({"documents": [], "count": 0, "source": "supabase_unavailable",
+                    "note": "Configure Supabase to persist knowledge entries."})
+    except Exception as exc:
+        logger.error("GET /api/v1/knowledge error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/knowledge", methods=["POST"])
+@_auth_required
+def create_knowledge():
+    """Create a new knowledge-base entry (flat, no brand scoping required)."""
+    try:
+        data    = request.get_json(force=True, silent=True) or {}
+        content = str(data.get("content", "")).strip()
+        if not content:
+            return _err("content field is required", 400)
+
+        entry = {
+            "id":         _uuid_mod.uuid4().hex,
+            "title":      str(data.get("title", content[:80])),
+            "content":    content,
+            "doc_type":   str(data.get("doc_type", "text")),
+            "category":   str(data.get("category", "General")),
+            "tags":       data.get("tags", []),
+            "brand_id":   data.get("brand_id", ""),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                supabase_service.client.table("knowledge_entries").insert(entry).execute()
+            except Exception as exc:
+                logger.warning("Supabase knowledge insert failed: %s", exc)
+
+        return _ok({"document": entry}, 201)
+    except Exception as exc:
+        logger.error("POST /api/v1/knowledge error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Analytics  — enriched endpoints for the Prometheus Analytics page
+# GET /api/v1/analytics/posts-performance  — per-post engagement stats
+# GET /api/v1/analytics/token-usage        — daily token / API call stats
+# GET /api/v1/analytics/engagement-heatmap — hour-of-day engagement matrix
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/analytics/posts-performance", methods=["GET"])
+@_auth_required
+def analytics_posts_performance():
+    """Return per-post engagement stats for the Analytics page."""
+    try:
+        limit = min(50, max(1, int(request.args.get("limit", 20))))
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                result = (
+                    supabase_service.client.table("post_history")
+                    .select("*")
+                    .order("published_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                posts = result.data or []
+                return _ok({"posts": posts, "count": len(posts)})
+            except Exception:
+                pass
+        return _ok({"posts": [], "count": 0, "note": "Supabase not configured"})
+    except Exception as exc:
+        logger.error("GET /api/v1/analytics/posts-performance error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/analytics/token-usage", methods=["GET"])
+@_auth_required
+def analytics_token_usage():
+    """Return daily token / API usage stats for the Analytics page."""
+    try:
+        from utils.metrics import metrics as _m
+        snap = _m.get_snapshot()
+        counters = snap.get("counters", {})
+        return _ok({
+            "total_tokens_estimated": counters.get("gemini_tokens_used", 0),
+            "api_calls_today": counters.get("requests_total", 0),
+            "daily": [],  # would be populated from Supabase analytics table
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/analytics/token-usage error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/analytics/engagement-heatmap", methods=["GET"])
+@_auth_required
+def analytics_engagement_heatmap():
+    """Return hour-of-day / day-of-week engagement data for the Analytics page."""
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                result = supabase_service.client.rpc(
+                    "get_engagement_heatmap", {}
+                ).execute()
+                if result.data:
+                    return _ok({"heatmap": result.data})
+            except Exception:
+                pass
+        # Return zeroed-out matrix when Supabase is unavailable
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        heatmap = [
+            {"day": d, "hours": [0.0] * 24}
+            for d in days
+        ]
+        return _ok({"heatmap": heatmap, "note": "Real data requires Supabase"})
+    except Exception as exc:
+        logger.error("GET /api/v1/analytics/engagement-heatmap error: %s", exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Notifications  — GET /api/v1/notifications
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/notifications", methods=["GET"])
+@_auth_required
+def get_notifications():
+    """Return recent system notifications."""
+    try:
+        limit = min(50, max(1, int(request.args.get("limit", 20))))
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            try:
+                result = (
+                    supabase_service.client.table("notifications")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                return _ok({"notifications": result.data or [], "count": len(result.data or [])})
+            except Exception:
+                pass
+        return _ok({"notifications": [], "count": 0})
+    except Exception as exc:
+        logger.error("GET /api/v1/notifications error: %s", exc)
+        return _err(str(exc), 500)
+
+
+@api_v1_bp.route("/notifications/<notif_id>/read", methods=["POST"])
+@_auth_required
+def mark_notification_read(notif_id: str):
+    """Mark a notification as read."""
+    try:
+        from services.supabase import supabase_service
+        if supabase_service and supabase_service.client:
+            supabase_service.client.table("notifications").update(
+                {"read": True}
+            ).eq("id", notif_id).execute()
+        return _ok({"read": True, "id": notif_id})
+    except Exception as exc:
+        logger.error("POST /api/v1/notifications/%s/read error: %s", notif_id, exc)
+        return _err(str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# Integrations  — GET /api/v1/integrations
+# Returns connected platform integration status (real, not mock).
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.route("/integrations", methods=["GET"])
+@_auth_required
+def get_integrations():
+    """Return integration status for all configured platforms."""
+    try:
+        from config.settings import settings as _s
+
+        integrations = [
+            {
+                "id": "facebook",
+                "name": "Facebook",
+                "category": "Social Media",
+                "connected": bool(getattr(_s, "page_access_token", "")),
+                "status": "active" if bool(getattr(_s, "page_access_token", "")) else "disconnected",
+                "description": "Facebook Page messaging and post publishing",
+            },
+            {
+                "id": "gemini",
+                "name": "Google Gemini AI",
+                "category": "AI",
+                "connected": bool(getattr(_s, "gemini_key", "")),
+                "status": "active" if bool(getattr(_s, "gemini_key", "")) else "disconnected",
+                "description": "Primary AI provider for chat and content generation",
+            },
+            {
+                "id": "supabase",
+                "name": "Supabase",
+                "category": "Databases",
+                "connected": _s.supabase_enabled,
+                "status": "active" if _s.supabase_enabled else "disconnected",
+                "description": "Database and realtime subscriptions",
+            },
+            {
+                "id": "huggingface",
+                "name": "Hugging Face",
+                "category": "AI",
+                "connected": bool(getattr(_s, "hf_token", "")),
+                "status": "active" if bool(getattr(_s, "hf_token", "")) else "disconnected",
+                "description": "Image generation and AI fallback",
+            },
+            {
+                "id": "github",
+                "name": "GitHub",
+                "category": "DevOps",
+                "connected": bool(getattr(_s, "github_token", "")),
+                "status": "active" if bool(getattr(_s, "github_token", "")) else "disconnected",
+                "description": "Code Guardian security scanning",
+            },
+            {
+                "id": "twitter",
+                "name": "Twitter / X",
+                "category": "Social Media",
+                "connected": bool(getattr(_s, "twitter_access_token", "")),
+                "status": "active" if bool(getattr(_s, "twitter_access_token", "")) else "disconnected",
+                "description": "Twitter post publishing",
+            },
+            {
+                "id": "linkedin",
+                "name": "LinkedIn",
+                "category": "Social Media",
+                "connected": bool(getattr(_s, "linkedin_access_token", "")),
+                "status": "active" if bool(getattr(_s, "linkedin_access_token", "")) else "disconnected",
+                "description": "LinkedIn post publishing",
+            },
+            {
+                "id": "whatsapp",
+                "name": "WhatsApp",
+                "category": "Messaging",
+                "connected": bool(getattr(_s, "whatsapp_token", "")),
+                "status": "active" if bool(getattr(_s, "whatsapp_token", "")) else "disconnected",
+                "description": "WhatsApp Business messaging",
+            },
+        ]
+
+        connected_count = sum(1 for i in integrations if i["connected"])
+        return _ok({
+            "integrations": integrations,
+            "count": len(integrations),
+            "connected": connected_count,
+        })
+    except Exception as exc:
+        logger.error("GET /api/v1/integrations error: %s", exc)
         return _err(str(exc), 500)
 
