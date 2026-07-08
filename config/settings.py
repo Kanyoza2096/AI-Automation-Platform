@@ -75,6 +75,18 @@ class Settings(BaseSettings):
     brand_name: str = Field(default="Dev Comparisons", description="Brand name shown in the card footer (BRAND_NAME)")
 
     # -------------------------------------------------------------------------
+    # Redis / Upstash (optional — system works without it)
+    # -------------------------------------------------------------------------
+    upstash_redis_rest_url: str = Field(
+        default="",
+        description="Upstash Redis REST API URL (UPSTASH_REDIS_REST_URL)",
+    )
+    upstash_redis_rest_token: str = Field(
+        default="",
+        description="Upstash Redis REST API token (UPSTASH_REDIS_REST_TOKEN)",
+    )
+
+    # -------------------------------------------------------------------------
     # Facebook / Messenger
     # -------------------------------------------------------------------------
     page_access_token: str = Field(default="", description="Facebook Page access token")
@@ -219,6 +231,11 @@ class Settings(BaseSettings):
     def guardian_configured(self) -> bool:
         return bool(self.github_token and self.github_username and self.guardian_enabled)
 
+    @property
+    def redis_configured(self) -> bool:
+        """True when Upstash Redis REST URL and token are configured."""
+        return bool(self.upstash_redis_rest_url and self.upstash_redis_rest_token)
+
     # -------------------------------------------------------------------------
     # Startup validation
     # -------------------------------------------------------------------------
@@ -275,6 +292,7 @@ class Settings(BaseSettings):
             "guardian_enabled": self.guardian_configured,
             "twitter_configured": bool(self.twitter_access_token),
             "linkedin_configured": bool(self.linkedin_access_token),
+            "redis_configured": self.redis_configured,
             "environment": self.environment,
             "log_level": self.log_level,
             "rate_limit_per_user": self.rate_limit_per_user,
