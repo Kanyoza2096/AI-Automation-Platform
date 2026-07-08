@@ -65,7 +65,13 @@ def _register_redis(c: ServiceContainer) -> None:
     When available, it enhances caching, rate limiting, and idempotency.
     When unavailable, services gracefully fall back to in-memory storage.
     """
-    if not settings.upstash_redis_rest_url:
+    # DEBUG: Log exactly what settings sees
+    url = getattr(settings, 'upstash_redis_rest_url', None)
+    token = getattr(settings, 'upstash_redis_rest_token', None)
+    logger.info("Redis DEBUG — URL: '%s' (len=%s)", url[:50] + "..." if url and len(url) > 50 else url, len(url) if url else 0)
+    logger.info("Redis DEBUG — Token: '%s' (len=%s)", token[:15] + "..." if token and len(token) > 15 else token, len(token) if token else 0)
+    
+    if not url:
         logger.info("Redis not configured — UPSTASH_REDIS_REST_URL not set.")
         return
 
@@ -310,11 +316,6 @@ def _register_services(c: ServiceContainer) -> None:
 
         c.register(GuardianService, _build_guardian, singleton=True)
         logger.info("GuardianService registered.")
-
-
-# ---------------------------------------------------------------------------
-# Redis-dependent Services (graceful fallback)
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
