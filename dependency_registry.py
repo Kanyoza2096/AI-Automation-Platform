@@ -63,10 +63,17 @@ def _register_redis(c: ServiceContainer) -> None:
         logger.info("Redis not configured — UPSTASH_REDIS_REST_URL not set.")
         return
 
-    from core.redis_client import UpstashRedisClient
+    from core.redis_client import UpstashRedisClient, RedisConfig
 
-    # Eagerly initialize so health check works immediately
-    client = UpstashRedisClient()
+    # Build config from settings
+    config = RedisConfig(
+        url=url,
+        token=getattr(settings, 'upstash_redis_rest_token', ''),
+        enabled=True,
+    )
+    
+    # Eagerly initialize
+    client = UpstashRedisClient(config)
     health = client.health_check()
     status = health.get("redis", "unknown")
     
