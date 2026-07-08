@@ -42,6 +42,9 @@ def _register_infrastructure(c: ServiceContainer) -> None:
     from core.event_bus import EventBus
     c.register(EventBus, lambda: _build_event_bus(), singleton=True)
 
+    # ── Redis Client (Upstash REST API) ──────────────────────────
+    _register_redis(c)
+
     from workers.task_queue import TaskQueue
     c.register(TaskQueue, lambda: _build_task_queue(), singleton=True)
 
@@ -52,6 +55,38 @@ def _register_infrastructure(c: ServiceContainer) -> None:
     c.register(ReplayGuard, lambda: ReplayGuard(ttl_seconds=300), singleton=True)
 
     _register_supabase(c)
+
+
+def _register_redis(c: ServiceContainer) -> None:
+    """
+    Register Upstash Redis client.
+    
+    Redis is OPTIONAL — the system works fully without it.
+    When available, it enhances caching, rate limiting, and idempotency.
+    When unavailable, services gracefully fall back to in-memory storage.
+    """
+    if not settings.upstash_redis_rest_url:
+        logger.info("Redis not configured — UPSTASH_REDIS_REST_URL not set.")
+        return
+
+    from core.redis_client import UpstashRedisClient
+
+    def _build_redis():
+        client = UpstashRedisClient()
+        health = client.health_check()
+        status = health.get("redis", "unknown")
+        if status == "healthy":
+            logger.info(
+                "Redis connected — %s (%.2fms)",
+                health.get("url", "unknown"),
+                health.get("latency_ms", 0),
+            )
+        else:
+            logger.warning("Redis unavailable (%s) — using in-memory fallback.", status)
+        return client
+
+    c.register(UpstashRedisClient, _build_redis, singleton=True)
+    logger.info("UpstashRedisClient registered.")
 
 
 def _build_event_bus():
@@ -172,7 +207,7 @@ def _register_services(c: ServiceContainer) -> None:
     from domain.analytics.event_recorder import EventRecorder
     from core.event_bus import EventBus
     from repositories.analytics_repository import AnalyticsRepository
-    
+
     from core.multi_tenant import WorkspaceManager
     from repositories.workspace_repository import WorkspaceRepository
 
@@ -182,7 +217,7 @@ def _register_services(c: ServiceContainer) -> None:
     from scheduler.brand_scheduler import BrandSchedulerManager
     from repositories.brand_repository import BrandRepository
     from repositories.ai_profile_repository import AIProfileRepository
-    
+
     def _build_brand_scheduler_manager():
         manager = BrandSchedulerManager(
             c.resolve(BrandRepository),
@@ -211,7 +246,13 @@ def _register_services(c: ServiceContainer) -> None:
     c.register_instance(RenderCache, _rc)
     logger.info("RenderCache registered (module singleton).")
 
-    # ── Phase 5: Security & Reliability ──────────────────────────────
+    # ── Rate Limiter (uses Redis when available) ─────────────────
+    _register_rate_limiter(c)
+
+    # ── Prompt Cache (uses Redis when available) ─────────────────
+    _register_prompt_cache(c)
+
+    # ── Phase 5: Security & Reliability ──────────────────────────
     from core.credential_vault import CredentialVault
     c.register(CredentialVault, lambda: CredentialVault(), singleton=True)
     logger.info("CredentialVault registered.")
@@ -278,6 +319,55 @@ def _register_services(c: ServiceContainer) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Redis-dependent Services (graceful fallback)
+# ---------------------------------------------------------------------------
+
+def _register_rate_limiter(c: ServiceContainer) -> None:
+    """
+    Register rate limiter with Redis backend when available.
+    Falls back to in-memory rate limiting if Redis is not configured.
+    """
+    from core.rate_limiter import RateLimiter
+
+    def _build():
+        try:
+            from core.redis_client import UpstashRedisClient
+            redis = c.resolve(UpstashRedisClient)
+            logger.info("RateLimiter using Redis backend.")
+            return RateLimiter(redis=redis)
+        except Exception:
+            logger.info("RateLimiter using in-memory backend (Redis unavailable).")
+            return RateLimiter(redis=None)
+
+    c.register(RateLimiter, _build, singleton=True)
+    logger.info("RateLimiter registered.")
+
+
+def _register_prompt_cache(c: ServiceContainer) -> None:
+    """
+    Register prompt cache with Redis backend when available.
+    Falls back to in-memory LRU cache if Redis is not configured.
+    """
+    from services.prompt_cache import PromptCache
+
+    def _build():
+        try:
+            from core.redis_client import UpstashRedisClient
+            redis = c.resolve(UpstashRedisClient)
+            if redis.is_available:
+                logger.info("PromptCache using Redis backend.")
+                return PromptCache(redis=redis)
+        except Exception:
+            pass
+        
+        logger.info("PromptCache using in-memory backend (Redis unavailable).")
+        return PromptCache(redis=None)
+
+    c.register(PromptCache, _build, singleton=True)
+    logger.info("PromptCache registered.")
+
+
+# ---------------------------------------------------------------------------
 # Plugins
 # ---------------------------------------------------------------------------
 
@@ -301,7 +391,7 @@ def _register_plugins(c: ServiceContainer) -> None:
         if settings.twitter_access_token:
             try:
                 from plugins.twitter.plugin import TwitterPlugin
-
+                social_repo = c.resolve(SocialAccountRepository)
                 twitter_plugin = TwitterPlugin(social_repo)
                 twitter_plugin.configure(
                     access_token=settings.twitter_access_token,
@@ -316,7 +406,7 @@ def _register_plugins(c: ServiceContainer) -> None:
             try:
                 from plugins.linkedin.plugin import LinkedInPlugin
                 from services.linkedIn import linkedin as linkedin_svc
-
+                social_repo = c.resolve(SocialAccountRepository)
                 linkedin_plugin = LinkedInPlugin(linkedin_svc, social_repo)
                 linkedin_plugin.configure(
                     access_token=settings.linkedin_access_token,
@@ -348,7 +438,7 @@ def _register_workflows(c: ServiceContainer) -> None:
         from services.prompt_builder import PromptBuilder
         from repositories.knowledge_repository import KnowledgeRepository
         from services.pipeline.pipeline import ContentGenerationPipeline
-        
+
         content_engine = ContentEngine()
         prompt_builder = PromptBuilder()
         registry = c.resolve(PluginRegistry)
@@ -370,14 +460,10 @@ def _register_workflows(c: ServiceContainer) -> None:
             )
         return factory
 
-    # Register both names for full backward compatibility
     c.register("PostPublishWorkflowFactory", _build_post_workflow_factory, singleton=True)
     c.register("ContentGenerationPipelineFactory", _build_post_workflow_factory, singleton=True)
     logger.info("ContentGenerationPipelineFactory and legacy PostPublishWorkflowFactory registered.")
 
-    # Register PostPublishWorkflow as a resolvable type (transient — fresh instance per
-    # resolve) so lifecycle.py can wire it directly into the scheduler.
-    # Uses Brand.create_default / AIProfile.create_default for the legacy single-tenant path.
     def _build_default_post_workflow():
         from models.brand import Brand
         from models.ai_profile import AIProfile
