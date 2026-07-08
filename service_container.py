@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from core.service_container import ServiceContainer
+
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
