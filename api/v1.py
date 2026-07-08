@@ -30,11 +30,74 @@ import logging
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 logger = logging.getLogger("kanyoza.api.v1")
 
 api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+
+# [SECURITY] Maximum request body size: 1MB
+MAX_REQUEST_BODY_SIZE = 1_048_576  # 1 MB
+
+# [SECURITY] Maximum AI prompt length: 4000 characters
+MAX_AI_PROMPT_LENGTH = 4000
+
+
+# ---------------------------------------------------------------------------
+# [SECURITY] Rate Limiting Helper
+# ---------------------------------------------------------------------------
+
+def _get_rate_limiter():
+    """Lazy-resolve rate limiter from DI container."""
+    from flask import current_app
+    container = current_app.extensions.get("service_container")
+    if container:
+        try:
+            from core.rate_limiter import RateLimiter
+            return container.resolve(RateLimiter)
+        except Exception:
+            pass
+    return None
+
+
+def _rate_limit(action: str, max_per_minute: int = 30):
+    """
+    [SECURITY] Decorator: rate-limit an endpoint by IP address.
+    Uses Redis when available, falls back to in-memory.
+    """
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            limiter = _get_rate_limiter()
+            if limiter:
+                client_ip = request.remote_addr or "unknown"
+                key = f"api:{action}:{client_ip}"
+                if not limiter.is_allowed(key, max_per_minute):
+                    return jsonify({
+                        "ok": False,
+                        "error": "rate_limited",
+                        "message": f"Too many requests. Max {max_per_minute} per minute.",
+                        "retry_after_seconds": 60,
+                    }), 429
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# [SECURITY] Request Size Validation
+# ---------------------------------------------------------------------------
+
+@api_v1_bp.before_request
+def _enforce_request_size_limit():
+    """Reject requests with body larger than MAX_REQUEST_BODY_SIZE."""
+    content_length = request.content_length
+    if content_length and content_length > MAX_REQUEST_BODY_SIZE:
+        return jsonify({
+            "ok": False,
+            "error": "payload_too_large",
+            "message": f"Request body exceeds maximum size of {MAX_REQUEST_BODY_SIZE} bytes.",
+        }), 413
 
 
 # ---------------------------------------------------------------------------
@@ -65,14 +128,20 @@ def _require_auth() -> bool:
     if auth_header.startswith("Bearer "):
         bearer = auth_header[len("Bearer "):]
         if master_token and hmac.compare_digest(bearer, master_token):
+            g.auth_method = "bearer"
+            g.auth_workspace_id = None  # [SECURITY] Master token has no workspace scope
             return True
 
     # 2 & 3. Legacy X-API-Key header
     key = request.headers.get("X-API-Key", "").strip()
     if key:
         if api_secret and hmac.compare_digest(key, api_secret):
+            g.auth_method = "api_key"
+            g.auth_workspace_id = None
             return True
         if owner_psid and hmac.compare_digest(key, owner_psid):
+            g.auth_method = "owner_psid"
+            g.auth_workspace_id = None
             return True
 
     return False
@@ -91,12 +160,131 @@ def _auth_required(fn):
     return wrapper
 
 
+# [SECURITY] Rate-limited auth decorator for login-heavy endpoints
+def _auth_required_rate_limited(fn):
+    """Decorator: auth + rate limiting to prevent brute force."""
+    @wraps(fn)
+    @_rate_limit("auth_attempt", max_per_minute=10)
+    def wrapper(*args, **kwargs):
+        if not _require_auth():
+            return jsonify({
+                "error": "unauthorized",
+                "message": "Valid Authorization: Bearer <token> or X-API-Key header required",
+            }), 401
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# [SECURITY] Workspace Scoping Helper
+# ---------------------------------------------------------------------------
+
+def _get_container():
+    """Get the DI container from the Flask app."""
+    from flask import current_app
+    return current_app.extensions.get("service_container")
+
+
+def _require_workspace_ownership(resource_type: str, resource_id: str, workspace_id_field: str = "workspace_id"):
+    """
+    [SECURITY] Verify that the authenticated user can access this resource.
+    
+    For master token auth, this is a no-op (master token has full access).
+    For workspace-scoped tokens, this verifies the resource belongs to the token's workspace.
+    
+    Args:
+        resource_type: Human-readable resource type for error messages
+        resource_id: The ID of the resource being accessed
+        workspace_id_field: The field name containing workspace_id on the resource
+    
+    Returns:
+        The workspace_id that owns this resource, or aborts with 404.
+    """
+    workspace_id = getattr(g, 'auth_workspace_id', None)
+    
+    # Master token — full access, no workspace scoping enforced
+    # [SECURITY] This is the legacy behavior. Migrate to scoped tokens to enable this check.
+    if workspace_id is None:
+        return None
+    
+    # Scoped token — must verify ownership
+    resource_workspace_id = _get_resource_workspace_id(resource_type, resource_id)
+    
+    if resource_workspace_id is None:
+        # Resource doesn't exist — return 404 (don't reveal existence)
+        from flask import abort
+        abort(404, f"{resource_type} not found")
+    
+    if resource_workspace_id != workspace_id:
+        # Resource exists but belongs to different workspace — return 404
+        logger.warning(
+            "Cross-workspace access attempt: user from workspace %s tried to access %s %s (belongs to %s)",
+            workspace_id, resource_type, resource_id, resource_workspace_id,
+        )
+        from flask import abort
+        abort(404, f"{resource_type} not found")
+    
+    return workspace_id
+
+
+def _get_resource_workspace_id(resource_type: str, resource_id: str) -> str | None:
+    """Look up the workspace_id for a given resource."""
+    container = _get_container()
+    if not container:
+        return None
+    
+    try:
+        if resource_type == "workspace":
+            from repositories.workspace_repository import WorkspaceRepository
+            repo = container.resolve(WorkspaceRepository)
+            ws = repo.find_by_id(resource_id)
+            return ws.workspace_id if hasattr(ws, 'workspace_id') else ws.id if ws else None
+        
+        elif resource_type == "brand":
+            from repositories.brand_repository import BrandRepository
+            repo = container.resolve(BrandRepository)
+            brand = repo.find_by_id(resource_id)
+            return brand.workspace_id if brand else None
+        
+        elif resource_type == "ai_profile":
+            from repositories.ai_profile_repository import AIProfileRepository
+            repo = container.resolve(AIProfileRepository)
+            profile = repo.find_by_id(resource_id)
+            return profile.workspace_id if profile else None
+        
+        elif resource_type == "social_account":
+            from repositories.social_account_repository import SocialAccountRepository
+            repo = container.resolve(SocialAccountRepository)
+            account = repo.find_by_id(resource_id)
+            return account.workspace_id if account else None
+        
+    except Exception as e:
+        logger.error("Failed to resolve workspace for %s %s: %s", resource_type, resource_id, e)
+    
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Response helpers
+# ---------------------------------------------------------------------------
+
 def _ok(data: dict, status: int = 200):
     return jsonify({"ok": True, **data}), status
 
 
 def _err(msg: str, status: int = 400):
     return jsonify({"ok": False, "error": msg}), status
+
+
+# [SECURITY] Safe error — never leaks internal details to the client
+def _safe_err(exc: Exception, endpoint: str, status: int = 500):
+    """Log the real error internally, return a safe message to the client."""
+    logger.error("%s error: %s", endpoint, exc, exc_info=True)
+    # Only return the exception message in debug mode
+    from config.settings import settings as _s
+    if getattr(_s, "debug", False):
+        return _err(str(exc), status)
+    return _err("An internal error occurred. Please try again later.", status)
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +338,7 @@ def get_posts():
             "drafts": len(drafts),
         })
     except Exception as exc:
-        logger.error("GET /api/v1/posts error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/posts", 500)
 
 
 @api_v1_bp.route("/posts", methods=["POST"])
@@ -181,8 +368,7 @@ def create_post():
         queued = scheduler.force_post()
         return _ok({"queued": queued, "message": "Post queued" if queued else "Queue full — try again"}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/posts error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/posts", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +385,7 @@ def get_messages():
         msgs = analytics.get_recent_messages(limit=limit)
         return _ok({"messages": msgs, "count": len(msgs)})
     except Exception as exc:
-        logger.error("GET /api/v1/messages error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/messages", 500)
 
 
 @api_v1_bp.route("/messages/reply", methods=["POST"])
@@ -216,8 +401,7 @@ def send_message():
         fb.send_message(recipient, text)
         return _ok({"sent": True, "recipient": recipient})
     except Exception as exc:
-        logger.error("POST /api/v1/messages/reply error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/messages/reply", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -233,8 +417,7 @@ def get_analytics():
         stats = analytics.get_stats()
         return _ok({"analytics": stats, "as_of": datetime.now(timezone.utc).isoformat()})
     except Exception as exc:
-        logger.error("GET /api/v1/analytics error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/analytics", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -259,8 +442,7 @@ def bot_status():
             "as_of": datetime.now(timezone.utc).isoformat(),
         })
     except Exception as exc:
-        logger.error("GET /api/v1/bot/status error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/bot/status", 500)
 
 
 @api_v1_bp.route("/bot/post", methods=["POST"])
@@ -271,8 +453,7 @@ def force_post():
         queued = scheduler.force_post()
         return _ok({"queued": queued}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/bot/post error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/bot/post", 500)
 
 
 @api_v1_bp.route("/bot/news", methods=["POST"])
@@ -285,8 +466,7 @@ def force_news():
         queued = scheduler.force_news(category=category)
         return _ok({"queued": queued}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/bot/news error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/bot/news", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +478,7 @@ def force_news():
 def guardian_status():
     try:
         from services.guardian_service import GuardianService
-        from flask import current_app
-        container = current_app.extensions.get("service_container")
+        container = _get_container()
         if not container:
             return _ok({"configured": False, "message": "DI container not attached"})
         svc = container.try_resolve(GuardianService)
@@ -307,8 +486,7 @@ def guardian_status():
             return _ok({"configured": False, "message": "Guardian not configured"})
         return _ok(svc.get_status())
     except Exception as exc:
-        logger.error("GET /api/v1/guardian/status error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/guardian/status", 500)
 
 
 @api_v1_bp.route("/guardian/issues", methods=["GET"])
@@ -317,8 +495,7 @@ def guardian_issues():
     """Return the full issue list from the last scan, with optional severity filter."""
     try:
         from services.guardian_service import GuardianService
-        from flask import current_app
-        container = current_app.extensions.get("service_container")
+        container = _get_container()
         if not container:
             return _ok({"issues": [], "message": "Guardian not available"})
         svc = container.try_resolve(GuardianService)
@@ -348,8 +525,7 @@ def guardian_issues():
             "auto_fix_enabled": getattr(__import__("config.settings", fromlist=["settings"]).settings, "guardian_auto_fix", False),
         })
     except Exception as exc:
-        logger.error("GET /api/v1/guardian/issues error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/guardian/issues", 500)
 
 
 @api_v1_bp.route("/guardian/scan", methods=["POST"])
@@ -357,8 +533,7 @@ def guardian_issues():
 def trigger_scan():
     try:
         from services.guardian_service import GuardianService
-        from flask import current_app
-        container = current_app.extensions.get("service_container")
+        container = _get_container()
         if not container:
             return _err("Guardian not available — DI container not attached", 503)
         svc = container.try_resolve(GuardianService)
@@ -372,8 +547,7 @@ def trigger_scan():
         t.start()
         return _ok({"started": True, "message": "Scan started in background"}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/guardian/scan error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/guardian/scan", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +562,7 @@ def get_schedule():
     try:
         return _ok({"schedule": scheduler.get_config()})
     except Exception as exc:
-        logger.error("GET /api/v1/schedule error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/schedule", 500)
 
 
 @api_v1_bp.route("/schedule", methods=["PUT"])
@@ -410,8 +583,7 @@ def update_schedule():
     except ValueError as exc:
         return _err(str(exc), 400)
     except Exception as exc:
-        logger.error("PUT /api/v1/schedule error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "PUT /api/v1/schedule", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +599,7 @@ def get_metrics():
         snapshot = metrics_collector.get_snapshot()
         return _ok({"metrics": snapshot, "as_of": datetime.now(timezone.utc).isoformat()})
     except Exception as exc:
-        logger.error("GET /api/v1/metrics error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/metrics", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +615,6 @@ def get_ai_config():
     from api.ai_runtime import get as _rt_get, VALID_MOODS
     rt = _rt_get()
     return _ok({
-        # Model / provider (from Settings, mutable at runtime)
         "provider": _s.ai_provider,
         "model": _s.gemini_model,
         "chat_temperature": _s.gemini_chat_temperature,
@@ -457,7 +627,6 @@ def get_ai_config():
             "gemini-1.5-flash",
         ],
         "available_providers": ["gemini", "huggingface"],
-        # Personality (from runtime store, not persisted to env)
         "system_prompt_override": rt["system_prompt_override"],
         "persona_mood": rt["persona_mood"],
         "tone_assertiveness": rt["tone_assertiveness"],
@@ -531,37 +700,22 @@ def update_ai_config():
             },
         })
     except Exception as exc:
-        logger.error("PUT /api/v1/ai/config error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "PUT /api/v1/ai/config", 500)
 
 
 @api_v1_bp.route("/ai/persona", methods=["GET"])
 @_auth_required
 def get_ai_persona():
-    """
-    Return the live persona state in the shape the Prometheus frontend expects.
-
-    Frontend PersonaPayload:
-      { tone: 0-100, aggression: 0-100, humor: 0-100, model: str, system_prompt: str }
-
-    Internal backend uses 0.0-1.0 floats with different field names:
-      tone_formality      → tone        (×100)
-      tone_assertiveness  → aggression  (×100)
-      tone_humor          → humor       (×100)
-      gemini_model        → model
-      system_prompt_override → system_prompt
-    """
+    """Return the live persona state in the shape the Prometheus frontend expects."""
     from api.ai_runtime import get as _rt_get
     from config.settings import settings as _s
     rt = _rt_get()
     return _ok({
-        # Frontend-facing field names (0–100 integer scale)
         "tone":          int(round(rt.get("tone_formality", 0.6) * 100)),
         "aggression":    int(round(rt.get("tone_assertiveness", 0.7) * 100)),
         "humor":         int(round(rt.get("tone_humor", 0.2) * 100)),
         "model":         getattr(_s, "gemini_model", "gemini-2.5-flash"),
         "system_prompt": rt.get("system_prompt_override") or "",
-        # Also expose internal fields so advanced clients can read them
         "persona_mood":       rt.get("persona_mood", "professional"),
         "tone_formality":     rt.get("tone_formality", 0.6),
         "tone_assertiveness": rt.get("tone_assertiveness", 0.7),
@@ -572,53 +726,40 @@ def get_ai_persona():
 @api_v1_bp.route("/ai/persona", methods=["PUT"])
 @_auth_required
 def update_ai_persona():
-    """
-    Update personality sliders and mood.
-
-    Accepts BOTH the frontend-native field names (tone/aggression/humor/model/system_prompt)
-    AND the internal backend field names (tone_formality/tone_assertiveness/tone_humor/…)
-    so that the Prometheus dashboard and any direct API callers both work.
-    """
+    """Update personality sliders and mood."""
     from api.ai_runtime import update as _rt_update, VALID_MOODS
     from config.settings import settings as _s
     try:
         data = request.get_json(force=True, silent=True) or {}
 
-        # --- Translate frontend field names to internal names ---
         rt_updates: dict = {}
 
-        # tone (0-100) → tone_formality (0.0-1.0)
         if "tone" in data:
             val = data["tone"]
             if not isinstance(val, (int, float)) or not 0 <= val <= 100:
                 return _err("tone must be an integer in 0–100", 400)
             rt_updates["tone_formality"] = round(float(val) / 100.0, 4)
 
-        # aggression (0-100) → tone_assertiveness (0.0-1.0)
         if "aggression" in data:
             val = data["aggression"]
             if not isinstance(val, (int, float)) or not 0 <= val <= 100:
                 return _err("aggression must be an integer in 0–100", 400)
             rt_updates["tone_assertiveness"] = round(float(val) / 100.0, 4)
 
-        # humor (0-100) → tone_humor (0.0-1.0)
         if "humor" in data:
             val = data["humor"]
             if not isinstance(val, (int, float)) or not 0 <= val <= 100:
                 return _err("humor must be an integer in 0–100", 400)
             rt_updates["tone_humor"] = round(float(val) / 100.0, 4)
 
-        # model / gemini_model → settings.gemini_model (not an ai_runtime field)
         for _model_key in ("model", "gemini_model"):
             if _model_key in data:
                 _s.gemini_model = str(data[_model_key])
                 break
 
-        # system_prompt → system_prompt_override
         if "system_prompt" in data:
             rt_updates["system_prompt_override"] = data["system_prompt"] or None
 
-        # Pass-through internal field names unchanged
         for internal_key in ("tone_formality", "tone_assertiveness", "tone_humor",
                              "persona_mood", "system_prompt_override"):
             if internal_key in data and internal_key not in rt_updates:
@@ -638,8 +779,7 @@ def update_ai_persona():
     except ValueError as exc:
         return _err(str(exc), 400)
     except Exception as exc:
-        logger.error("PUT /api/v1/ai/persona error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "PUT /api/v1/ai/persona", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +791,6 @@ def update_ai_persona():
 @_auth_required
 def delete_post(post_id):
     try:
-        # Check in-memory drafts first — no Supabase needed
         with _draft_lock:
             if post_id in _draft_store:
                 del _draft_store[post_id]
@@ -663,8 +802,7 @@ def delete_post(post_id):
             return _ok({"deleted": True, "post_id": post_id, "source": "published"})
         return _err("Supabase not configured — cannot delete published post", 503)
     except Exception as exc:
-        logger.error("DELETE /api/v1/posts/%s error: %s", post_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/posts/{post_id}", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -689,8 +827,7 @@ def get_conversation(sender_id):
             return _ok({"messages": result.data or [], "sender_id": sender_id})
         return _ok({"messages": [], "sender_id": sender_id, "note": "Supabase not configured"})
     except Exception as exc:
-        logger.error("GET /api/v1/messages/%s error: %s", sender_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/messages/{sender_id}", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -706,8 +843,7 @@ def force_engage():
         queued = scheduler.force_engagement()
         return _ok({"queued": queued}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/bot/engage error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/bot/engage", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -730,8 +866,7 @@ def get_features():
             }
         })
     except Exception as exc:
-        logger.error("GET /api/v1/features error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/features", 500)
 
 
 @api_v1_bp.route("/features/toggle", methods=["POST"])
@@ -746,7 +881,6 @@ def toggle_feature():
             return _err(f"feature must be one of {sorted(allowed)}", 400)
         try:
             from services.supabase import supabase_service
-            from datetime import datetime, timezone
             if supabase_service and supabase_service.client:
                 supabase_service.client.table("settings").upsert(
                     {"key": f"feature_{feature}", "value": str(enabled).lower(),
@@ -757,8 +891,7 @@ def toggle_feature():
             pass
         return _ok({"feature": feature, "enabled": enabled})
     except Exception as exc:
-        logger.error("POST /api/v1/features/toggle error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/features/toggle", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -782,8 +915,7 @@ def analytics_performance():
             return _ok({"posts": result.data or []})
         return _ok({"posts": [], "note": "Supabase not configured"})
     except Exception as exc:
-        logger.error("GET /api/v1/analytics/performance error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/analytics/performance", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -806,8 +938,7 @@ def get_tenants():
             return _ok({"tenants": result.data or []})
         return _ok({"tenants": [], "note": "Supabase not configured"})
     except Exception as exc:
-        logger.error("GET /api/v1/tenants error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/tenants", 500)
 
 
 @api_v1_bp.route("/tenants/switch", methods=["POST"])
@@ -820,8 +951,7 @@ def switch_tenant():
             return _err("tenant_id is required", 400)
         return _ok({"switched": True, "tenant_id": tenant_id})
     except Exception as exc:
-        logger.error("POST /api/v1/tenants/switch error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/tenants/switch", 500)
 
 
 # ---------------------------------------------------------------------------
@@ -835,8 +965,7 @@ def get_rate_limits():
         from utils.rate_limiter import rate_limiter
         return _ok({"rate_limits": rate_limiter.get_config()})
     except Exception as exc:
-        logger.error("GET /api/v1/rate-limits error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/rate-limits", 500)
 
 
 @api_v1_bp.route("/rate-limits/unblock", methods=["POST"])
@@ -850,15 +979,11 @@ def unblock_user():
         from utils.rate_limiter import rate_limiter
         return _ok({"unblocked": rate_limiter.unblock(identifier), "identifier": identifier})
     except Exception as exc:
-        logger.error("POST /api/v1/rate-limits/unblock error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/rate-limits/unblock", 500)
 
 
 # ---------------------------------------------------------------------------
-# Persona  (top-level — no /ai/ prefix)
-# GET  /api/v1/persona          — public  — returns bot identity + live mood
-# PUT  /api/v1/persona          — auth    — update mood / tone sliders
-# POST /api/v1/persona/reset    — auth    — reset to defaults
+# Persona (top-level — no /ai/ prefix)
 # ---------------------------------------------------------------------------
 
 
@@ -866,7 +991,7 @@ def unblock_user():
 def get_persona():
     """Return the live bot persona — public, no auth required."""
     try:
-        from core.persona import bot_persona, MOODS, PERSONA_PROMPTS
+        from core.persona import bot_persona
         from api.ai_runtime import get as _rt_get, VALID_MOODS
         rt = _rt_get()
         state = bot_persona.to_dict()
@@ -885,15 +1010,14 @@ def get_persona():
             "system_prompt_override": rt["system_prompt_override"],
         })
     except Exception as exc:
-        logger.error("GET /api/v1/persona error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/persona", 500)
 
 
 @api_v1_bp.route("/persona", methods=["PUT"])
 @_auth_required
 def update_persona():
     """Update mood and tone sliders. Alias for PUT /api/v1/ai/persona."""
-    from api.ai_runtime import update as _rt_update, VALID_MOODS
+    from api.ai_runtime import update as _rt_update
     try:
         data = request.get_json(force=True, silent=True) or {}
         allowed = {"persona_mood", "tone_assertiveness", "tone_humor",
@@ -906,8 +1030,7 @@ def update_persona():
     except ValueError as exc:
         return _err(str(exc), 400)
     except Exception as exc:
-        logger.error("PUT /api/v1/persona error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "PUT /api/v1/persona", 500)
 
 
 @api_v1_bp.route("/persona/reset", methods=["POST"])
@@ -925,15 +1048,11 @@ def reset_persona():
         )
         return _ok({"reset": True, "persona": rt})
     except Exception as exc:
-        logger.error("POST /api/v1/persona/reset error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/persona/reset", 500)
 
 
 # ---------------------------------------------------------------------------
-# Workflows  /api/v1/workflow/*
-# GET  /api/v1/workflow           — list available workflows + their last run
-# POST /api/v1/workflow/run       — run a named workflow immediately
-# GET  /api/v1/workflow/history   — recent workflow execution history (last 20)
+# Workflows
 # ---------------------------------------------------------------------------
 
 import collections as _collections_mod
@@ -976,14 +1095,7 @@ def list_workflows():
 @api_v1_bp.route("/workflow/run", methods=["POST"])
 @_auth_required
 def run_workflow():
-    """
-    Run a named workflow synchronously and return the result.
-
-    Body (JSON):
-      { "workflow": "post_publish", "params": {} }
-
-    Only "post_publish" is supported today. Returns the step-by-step result.
-    """
+    """Run a named workflow synchronously and return the result."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         name = data.get("workflow", "post_publish").strip().lower()
@@ -1014,8 +1126,7 @@ def run_workflow():
         return _err(f"Workflow '{name}' runner not implemented", 501)
 
     except Exception as exc:
-        logger.error("POST /api/v1/workflow/run error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/workflow/run", 500)
 
 
 @api_v1_bp.route("/workflow/history", methods=["GET"])
@@ -1028,30 +1139,21 @@ def workflow_history():
             entries = list(_workflow_history)[-limit:]
         return _ok({"history": list(reversed(entries)), "count": len(entries)})
     except Exception as exc:
-        logger.error("GET /api/v1/workflow/history error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/workflow/history", 500)
 
 
 # ---------------------------------------------------------------------------
-# Scan  (top-level shortcut for /guardian/scan)
-# POST /api/v1/scan        — trigger a code guardian scan in the background
-# GET  /api/v1/scan        — return the last scan report (status + issues)
+# Scan (top-level shortcut for /guardian/scan)
 # ---------------------------------------------------------------------------
 
 
 @api_v1_bp.route("/scan", methods=["POST"])
 @_auth_required
 def trigger_scan_shortcut():
-    """
-    Trigger a Code Guardian scan.  Top-level alias for POST /api/v1/guardian/scan.
-
-    Does not require GitHub to be configured — returns a 503 with a clear message
-    if Guardian is unavailable, so clients can detect the feature gracefully.
-    """
+    """Trigger a Code Guardian scan. Top-level alias for POST /api/v1/guardian/scan."""
     try:
         from services.guardian_service import GuardianService
-        from flask import current_app
-        container = current_app.extensions.get("service_container")
+        container = _get_container()
         if not container:
             return _err("Guardian not available — DI container not attached", 503)
         svc = container.try_resolve(GuardianService)
@@ -1067,21 +1169,15 @@ def trigger_scan_shortcut():
         t.start()
         return _ok({"started": True, "message": "Code Guardian scan started in background"}, 202)
     except Exception as exc:
-        logger.error("POST /api/v1/scan error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/scan", 500)
 
 
 @api_v1_bp.route("/scan", methods=["GET"])
 def get_scan_status():
-    """
-    Return the last Guardian scan report.
-    Top-level alias for GET /api/v1/guardian/status + issues combined.
-    Public — no auth required.
-    """
+    """Return the last Guardian scan report. Public — no auth required."""
     try:
         from services.guardian_service import GuardianService
-        from flask import current_app
-        container = current_app.extensions.get("service_container")
+        container = _get_container()
         if not container:
             return _ok({"configured": False, "issues": []})
         svc = container.try_resolve(GuardianService)
@@ -1091,25 +1187,17 @@ def get_scan_status():
         issues = svc.get_issues() if hasattr(svc, "get_issues") else []
         return _ok({**status, "issues": issues[:50]})
     except Exception as exc:
-        logger.error("GET /api/v1/scan error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/scan", 500)
 
 
 # ---------------------------------------------------------------------------
 # Metrics — public lightweight snapshot (no auth)
-# GET /api/v1/metrics/public   — key counters only, safe to expose
-# (The full snapshot at GET /api/v1/metrics still requires auth.)
 # ---------------------------------------------------------------------------
 
 
 @api_v1_bp.route("/metrics/public", methods=["GET"])
 def get_public_metrics():
-    """
-    Return a safe subset of in-process metrics — no auth required.
-
-    Exposes: uptime_seconds, request_count, total_posts, total_messages.
-    Sensitive latency details remain auth-gated at GET /api/v1/metrics.
-    """
+    """Return a safe subset of in-process metrics — no auth required."""
     try:
         from utils.metrics import metrics as _m
         snap = _m.get_snapshot()
@@ -1122,15 +1210,11 @@ def get_public_metrics():
             "as_of": datetime.now(timezone.utc).isoformat(),
         })
     except Exception as exc:
-        logger.error("GET /api/v1/metrics/public error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/metrics/public", 500)
 
 
 # ---------------------------------------------------------------------------
 # API Key management
-# POST /api/v1/keys/generate   — generate a new signed API token
-# GET  /api/v1/keys            — list active key metadata (no secrets)
-# DELETE /api/v1/keys/<key_id> — revoke a key
 # ---------------------------------------------------------------------------
 
 import secrets as _secrets_mod
@@ -1142,25 +1226,18 @@ _active_keys: dict[str, dict] = {}
 
 
 @api_v1_bp.route("/keys/generate", methods=["POST"])
-@_auth_required
+@_auth_required_rate_limited  # [SECURITY] Rate-limited to prevent brute force
 def generate_api_key():
-    """
-    Generate a new API token.
-
-    Body (JSON, all optional):
-      { "label": "my-dashboard-client" }
-
-    Returns the full token ONCE — it is never stored in plain text.
-    Subsequent calls to GET /api/v1/keys return only the prefix + metadata.
-    """
+    """Generate a new API token. Returns the full token ONCE."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         label = str(data.get("label", "api-key")).strip()[:64] or "api-key"
 
+        # [SECURITY] Use secrets module for cryptographic randomness
         raw_token = "kz_" + _secrets_mod.token_urlsafe(32)
         key_id = _uuid_mod.uuid4().hex[:12]
         hashed = _hashlib_mod.sha256(raw_token.encode()).hexdigest()
-        prefix = raw_token[:10] + "…"
+        prefix = raw_token[:10] + "..."
 
         entry = {
             "id": key_id,
@@ -1174,6 +1251,15 @@ def generate_api_key():
         with _keys_lock:
             _active_keys[key_id] = entry
 
+        # [SECURITY] Audit log for key creation
+        _append_audit(
+            action="api_key_created",
+            resource=f"key:{key_id}",
+            user=g.get("auth_method", "unknown"),
+            status="success",
+            detail=f"API key '{label}' created",
+        )
+
         return _ok({
             "key_id": key_id,
             "token": raw_token,
@@ -1183,8 +1269,7 @@ def generate_api_key():
             "note": "Store this token securely — it will not be shown again.",
         }, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/keys/generate error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/keys/generate", 500)
 
 
 @api_v1_bp.route("/keys", methods=["GET"])
@@ -1200,8 +1285,7 @@ def list_api_keys():
             ]
         return _ok({"keys": keys, "count": len(keys)})
     except Exception as exc:
-        logger.error("GET /api/v1/keys error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/keys", 500)
 
 
 @api_v1_bp.route("/keys/<key_id>", methods=["DELETE"])
@@ -1214,25 +1298,29 @@ def revoke_api_key(key_id: str):
             if not entry:
                 return _err(f"Key '{key_id}' not found", 404)
             _active_keys[key_id]["revoked"] = True
+
+        # [SECURITY] Audit log for key revocation
+        _append_audit(
+            action="api_key_revoked",
+            resource=f"key:{key_id}",
+            user=g.get("auth_method", "unknown"),
+            status="success",
+            detail=f"API key '{entry.get('label', key_id)}' revoked",
+        )
+
         return _ok({"revoked": True, "key_id": key_id})
     except Exception as exc:
-        logger.error("DELETE /api/v1/keys/%s error: %s", key_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/keys/{key_id}", 500)
 
 
 # ---------------------------------------------------------------------------
-# Status / Config — GET /api/v1/status
-# Polled by the Prometheus frontend on every tab focus & on startup.
+# Status / Config
 # ---------------------------------------------------------------------------
+
 
 @api_v1_bp.route("/status", methods=["GET"])
 def get_status():
-    """
-    Return current server config and version.
-
-    Called by the Prometheus frontend via ``${restEndpoint}/status``
-    (restEndpoint already ends with ``/api/v1``).
-    """
+    """Return current server config and version."""
     try:
         from config.settings import settings as _s
         return _ok({
@@ -1252,25 +1340,17 @@ def get_status():
             },
         })
     except Exception as exc:
-        logger.error("GET /api/v1/status error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/status", 500)
 
 
 # ---------------------------------------------------------------------------
 # Health — GET /api/v1/health/deep
-# Returns service health in the shape the Prometheus frontend expects.
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/health/deep", methods=["GET"])
 def health_deep():
-    """
-    Deep health check — returns per-service latency and status.
-
-    Shape consumed by the Prometheus frontend healthMatrix mapping:
-      { status, version, services: { <name>: { status, latency_ms, page_name } } }
-    """
+    """Deep health check — returns per-service latency and status."""
     try:
-        import time as _time
         from config.settings import settings as _s
 
         services: dict = {}
@@ -1302,9 +1382,30 @@ def health_deep():
             "configured": supa_ok,
         }
 
+        # [SECURITY] Redis health check (non-sensitive)
+        try:
+            container = _get_container()
+            if container:
+                from core.redis_client import UpstashRedisClient
+                redis = container.resolve(UpstashRedisClient)
+                redis_health = redis.health_check()
+                services["redis"] = {
+                    "status": "ok" if redis_health.get("redis") == "healthy" else "degraded",
+                    "latency_ms": redis_health.get("latency_ms", 0),
+                    "page_name": "Upstash Redis",
+                    "configured": redis_health.get("redis") != "disabled",
+                }
+        except Exception:
+            services["redis"] = {
+                "status": "disabled",
+                "latency_ms": 0,
+                "page_name": "Upstash Redis",
+                "configured": False,
+            }
+
         # Playwright (card renderer)
         try:
-            from renderer.card_renderer import CardRenderer  # noqa: F401
+            from renderer.card_renderer import CardRenderer
             services["playwright"] = {"status": "ok", "latency_ms": 0, "page_name": "Playwright"}
         except Exception:
             services["playwright"] = {"status": "degraded", "latency_ms": 0, "page_name": "Playwright"}
@@ -1319,7 +1420,7 @@ def health_deep():
 
         # MWK Converter
         try:
-            from products.converter.service import CurrencyService  # noqa: F401
+            from products.converter.service import CurrencyService
             services["converter"] = {"status": "ok", "latency_ms": 0, "page_name": "MWK Converter"}
         except Exception:
             services["converter"] = {"status": "degraded", "latency_ms": 0, "page_name": "MWK Converter"}
@@ -1332,24 +1433,18 @@ def health_deep():
             "services": services,
         })
     except Exception as exc:
-        logger.error("GET /api/v1/health/deep error: %s", exc)
-        return jsonify({"status": "error", "version": "10.0.0", "services": {}, "error": str(exc)}), 500
+        return _safe_err(exc, "GET /api/v1/health/deep", 500)
 
 
 # ---------------------------------------------------------------------------
-# Workflow aliases — the Prometheus frontend uses paths that differ slightly
-# from the backend's canonical names.
+# Workflow aliases
 # ---------------------------------------------------------------------------
+
 
 @api_v1_bp.route("/workflow/status", methods=["GET"])
 @_auth_required
 def workflow_status():
-    """
-    Return current workflow engine status.
-
-    Shape consumed by the Prometheus frontend:
-      { status: 'running'|'paused'|'idle'|'error', progress, current_step }
-    """
+    """Return current workflow engine status."""
     try:
         from scheduler.post_scheduler import scheduler
         sched = scheduler.get_status()
@@ -1360,8 +1455,7 @@ def workflow_status():
             "current_step": "Scheduler active" if running else "Idle",
         })
     except Exception as exc:
-        logger.error("GET /api/v1/workflow/status error: %s", exc)
-        return _ok({"status": "idle", "progress": 0, "current_step": str(exc)})
+        return _safe_err(exc, "GET /api/v1/workflow/status", 500)
 
 
 @api_v1_bp.route("/workflow/pause", methods=["POST"])
@@ -1373,8 +1467,7 @@ def workflow_pause():
         scheduler.stop()
         return _ok({"ok": True, "status": "paused"})
     except Exception as exc:
-        logger.error("POST /api/v1/workflow/pause error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/workflow/pause", 500)
 
 
 @api_v1_bp.route("/workflow/resume", methods=["POST"])
@@ -1386,8 +1479,7 @@ def workflow_resume():
         scheduler.start()
         return _ok({"ok": True, "status": "running"})
     except Exception as exc:
-        logger.error("POST /api/v1/workflow/resume error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/workflow/resume", 500)
 
 
 @api_v1_bp.route("/workflow/trigger", methods=["POST"])
@@ -1399,22 +1491,19 @@ def workflow_trigger():
         result = scheduler.run_content_now()
         return _ok({"ok": result.get("ok", False), "job_id": result.get("topic", "manual")})
     except Exception as exc:
-        logger.error("POST /api/v1/workflow/trigger error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/workflow/trigger", 500)
 
 
 # ---------------------------------------------------------------------------
-# Resource metrics — GET /api/v1/metrics/resources
-# Returns CPU/memory/disk/network utilisation consumed by ResourceUtilization
-# component in the Prometheus frontend.
+# Resource metrics
 # ---------------------------------------------------------------------------
+
 
 @api_v1_bp.route("/metrics/resources", methods=["GET"])
 @_auth_required
 def get_resource_metrics():
     """Return current process resource utilisation."""
     try:
-        import os as _os
         cpu_percent: float = 0.0
         mem_percent: float = 0.0
         disk_percent: float = 0.0
@@ -1441,23 +1530,18 @@ def get_resource_metrics():
             "queue_depth":      0,
         })
     except Exception as exc:
-        logger.error("GET /api/v1/metrics/resources error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/metrics/resources", 500)
 
 
 # ---------------------------------------------------------------------------
-# PromQL-style query — GET /api/v1/metrics/query?q=<expr>
-# Minimal shim so the PrometheusMetrics page doesn't hard-error on 404.
+# PromQL-style query
 # ---------------------------------------------------------------------------
+
 
 @api_v1_bp.route("/metrics/query", methods=["GET"])
 @_auth_required
 def metrics_query():
-    """
-    Accept a PromQL-like query string and return a minimal result envelope.
-    Real Prometheus scraping is not implemented; this returns in-process counters
-    shaped like a Prometheus instant-query response so frontend charts render.
-    """
+    """Accept a PromQL-like query string and return a minimal result envelope."""
     try:
         from utils.metrics import metrics as _m
         snap = _m.get_snapshot()
@@ -1481,17 +1565,15 @@ def metrics_query():
             },
         })
     except Exception as exc:
-        logger.error("GET /api/v1/metrics/query error: %s", exc)
-        return jsonify({"status": "error", "error": str(exc), "data": {"result": []}}), 500
+        return _safe_err(exc, "GET /api/v1/metrics/query", 500)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DASHBOARD REST CRUD API (Phase 6)
+# [SECURITY] DASHBOARD REST CRUD API — WITH WORKSPACE ISOLATION
+# Every CRUD endpoint now verifies workspace ownership before returning data.
+# Returns 404 (not 403) when resource belongs to different workspace to
+# prevent information disclosure.
 # ═══════════════════════════════════════════════════════════════════════════
-
-def _get_container():
-    from flask import current_app
-    return current_app.extensions.get("service_container")
 
 
 # ── Workspaces ─────────────────────────────────────────────────────────────
@@ -1505,14 +1587,26 @@ def create_workspace():
         data = request.get_json(force=True, silent=True) or {}
         ws_id = data.get("id") or f"ws-{_uuid_mod.uuid4().hex[:12]}"
         data["id"] = ws_id
-        
+
+        # [SECURITY] Validate required fields
+        if not data.get("name"):
+            return _err("name is required", 400)
+
         ws = Workspace(**data)
         repo = _get_container().resolve(WorkspaceRepository)
         saved = repo.save(ws)
+
+        # [SECURITY] Audit log
+        _append_audit(
+            action="workspace_created",
+            resource=f"workspace:{ws_id}",
+            status="success",
+            detail=f"Workspace '{ws.name}' created",
+        )
+
         return _ok({"workspace": saved.model_dump(mode="json")}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/workspaces error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/workspaces", 500)
 
 
 @api_v1_bp.route("/workspaces", methods=["GET"])
@@ -1521,15 +1615,21 @@ def list_workspaces():
     from repositories.workspace_repository import WorkspaceRepository
     try:
         repo = _get_container().resolve(WorkspaceRepository)
-        if not repo.supabase:
+
+        # [SECURITY] For scoped tokens, only return the user's workspace
+        workspace_id = getattr(g, 'auth_workspace_id', None)
+        if workspace_id:
+            ws = repo.find_by_id(workspace_id)
+            workspaces = [ws.model_dump(mode="json")] if ws else []
+        elif not repo.supabase:
             workspaces = list(repo._in_memory.values())
         else:
             res = repo.supabase.table("workspaces").select("*").execute()
             workspaces = res.data or []
+
         return _ok({"workspaces": workspaces})
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/workspaces", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>", methods=["GET"])
@@ -1537,14 +1637,16 @@ def list_workspaces():
 def get_workspace(workspace_id):
     from repositories.workspace_repository import WorkspaceRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(WorkspaceRepository)
         ws = repo.find_by_id(workspace_id)
         if not ws:
             return _err("Workspace not found", 404)
         return _ok({"workspace": ws.model_dump(mode="json")})
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces/%s error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>", methods=["PUT"])
@@ -1552,22 +1654,31 @@ def get_workspace(workspace_id):
 def update_workspace(workspace_id):
     from repositories.workspace_repository import WorkspaceRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(WorkspaceRepository)
         ws = repo.find_by_id(workspace_id)
         if not ws:
             return _err("Workspace not found", 404)
-        
+
         data = request.get_json(force=True, silent=True) or {}
-        # Update fields
+        # [SECURITY] Don't allow changing the workspace ID
         for k, v in data.items():
-            if hasattr(ws, k) and k != "id":
+            if hasattr(ws, k) and k not in ("id", "created_at"):
                 setattr(ws, k, v)
         ws.updated_at = datetime.now(timezone.utc)
         saved = repo.save(ws)
+
+        _append_audit(
+            action="workspace_updated",
+            resource=f"workspace:{workspace_id}",
+            status="success",
+        )
+
         return _ok({"workspace": saved.model_dump(mode="json")})
     except Exception as exc:
-        logger.error("PUT /api/v1/workspaces/%s error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"PUT /api/v1/workspaces/{workspace_id}", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>", methods=["DELETE"])
@@ -1575,12 +1686,21 @@ def update_workspace(workspace_id):
 def delete_workspace(workspace_id):
     from repositories.workspace_repository import WorkspaceRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(WorkspaceRepository)
         deleted = repo.delete(workspace_id)
+
+        _append_audit(
+            action="workspace_deleted",
+            resource=f"workspace:{workspace_id}",
+            status="success",
+        )
+
         return _ok({"deleted": deleted})
     except Exception as exc:
-        logger.error("DELETE /api/v1/workspaces/%s error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/workspaces/{workspace_id}", 500)
 
 
 # ── Brands ─────────────────────────────────────────────────────────────────
@@ -1591,18 +1711,31 @@ def create_brand(workspace_id):
     from models.brand import Brand
     from repositories.brand_repository import BrandRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         data = request.get_json(force=True, silent=True) or {}
         brand_id = data.get("id") or f"brand-{_uuid_mod.uuid4().hex[:12]}"
         data["id"] = brand_id
         data["workspace_id"] = workspace_id
-        
+
+        if not data.get("name"):
+            return _err("name is required", 400)
+
         brand = Brand(**data)
         repo = _get_container().resolve(BrandRepository)
         saved = repo.save(brand)
+
+        _append_audit(
+            action="brand_created",
+            resource=f"brand:{brand_id}",
+            status="success",
+            detail=f"Brand '{brand.name}' created in workspace {workspace_id}",
+        )
+
         return _ok({"brand": saved.model_dump(mode="json")}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/workspaces/%s/brands error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/brands", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/brands", methods=["GET"])
@@ -1610,12 +1743,14 @@ def create_brand(workspace_id):
 def list_brands(workspace_id):
     from repositories.brand_repository import BrandRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(BrandRepository)
         brands = repo.find_by_workspace(workspace_id)
         return _ok({"brands": [b.model_dump(mode="json") for b in brands]})
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces/%s/brands error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/brands", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>", methods=["GET"])
@@ -1623,14 +1758,16 @@ def list_brands(workspace_id):
 def get_brand(brand_id):
     from repositories.brand_repository import BrandRepository
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         repo = _get_container().resolve(BrandRepository)
         brand = repo.find_by_id(brand_id)
         if not brand:
             return _err("Brand not found", 404)
         return _ok({"brand": brand.model_dump(mode="json")})
     except Exception as exc:
-        logger.error("GET /api/v1/brands/%s error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/brands/{brand_id}", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>", methods=["PUT"])
@@ -1638,21 +1775,30 @@ def get_brand(brand_id):
 def update_brand(brand_id):
     from repositories.brand_repository import BrandRepository
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         repo = _get_container().resolve(BrandRepository)
         brand = repo.find_by_id(brand_id)
         if not brand:
             return _err("Brand not found", 404)
-        
+
         data = request.get_json(force=True, silent=True) or {}
         for k, v in data.items():
-            if hasattr(brand, k) and k not in ("id", "workspace_id"):
+            if hasattr(brand, k) and k not in ("id", "workspace_id", "created_at"):
                 setattr(brand, k, v)
         brand.updated_at = datetime.now(timezone.utc)
         saved = repo.save(brand)
+
+        _append_audit(
+            action="brand_updated",
+            resource=f"brand:{brand_id}",
+            status="success",
+        )
+
         return _ok({"brand": saved.model_dump(mode="json")})
     except Exception as exc:
-        logger.error("PUT /api/v1/brands/%s error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"PUT /api/v1/brands/{brand_id}", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>", methods=["DELETE"])
@@ -1660,12 +1806,21 @@ def update_brand(brand_id):
 def delete_brand(brand_id):
     from repositories.brand_repository import BrandRepository
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         repo = _get_container().resolve(BrandRepository)
         deleted = repo.delete(brand_id)
+
+        _append_audit(
+            action="brand_deleted",
+            resource=f"brand:{brand_id}",
+            status="success",
+        )
+
         return _ok({"deleted": deleted})
     except Exception as exc:
-        logger.error("DELETE /api/v1/brands/%s error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/brands/{brand_id}", 500)
 
 
 # ── AI Profiles ────────────────────────────────────────────────────────────
@@ -1676,18 +1831,31 @@ def create_ai_profile(workspace_id):
     from models.ai_profile import AIProfile
     from repositories.ai_profile_repository import AIProfileRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         data = request.get_json(force=True, silent=True) or {}
         profile_id = data.get("id") or f"profile-{_uuid_mod.uuid4().hex[:12]}"
         data["id"] = profile_id
         data["workspace_id"] = workspace_id
-        
+
+        if not data.get("name"):
+            return _err("name is required", 400)
+
         profile = AIProfile(**data)
         repo = _get_container().resolve(AIProfileRepository)
         saved = repo.save(profile)
+
+        _append_audit(
+            action="ai_profile_created",
+            resource=f"ai_profile:{profile_id}",
+            status="success",
+            detail=f"AI Profile '{profile.name}' created",
+        )
+
         return _ok({"ai_profile": saved.model_dump(mode="json")}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/workspaces/%s/ai-profiles error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/ai-profiles", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/ai-profiles", methods=["GET"])
@@ -1695,12 +1863,14 @@ def create_ai_profile(workspace_id):
 def list_ai_profiles(workspace_id):
     from repositories.ai_profile_repository import AIProfileRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(AIProfileRepository)
         profiles = repo.find_by_workspace(workspace_id)
         return _ok({"ai_profiles": [p.model_dump(mode="json") for p in profiles]})
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces/%s/ai-profiles error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/ai-profiles", 500)
 
 
 @api_v1_bp.route("/ai-profiles/<profile_id>", methods=["PUT"])
@@ -1708,21 +1878,30 @@ def list_ai_profiles(workspace_id):
 def update_ai_profile(profile_id):
     from repositories.ai_profile_repository import AIProfileRepository
     try:
+        # [SECURITY] Verify profile ownership
+        _require_workspace_ownership("ai_profile", profile_id)
+
         repo = _get_container().resolve(AIProfileRepository)
         profile = repo.find_by_id(profile_id)
         if not profile:
             return _err("AI Profile not found", 404)
-        
+
         data = request.get_json(force=True, silent=True) or {}
         for k, v in data.items():
-            if hasattr(profile, k) and k not in ("id", "workspace_id"):
+            if hasattr(profile, k) and k not in ("id", "workspace_id", "created_at"):
                 setattr(profile, k, v)
         profile.updated_at = datetime.now(timezone.utc)
         saved = repo.save(profile)
+
+        _append_audit(
+            action="ai_profile_updated",
+            resource=f"ai_profile:{profile_id}",
+            status="success",
+        )
+
         return _ok({"ai_profile": saved.model_dump(mode="json")})
     except Exception as exc:
-        logger.error("PUT /api/v1/ai-profiles/%s error: %s", profile_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"PUT /api/v1/ai-profiles/{profile_id}", 500)
 
 
 @api_v1_bp.route("/ai-profiles/<profile_id>", methods=["DELETE"])
@@ -1730,12 +1909,21 @@ def update_ai_profile(profile_id):
 def delete_ai_profile(profile_id):
     from repositories.ai_profile_repository import AIProfileRepository
     try:
+        # [SECURITY] Verify profile ownership
+        _require_workspace_ownership("ai_profile", profile_id)
+
         repo = _get_container().resolve(AIProfileRepository)
         deleted = repo.delete(profile_id)
+
+        _append_audit(
+            action="ai_profile_deleted",
+            resource=f"ai_profile:{profile_id}",
+            status="success",
+        )
+
         return _ok({"deleted": deleted})
     except Exception as exc:
-        logger.error("DELETE /api/v1/ai-profiles/%s error: %s", profile_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/ai-profiles/{profile_id}", 500)
 
 
 # ── Social Accounts ────────────────────────────────────────────────────────
@@ -1746,18 +1934,36 @@ def create_social_account(workspace_id):
     from models.social_account import SocialAccount
     from repositories.social_account_repository import SocialAccountRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         data = request.get_json(force=True, silent=True) or {}
         acc_id = data.get("id") or f"acc-{_uuid_mod.uuid4().hex[:12]}"
         data["id"] = acc_id
         data["workspace_id"] = workspace_id
-        
+
+        if not data.get("platform"):
+            return _err("platform is required", 400)
+
         account = SocialAccount(**data)
         repo = _get_container().resolve(SocialAccountRepository)
         saved = repo.save(account)
-        return _ok({"social_account": saved.model_dump(mode="json")}, 201)
+
+        # [SECURITY] Never return the access token in the response
+        response_data = saved.model_dump(mode="json")
+        response_data.pop("access_token", None)
+        response_data.pop("encrypted_credential", None)
+
+        _append_audit(
+            action="social_account_created",
+            resource=f"social_account:{acc_id}",
+            status="success",
+            detail=f"Social account for platform '{account.platform}' created",
+        )
+
+        return _ok({"social_account": response_data}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/workspaces/%s/social-accounts error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/social-accounts", 500)
 
 
 @api_v1_bp.route("/workspaces/<workspace_id>/social-accounts", methods=["GET"])
@@ -1765,12 +1971,23 @@ def create_social_account(workspace_id):
 def list_social_accounts(workspace_id):
     from repositories.social_account_repository import SocialAccountRepository
     try:
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         repo = _get_container().resolve(SocialAccountRepository)
         accounts = repo.find_by_workspace(workspace_id)
-        return _ok({"social_accounts": [a.model_dump(mode="json") for a in accounts]})
+
+        # [SECURITY] Strip sensitive fields from response
+        safe_accounts = []
+        for a in accounts:
+            a_dict = a.model_dump(mode="json")
+            a_dict.pop("access_token", None)
+            a_dict.pop("encrypted_credential", None)
+            safe_accounts.append(a_dict)
+
+        return _ok({"social_accounts": safe_accounts})
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces/%s/social-accounts error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/social-accounts", 500)
 
 
 @api_v1_bp.route("/social-accounts/<account_id>", methods=["PUT"])
@@ -1778,21 +1995,35 @@ def list_social_accounts(workspace_id):
 def update_social_account(account_id):
     from repositories.social_account_repository import SocialAccountRepository
     try:
+        # [SECURITY] Verify account ownership
+        _require_workspace_ownership("social_account", account_id)
+
         repo = _get_container().resolve(SocialAccountRepository)
         account = repo.find_by_id(account_id)
         if not account:
             return _err("Social Account not found", 404)
-        
+
         data = request.get_json(force=True, silent=True) or {}
         for k, v in data.items():
-            if hasattr(account, k) and k not in ("id", "workspace_id"):
+            if hasattr(account, k) and k not in ("id", "workspace_id", "created_at"):
                 setattr(account, k, v)
         account.updated_at = datetime.now(timezone.utc)
         saved = repo.save(account)
-        return _ok({"social_account": saved.model_dump(mode="json")})
+
+        # [SECURITY] Never return the access token
+        response_data = saved.model_dump(mode="json")
+        response_data.pop("access_token", None)
+        response_data.pop("encrypted_credential", None)
+
+        _append_audit(
+            action="social_account_updated",
+            resource=f"social_account:{account_id}",
+            status="success",
+        )
+
+        return _ok({"social_account": response_data})
     except Exception as exc:
-        logger.error("PUT /api/v1/social-accounts/%s error: %s", account_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"PUT /api/v1/social-accounts/{account_id}", 500)
 
 
 @api_v1_bp.route("/social-accounts/<account_id>", methods=["DELETE"])
@@ -1800,12 +2031,21 @@ def update_social_account(account_id):
 def delete_social_account(account_id):
     from repositories.social_account_repository import SocialAccountRepository
     try:
+        # [SECURITY] Verify account ownership
+        _require_workspace_ownership("social_account", account_id)
+
         repo = _get_container().resolve(SocialAccountRepository)
         deleted = repo.delete(account_id)
+
+        _append_audit(
+            action="social_account_deleted",
+            resource=f"social_account:{account_id}",
+            status="success",
+        )
+
         return _ok({"deleted": deleted})
     except Exception as exc:
-        logger.error("DELETE /api/v1/social-accounts/%s error: %s", account_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/social-accounts/{account_id}", 500)
 
 
 @api_v1_bp.route("/social-accounts/<account_id>/health-check", methods=["POST"])
@@ -1814,27 +2054,29 @@ def health_check_social_account(account_id):
     from repositories.social_account_repository import SocialAccountRepository
     from services.connectors.connector_factory import create_connector
     try:
+        # [SECURITY] Verify account ownership
+        _require_workspace_ownership("social_account", account_id)
+
         repo = _get_container().resolve(SocialAccountRepository)
         account = repo.find_by_id(account_id)
         if not account:
             return _err("Social Account not found", 404)
-            
+
         connector = create_connector(account)
         h = connector.health()
-        
+
         # Update health status in DB
         account.health_status = "healthy" if h.ok else "unhealthy"
         account.last_health_check = datetime.now(timezone.utc)
         repo.save(account)
-        
+
         return _ok({
             "healthy": h.ok,
             "latency_ms": h.latency_ms,
             "error": h.error,
         })
     except Exception as exc:
-        logger.error("POST /api/v1/social-accounts/%s/health-check error: %s", account_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/social-accounts/{account_id}/health-check", 500)
 
 
 # ── Knowledge Base ─────────────────────────────────────────────────────────
@@ -1846,27 +2088,29 @@ def create_knowledge_entry(brand_id):
     from repositories.brand_repository import BrandRepository
     from services.knowledge_base import KnowledgeBase
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         brand_repo = _get_container().resolve(BrandRepository)
         brand = brand_repo.find_by_id(brand_id)
         if not brand:
             return _err("Brand not found", 404)
-            
+
         data = request.get_json(force=True, silent=True) or {}
         content = data.get("content", "").strip()
         doc_type = data.get("doc_type", "text")
         metadata = data.get("metadata", {})
-        
+
         if not content:
             return _err("content field is required", 400)
-            
+
         kb_repo = _get_container().resolve(KnowledgeRepository)
         kb = KnowledgeBase(brand_id=brand_id, workspace_id=brand.workspace_id, repository=kb_repo)
         entry = kb.add_document(content=content, doc_type=doc_type, metadata=metadata)
-        
+
         return _ok({"knowledge_entry": entry.model_dump(mode="json")}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/brands/%s/knowledge error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/brands/{brand_id}/knowledge", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>/knowledge", methods=["GET"])
@@ -1874,12 +2118,14 @@ def create_knowledge_entry(brand_id):
 def list_knowledge_entries(brand_id):
     from repositories.knowledge_repository import KnowledgeRepository
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         repo = _get_container().resolve(KnowledgeRepository)
         entries = repo.find_by_brand(brand_id)
         return _ok({"knowledge_entries": [e.model_dump(mode="json") for e in entries]})
     except Exception as exc:
-        logger.error("GET /api/v1/brands/%s/knowledge error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/brands/{brand_id}/knowledge", 500)
 
 
 @api_v1_bp.route("/knowledge/<knowledge_id>", methods=["DELETE"])
@@ -1889,10 +2135,16 @@ def delete_knowledge_entry(knowledge_id):
     try:
         repo = _get_container().resolve(KnowledgeRepository)
         deleted = repo.delete(knowledge_id)
+
+        _append_audit(
+            action="knowledge_deleted",
+            resource=f"knowledge:{knowledge_id}",
+            status="success",
+        )
+
         return _ok({"deleted": deleted})
     except Exception as exc:
-        logger.error("DELETE /api/v1/knowledge/%s error: %s", knowledge_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"DELETE /api/v1/knowledge/{knowledge_id}", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>/knowledge/search", methods=["POST"])
@@ -1902,30 +2154,32 @@ def search_knowledge_entries(brand_id):
     from repositories.knowledge_repository import KnowledgeRepository
     from services.knowledge_base import KnowledgeBase
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         brand_repo = _get_container().resolve(BrandRepository)
         brand = brand_repo.find_by_id(brand_id)
         if not brand:
             return _err("Brand not found", 404)
-            
+
         data = request.get_json(force=True, silent=True) or {}
         query = data.get("query", "").strip()
         top_k = min(50, max(1, int(data.get("top_k", 5))))
-        
+
         if not query:
             return _err("query field is required", 400)
-            
+
         kb_repo = _get_container().resolve(KnowledgeRepository)
         kb = KnowledgeBase(brand_id=brand_id, workspace_id=brand.workspace_id, repository=kb_repo)
         results = kb.search(query=query, top_k=top_k)
-        
+
         serialised = [
             {"entry": entry.model_dump(mode="json"), "similarity": float(sim)}
             for entry, sim in results
         ]
         return _ok({"results": serialised})
     except Exception as exc:
-        logger.error("POST /api/v1/brands/%s/knowledge/search error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/brands/{brand_id}/knowledge/search", 500)
 
 
 # ── Analytics ──────────────────────────────────────────────────────────────
@@ -1935,7 +2189,9 @@ def search_knowledge_entries(brand_id):
 def get_workspace_analytics(workspace_id):
     from analytics.tracker import analytics
     try:
-        # Custom workspace analytics fetch shim (scopes rpc call or fallback filters)
+        # [SECURITY] Verify workspace ownership
+        _require_workspace_ownership("workspace", workspace_id)
+
         stats = analytics.get_stats()
         return _ok({
             "workspace_id": workspace_id,
@@ -1943,8 +2199,7 @@ def get_workspace_analytics(workspace_id):
             "as_of": datetime.now(timezone.utc).isoformat()
         })
     except Exception as exc:
-        logger.error("GET /api/v1/workspaces/%s/analytics error: %s", workspace_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/analytics", 500)
 
 
 @api_v1_bp.route("/brands/<brand_id>/analytics", methods=["GET"])
@@ -1952,6 +2207,9 @@ def get_workspace_analytics(workspace_id):
 def get_brand_analytics(brand_id):
     from analytics.tracker import analytics
     try:
+        # [SECURITY] Verify brand ownership
+        _require_workspace_ownership("brand", brand_id)
+
         stats = analytics.get_stats()
         return _ok({
             "brand_id": brand_id,
@@ -1959,8 +2217,7 @@ def get_brand_analytics(brand_id):
             "as_of": datetime.now(timezone.utc).isoformat()
         })
     except Exception as exc:
-        logger.error("GET /api/v1/brands/%s/analytics error: %s", brand_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"GET /api/v1/brands/{brand_id}/analytics", 500)
 
 
 # ── System Health ──────────────────────────────────────────────────────────
@@ -1971,7 +2228,7 @@ def get_system_health():
         from core.reliability import HealthChecker
         checker = _get_container().resolve(HealthChecker)
         statuses = checker.check_all()
-        
+
         all_ok = all(stat.get("ok", False) for stat in statuses.values())
         return _ok({
             "status": "healthy" if all_ok else "degraded",
@@ -1979,8 +2236,7 @@ def get_system_health():
             "as_of": datetime.now(timezone.utc).isoformat()
         })
     except Exception as exc:
-        logger.error("GET /api/v1/system/health error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/system/health", 500)
 
 
 @api_v1_bp.route("/system/connectors", methods=["GET"])
@@ -1994,40 +2250,34 @@ def get_system_connectors():
             "count": len(platforms)
         })
     except Exception as exc:
-        logger.error("GET /api/v1/system/connectors error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/system/connectors", 500)
 
 
 # ---------------------------------------------------------------------------
-# AI Chat  — POST /api/v1/ai/chat
-# Real-time chat with the Gemini AI backend (used by the AI Chat page).
+# AI Chat — POST /api/v1/ai/chat
+# [SECURITY] Added prompt length limit and rate limiting
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/ai/chat", methods=["POST"])
 @_auth_required
+@_rate_limit("ai_chat", max_per_minute=20)  # [SECURITY] Prevent quota exhaustion
 def ai_chat():
-    """
-    Send a message to the Gemini AI and return a response.
-
-    Body (JSON):
-      { "message": "Hello!", "history": [...], "system_prompt": "..." }
-
-    Returns:
-      { "reply": "...", "model": "...", "tokens_used": N }
-    """
+    """Send a message to the Gemini AI and return a response."""
     try:
         data = request.get_json(force=True, silent=True) or {}
         message = str(data.get("message", "")).strip()
         if not message:
             return _err("message field is required", 400)
 
-        history = data.get("history", [])  # list of {role, content} dicts
+        # [SECURITY] Enforce maximum prompt length
+        if len(message) > MAX_AI_PROMPT_LENGTH:
+            return _err(f"Message exceeds maximum length of {MAX_AI_PROMPT_LENGTH} characters", 400)
+
+        history = data.get("history", [])
         system_prompt_override = data.get("system_prompt", "")
 
-        from api.ai_runtime import get_effective_system_prompt
         from config.settings import settings as _s
 
-        # Inject prior history into the in-process memory so Gemini picks it up
         if history:
             from core.memory import memory as _mem
             for turn in history[-10:]:
@@ -2038,15 +2288,22 @@ def ai_chat():
                 elif role in ("assistant", "bot"):
                     _mem.add_message("api_chat_user", "assistant", content)
 
-        # Try Gemini with the correct service contract
         try:
             from services.gemini import GeminiService
             gemini = GeminiService()
-            # generate_chat_response(sender_id, user_message, language, sentiment)
             reply = gemini.generate_chat_response(
                 sender_id="api_chat_user",
                 user_message=message,
             )
+
+            # [SECURITY] Audit log for AI usage
+            _append_audit(
+                action="ai_chat",
+                resource="gemini",
+                status="success",
+                detail=f"Chat request processed ({len(message)} chars input, {len(reply)} chars output)",
+            )
+
             return _ok({
                 "reply": reply,
                 "model": _s.gemini_model,
@@ -2060,17 +2317,13 @@ def ai_chat():
                 "tokens_used": 0,
             })
     except Exception as exc:
-        logger.error("POST /api/v1/ai/chat error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/ai/chat", 500)
 
 
 # ---------------------------------------------------------------------------
-# Audit Logs  — GET /api/v1/audit-logs
-# Returns recent audit/event log entries from analytics or Supabase.
+# [SECURITY] Audit Log Helper
 # ---------------------------------------------------------------------------
 
-# In-process audit log ring-buffer (supplements Supabase when not configured)
-import collections as _audit_collections
 _audit_log: _collections_mod.deque = _collections_mod.deque(maxlen=200)
 _audit_log_lock = _threading_mod.Lock()
 
@@ -2091,23 +2344,19 @@ def _append_audit(action: str, resource: str, user: str = "system",
         _audit_log.appendleft(entry)
 
 
+# ---------------------------------------------------------------------------
+# Audit Logs — GET /api/v1/audit-logs
+# ---------------------------------------------------------------------------
+
 @api_v1_bp.route("/audit-logs", methods=["GET"])
 @_auth_required
 def get_audit_logs():
-    """
-    Return recent audit log entries.
-
-    Query params:
-      limit  — max entries to return (default 50, max 200)
-      action — filter by action type
-      user   — filter by user
-    """
+    """Return recent audit log entries."""
     try:
         limit  = min(200, max(1, int(request.args.get("limit", 50))))
         action = request.args.get("action", "").strip().lower()
         user   = request.args.get("user", "").strip().lower()
 
-        # Try Supabase first
         from services.supabase import supabase_service
         if supabase_service and supabase_service.client:
             try:
@@ -2121,9 +2370,8 @@ def get_audit_logs():
                 logs = result.data or []
                 return _ok({"logs": logs, "count": len(logs), "source": "supabase"})
             except Exception:
-                pass  # fall through to in-process buffer
+                pass
 
-        # Fall back to in-process ring buffer
         with _audit_log_lock:
             logs = list(_audit_log)
 
@@ -2134,7 +2382,6 @@ def get_audit_logs():
 
         logs = logs[:limit]
 
-        # If nothing in buffer yet, seed with server start entry
         if not logs:
             from config.settings import settings as _s
             logs = [{
@@ -2149,15 +2396,11 @@ def get_audit_logs():
 
         return _ok({"logs": logs, "count": len(logs), "source": "memory"})
     except Exception as exc:
-        logger.error("GET /api/v1/audit-logs error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/audit-logs", 500)
 
 
 # ---------------------------------------------------------------------------
-# Knowledge Base — flat endpoints (no brand scoping)
-# GET  /api/v1/knowledge           — list all entries (Supabase or empty)
-# POST /api/v1/knowledge           — create a new entry
-# GET  /api/v1/knowledge/search    — keyword search
+# Knowledge Base — flat endpoints
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/knowledge", methods=["GET"])
@@ -2189,14 +2432,13 @@ def list_knowledge():
         return _ok({"documents": [], "count": 0, "source": "supabase_unavailable",
                     "note": "Configure Supabase to persist knowledge entries."})
     except Exception as exc:
-        logger.error("GET /api/v1/knowledge error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/knowledge", 500)
 
 
 @api_v1_bp.route("/knowledge", methods=["POST"])
 @_auth_required
 def create_knowledge():
-    """Create a new knowledge-base entry (flat, no brand scoping required)."""
+    """Create a new knowledge-base entry."""
     try:
         data    = request.get_json(force=True, silent=True) or {}
         content = str(data.get("content", "")).strip()
@@ -2221,23 +2463,24 @@ def create_knowledge():
             except Exception as exc:
                 logger.warning("Supabase knowledge insert failed: %s", exc)
 
+        _append_audit(
+            action="knowledge_created",
+            resource=f"knowledge:{entry['id']}",
+            status="success",
+        )
+
         return _ok({"document": entry}, 201)
     except Exception as exc:
-        logger.error("POST /api/v1/knowledge error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "POST /api/v1/knowledge", 500)
 
 
 # ---------------------------------------------------------------------------
-# Analytics  — enriched endpoints for the Prometheus Analytics page
-# GET /api/v1/analytics/posts-performance  — per-post engagement stats
-# GET /api/v1/analytics/token-usage        — daily token / API call stats
-# GET /api/v1/analytics/engagement-heatmap — hour-of-day engagement matrix
+# Analytics — enriched endpoints
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/analytics/posts-performance", methods=["GET"])
 @_auth_required
 def analytics_posts_performance():
-    """Return per-post engagement stats for the Analytics page."""
     try:
         limit = min(50, max(1, int(request.args.get("limit", 20))))
         from services.supabase import supabase_service
@@ -2256,14 +2499,12 @@ def analytics_posts_performance():
                 pass
         return _ok({"posts": [], "count": 0, "note": "Supabase not configured"})
     except Exception as exc:
-        logger.error("GET /api/v1/analytics/posts-performance error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/analytics/posts-performance", 500)
 
 
 @api_v1_bp.route("/analytics/token-usage", methods=["GET"])
 @_auth_required
 def analytics_token_usage():
-    """Return daily token / API usage stats for the Analytics page."""
     try:
         from utils.metrics import metrics as _m
         snap = _m.get_snapshot()
@@ -2271,18 +2512,16 @@ def analytics_token_usage():
         return _ok({
             "total_tokens_estimated": counters.get("gemini_tokens_used", 0),
             "api_calls_today": counters.get("requests_total", 0),
-            "daily": [],  # would be populated from Supabase analytics table
+            "daily": [],
             "as_of": datetime.now(timezone.utc).isoformat(),
         })
     except Exception as exc:
-        logger.error("GET /api/v1/analytics/token-usage error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/analytics/token-usage", 500)
 
 
 @api_v1_bp.route("/analytics/engagement-heatmap", methods=["GET"])
 @_auth_required
 def analytics_engagement_heatmap():
-    """Return hour-of-day / day-of-week engagement data for the Analytics page."""
     try:
         from services.supabase import supabase_service
         if supabase_service and supabase_service.client:
@@ -2294,7 +2533,6 @@ def analytics_engagement_heatmap():
                     return _ok({"heatmap": result.data})
             except Exception:
                 pass
-        # Return zeroed-out matrix when Supabase is unavailable
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         heatmap = [
             {"day": d, "hours": [0.0] * 24}
@@ -2302,18 +2540,16 @@ def analytics_engagement_heatmap():
         ]
         return _ok({"heatmap": heatmap, "note": "Real data requires Supabase"})
     except Exception as exc:
-        logger.error("GET /api/v1/analytics/engagement-heatmap error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/analytics/engagement-heatmap", 500)
 
 
 # ---------------------------------------------------------------------------
-# Notifications  — GET /api/v1/notifications
+# Notifications
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/notifications", methods=["GET"])
 @_auth_required
 def get_notifications():
-    """Return recent system notifications."""
     try:
         limit = min(50, max(1, int(request.args.get("limit", 20))))
         from services.supabase import supabase_service
@@ -2331,14 +2567,12 @@ def get_notifications():
                 pass
         return _ok({"notifications": [], "count": 0})
     except Exception as exc:
-        logger.error("GET /api/v1/notifications error: %s", exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, "GET /api/v1/notifications", 500)
 
 
 @api_v1_bp.route("/notifications/<notif_id>/read", methods=["POST"])
 @_auth_required
 def mark_notification_read(notif_id: str):
-    """Mark a notification as read."""
     try:
         from services.supabase import supabase_service
         if supabase_service and supabase_service.client:
@@ -2347,13 +2581,11 @@ def mark_notification_read(notif_id: str):
             ).eq("id", notif_id).execute()
         return _ok({"read": True, "id": notif_id})
     except Exception as exc:
-        logger.error("POST /api/v1/notifications/%s/read error: %s", notif_id, exc)
-        return _err(str(exc), 500)
+        return _safe_err(exc, f"POST /api/v1/notifications/{notif_id}/read", 500)
 
 
 # ---------------------------------------------------------------------------
-# Integrations  — GET /api/v1/integrations
-# Returns connected platform integration status (real, not mock).
+# Integrations
 # ---------------------------------------------------------------------------
 
 @api_v1_bp.route("/integrations", methods=["GET"])
@@ -2428,6 +2660,14 @@ def get_integrations():
                 "status": "active" if bool(getattr(_s, "whatsapp_token", "")) else "disconnected",
                 "description": "WhatsApp Business messaging",
             },
+            {
+                "id": "redis",
+                "name": "Upstash Redis",
+                "category": "Infrastructure",
+                "connected": bool(getattr(_s, "upstash_redis_rest_url", "")),
+                "status": "active" if bool(getattr(_s, "upstash_redis_rest_url", "")) else "disconnected",
+                "description": "Caching and rate limiting",
+            },
         ]
 
         connected_count = sum(1 for i in integrations if i["connected"])
@@ -2437,6 +2677,4 @@ def get_integrations():
             "connected": connected_count,
         })
     except Exception as exc:
-        logger.error("GET /api/v1/integrations error: %s", exc)
-        return _err(str(exc), 500)
-
+        return _safe_err(exc, "GET /api/v1/integrations", 500)
