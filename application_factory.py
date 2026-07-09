@@ -329,3 +329,10 @@ def _register_socketio(app: Flask) -> None:
         logger.info("API v1 Blueprint registered at /api/v1/*")
     except Exception as exc:
         logger.error("API v1 blueprint registration FAILED: %s", exc)
+
+    try:
+        from api.logs import logs_bp
+        app.register_blueprint(logs_bp)
+        logger.info("Logs API registered at /api/v1/logs")
+    except Exception as exc:
+        logger.error("Logs blueprint registration FAILED: %s", exc)

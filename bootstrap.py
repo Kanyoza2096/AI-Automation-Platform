@@ -25,6 +25,52 @@ setup_logging(settings.log_level)
 logger = logging.getLogger("kanyoza.bootstrap")
 
 
+# ---------------------------------------------------------------------------
+# LogBuffer handler — captures all log records into the ring buffer for SSE
+# ---------------------------------------------------------------------------
+
+class _LogBufferHandler(logging.Handler):
+    """Logging handler that forwards records into the LogBuffer singleton."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            from core.log_buffer import LogBuffer
+            from utils.ids import get_correlation_id  # type: ignore[import]
+            try:
+                cid = get_correlation_id() or ""
+            except Exception:
+                cid = ""
+            LogBuffer.get_instance().add(
+                level=record.levelname,
+                module=record.name,
+                message=self.format(record),
+                correlation_id=cid,
+            )
+        except Exception:
+            pass  # Never let the handler crash the application
+
+
+def _attach_log_buffer_handler() -> None:
+    """Attach the LogBuffer handler to the root logger only.
+
+    Attaching to both root and 'kanyoza' would cause duplicate entries because
+    kanyoza.* loggers propagate to root by default, resulting in every kanyoza
+    record being processed twice. Root-only attachment captures all records once.
+    """
+    handler = _LogBufferHandler()
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(message)s")
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger("")
+    # Avoid duplicate handlers on gunicorn worker reload
+    if not any(isinstance(h, _LogBufferHandler) for h in root.handlers):
+        root.addHandler(handler)
+
+
+_attach_log_buffer_handler()
+
+
 def bootstrap():
     """
     Initialise the platform and return a ready-to-serve Flask app.
