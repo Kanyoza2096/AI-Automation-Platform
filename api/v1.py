@@ -1848,7 +1848,6 @@ def delete_brand(brand_id):
 
 
 # ── AI Profiles ────────────────────────────────────────────────────────────
-
 @api_v1_bp.route("/workspaces/<workspace_id>/ai-profiles", methods=["POST"])
 @_auth_required
 def create_ai_profile(workspace_id):
@@ -1866,6 +1865,29 @@ def create_ai_profile(workspace_id):
         if not data.get("name"):
             return _err("name is required", 400)
 
+        # Normalize frontend values to backend enum
+        complexity_map = {
+            "simple": "beginner",
+            "moderate": "intermediate",
+            "advanced": "advanced",
+            "expert": "expert",
+        }
+        if data.get("complexity"):
+            data["complexity"] = complexity_map.get(
+                data["complexity"].lower(), data["complexity"]
+            )
+
+        emoji_map = {
+            "none": "none",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+        }
+        if data.get("emoji_level"):
+            data["emoji_level"] = emoji_map.get(
+                data["emoji_level"].lower(), data["emoji_level"]
+            )
+
         profile = AIProfile(**data)
         repo = _get_container().resolve(AIProfileRepository)
         saved = repo.save(profile)
@@ -1880,7 +1902,6 @@ def create_ai_profile(workspace_id):
         return _ok({"ai_profile": saved.model_dump(mode="json")}, 201)
     except Exception as exc:
         return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/ai-profiles", 500)
-
 
 @api_v1_bp.route("/workspaces/<workspace_id>/ai-profiles", methods=["GET"])
 @_auth_required
