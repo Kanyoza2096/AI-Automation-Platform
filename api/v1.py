@@ -1722,6 +1722,30 @@ def create_brand(workspace_id):
         if not data.get("name"):
             return _err("name is required", 400)
 
+        # Auto-generate slug from name if missing
+        if not data.get("slug"):
+            data["slug"] = data["name"].lower().replace(" ", "-")
+
+        # Convert hashtags string to list if sent as string
+        if "hashtags" in data and isinstance(data["hashtags"], str):
+            data["hashtags"] = [h.strip() for h in data["hashtags"].replace("#", "").split() if h.strip()]
+
+        # Ensure colors is a dict if sent as string
+        if "colors" in data and isinstance(data["colors"], str):
+            import json
+            try:
+                data["colors"] = json.loads(data["colors"])
+            except json.JSONDecodeError:
+                data["colors"] = {}
+
+        # Ensure posting_schedule is a dict if sent as string
+        if "posting_schedule" in data and isinstance(data["posting_schedule"], str):
+            import json
+            try:
+                data["posting_schedule"] = json.loads(data["posting_schedule"])
+            except json.JSONDecodeError:
+                data["posting_schedule"] = {}
+
         brand = Brand(**data)
         repo = _get_container().resolve(BrandRepository)
         saved = repo.save(brand)
