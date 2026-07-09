@@ -28,10 +28,8 @@ class SocialAccountRepository(Repository[SocialAccount]):
         from core.credential_vault import credential_vault
         return credential_vault.decrypt(value)
 
-
     def _encrypt_entity(self, entity: SocialAccount) -> SocialAccount:
         """Return a new entity with encrypted credentials for storage."""
-        # We don't want to mutate the passed entity
         dump = entity.model_dump()
         dump['access_token'] = self._encrypt(dump['access_token'])
         dump['refresh_token'] = self._encrypt(dump['refresh_token'])
@@ -91,6 +89,60 @@ class SocialAccountRepository(Repository[SocialAccount]):
             
         def _fetch():
             res = self.supabase.table('social_accounts').select('*').eq('workspace_id', workspace_id).execute()
+            return [self._decrypt_entity(row) for row in res.data]
+            
+        return self._safe_call(_fetch, default=[])
+
+    def find_by_brand(self, brand_id: str) -> List[SocialAccount]:
+        """Find all social accounts linked to a specific brand."""
+        if not self.supabase:
+            return [a for a in self._in_memory.values() if a.brand_id == brand_id]
+            
+        def _fetch():
+            res = self.supabase.table('social_accounts').select('*').eq('brand_id', brand_id).execute()
+            return [self._decrypt_entity(row) for row in res.data]
+            
+        return self._safe_call(_fetch, default=[])
+
+    def find_by_brand_and_platform(self, brand_id: str, platform: str) -> Optional[SocialAccount]:
+        """Find a social account for a specific brand and platform."""
+        if not self.supabase:
+            for a in self._in_memory.values():
+                if a.brand_id == brand_id and a.platform == platform:
+                    return a
+            return None
+            
+        def _fetch():
+            res = self.supabase.table('social_accounts') \
+                .select('*') \
+                .eq('brand_id', brand_id) \
+                .eq('platform', platform) \
+                .limit(1) \
+                .execute()
+            if res.data:
+                return self._decrypt_entity(res.data[0])
+            return None
+            
+        return self._safe_call(_fetch)
+
+    def find_by_platform(self, platform: str) -> List[SocialAccount]:
+        """Find all social accounts for a specific platform."""
+        if not self.supabase:
+            return [a for a in self._in_memory.values() if a.platform == platform]
+            
+        def _fetch():
+            res = self.supabase.table('social_accounts').select('*').eq('platform', platform).execute()
+            return [self._decrypt_entity(row) for row in res.data]
+            
+        return self._safe_call(_fetch, default=[])
+
+    def find_enabled(self) -> List[SocialAccount]:
+        """Find all enabled social accounts."""
+        if not self.supabase:
+            return [a for a in self._in_memory.values() if a.enabled]
+            
+        def _fetch():
+            res = self.supabase.table('social_accounts').select('*').eq('enabled', True).execute()
             return [self._decrypt_entity(row) for row in res.data]
             
         return self._safe_call(_fetch, default=[])
