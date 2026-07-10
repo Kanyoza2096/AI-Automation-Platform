@@ -2504,10 +2504,10 @@ def create_knowledge():
         from services.supabase import supabase_service
         if supabase_service and supabase_service.client:
             try:
-                supabase_service.client.table("knowledge_entries").insert(entry).execute()
+               supabase_service.client.table("knowledge_entries").insert(entry).execute()
+               logger.info("Knowledge entry saved to Supabase: %s", entry["id"])
             except Exception as exc:
-                logger.warning("Supabase knowledge insert failed: %s", exc)
-
+               logger.error("Supabase knowledge insert failed: %s", exc)
         _append_audit(
             action="knowledge_created",
             resource=f"knowledge:{entry['id']}",
