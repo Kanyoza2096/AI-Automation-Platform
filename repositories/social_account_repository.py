@@ -142,17 +142,17 @@ class SocialAccountRepository(Repository[SocialAccount]):
         from datetime import datetime, timezone
         if not self.supabase:
             if record_id in self._in_memory:
-            # In-memory dicts aren't frozen, so direct assignment works
-            self._in_memory[record_id].health_status = status
-        return
-    try:
-        self.supabase.table('social_accounts').update({
-            'health_status': status,
-            'last_health_check': datetime.now(timezone.utc).isoformat()
-        }).eq('id', record_id).execute()
-        logger.info("Health status updated for %s: %s", record_id, status)
-    except Exception as e:
-        logger.error("Failed to update health status for %s: %s", record_id, e)
+                # In-memory dicts aren't frozen, so direct assignment works
+                self._in_memory[record_id].health_status = status
+            return
+        try:
+            self.supabase.table('social_accounts').update({
+                'health_status': status,
+                'last_health_check': datetime.now(timezone.utc).isoformat()
+            }).eq('id', record_id).execute()
+            logger.info("Health status updated for %s: %s", record_id, status)
+        except Exception as e:
+            logger.error("Failed to update health status for %s: %s", record_id, e)
 
     def find_enabled(self) -> List[SocialAccount]:
         if not self.supabase:
