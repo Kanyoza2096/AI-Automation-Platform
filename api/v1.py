@@ -2114,10 +2114,7 @@ def health_check_social_account(account_id):
         h = connector.health()
 
         # Update health status in DB
-        account.health_status = "healthy" if h.ok else "unhealthy"
-        account.last_health_check = datetime.now(timezone.utc)
-        repo.save(account)
-
+        repo.update_health_status(account.id, "healthy" if h.ok else "unhealthy")
         return _ok({
             "healthy": h.ok,
             "latency_ms": h.latency_ms,
