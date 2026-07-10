@@ -635,7 +635,6 @@ def get_ai_config():
         "available_moods": sorted(VALID_MOODS),
     })
 
-
 @api_v1_bp.route("/ai/config", methods=["PUT"])
 @_auth_required
 def update_ai_config():
@@ -651,15 +650,15 @@ def update_ai_config():
         if unknown:
             return _err(f"Unknown keys: {sorted(unknown)}", 400)
 
-# --- Settings-level fields ---
-if "provider" in data:
-    valid = {"gemini", "huggingface"}
-    if data["provider"] not in valid:
-        return _err(f"provider must be one of {sorted(valid)}", 400)
-    _s.ai_provider = data["provider"]
+        # --- Settings-level fields ---
+        if "provider" in data:
+            valid = {"gemini", "huggingface"}
+            if data["provider"] not in valid:
+                return _err(f"provider must be one of {sorted(valid)}", 400)
+            _s.ai_provider = data["provider"]
 
-if "model" in data:
-    _s.gemini_model = str(data["model"])
+        if "model" in data:
+            _s.gemini_model = str(data["model"])
 
 # Map frontend field names to Settings field names
 temp_map = {
