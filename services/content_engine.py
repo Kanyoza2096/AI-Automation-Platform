@@ -203,6 +203,80 @@ TOPICS = {
         "GitHub vs GitLab vs Bitbucket",
         "1Password vs Bitwarden",
     ],
+    "cars_motorbikes": [
+    "Tesla Model 3 vs BMW i4 electric comparison",
+    "Toyota Hilux vs Ford Ranger: best African pickup",
+    "Electric cars vs Petrol cars in 2025",
+    "Toyota Vitz vs Honda Fit: best used car",
+    "Hybrid vs Full Electric: which saves more money",
+    "SUV vs Sedan: what to buy for African roads",
+    "Tesla Cybertruck vs Rivian R1T",
+    "Automatic vs Manual transmission: pros and cons",
+    "Toyota RAV4 vs Honda CR-V comparison",
+    "Mercedes-Benz vs BMW: which brand wins",
+    "Best motorcycles for African roads",
+    "Honda CB vs Yamaha YZF for beginners",
+    "Electric motorcycles vs Petrol motorcycles",
+    "Bajaj vs TVS: best affordable bike",
+    "Sports bikes vs Cruisers: riding experience",
+    "Kawasaki Ninja vs Suzuki GSX comparison",
+    "Best commuter bikes under $5000",
+    "Dirt bikes vs Street bikes for adventure",
+    "Harley-Davidson vs Indian Motorcycle",
+    "Motorcycle safety gear: what's essential",
+    "Tesla Autopilot vs Mercedes Drive Pilot",
+    "Car maintenance tips every driver should know",
+    "Best fuel-efficient cars for city driving",
+    "Luxury cars vs Economy cars: total cost of ownership",
+    "Toyota vs Honda reliability comparison",
+    "Best 7-seater SUVs for families",
+    "Electric scooter vs Motorcycle for city commute",
+    "Turbocharged vs Naturally aspirated engines",
+],
+"tech_startups": [
+    "Bootstrapping vs VC funding: which path",
+    "SaaS vs Marketplace business model",
+    "How to validate your startup idea before building",
+    "MVP vs Full product launch strategy",
+    "Solo founder vs Co-founder: pros and cons",
+    "B2B vs B2C SaaS: which is easier",
+    "How to get your first 100 customers",
+    "Pricing strategies for SaaS products",
+    "When to pivot vs when to persevere",
+    "Building in public vs stealth mode",
+    "Remote team vs In-office for startups",
+    "How to pitch to investors effectively",
+    "Equity split between co-founders guide",
+    "Customer acquisition vs Product development priority",
+    "African tech startup ecosystem overview",
+],
+"blockchain_web3": [
+    "Bitcoin vs Ethereum: store of value vs smart contracts",
+    "Proof of Work vs Proof of Stake explained",
+    "DeFi vs Traditional banking",
+    "NFTs beyond art: real utility cases",
+    "Solana vs Ethereum for dApp development",
+    "Centralized exchange vs DEX comparison",
+    "Web3 vs Web2: what actually changes",
+    "Stablecoins vs Traditional currencies",
+    "Smart contract security best practices",
+    "Layer 1 vs Layer 2 blockchain scaling",
+    "Crypto wallet comparison: hardware vs software",
+    "DAO vs Traditional organization structure",
+],
+"internet_of_things": [
+    "Smart home: Google Home vs Amazon Alexa",
+    "IoT security risks every user should know",
+    "Raspberry Pi vs Arduino for IoT projects",
+    "MQTT vs HTTP for IoT communication",
+    "Edge computing vs Cloud for IoT data",
+    "Smart agriculture sensors for African farmers",
+    "Wearables: Apple Watch vs Garmin for health",
+    "Zigbee vs Z-Wave vs Wi-Fi for smart homes",
+    "IoT in manufacturing vs Traditional automation",
+    "Smart city technology: what's actually working",
+],
+
 }
 
 CATEGORY_THEMES: dict = {
@@ -222,6 +296,10 @@ CATEGORY_THEMES: dict = {
     "gaming":                 PostTheme.COMPARISON,
     "gadgets_tech":           PostTheme.COMPARISON,
     "apps_productivity":      PostTheme.COMPARISON,
+    "cars_motorbikes":        PostTheme.COMPARISON,
+    "tech_startups":          PostTheme.TUTORIAL,
+    "blockchain_web3":        PostTheme.TUTORIAL,
+    "internet_of_things":     PostTheme.TUTORIAL,
 }
 
 HASHTAGS: dict = {
@@ -241,6 +319,10 @@ HASHTAGS: dict = {
     "gaming":                 "#Gaming #PlayStation #Xbox #PCGaming #Nintendo",
     "gadgets_tech":           "#Gadgets #TechReview #Unboxing #ConsumerTech #TechTrends",
     "apps_productivity":      "#Productivity #Apps #SoftwareTools #TechTips #DevTools",
+    "cars_motorbikes":        "#Cars #Motorcycles #AutoReview #CarComparison #EVs #Tesla #Toyota",
+    "tech_startups":          "#Startups #Entrepreneurship #SaaS #Business #TechStartups",
+    "blockchain_web3":        "#Blockchain #Web3 #Crypto #DeFi #NFTs #Ethereum",
+    "internet_of_things":     "#IoT #SmartHome #EdgeComputing #RaspberryPi #Automation",
 }
 
 VIRAL_HOOKS: list = [
@@ -352,6 +434,39 @@ class ContentEngine:
 
     def __init__(self):
         self._caption_builder = CaptionBuilder()
+        self._prompt_cache = {}
+        self._redis = None
+        try:
+            from flask import current_app
+            container = current_app.extensions.get("service_container")
+            if container:
+                from core.redis_client import UpstashRedisClient
+                self._redis = container.try_resolve(UpstashRedisClient)
+        except Exception:
+            pass
+
+    def _cached_prompt(self, brand, ai_profile, topic: str) -> Optional[str]:
+        """Check Redis for a cached prompt. Falls back to in-memory."""
+        cache_key = f"prompt:{getattr(brand, 'id', 'default')}:{topic[:50]}"
+        if self._redis and self._redis.is_available:
+            try:
+                cached = self._redis.get(cache_key)
+                if cached:
+                    logger.info("Redis prompt cache HIT for %s", cache_key)
+                    return cached
+            except Exception:
+                pass
+        return self._prompt_cache.get(cache_key)
+
+    def _cache_prompt(self, brand, ai_profile, topic: str, prompt: str) -> None:
+        """Store prompt in Redis + in-memory cache with 30-min TTL."""
+        cache_key = f"prompt:{getattr(brand, 'id', 'default')}:{topic[:50]}"
+        self._prompt_cache[cache_key] = prompt
+        if self._redis and self._redis.is_available:
+            try:
+                self._redis.set(cache_key, prompt, ex=1800)
+            except Exception:
+                pass
 
     def get_theme(self, category: str) -> PostTheme:
         return CATEGORY_THEMES.get(category, PostTheme.COMPARISON)
@@ -395,8 +510,15 @@ class ContentEngine:
                 brand_name, category, topic[:60], theme.value,
             )
 
-            from services.prompt_builder import prompt_builder
-            base_prompt = prompt_builder.build_post_prompt(brand, ai_profile, topic)
+            # Check Redis cache before calling prompt builder
+            cached_prompt = self._cached_prompt(brand, ai_profile, topic)
+            if cached_prompt:
+                base_prompt = cached_prompt
+                logger.info("Using cached prompt for %s", topic[:50])
+            else:
+                from services.prompt_builder import prompt_builder
+                base_prompt = prompt_builder.build_post_prompt(brand, ai_profile, topic)
+                self._cache_prompt(brand, ai_profile, topic, base_prompt)
 
             structured = gemini.generate_structured_post(topic, theme.value, base_prompt=base_prompt)
             if structured:
@@ -413,7 +535,6 @@ class ContentEngine:
                     return {"caption": caption, "image_bytes": image_bytes, "topic": topic, "category": category}
                 except Exception as exc:
                     logger.warning("TechPost parse/render failed — falling back: %s", exc)
-
             # Fallback to legacy text
             post_body = gemini.generate_content_post(topic=topic, template_type="deep_dive")
             if not post_body:
