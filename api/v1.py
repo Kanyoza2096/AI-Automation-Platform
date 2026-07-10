@@ -2050,15 +2050,20 @@ def update_social_account(account_id):
         account = repo.find_by_id(account_id)
         if not account:
             return _err("Social Account not found", 404)
+# Build update payload without mutating the frozen model
+update_data = {}
+for k, v in data.items():
+    if k not in ("id", "workspace_id", "created_at"):
+        update_data[k] = v
+update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-        data = request.get_json(force=True, silent=True) or {}
-        for k, v in data.items():
-            if hasattr(account, k) and k not in ("id", "workspace_id", "created_at"):
-                setattr(account, k, v)
-        account.updated_at = datetime.now(timezone.utc)
-        saved = repo.save(account)
+# Create a new entity with merged data
+account_dict = account.model_dump(mode="json")
+account_dict.update(update_data)
+updated_account = SocialAccount(**account_dict)
+saved = repo.save(updated_account)
 
-        # [SECURITY] Never return the access token
+# [SECURITY] Never return the access token
         response_data = saved.model_dump(mode="json")
         response_data.pop("access_token", None)
         response_data.pop("encrypted_credential", None)
