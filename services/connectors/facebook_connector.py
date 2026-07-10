@@ -38,7 +38,7 @@ class FacebookConnector:
 
         # Resolve credentials: account-specific or service defaults
         if social_account:
-            self._page_id = social_account.provider_account_id
+            self._page_id = social_account.platform_account_id
             self._page_token = social_account.access_token or ""
         else:
             self._page_id = self._svc.page_id
