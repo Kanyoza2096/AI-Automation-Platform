@@ -23,9 +23,18 @@ class Repository(ABC, Generic[T]):
     def delete(self, record_id: str) -> bool: ...
 
     def _safe_call(self, fn, *args, default=None, **kwargs):
-        """Run a storage call and return *default* on any exception."""
+        """
+        Run a storage call and return *default* on any exception.
+        
+        WARNING: This method swallows ALL exceptions silently.
+        Prefer using explicit try/except in each repository method
+        so errors are logged with context about what failed.
+        """
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
-            logger.error("%s._safe_call: %s", self.__class__.__name__, exc, exc_info=True)
+            logger.error(
+                "%s._safe_call FAILED: %s",
+                self.__class__.__name__, exc, exc_info=True
+            )
             return default
