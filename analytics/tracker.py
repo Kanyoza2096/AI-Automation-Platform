@@ -117,6 +117,40 @@ class AnalyticsTracker:
         except Exception as e:
             logger.error(f"Failed to record scan: {e}")
 
+    def get_recent_messages(self, limit: int = 50) -> list:
+        """Return recent messages for the Messenger dashboard."""
+        if self.supabase:
+            try:
+                result = (
+                    self.supabase.table("conversation_history")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                if result.data:
+                    return result.data
+            except Exception as e:
+                logger.error(f"Failed to get recent messages: {e}")
+        return []
+
+    def get_recent_posts(self, limit: int = 50) -> list:
+        """Return recent posts for the Posts dashboard."""
+        if self.supabase:
+            try:
+                result = (
+                    self.supabase.table("post_history")
+                    .select("*")
+                    .order("published_at", desc=True)
+                    .limit(limit)
+                    .execute()
+                )
+                if result.data:
+                    return result.data
+            except Exception as e:
+                logger.error(f"Failed to get recent posts: {e}")
+        return []
+
     def get_stats(self) -> dict:
         if self.supabase:
             try:
