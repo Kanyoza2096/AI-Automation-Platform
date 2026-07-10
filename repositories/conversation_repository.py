@@ -22,8 +22,8 @@ class ConversationRepository(Repository[dict]):
             try:
                 from services.supabase import get_service_client_from_settings
                 self._client = get_service_client_from_settings()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
     def find_by_id(self, sender_id: str) -> Optional[dict]:
@@ -38,17 +38,19 @@ class ConversationRepository(Repository[dict]):
         if client is None:
             return []
 
-        result = self._safe_call(
-            lambda: client.table(self.TABLE)
-            .select("*")
-            .eq("sender_id", sender_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        turns = list(reversed(result.data)) if result and result.data else []
-        self._cache[sender_id] = turns
-        return turns
+        try:
+            result = client.table(self.TABLE) \
+                .select("*") \
+                .eq("sender_id", sender_id) \
+                .order("created_at", desc=True) \
+                .limit(limit) \
+                .execute()
+            turns = list(reversed(result.data)) if result and result.data else []
+            self._cache[sender_id] = turns
+            return turns
+        except Exception as e:
+            logger.error("Failed to get turns for %s: %s", sender_id, e)
+            return []
 
     def append_turn(self, sender_id: str, role: str, content: str) -> None:
         turn = {"sender_id": sender_id, "role": role, "content": content}
@@ -58,9 +60,10 @@ class ConversationRepository(Repository[dict]):
         if client is None:
             return
 
-        self._safe_call(
-            lambda: client.table(self.TABLE).insert(turn).execute()
-        )
+        try:
+            client.table(self.TABLE).insert(turn).execute()
+        except Exception as e:
+            logger.error("Failed to append turn for %s: %s", sender_id, e)
 
     def save(self, entity: dict) -> dict:
         sender_id = entity.get("sender_id", "")
@@ -72,15 +75,18 @@ class ConversationRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return True
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
-        )
-        return result is not None
+        try:
+            client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
+            return True
+        except Exception as e:
+            logger.error("Failed to delete conversations for %s: %s", sender_id, e)
+            return False
 
     def clear_turns(self, sender_id: str) -> None:
         self._cache.pop(sender_id, None)
         client = self._get_client()
         if client:
-            self._safe_call(
-                lambda: client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
-            )
+            try:
+                client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
+            except Exception as e:
+                logger.error("Failed to clear turns for %s: %s", sender_id, e)
