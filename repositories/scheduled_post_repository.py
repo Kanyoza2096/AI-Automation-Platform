@@ -23,8 +23,8 @@ class ScheduledPostRepository(Repository[dict]):
             try:
                 from services.supabase import get_service_client_from_settings
                 self._client = get_service_client_from_settings()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
     def find_by_id(self, record_id: str) -> Optional[dict]:
@@ -33,12 +33,14 @@ class ScheduledPostRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return None
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).select("*").eq("id", record_id).maybe_single().execute()
-        )
-        if result and result.data:
-            self._cache[record_id] = result.data
-        return result.data if result else None
+        try:
+            result = client.table(self.TABLE).select("*").eq("id", record_id).maybe_single().execute()
+            if result and result.data:
+                self._cache[record_id] = result.data
+                return result.data
+        except Exception as e:
+            logger.error("Failed to find scheduled post %s: %s", record_id, e)
+        return None
 
     def save(self, entity: dict) -> dict:
         record_id = entity.get("id", "")
@@ -48,9 +50,11 @@ class ScheduledPostRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return entity
-        self._safe_call(
-            lambda: client.table(self.TABLE).upsert(entity, on_conflict="id").execute()
-        )
+        try:
+            client.table(self.TABLE).upsert(entity, on_conflict="id").execute()
+            logger.info("Scheduled post saved: %s", record_id)
+        except Exception as e:
+            logger.error("Failed to save scheduled post %s: %s", record_id, e)
         return entity
 
     def delete(self, record_id: str) -> bool:
@@ -58,24 +62,29 @@ class ScheduledPostRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return True
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).delete().eq("id", record_id).execute()
-        )
-        return result is not None
+        try:
+            client.table(self.TABLE).delete().eq("id", record_id).execute()
+            logger.info("Scheduled post deleted: %s", record_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete scheduled post %s: %s", record_id, e)
+            return False
 
     def get_pending(self) -> list[dict]:
         client = self._get_client()
         if client is None:
             return [p for p in self._cache.values() if p.get("status") == "pending"]
-        result = self._safe_call(
-            lambda: client.table(self.TABLE)
-            .select("*")
-            .eq("status", "pending")
-            .order("scheduled_at")
-            .limit(50)
-            .execute()
-        )
-        return result.data if result and result.data else []
+        try:
+            result = client.table(self.TABLE) \
+                .select("*") \
+                .eq("status", "pending") \
+                .order("scheduled_at") \
+                .limit(50) \
+                .execute()
+            return result.data if result and result.data else []
+        except Exception as e:
+            logger.error("Failed to get pending scheduled posts: %s", e)
+            return [p for p in self._cache.values() if p.get("status") == "pending"]
 
     def mark_published(self, record_id: str, post_id: str) -> None:
         if record_id in self._cache:
@@ -83,10 +92,15 @@ class ScheduledPostRepository(Repository[dict]):
             self._cache[record_id]["post_id"] = post_id
         client = self._get_client()
         if client:
-            self._safe_call(
-                lambda: client.table(self.TABLE)
-                .update({"status": "published", "post_id": post_id,
-                         "published_at": datetime.now(timezone.utc).isoformat()})
-                .eq("id", record_id)
-                .execute()
-            )
+            try:
+                client.table(self.TABLE) \
+                    .update({
+                        "status": "published",
+                        "post_id": post_id,
+                        "published_at": datetime.now(timezone.utc).isoformat()
+                    }) \
+                    .eq("id", record_id) \
+                    .execute()
+                logger.info("Scheduled post marked published: %s", record_id)
+            except Exception as e:
+                logger.error("Failed to mark post %s as published: %s", record_id, e)
