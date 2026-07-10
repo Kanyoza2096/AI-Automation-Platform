@@ -138,10 +138,10 @@ class SocialAccountRepository(Repository[SocialAccount]):
             return [a for a in self._in_memory.values() if a.platform == platform]
 
     def update_health_status(self, record_id: str, status: str) -> None:
-    """Update health status without loading the full entity (avoids frozen instance error)."""
-    from datetime import datetime, timezone
-    if not self.supabase:
-        if record_id in self._in_memory:
+        """Update health status without loading the full entity (avoids frozen instance error)."""
+        from datetime import datetime, timezone
+        if not self.supabase:
+            if record_id in self._in_memory:
             # In-memory dicts aren't frozen, so direct assignment works
             self._in_memory[record_id].health_status = status
         return
