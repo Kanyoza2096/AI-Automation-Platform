@@ -634,7 +634,6 @@ def get_ai_config():
         "tone_formality": rt["tone_formality"],
         "available_moods": sorted(VALID_MOODS),
     })
-
 @api_v1_bp.route("/ai/config", methods=["PUT"])
 @_auth_required
 def update_ai_config():
@@ -660,23 +659,18 @@ def update_ai_config():
         if "model" in data:
             _s.gemini_model = str(data["model"])
 
-# Map frontend field names to Settings field names
-temp_map = {
-    "chat_temperature": "gemini_chat_temperature",
-    "post_temperature": "gemini_post_temperature",
-}
-for frontend_key, settings_key in temp_map.items():
-    if frontend_key in data:
-        val = data[frontend_key]
-        if not isinstance(val, (int, float)) or not 0.0 <= float(val) <= 2.0:
-            return _err(f"{frontend_key} must be a float in 0.0–2.0", 400)
-        setattr(_s, settings_key, float(val))
+        # Map frontend field names to Settings field names
+        temp_map = {
+            "chat_temperature": "gemini_chat_temperature",
+            "post_temperature": "gemini_post_temperature",
+        }
+        for frontend_key, settings_key in temp_map.items():
+            if frontend_key in data:
+                val = data[frontend_key]
+                if not isinstance(val, (int, float)) or not 0.0 <= float(val) <= 2.0:
+                    return _err(f"{frontend_key} must be a float in 0.0–2.0", 400)
+                setattr(_s, settings_key, float(val))
 
-if "safety_level" in data:
-    valid = {"low", "medium", "high"}
-    if data["safety_level"] not in valid:
-        return _err(f"safety_level must be one of {sorted(valid)}", 400)
-    _s.gemini_safety_level = data["safety_level"]
         if "safety_level" in data:
             valid = {"low", "medium", "high"}
             if data["safety_level"] not in valid:
