@@ -23,18 +23,20 @@ class AnalyticsRepository(Repository[dict]):
             try:
                 from services.supabase import get_service_client_from_settings
                 self._client = get_service_client_from_settings()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
     def find_by_id(self, record_id: str) -> Optional[dict]:
         client = self._get_client()
         if client is None:
             return None
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).select("*").eq("id", record_id).maybe_single().execute()
-        )
-        return result.data if result else None
+        try:
+            result = client.table(self.TABLE).select("*").eq("id", record_id).maybe_single().execute()
+            return result.data if result else None
+        except Exception as e:
+            logger.error("Failed to find analytics event %s: %s", record_id, e)
+            return None
 
     def save(self, entity: dict) -> dict:
         entity.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
@@ -44,17 +46,22 @@ class AnalyticsRepository(Repository[dict]):
         if client is None:
             return entity
 
-        self._safe_call(lambda: client.table(self.TABLE).insert(entity).execute())
+        try:
+            client.table(self.TABLE).insert(entity).execute()
+        except Exception as e:
+            logger.error("Failed to save analytics event: %s", e)
         return entity
 
     def delete(self, record_id: str) -> bool:
         client = self._get_client()
         if client is None:
             return False
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).delete().eq("id", record_id).execute()
-        )
-        return result is not None
+        try:
+            client.table(self.TABLE).delete().eq("id", record_id).execute()
+            return True
+        except Exception as e:
+            logger.error("Failed to delete analytics event %s: %s", record_id, e)
+            return False
 
     def record_post_published(self, topic: str, platform: str, post_id: str) -> None:
         self.save({
@@ -75,14 +82,16 @@ class AnalyticsRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return list(reversed(self._buffer[-limit:]))
-        result = self._safe_call(
-            lambda: client.table(self.TABLE)
-            .select("*")
-            .order("recorded_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return result.data if result and result.data else list(reversed(self._buffer[-limit:]))
+        try:
+            result = client.table(self.TABLE) \
+                .select("*") \
+                .order("recorded_at", desc=True) \
+                .limit(limit) \
+                .execute()
+            return result.data if result and result.data else list(reversed(self._buffer[-limit:]))
+        except Exception as e:
+            logger.error("Failed to get recent analytics events: %s", e)
+            return list(reversed(self._buffer[-limit:]))
 
     def get_counts(self) -> dict:
         return {
