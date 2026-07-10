@@ -1,6 +1,5 @@
 import logging
 from typing import List, Optional
-from cryptography.fernet import Fernet
 
 from repositories.base import Repository
 from models.social_account import SocialAccount
@@ -29,7 +28,6 @@ class SocialAccountRepository(Repository[SocialAccount]):
         return credential_vault.decrypt(value)
 
     def _encrypt_entity(self, entity: SocialAccount) -> SocialAccount:
-        """Return a new entity with encrypted credentials for storage."""
         dump = entity.model_dump()
         dump['access_token'] = self._encrypt(dump['access_token'])
         dump['refresh_token'] = self._encrypt(dump['refresh_token'])
@@ -37,7 +35,6 @@ class SocialAccountRepository(Repository[SocialAccount]):
         return SocialAccount(**dump)
 
     def _decrypt_entity(self, data: dict) -> SocialAccount:
-        """Decrypt credentials when loading from storage."""
         data['access_token'] = self._decrypt(data.get('access_token', ''))
         data['refresh_token'] = self._decrypt(data.get('refresh_token', ''))
         data['app_secret'] = self._decrypt(data.get('app_secret', ''))
@@ -46,29 +43,30 @@ class SocialAccountRepository(Repository[SocialAccount]):
     def find_by_id(self, record_id: str) -> Optional[SocialAccount]:
         if not self.supabase:
             return self._in_memory.get(record_id)
-        
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts').select('*').eq('id', record_id).execute()
             if res.data:
                 return self._decrypt_entity(res.data[0])
             return None
-            
-        return self._safe_call(_fetch)
+        except Exception as e:
+            logger.error("Failed to find social account by id %s: %s", record_id, e)
+            return self._in_memory.get(record_id)
 
     def save(self, entity: SocialAccount) -> SocialAccount:
         if not self.supabase:
             self._in_memory[entity.id] = entity
             return entity
-            
-        def _upsert():
+        try:
             encrypted_entity = self._encrypt_entity(entity)
             data = encrypted_entity.model_dump(mode='json')
             res = self.supabase.table('social_accounts').upsert(data).execute()
             if res.data:
                 return self._decrypt_entity(res.data[0])
             return entity
-            
-        return self._safe_call(_upsert, default=entity)
+        except Exception as e:
+            logger.error("Failed to save social account %s: %s", entity.id, e)
+            self._in_memory[entity.id] = entity
+            return entity
 
     def delete(self, record_id: str) -> bool:
         if not self.supabase:
@@ -76,43 +74,43 @@ class SocialAccountRepository(Repository[SocialAccount]):
                 del self._in_memory[record_id]
                 return True
             return False
-            
-        def _delete():
+        try:
             self.supabase.table('social_accounts').delete().eq('id', record_id).execute()
             return True
-            
-        return self._safe_call(_delete, default=False)
+        except Exception as e:
+            logger.error("Failed to delete social account %s: %s", record_id, e)
+            if record_id in self._in_memory:
+                del self._in_memory[record_id]
+                return True
+            return False
 
     def find_by_workspace(self, workspace_id: str) -> List[SocialAccount]:
         if not self.supabase:
             return [a for a in self._in_memory.values() if a.workspace_id == workspace_id]
-            
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts').select('*').eq('workspace_id', workspace_id).execute()
-            return [self._decrypt_entity(row) for row in res.data]
-            
-        return self._safe_call(_fetch, default=[])
+            return [self._decrypt_entity(row) for row in (res.data or [])]
+        except Exception as e:
+            logger.error("Failed to find social accounts by workspace %s: %s", workspace_id, e)
+            return [a for a in self._in_memory.values() if a.workspace_id == workspace_id]
 
     def find_by_brand(self, brand_id: str) -> List[SocialAccount]:
-        """Find all social accounts linked to a specific brand."""
         if not self.supabase:
             return [a for a in self._in_memory.values() if a.brand_id == brand_id]
-            
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts').select('*').eq('brand_id', brand_id).execute()
-            return [self._decrypt_entity(row) for row in res.data]
-            
-        return self._safe_call(_fetch, default=[])
+            return [self._decrypt_entity(row) for row in (res.data or [])]
+        except Exception as e:
+            logger.error("Failed to find social accounts by brand %s: %s", brand_id, e)
+            return [a for a in self._in_memory.values() if a.brand_id == brand_id]
 
     def find_by_brand_and_platform(self, brand_id: str, platform: str) -> Optional[SocialAccount]:
-        """Find a social account for a specific brand and platform."""
         if not self.supabase:
             for a in self._in_memory.values():
                 if a.brand_id == brand_id and a.platform == platform:
                     return a
             return None
-            
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts') \
                 .select('*') \
                 .eq('brand_id', brand_id) \
@@ -122,27 +120,29 @@ class SocialAccountRepository(Repository[SocialAccount]):
             if res.data:
                 return self._decrypt_entity(res.data[0])
             return None
-            
-        return self._safe_call(_fetch)
+        except Exception as e:
+            logger.error("Failed to find social account by brand %s and platform %s: %s", brand_id, platform, e)
+            for a in self._in_memory.values():
+                if a.brand_id == brand_id and a.platform == platform:
+                    return a
+            return None
 
     def find_by_platform(self, platform: str) -> List[SocialAccount]:
-        """Find all social accounts for a specific platform."""
         if not self.supabase:
             return [a for a in self._in_memory.values() if a.platform == platform]
-            
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts').select('*').eq('platform', platform).execute()
-            return [self._decrypt_entity(row) for row in res.data]
-            
-        return self._safe_call(_fetch, default=[])
+            return [self._decrypt_entity(row) for row in (res.data or [])]
+        except Exception as e:
+            logger.error("Failed to find social accounts by platform %s: %s", platform, e)
+            return [a for a in self._in_memory.values() if a.platform == platform]
 
     def find_enabled(self) -> List[SocialAccount]:
-        """Find all enabled social accounts."""
         if not self.supabase:
             return [a for a in self._in_memory.values() if a.enabled]
-            
-        def _fetch():
+        try:
             res = self.supabase.table('social_accounts').select('*').eq('enabled', True).execute()
-            return [self._decrypt_entity(row) for row in res.data]
-            
-        return self._safe_call(_fetch, default=[])
+            return [self._decrypt_entity(row) for row in (res.data or [])]
+        except Exception as e:
+            logger.error("Failed to find enabled social accounts: %s", e)
+            return [a for a in self._in_memory.values() if a.enabled]
