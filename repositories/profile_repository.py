@@ -26,8 +26,8 @@ class ProfileRepository(Repository[dict]):
             try:
                 from services.supabase import get_service_client_from_settings
                 self._client = get_service_client_from_settings()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
     def find_by_id(self, sender_id: str) -> Optional[dict]:
@@ -39,16 +39,17 @@ class ProfileRepository(Repository[dict]):
         if client is None:
             return None
 
-        result = self._safe_call(
-            lambda: client.table(self.TABLE)
-            .select("*")
-            .eq("sender_id", sender_id)
-            .maybe_single()
-            .execute()
-        )
-        if result and result.data:
-            self._cache[sender_id] = result.data
-            return result.data
+        try:
+            result = client.table(self.TABLE) \
+                .select("*") \
+                .eq("sender_id", sender_id) \
+                .maybe_single() \
+                .execute()
+            if result and result.data:
+                self._cache[sender_id] = result.data
+                return result.data
+        except Exception as e:
+            logger.error("Failed to find profile for %s: %s", sender_id, e)
         return None
 
     def save(self, entity: dict) -> dict:
@@ -59,11 +60,13 @@ class ProfileRepository(Repository[dict]):
         if client is None:
             return entity
 
-        self._safe_call(
-            lambda: client.table(self.TABLE)
-            .upsert(entity, on_conflict="sender_id")
-            .execute()
-        )
+        try:
+            client.table(self.TABLE) \
+                .upsert(entity, on_conflict="sender_id") \
+                .execute()
+            logger.info("Profile saved: %s", sender_id)
+        except Exception as e:
+            logger.error("Failed to save profile for %s: %s", sender_id, e)
         return entity
 
     def delete(self, sender_id: str) -> bool:
@@ -71,17 +74,21 @@ class ProfileRepository(Repository[dict]):
         client = self._get_client()
         if client is None:
             return True
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
-        )
-        return result is not None
+        try:
+            client.table(self.TABLE).delete().eq("sender_id", sender_id).execute()
+            logger.info("Profile deleted: %s", sender_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to delete profile for %s: %s", sender_id, e)
+            return False
 
     def get_all(self, limit: int = 100) -> list[dict]:
         client = self._get_client()
         if client is None:
             return list(self._cache.values())
-        result = self._safe_call(
-            lambda: client.table(self.TABLE).select("*").limit(limit).execute(),
-            default=None,
-        )
-        return result.data if result and result.data else list(self._cache.values())
+        try:
+            result = client.table(self.TABLE).select("*").limit(limit).execute()
+            return result.data if result and result.data else list(self._cache.values())
+        except Exception as e:
+            logger.error("Failed to get all profiles: %s", e)
+            return list(self._cache.values())
