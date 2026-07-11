@@ -228,6 +228,7 @@ def _start_brand_schedulers(container: ServiceContainer) -> None:
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
         manager = container.resolve(BrandSchedulerManager)
+        manager.set_container(container)
         manager.start()
         logger.info("BrandSchedulerManager started.")
     except Exception as exc:
