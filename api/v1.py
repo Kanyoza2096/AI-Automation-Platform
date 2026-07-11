@@ -1295,6 +1295,26 @@ def create_social_account(workspace_id):
         data["workspace_id"] = workspace_id
         if not data.get("platform"):
             return _err("platform is required", 400)
+
+        # ── Map platform-specific credentials into platform_config ──────
+        PLATFORM_CREDENTIAL_FIELDS = {
+            "facebook": ["page_id", "page_access_token", "verify_token"],
+            "twitter": ["client_id", "client_secret"],
+            "linkedin": ["person_urn"],
+            "instagram": ["page_id"],
+            "whatsapp": ["phone_number_id"],
+            "telegram": ["bot_token"],
+        }
+
+        platform = data.get("platform", "")
+        if platform in PLATFORM_CREDENTIAL_FIELDS:
+            pc = data.get("platform_config", {}) or {}
+            for field in PLATFORM_CREDENTIAL_FIELDS[platform]:
+                if field in data:
+                    pc[field] = data.pop(field)
+            data["platform_config"] = pc
+        # ── End platform_config mapping ─────────────────────────────────
+
         account = SocialAccount(**data)
         repo = _get_container().resolve(SocialAccountRepository)
         saved = repo.save(account)
@@ -1305,8 +1325,6 @@ def create_social_account(workspace_id):
         return _ok({"social_account": response_data}, 201)
     except Exception as exc:
         return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/social-accounts", 500)
-
-
 @api_v1_bp.route("/workspaces/<workspace_id>/social-accounts", methods=["GET"])
 @_auth_required
 def list_social_accounts(workspace_id):
@@ -1325,7 +1343,6 @@ def list_social_accounts(workspace_id):
     except Exception as exc:
         return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/social-accounts", 500)
 
-
 @api_v1_bp.route("/social-accounts/<account_id>", methods=["PUT"])
 @_auth_required
 def update_social_account(account_id):
@@ -1342,6 +1359,26 @@ def update_social_account(account_id):
         update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
         acc_dict = account.model_dump(mode="json")
         acc_dict.update(update_data)
+
+        # ── Map platform-specific credentials into platform_config ──────
+        PLATFORM_CREDENTIAL_FIELDS = {
+            "facebook": ["page_id", "page_access_token", "verify_token"],
+            "twitter": ["client_id", "client_secret"],
+            "linkedin": ["person_urn"],
+            "instagram": ["page_id"],
+            "whatsapp": ["phone_number_id"],
+            "telegram": ["bot_token"],
+        }
+
+        platform = acc_dict.get("platform", "")
+        if platform in PLATFORM_CREDENTIAL_FIELDS:
+            pc = acc_dict.get("platform_config", {}) or {}
+            for field in PLATFORM_CREDENTIAL_FIELDS[platform]:
+                if field in acc_dict:
+                    pc[field] = acc_dict.pop(field)
+            acc_dict["platform_config"] = pc
+        # ── End platform_config mapping ─────────────────────────────────
+
         saved = repo.save(SocialAccount(**acc_dict))
         resp = saved.model_dump(mode="json")
         resp.pop("access_token", None)
