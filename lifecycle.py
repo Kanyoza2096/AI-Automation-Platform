@@ -2,7 +2,9 @@
 Kanyoza Systems AI Platform v10 — Lifecycle Management.
 
 Handles application start/stop hooks:
-  - Scheduler startup
+  - Infrastructure boot (EventBus, TaskQueue, PluginRegistry, etc.)
+  - Industry plugin registration (Church MIS, School MIS, Hospital, etc.)
+  - Scheduler startup (post, brand, guardian)
   - Graceful shutdown (SIGTERM / SIGINT)
   - Resource cleanup
 
@@ -43,9 +45,9 @@ def register_lifecycle(app: Flask, container: ServiceContainer) -> None:
     logger.info("Lifecycle hooks registered.")
 
 
-# ---------------------------------------------------------------------------
-# Infrastructure boot (EventBus, TaskQueue, PluginRegistry, EventRecorder)
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# INFRASTRUCTURE BOOT
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _boot_infrastructure(container: ServiceContainer) -> None:
@@ -67,13 +69,16 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("TaskQueue boot failed: %s", exc)
 
-    # Plugin Registry — starts all registered plugins
+    # Plugin Registry — starts all registered connector plugins (Facebook, Twitter, etc.)
     try:
         from plugins.base import PluginRegistry
         container.resolve(PluginRegistry)
-        logger.info("PluginRegistry ready.")
+        logger.info("PluginRegistry ready (connector plugins).")
     except Exception as exc:
         logger.warning("PluginRegistry boot failed: %s", exc)
+
+    # ─── Industry Plugins — Church MIS, School MIS, Hospital, CRM, ERP ──
+    _register_industry_plugins(container)
 
     # EventRecorder — subscribes to bus and persists analytics
     try:
@@ -113,9 +118,178 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
     _wire_socket_events(container)
 
 
-# ---------------------------------------------------------------------------
-# EventBus → SocketIO bridge
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# INDUSTRY PLUGIN REGISTRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _register_industry_plugins(container: ServiceContainer) -> None:
+    """
+    Register all industry-specific plugins (Church MIS, School MIS, etc.).
+
+    These are DIFFERENT from connector plugins (Facebook, Twitter).
+    Industry plugins handle domain logic — members, attendance, donations.
+    Connector plugins handle outbound publishing to social platforms.
+
+    Each industry plugin registers its commands with the CommandExecutor
+    so natural-language queries like "Add member John Doe" are routed
+    to the correct handler.
+    """
+    from config.settings import settings
+
+    # Resolve dependencies that plugins may need
+    supabase_client = None
+    redis_client = None
+
+    try:
+        from supabase import Client as SupabaseClient
+        supabase_client = container.try_resolve(SupabaseClient)
+    except Exception:
+        logger.debug("Supabase client not available for industry plugins.")
+
+    try:
+        from core.redis_client import UpstashRedisClient
+        redis_client = container.try_resolve(UpstashRedisClient)
+    except Exception:
+        logger.debug("Redis client not available for industry plugins.")
+
+    # ── Discover and register industry plugins ──────────────────────────
+    industry_plugins: dict = {}
+
+    # Church MIS
+    try:
+        from plugins.industries.church_mis import ChurchMISPlugin
+        church_plugin = ChurchMISPlugin(
+            supabase_client=supabase_client,
+            redis_client=redis_client,
+        )
+        industry_plugins["church_mis"] = church_plugin
+        logger.info(
+            "Industry plugin registered: church_mis (%d commands)",
+            len(church_plugin.get_commands()),
+        )
+    except ImportError:
+        logger.debug("Church MIS plugin not installed — skipping.")
+    except Exception as exc:
+        logger.warning("Church MIS plugin failed to load: %s", exc)
+
+    # School MIS — uncomment when ready
+    # try:
+    #     from plugins.industries.school_mis import SchoolMISPlugin
+    #     school_plugin = SchoolMISPlugin(
+    #         supabase_client=supabase_client,
+    #         redis_client=redis_client,
+    #     )
+    #     industry_plugins["school_mis"] = school_plugin
+    #     logger.info(
+    #         "Industry plugin registered: school_mis (%d commands)",
+    #         len(school_plugin.get_commands()),
+    #     )
+    # except ImportError:
+    #     logger.debug("School MIS plugin not installed — skipping.")
+    # except Exception as exc:
+    #     logger.warning("School MIS plugin failed to load: %s", exc)
+
+    # Hospital — uncomment when ready
+    # try:
+    #     from plugins.industries.hospital import HospitalPlugin
+    #     hospital_plugin = HospitalPlugin(
+    #         supabase_client=supabase_client,
+    #         redis_client=redis_client,
+    #     )
+    #     industry_plugins["hospital"] = hospital_plugin
+    #     logger.info(
+    #         "Industry plugin registered: hospital (%d commands)",
+    #         len(hospital_plugin.get_commands()),
+    #     )
+    # except ImportError:
+    #     logger.debug("Hospital plugin not installed — skipping.")
+    # except Exception as exc:
+    #     logger.warning("Hospital plugin failed to load: %s", exc)
+
+    # CRM — uncomment when ready
+    # try:
+    #     from plugins.industries.crm import CRMPlugin
+    #     crm_plugin = CRMPlugin(
+    #         supabase_client=supabase_client,
+    #         redis_client=redis_client,
+    #     )
+    #     industry_plugins["crm"] = crm_plugin
+    #     logger.info(
+    #         "Industry plugin registered: crm (%d commands)",
+    #         len(crm_plugin.get_commands()),
+    #     )
+    # except ImportError:
+    #     logger.debug("CRM plugin not installed — skipping.")
+    # except Exception as exc:
+    #     logger.warning("CRM plugin failed to load: %s", exc)
+
+    # ERP — uncomment when ready
+    # try:
+    #     from plugins.industries.erp import ERPPlugin
+    #     erp_plugin = ERPPlugin(
+    #         supabase_client=supabase_client,
+    #         redis_client=redis_client,
+    #     )
+    #     industry_plugins["erp"] = erp_plugin
+    #     logger.info(
+    #         "Industry plugin registered: erp (%d commands)",
+    #         len(erp_plugin.get_commands()),
+    #     )
+    # except ImportError:
+    #     logger.debug("ERP plugin not installed — skipping.")
+    # except Exception as exc:
+    #     logger.warning("ERP plugin failed to load: %s", exc)
+
+    # ── Store in DI container so API endpoints can discover plugins ─────
+    container.industry_plugins = industry_plugins
+
+    if not industry_plugins:
+        logger.info("No industry plugins registered.")
+        return
+
+    # ── Register commands with the Command Executor ─────────────────────
+    _register_plugin_commands(industry_plugins)
+
+    logger.info(
+        "Industry plugins loaded: %s (%d total commands)",
+        list(industry_plugins.keys()),
+        sum(len(p.get_commands()) for p in industry_plugins.values()),
+    )
+
+
+def _register_plugin_commands(industry_plugins: dict) -> None:
+    """
+    Register all plugin commands with the CommandExecutor.
+
+    This makes natural-language commands like "Add member John Doe"
+    routable to the Church MIS plugin without modifying the executor.
+    """
+    try:
+        from services.command_executor import CommandExecutor
+
+        total_commands = 0
+        for plugin_name, plugin in industry_plugins.items():
+            for cmd in plugin.get_commands():
+                CommandExecutor.register_external_command(plugin_name, cmd)
+                total_commands += 1
+
+        logger.info(
+            "Registered %d plugin commands with CommandExecutor.",
+            total_commands,
+        )
+    except ImportError:
+        logger.warning(
+            "CommandExecutor not available — plugin commands will not be "
+            "accessible via natural language. Use POST /api/v1/plugins/<name>/execute instead."
+        )
+    except Exception as exc:
+        logger.warning("Failed to register plugin commands: %s", exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EVENTBUS → SOCKETIO BRIDGE
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _wire_socket_events(container: ServiceContainer) -> None:
@@ -193,14 +367,15 @@ def _wire_socket_events(container: ServiceContainer) -> None:
         logger.warning("SocketIO event bridge skipped: %s", exc)
 
 
-# ---------------------------------------------------------------------------
-# Scheduler startup
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# SCHEDULER STARTUP
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _start_schedulers(container: ServiceContainer) -> None:
     _start_post_scheduler(container)
     _start_brand_schedulers(container)
+    _start_guardian_scheduler(container)
 
 
 def _start_post_scheduler(container: ServiceContainer) -> None:
@@ -276,9 +451,9 @@ def _start_guardian_scheduler(container: ServiceContainer) -> None:
         logger.warning("Code Guardian could not start: %s", exc)
 
 
-# ---------------------------------------------------------------------------
-# Signal handlers
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# SIGNAL HANDLERS & GRACEFUL SHUTDOWN
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _register_signal_handlers(container: ServiceContainer) -> None:
@@ -298,6 +473,21 @@ def _register_signal_handlers(container: ServiceContainer) -> None:
 def _graceful_shutdown(container: ServiceContainer) -> None:
     """Stop all running services cleanly."""
 
+    # ── Stop industry plugins first (they may be mid-operation) ─────────
+    try:
+        industry_plugins = getattr(container, "industry_plugins", {})
+        for name, plugin in industry_plugins.items():
+            try:
+                if hasattr(plugin, "shutdown"):
+                    plugin.shutdown()
+            except Exception as exc:
+                logger.warning("Error stopping industry plugin %s: %s", name, exc)
+        if industry_plugins:
+            logger.info("Industry plugins stopped (%d).", len(industry_plugins))
+    except Exception as exc:
+        logger.warning("Error stopping industry plugins: %s", exc)
+
+    # ── Stop connector plugins ──────────────────────────────────────────
     try:
         from plugins.base import PluginRegistry
         registry = container.try_resolve(PluginRegistry)
@@ -307,6 +497,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping PluginRegistry: %s", exc)
 
+    # ── Stop task queue ─────────────────────────────────────────────────
     try:
         from workers.task_queue import TaskQueue
         tq = container.try_resolve(TaskQueue)
@@ -316,6 +507,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping TaskQueue: %s", exc)
 
+    # ── Stop post scheduler ─────────────────────────────────────────────
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
         post_scheduler.stop(timeout=30)
@@ -323,6 +515,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping post scheduler: %s", exc)
 
+    # ── Stop brand schedulers ───────────────────────────────────────────
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
         brand_manager = container.try_resolve(BrandSchedulerManager)
@@ -332,6 +525,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping BrandSchedulerManager: %s", exc)
 
+    # ── Stop browser manager ────────────────────────────────────────────
     try:
         from services.browser_manager import browser_manager
         browser_manager.stop()
@@ -339,7 +533,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping BrowserManager: %s", exc)
 
-    # RenderQueue — stop async rendering workers
+    # ── Stop render queue ───────────────────────────────────────────────
     try:
         from core.render_queue import get_render_queue
         rq = get_render_queue()
@@ -348,6 +542,7 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping RenderQueue: %s", exc)
 
+    # ── Close service singletons ────────────────────────────────────────
     _service_singletons = [
         ("services.gemini", "gemini"),
         ("services.facebook", "facebook"),
