@@ -2204,12 +2204,65 @@ def rollback_workflow(workflow_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WEBHOOK RECEIVERS
+# WEBHOOK RECEIVERS — Signature-Protected
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _verify_webhook_signature(platform: str) -> bool:
+    """
+    Validate incoming webhook using a shared secret.
+
+    Supports:
+      1. X-Hub-Signature-256 header (Facebook/GitHub standard — HMAC-SHA256)
+      2. Query parameter ?secret= (simpler fallback for all platforms)
+
+    If WEBHOOK_SECRET is not configured, all webhooks are allowed
+    (backward compatible — set the env var to enable protection).
+    """
+    from config.settings import settings as _s
+    import hashlib as _hashlib_webhook
+
+    secret = getattr(_s, "webhook_secret", "") or ""
+
+    # No secret configured — allow all (backward compatible)
+    if not secret:
+        return True
+
+    # Method 1: X-Hub-Signature-256 header (HMAC-SHA256)
+    sig_header = request.headers.get("X-Hub-Signature-256", "")
+    if sig_header.startswith("sha256="):
+        raw_body = request.get_data()
+        expected = "sha256=" + _hashlib_webhook.sha256(
+            raw_body + secret.encode("utf-8")
+        ).hexdigest()
+        if hmac.compare_digest(sig_header, expected):
+            return True
+        logger.warning("Webhook to /%s rejected: invalid HMAC signature", platform)
+        return False
+
+    # Method 2: Query parameter ?secret=
+    token = request.args.get("secret", "").strip()
+    if token:
+        if hmac.compare_digest(token, secret):
+            return True
+        logger.warning("Webhook to /%s rejected: invalid query secret", platform)
+        return False
+
+    # No signature provided at all
+    logger.warning("Webhook to /%s rejected: no signature provided", platform)
+    return False
+
 
 @api_v1_bp.route("/webhooks/facebook", methods=["GET", "POST"])
 def facebook_webhook():
-    """Facebook Graph API webhook — verification challenge + real-time events."""
+    """
+    Facebook Graph API webhook receiver.
+
+    GET  — Verification challenge (hub.mode=subscribe&hub.verify_token=...)
+    POST — Real-time page events (feed changes, token expiry, deauthorization)
+
+    Callback URL format:
+      https://<host>/api/v1/webhooks/facebook?secret=<WEBHOOK_SECRET>
+    """
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
@@ -2231,15 +2284,19 @@ def facebook_webhook():
         logger.warning("Facebook webhook verification failed")
         return "Verification failed", 403
 
-    # POST — process events
+    # POST — validate signature before processing
+    if not _verify_webhook_signature("facebook"):
+        return "Invalid signature", 403
+
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Facebook webhook received: %s", str(payload)[:500])
 
+        # Invalidate health cache for affected pages
         for entry in payload.get("entry", []):
             page_id = entry.get("id")
             for change in entry.get("changes", []):
-                if change.get("field") == "feed":
+                if change.get("field") in ("feed", "conversations", "messages"):
                     try:
                         container = _get_container()
                         if container:
@@ -2249,7 +2306,13 @@ def facebook_webhook():
                     except Exception:
                         pass
 
-        _append_audit(action="webhook_facebook", resource="webhook:facebook", status="success", detail=f"Received {len(payload.get('entry', []))} entries")
+        _append_audit(
+            action="webhook_facebook",
+            resource="webhook:facebook",
+            status="success",
+            detail=f"Received {len(payload.get('entry', []))} entries",
+        )
+
         return "OK", 200
     except Exception as exc:
         logger.error("Facebook webhook error: %s", exc)
@@ -2258,11 +2321,26 @@ def facebook_webhook():
 
 @api_v1_bp.route("/webhooks/twitter", methods=["POST"])
 def twitter_webhook():
-    """Twitter/X CRC and event receiver."""
+    """
+    Twitter/X account activity webhook receiver.
+
+    Callback URL format:
+      https://<host>/api/v1/webhooks/twitter?secret=<WEBHOOK_SECRET>
+    """
+    if not _verify_webhook_signature("twitter"):
+        return "Invalid signature", 403
+
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Twitter webhook received: %s", str(payload)[:500])
-        _append_audit(action="webhook_twitter", resource="webhook:twitter", status="success", detail="Twitter webhook processed")
+
+        _append_audit(
+            action="webhook_twitter",
+            resource="webhook:twitter",
+            status="success",
+            detail="Twitter webhook processed",
+        )
+
         return "OK", 200
     except Exception as exc:
         logger.error("Twitter webhook error: %s", exc)
@@ -2271,11 +2349,26 @@ def twitter_webhook():
 
 @api_v1_bp.route("/webhooks/linkedin", methods=["POST"])
 def linkedin_webhook():
-    """LinkedIn organization webhook receiver."""
+    """
+    LinkedIn organization page webhook receiver.
+
+    Callback URL format:
+      https://<host>/api/v1/webhooks/linkedin?secret=<WEBHOOK_SECRET>
+    """
+    if not _verify_webhook_signature("linkedin"):
+        return "Invalid signature", 403
+
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("LinkedIn webhook received: %s", str(payload)[:500])
-        _append_audit(action="webhook_linkedin", resource="webhook:linkedin", status="success", detail="LinkedIn webhook processed")
+
+        _append_audit(
+            action="webhook_linkedin",
+            resource="webhook:linkedin",
+            status="success",
+            detail="LinkedIn webhook processed",
+        )
+
         return "OK", 200
     except Exception as exc:
         logger.error("LinkedIn webhook error: %s", exc)
@@ -2284,7 +2377,15 @@ def linkedin_webhook():
 
 @api_v1_bp.route("/webhooks/instagram", methods=["GET", "POST"])
 def instagram_webhook():
-    """Instagram Graph API webhook (via Facebook)."""
+    """
+    Instagram Graph API webhook receiver (via Facebook).
+
+    GET  — Verification challenge
+    POST — Comment and mention events
+
+    Callback URL format:
+      https://<host>/api/v1/webhooks/instagram?secret=<WEBHOOK_SECRET>
+    """
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
@@ -2293,14 +2394,25 @@ def instagram_webhook():
             return challenge, 200
         return "Verification failed", 403
 
+    # POST — validate signature before processing
+    if not _verify_webhook_signature("instagram"):
+        return "Invalid signature", 403
+
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Instagram webhook received: %s", str(payload)[:500])
+
+        _append_audit(
+            action="webhook_instagram",
+            resource="webhook:instagram",
+            status="success",
+            detail="Instagram webhook processed",
+        )
+
         return "OK", 200
     except Exception as exc:
         logger.error("Instagram webhook error: %s", exc)
         return "Error processing webhook", 500
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SCAN (top-level shortcuts)
