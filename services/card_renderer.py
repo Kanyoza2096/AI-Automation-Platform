@@ -131,9 +131,7 @@ class CardRenderer:
     def _safe_points(points) -> list:
         return [p for p in (points or []) if p]
 
-
-
-    # ── Step 2: build Jinja2 context ────────────────-------------------------
+    # ── Step 2: build Jinja2 context ─────────────────────────────────────────
 
     def _build_context(self, post, bg_decoration: str, theme_val: str, brand: Optional[Any] = None) -> dict:
         points_a = self._safe_points(post.points_a)
@@ -416,6 +414,28 @@ class CardRenderer:
         except Exception as exc:
             logger.warning("HCTI fallback failed: %s", exc)
         return None
+
+    # ── Async Render Queue support ───────────────────────────────────────────
+
+    def render_html_string(self, html: str) -> Optional[bytes]:
+        """
+        Render a raw HTML string to PNG bytes.
+        Used by the async RenderQueue for decoupled rendering.
+        """
+        cached = self._cache_get(html)
+        if cached is not None:
+            return cached
+
+        if self._check_playwright():
+            png = self._screenshot_playwright(html)
+            if png:
+                self._cache_set(html, png)
+                return png
+
+        png = self._screenshot_hcti(html)
+        if png:
+            self._cache_set(html, png)
+        return png
 
     # ── Public API ───────────────────────────────────────────────────────────
 
