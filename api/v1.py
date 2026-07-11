@@ -38,7 +38,7 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 # ── Security Constants ─────────────────────────────────────────────────────
 MAX_REQUEST_BODY_SIZE = 1_048_576   # 1 MB
 MAX_AI_PROMPT_LENGTH  = 4000       # 4000 characters
-PLATFORM_VERIFY_TIMEOUT = 8        # seconds — matches frontend AbortSignal
+PLATFORM_VERIFY_TIMEOUT = 8        # seconds
 
 # ── In-Memory Stores ───────────────────────────────────────────────────────
 _draft_lock = _threading_mod.Lock()
@@ -215,6 +215,7 @@ def _safe_err(exc: Exception, endpoint: str, status: int = 500):
         return _err(str(exc), status)
     return _err("An internal error occurred. Please try again later.", status)
 
+
 def _append_audit(action: str, resource: str, user: str = "system",
                    status: str = "success", detail: str = "") -> None:
     entry = {
@@ -229,7 +230,7 @@ def _append_audit(action: str, resource: str, user: str = "system",
     }
     with _audit_log_lock:
         _audit_log.appendleft(entry)
-# ── Credential Helpers for Verifiers ───────────────────────────────────────
+
 
 def _get_account_token(account) -> str:
     """Extract access token from account fields or platform_config dict."""
@@ -253,13 +254,8 @@ def _get_account_platform_id(account) -> str:
 # BEFORE REQUEST
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════
-# BEFORE REQUEST — Correlation ID + Size Limit
-# ═══════════════════════════════════════════════════════════════════════════
-
 @api_v1_bp.before_request
 def _attach_correlation_id():
-    """Attach a unique correlation ID to every request for audit tracing."""
     g.correlation_id = (
         request.headers.get("X-Correlation-ID")
         or _uuid_mod.uuid4().hex[:12]
@@ -268,7 +264,6 @@ def _attach_correlation_id():
 
 @api_v1_bp.before_request
 def _enforce_request_size_limit():
-    """Reject requests with body larger than MAX_REQUEST_BODY_SIZE."""
     content_length = request.content_length
     if content_length and content_length > MAX_REQUEST_BODY_SIZE:
         return jsonify({
@@ -279,17 +274,16 @@ def _enforce_request_size_limit():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# AFTER REQUEST — Security Headers
+# AFTER REQUEST
 # ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.after_request
 def _add_security_headers(response):
-    """Add security headers to every response."""
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["X-Correlation-ID"] = g.get("correlation_id", "unknown")
-    response.headers["Server"] = ""  # Hide Flask version
+    response.headers["Server"] = ""
     return response
 
 
@@ -1252,12 +1246,6 @@ def create_ai_profile(workspace_id):
         data["workspace_id"] = workspace_id
         if not data.get("name"):
             return _err("name is required", 400)
-        complexity_map = {"simple": "beginner", "moderate": "intermediate", "advanced": "advanced", "expert": "expert"}
-        if data.get("complexity"):
-            data["complexity"] = complexity_map.get(data["complexity"].lower(), data["complexity"])
-        emoji_map = {"none": "none", "low": "low", "medium": "medium", "high": "high"}
-        if data.get("emoji_level"):
-            data["emoji_level"] = emoji_map.get(data["emoji_level"].lower(), data["emoji_level"])
         profile = AIProfile(**data)
         repo = _get_container().resolve(AIProfileRepository)
         saved = repo.save(profile)
@@ -1451,9 +1439,9 @@ def verify_publish(account_id):
         if not account:
             return _err("Social Account not found", 404)
 
-        # Extract the enum value, not the enum repr
-raw = getattr(account.platform, "value", None) or str(account.platform)
-platform = raw.lower().replace("platform.", "")
+        raw = getattr(account.platform, "value", None) or str(account.platform)
+        platform = raw.lower().replace("platform.", "")
+
         verifier_map = {
             "facebook":  _verify_facebook,
             "twitter":   _verify_twitter,
@@ -1470,14 +1458,12 @@ platform = raw.lower().replace("platform.", "")
         checks = verifier(account)
         ready = all(c.get("ok", False) for c in checks.values())
 
-        # Update health status
         account_dict = account.model_dump(mode="json")
         account_dict["health_status"] = "healthy" if ready else "unhealthy"
         account_dict["last_health_check"] = datetime.now(timezone.utc).isoformat()
         updated = SocialAccount(**account_dict)
         repo.save(updated)
 
-        # Generate summary
         failed = [k.replace("_", " ").title() for k, c in checks.items() if not c.get("ok")]
         if ready:
             summary = "All checks passed. Ready to publish."
@@ -1912,7 +1898,9 @@ def search_knowledge_entries(brand_id):
         return _safe_err(exc, f"POST /api/v1/brands/{brand_id}/knowledge/search", 500)
 
 
-# ─── BULK KNOWLEDGE UPLOAD ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# BULK KNOWLEDGE UPLOAD
+# ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/workspaces/<workspace_id>/knowledge/bulk", methods=["POST"])
 @_auth_required
@@ -2239,24 +2227,15 @@ def rollback_workflow(workflow_id):
 def _verify_webhook_signature(platform: str) -> bool:
     """
     Validate incoming webhook using a shared secret.
-
-    Supports:
-      1. X-Hub-Signature-256 header (Facebook/GitHub standard — HMAC-SHA256)
-      2. Query parameter ?secret= (simpler fallback for all platforms)
-
-    If WEBHOOK_SECRET is not configured, all webhooks are allowed
-    (backward compatible — set the env var to enable protection).
     """
     from config.settings import settings as _s
     import hashlib as _hashlib_webhook
 
     secret = getattr(_s, "webhook_secret", "") or ""
 
-    # No secret configured — allow all (backward compatible)
     if not secret:
         return True
 
-    # Method 1: X-Hub-Signature-256 header (HMAC-SHA256)
     sig_header = request.headers.get("X-Hub-Signature-256", "")
     if sig_header.startswith("sha256="):
         raw_body = request.get_data()
@@ -2268,7 +2247,6 @@ def _verify_webhook_signature(platform: str) -> bool:
         logger.warning("Webhook to /%s rejected: invalid HMAC signature", platform)
         return False
 
-    # Method 2: Query parameter ?secret=
     token = request.args.get("secret", "").strip()
     if token:
         if hmac.compare_digest(token, secret):
@@ -2276,22 +2254,12 @@ def _verify_webhook_signature(platform: str) -> bool:
         logger.warning("Webhook to /%s rejected: invalid query secret", platform)
         return False
 
-    # No signature provided at all
     logger.warning("Webhook to /%s rejected: no signature provided", platform)
     return False
 
 
 @api_v1_bp.route("/webhooks/facebook", methods=["GET", "POST"])
 def facebook_webhook():
-    """
-    Facebook Graph API webhook receiver.
-
-    GET  — Verification challenge (hub.mode=subscribe&hub.verify_token=...)
-    POST — Real-time page events (feed changes, token expiry, deauthorization)
-
-    Callback URL format:
-      https://<host>/api/v1/webhooks/facebook?secret=<WEBHOOK_SECRET>
-    """
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
@@ -2313,7 +2281,6 @@ def facebook_webhook():
         logger.warning("Facebook webhook verification failed")
         return "Verification failed", 403
 
-    # POST — validate signature before processing
     if not _verify_webhook_signature("facebook"):
         return "Invalid signature", 403
 
@@ -2321,7 +2288,6 @@ def facebook_webhook():
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Facebook webhook received: %s", str(payload)[:500])
 
-        # Invalidate health cache for affected pages
         for entry in payload.get("entry", []):
             page_id = entry.get("id")
             for change in entry.get("changes", []):
@@ -2350,12 +2316,6 @@ def facebook_webhook():
 
 @api_v1_bp.route("/webhooks/twitter", methods=["POST"])
 def twitter_webhook():
-    """
-    Twitter/X account activity webhook receiver.
-
-    Callback URL format:
-      https://<host>/api/v1/webhooks/twitter?secret=<WEBHOOK_SECRET>
-    """
     if not _verify_webhook_signature("twitter"):
         return "Invalid signature", 403
 
@@ -2378,12 +2338,6 @@ def twitter_webhook():
 
 @api_v1_bp.route("/webhooks/linkedin", methods=["POST"])
 def linkedin_webhook():
-    """
-    LinkedIn organization page webhook receiver.
-
-    Callback URL format:
-      https://<host>/api/v1/webhooks/linkedin?secret=<WEBHOOK_SECRET>
-    """
     if not _verify_webhook_signature("linkedin"):
         return "Invalid signature", 403
 
@@ -2406,15 +2360,6 @@ def linkedin_webhook():
 
 @api_v1_bp.route("/webhooks/instagram", methods=["GET", "POST"])
 def instagram_webhook():
-    """
-    Instagram Graph API webhook receiver (via Facebook).
-
-    GET  — Verification challenge
-    POST — Comment and mention events
-
-    Callback URL format:
-      https://<host>/api/v1/webhooks/instagram?secret=<WEBHOOK_SECRET>
-    """
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
@@ -2423,7 +2368,6 @@ def instagram_webhook():
             return challenge, 200
         return "Verification failed", 403
 
-    # POST — validate signature before processing
     if not _verify_webhook_signature("instagram"):
         return "Invalid signature", 403
 
@@ -2443,8 +2387,9 @@ def instagram_webhook():
         logger.error("Instagram webhook error: %s", exc)
         return "Error processing webhook", 500
 
+
 # ═══════════════════════════════════════════════════════════════════════════
-# SCAN (top-level shortcuts)
+# SCAN
 # ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/scan", methods=["POST"])
@@ -2740,6 +2685,7 @@ def get_audit_logs():
     except Exception as exc:
         return _safe_err(exc, "GET /api/v1/audit-logs", 500)
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PLUGIN DISCOVERY & EXECUTION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2793,9 +2739,6 @@ def execute_plugin_command(plugin_name):
         return _safe_err(exc, f"POST /api/v1/plugins/{plugin_name}/execute", 500)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# AUDIT LOGS
-# ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
 # WORKSPACE ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════
