@@ -38,6 +38,7 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 # ── Security Constants ─────────────────────────────────────────────────────
 MAX_REQUEST_BODY_SIZE = 1_048_576   # 1 MB
 MAX_AI_PROMPT_LENGTH  = 4000       # 4000 characters
+PLATFORM_VERIFY_TIMEOUT = 8        # seconds — matches frontend AbortSignal
 
 # ── In-Memory Stores ───────────────────────────────────────────────────────
 _draft_lock = _threading_mod.Lock()
@@ -54,13 +55,11 @@ _audit_log_lock = _threading_mod.Lock()
 
 _AVAILABLE_WORKFLOWS = {
     "post_publish": {
-        "description": "Select topic → Generate caption → Render card → Publish to Facebook",
+        "description": "Select topic → Generate caption → Render card → Publish",
         "steps": ["select_topic", "generate", "render", "publish", "analytics", "event"],
         "trigger": "scheduler (10 ×/day) or manual",
     },
 }
-
-PLATFORM_VERIFY_TIMEOUT = 8  # seconds — matches frontend AbortSignal
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -155,7 +154,7 @@ def _auth_required_rate_limited(fn):
     return wrapper
 
 
-def _require_workspace_ownership(resource_type: str, resource_id: str, workspace_id_field: str = "workspace_id"):
+def _require_workspace_ownership(resource_type: str, resource_id: str):
     workspace_id = getattr(g, 'auth_workspace_id', None)
     if workspace_id is None:
         return None
@@ -164,7 +163,7 @@ def _require_workspace_ownership(resource_type: str, resource_id: str, workspace
         abort(404, f"{resource_type} not found")
     if resource_workspace_id != workspace_id:
         logger.warning(
-            "Cross-workspace access: user from ws %s tried %s %s (belongs to %s)",
+            "Cross-workspace access: ws %s → %s %s (belongs to %s)",
             workspace_id, resource_type, resource_id, resource_workspace_id,
         )
         abort(404, f"{resource_type} not found")
@@ -180,7 +179,7 @@ def _get_resource_workspace_id(resource_type: str, resource_id: str) -> str | No
             from repositories.workspace_repository import WorkspaceRepository
             repo = container.resolve(WorkspaceRepository)
             ws = repo.find_by_id(resource_id)
-            return ws.workspace_id if hasattr(ws, 'workspace_id') else ws.id if ws else None
+            return ws.id if ws else None
         elif resource_type == "brand":
             from repositories.brand_repository import BrandRepository
             repo = container.resolve(BrandRepository)
@@ -232,8 +231,28 @@ def _append_audit(action: str, resource: str, user: str = "system",
         _audit_log.appendleft(entry)
 
 
+# ── Credential Helpers for Verifiers ───────────────────────────────────────
+
+def _get_account_token(account) -> str:
+    """Extract access token from account fields or platform_config dict."""
+    token = getattr(account, "access_token", "") or ""
+    if not token:
+        pc = getattr(account, "platform_config", {}) or {}
+        token = pc.get("page_access_token") or pc.get("access_token") or pc.get("bot_token") or ""
+    return token
+
+
+def _get_account_platform_id(account) -> str:
+    """Extract platform account ID from account fields or platform_config dict."""
+    pid = getattr(account, "platform_account_id", "") or ""
+    if not pid:
+        pc = getattr(account, "platform_config", {}) or {}
+        pid = pc.get("page_id") or pc.get("phone_number_id") or pc.get("person_urn") or ""
+    return pid
+
+
 # ═══════════════════════════════════════════════════════════════════════════
-# BEFORE REQUEST — Size Limit
+# BEFORE REQUEST
 # ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.before_request
@@ -817,7 +836,7 @@ def get_ai_persona():
 @api_v1_bp.route("/ai/persona", methods=["PUT"])
 @_auth_required
 def update_ai_persona():
-    from api.ai_runtime import update as _rt_update, VALID_MOODS
+    from api.ai_runtime import update as _rt_update
     from config.settings import settings as _s
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -1273,7 +1292,7 @@ def delete_ai_profile(profile_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SOCIAL ACCOUNTS CRUD + VERIFY + HEALTH + BULK
+# SOCIAL ACCOUNTS CRUD
 # ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/workspaces/<workspace_id>/social-accounts", methods=["POST"])
@@ -1324,6 +1343,7 @@ def list_social_accounts(workspace_id):
 @_auth_required
 def update_social_account(account_id):
     from repositories.social_account_repository import SocialAccountRepository
+    from models.social_account import SocialAccount
     try:
         _require_workspace_ownership("social_account", account_id)
         repo = _get_container().resolve(SocialAccountRepository)
@@ -1335,7 +1355,6 @@ def update_social_account(account_id):
         update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
         account_dict = account.model_dump(mode="json")
         account_dict.update(update_data)
-        from models.social_account import SocialAccount
         updated_account = SocialAccount(**account_dict)
         saved = repo.save(updated_account)
         response_data = saved.model_dump(mode="json")
@@ -1361,6 +1380,10 @@ def delete_social_account(account_id):
         return _safe_err(exc, f"DELETE /api/v1/social-accounts/{account_id}", 500)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SOCIAL ACCOUNTS — HEALTH CHECK
+# ═══════════════════════════════════════════════════════════════════════════
+
 @api_v1_bp.route("/social-accounts/<account_id>/health-check", methods=["POST"])
 @_auth_required
 def health_check_social_account(account_id):
@@ -1380,17 +1403,20 @@ def health_check_social_account(account_id):
         return _safe_err(exc, f"POST /api/v1/social-accounts/{account_id}/health-check", 500)
 
 
-# ─── VERIFY-PUBLISH — Multi-Platform ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# SOCIAL ACCOUNTS — VERIFY PUBLISH (ALL PLATFORMS)
+# ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/social-accounts/<account_id>/verify-publish", methods=["POST"])
 @_auth_required
 def verify_publish(account_id):
     """
-    Verify publish readiness without posting anything.
-    Tests token validity, page access, and publish permissions.
+    Verify publish readiness WITHOUT posting anything.
+    Tests token validity, page/account access, and publish permissions.
     Supports all 6 platforms: facebook, twitter, linkedin, instagram, whatsapp, telegram.
     """
     from repositories.social_account_repository import SocialAccountRepository
+    from models.social_account import SocialAccount
     try:
         _require_workspace_ownership("social_account", account_id)
         repo = _get_container().resolve(SocialAccountRepository)
@@ -1398,7 +1424,7 @@ def verify_publish(account_id):
         if not account:
             return _err("Social Account not found", 404)
 
-        platform = account.platform
+        platform = str(account.platform).lower()
         verifier_map = {
             "facebook":  _verify_facebook,
             "twitter":   _verify_twitter,
@@ -1418,18 +1444,20 @@ def verify_publish(account_id):
         # Update health status
         account_dict = account.model_dump(mode="json")
         account_dict["health_status"] = "healthy" if ready else "unhealthy"
-        account_dict["last_health_check"] = datetime.now(timezone.utc).isoformat()  # ← FIXED
-        from models.social_account import SocialAccount
+        account_dict["last_health_check"] = datetime.now(timezone.utc).isoformat()
         updated = SocialAccount(**account_dict)
         repo.save(updated)
+
         # Generate summary
         failed = [k.replace("_", " ").title() for k, c in checks.items() if not c.get("ok")]
         if ready:
             summary = "All checks passed. Ready to publish."
         elif len(failed) == 1:
             summary = f"{failed[0]} check failed"
+        elif len(failed) == 2:
+            summary = f"{failed[0]} and {failed[1]} checks failed"
         else:
-            summary = f"{len(failed)} checks failed: {', '.join(failed[:2])}"
+            summary = f"{len(failed)} checks failed: {', '.join(failed[:2])}..."
 
         return _ok({
             "verified": ready,
@@ -1442,7 +1470,9 @@ def verify_publish(account_id):
         return _safe_err(exc, f"POST /api/v1/social-accounts/{account_id}/verify-publish", 500)
 
 
-# ─── Bulk Social Health Check ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# SOCIAL ACCOUNTS — BULK HEALTH CHECK
+# ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/workspaces/<workspace_id>/social-accounts/bulk-health-check", methods=["POST"])
 @_auth_required
@@ -1455,7 +1485,7 @@ def bulk_health_check(workspace_id):
         accounts = repo.find_by_workspace(workspace_id)
 
         if len(accounts) > 20:
-            return _err("Bulk health check limited to 20 accounts. Use workspace filtering.", 400)
+            return _err("Bulk health check limited to 20 accounts.", 400)
 
         results = []
         for account in accounts:
@@ -1466,7 +1496,7 @@ def bulk_health_check(workspace_id):
                 repo.update_health_status(account.id, "healthy" if h.ok else "unhealthy")
                 results.append({
                     "id": account.id,
-                    "platform": account.platform,
+                    "platform": str(account.platform),
                     "account_name": account.account_name,
                     "healthy": h.ok,
                     "latency_ms": h.latency_ms,
@@ -1475,7 +1505,7 @@ def bulk_health_check(workspace_id):
             except Exception as e:
                 results.append({
                     "id": account.id,
-                    "platform": account.platform,
+                    "platform": str(account.platform),
                     "account_name": account.account_name,
                     "healthy": False,
                     "error": str(e)[:200],
@@ -1492,165 +1522,9 @@ def bulk_health_check(workspace_id):
         return _safe_err(exc, f"POST /api/v1/workspaces/{workspace_id}/social-accounts/bulk-health-check", 500)
 
 
-# ─── Platform Verifiers ────────────────────────────────────────────────────
-
-def _verify_facebook(account) -> dict:
-    """Verify Facebook Page token, page access, and publish permissions."""
-    checks = {
-        "token_valid": {"ok": False, "detail": "Not checked"},
-        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
-        "publish_permission": {"ok": False, "detail": "Not checked"},
-        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
-    }
-    token = getattr(account, "access_token", None) or getattr(account, "page_access_token", None)
-    page_id = getattr(account, "page_id", None) or getattr(account, "platform_account_id", None)
-
-    if not token or not page_id:
-        checks["token_valid"] = {"ok": False, "detail": "Missing access token or page ID"}
-        return checks
-
-    try:
-        # Token debug
-        resp = _requests_mod.get(
-            "https://graph.facebook.com/v22.0/debug_token",
-            params={"input_token": token, "access_token": token},
-            timeout=PLATFORM_VERIFY_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            data = resp.json().get("data", {})
-            if data.get("is_valid"):
-                expires = data.get("expires_at", 0)
-                if expires == 0:
-                    checks["token_valid"] = {"ok": True, "detail": "Long-lived token (no expiration)"}
-                else:
-                    days = (datetime.fromtimestamp(expires) - datetime.utcnow()).days
-                    checks["token_valid"] = {"ok": True, "detail": f"Token valid, expires in {days} days"}
-            else:
-                checks["token_valid"] = {"ok": False, "detail": data.get("error", {}).get("message", "Token invalid")}
-        else:
-            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
-
-        # Page access
-        if checks["token_valid"]["ok"]:
-            resp = _requests_mod.get(
-                f"https://graph.facebook.com/v22.0/{page_id}",
-                params={"fields": "name", "access_token": token},
-                timeout=PLATFORM_VERIFY_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                name = resp.json().get("name", account.account_name)
-                checks["page_access"] = {"ok": True, "detail": f"Page '{name}' accessible", "page_name": name}
-            else:
-                checks["page_access"] = {"ok": False, "detail": "Cannot access page — token may be revoked"}
-
-        # Publish permissions
-        if token:
-            resp = _requests_mod.get(
-                "https://graph.facebook.com/v22.0/me/permissions",
-                params={"access_token": token},
-                timeout=PLATFORM_VERIFY_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                perms = {p["permission"]: p["status"] for p in resp.json().get("data", [])}
-
-
-    try:
-        resp = _requests_mod.get(
-            "https://api.linkedin.com/v2/userinfo",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=PLATFORM_VERIFY_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            user = resp.json()
-            name = user.get("name", account.account_name)
-            checks["token_valid"] = {"ok": True, "detail": f"Authenticated as {name}"}
-            checks["page_access"] = {"ok": True, "detail": f"Profile accessible", "page_name": name}
-            checks["publish_permission"] = {"ok": True, "detail": "Token valid — publish assumed from OAuth scope"}
-        elif resp.status_code == 401:
-            checks["token_valid"] = {"ok": False, "detail": "Token expired or revoked"}
-        else:
-            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
-    except _requests_mod.exceptions.Timeout:
-        checks["token_valid"] = {"ok": False, "detail": f"LinkedIn API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-    except Exception as e:
-        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
-
-    return checks
-
-
-def _verify_instagram(account) -> dict:
-    """Verify Instagram Business account via Facebook Graph API."""
-    checks = {
-        "token_valid": {"ok": False, "detail": "Not checked"},
-        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
-        "publish_permission": {"ok": False, "detail": "Not checked"},
-        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
-    }
-    token = getattr(account, "access_token", None)
-    ig_id = getattr(account, "page_id", None) or getattr(account, "platform_account_id", None)
-
-    if not token:
-        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
-        return checks
-
-    try:
-        resp = _requests_mod.get(
-            "https://graph.facebook.com/v22.0/me",
-            params={"access_token": token, "fields": "id,name"},
-            timeout=PLATFORM_VERIFY_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            checks["token_valid"] = {"ok": True, "detail": f"Token valid for {data.get('name', 'user')}"}
-            if ig_id:
-                resp2 = _requests_mod.get(
-                    f"https://graph.facebook.com/v22.0/{ig_id}",
-                    params={"fields": "username", "access_token": token},
-                    timeout=PLATFORM_VERIFY_TIMEOUT,
-                )
-                if resp2.status_code == 200:
-                    name = resp2.json().get("username", account.account_name)
-                    checks["page_access"] = {"ok": True, "detail": f"Instagram @{name} accessible", "page_name": f"@{name}"}
-                    checks["publish_permission"] = {"ok": True, "detail": "Content publish permissions assumed from token scope"}
-                else:
-                    checks["page_access"] = {"ok": False, "detail": "Instagram account not found or not linked"}
-        else:
-            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
-    except _requests_mod.exceptions.Timeout:
-        checks["token_valid"] = {"ok": False, "detail": f"Instagram API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-    except Exception as e:
-        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
-
-    return checks
-
-
-def _verify_whatsapp(account) -> dict:
-    """Verify WhatsApp Cloud API token and phone number."""
-    checks = {
-        "token_valid": {"ok": False, "detail": "Not checked"},
-        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
-        "publish_permission": {"ok": False, "detail": "Not checked"},
-        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
-# ─── Platform Verifiers (Corrected for SocialAccount Model) ────────────────
-
-def _get_account_token(account) -> str:
-    """Extract access token from account, checking both field and platform_config."""
-    token = getattr(account, "access_token", "") or ""
-    if not token:
-        # Check platform_config for platform-specific token keys
-        pc = getattr(account, "platform_config", {}) or {}
-        token = pc.get("page_access_token") or pc.get("access_token") or pc.get("bot_token") or ""
-    return token
-
-
-def _get_account_platform_id(account) -> str:
-    """Extract platform account ID from account."""
-    pid = getattr(account, "platform_account_id", "") or ""
-    if not pid:
-        pc = getattr(account, "platform_config", {}) or {}
-        pid = pc.get("page_id") or pc.get("phone_number_id") or pc.get("person_urn") or ""
-    return pid
-
+# ═══════════════════════════════════════════════════════════════════════════
+# PLATFORM VERIFIERS
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _verify_facebook(account) -> dict:
     """Verify Facebook Page token, page access, and publish permissions."""
@@ -1897,9 +1771,7 @@ def _verify_telegram(account) -> dict:
         "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
     }
 
-    # Telegram token can be in access_token or platform_config.bot_token
     token = _get_account_token(account)
-
     if not token:
         checks["token_valid"] = {"ok": False, "detail": "Missing bot token"}
         return checks
@@ -1927,6 +1799,8 @@ def _verify_telegram(account) -> dict:
         checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
 
     return checks
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2009,7 +1883,7 @@ def search_knowledge_entries(brand_id):
         return _safe_err(exc, f"POST /api/v1/brands/{brand_id}/knowledge/search", 500)
 
 
-# ─── Bulk Knowledge Upload ─────────────────────────────────────────────────
+# ─── BULK KNOWLEDGE UPLOAD ─────────────────────────────────────────────────
 
 @api_v1_bp.route("/workspaces/<workspace_id>/knowledge/bulk", methods=["POST"])
 @_auth_required
@@ -2175,14 +2049,14 @@ def revoke_api_key(key_id: str):
             if not entry:
                 return _err(f"Key '{key_id}' not found", 404)
             _active_keys[key_id]["revoked"] = True
-        _append_audit(action="api_key_revoked", resource=f"key:{key_id}", user=g.get("auth_method", "unknown"), status="success", detail=f"API key revoked")
+        _append_audit(action="api_key_revoked", resource=f"key:{key_id}", user=g.get("auth_method", "unknown"), status="success", detail="API key revoked")
         return _ok({"revoked": True, "key_id": key_id})
     except Exception as exc:
         return _safe_err(exc, f"DELETE /api/v1/keys/{key_id}", 500)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# WORKFLOWS — including CANCEL/ROLLBACK
+# WORKFLOWS
 # ═══════════════════════════════════════════════════════════════════════════
 
 @api_v1_bp.route("/workflow", methods=["GET"])
@@ -2284,58 +2158,10 @@ def workflow_trigger():
         return _safe_err(exc, "POST /api/v1/workflow/trigger", 500)
 
 
-# ─── CANCEL ────────────────────────────────────────────────────────────────
-
 @api_v1_bp.route("/workflow/<workflow_id>/cancel", methods=["POST"])
 @_auth_required
 def cancel_workflow(workflow_id):
-    """
-    Cancel a running or paused workflow.
-    If compensation steps are defined, they will be executed to roll back
-    any side effects that have already been applied.
-    """
-    try:
-        # In the current architecture, workflows are tracked in-memory
-        # Find the workflow in history
-        with _workflow_history_lock:
-            matching = [e for e in _workflow_history if e.get("id") == workflow_id or e.get("topic") == workflow_id]
-            if not matching:
-                return _err(f"Workflow '{workflow_id}' not found in history", 404)
-            entry = matching[0]
-
-        if entry.get("status") not in ("running", "paused", None):
-            return _err(f"Cannot cancel workflow with status: {entry.get('status', 'unknown')}", 400)
-
-        # Mark as cancelled
-        entry["status"] = "cancelled"
-        entry["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-
-        _append_audit(
-            action="workflow_cancelled",
-            resource=f"workflow:{workflow_id}",
-            status="success",
-            detail=f"Workflow cancelled by user",
-        )
-
-        return _ok({
-            "cancelled": True,
-            "workflow_id": workflow_id,
-            "status": "cancelled",
-            "message": "Workflow has been cancelled. No compensation steps were defined.",
-        })
-    except Exception as exc:
-        return _safe_err(exc, f"POST /api/v1/workflow/{workflow_id}/cancel", 500)
-
-
-# ─── ROLLBACK ──────────────────────────────────────────────────────────────
-
-@api_v1_bp.route("/workflow/<workflow_id>/rollback", methods=["POST"])
-@_auth_required
-def rollback_workflow(workflow_id):
-    """
-    Force a rollback of a workflow, executing any defined compensation steps.
-    This is a destructive operation — use with caution.
-    """
+    """Cancel a running or paused workflow."""
     try:
         with _workflow_history_lock:
             matching = [e for e in _workflow_history if e.get("id") == workflow_id or e.get("topic") == workflow_id]
@@ -2343,24 +2169,36 @@ def rollback_workflow(workflow_id):
                 return _err(f"Workflow '{workflow_id}' not found", 404)
             entry = matching[0]
 
-        # In a full implementation, this would execute compensation steps
-        # For now, mark as rolled back
+        if entry.get("status") not in ("running", "paused", None):
+            return _err(f"Cannot cancel workflow with status: {entry.get('status', 'unknown')}", 400)
+
+        entry["status"] = "cancelled"
+        entry["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+
+        _append_audit(action="workflow_cancelled", resource=f"workflow:{workflow_id}", status="success", detail="Workflow cancelled by user")
+
+        return _ok({"cancelled": True, "workflow_id": workflow_id, "status": "cancelled"})
+    except Exception as exc:
+        return _safe_err(exc, f"POST /api/v1/workflow/{workflow_id}/cancel", 500)
+
+
+@api_v1_bp.route("/workflow/<workflow_id>/rollback", methods=["POST"])
+@_auth_required
+def rollback_workflow(workflow_id):
+    """Force rollback of a workflow."""
+    try:
+        with _workflow_history_lock:
+            matching = [e for e in _workflow_history if e.get("id") == workflow_id or e.get("topic") == workflow_id]
+            if not matching:
+                return _err(f"Workflow '{workflow_id}' not found", 404)
+            entry = matching[0]
+
         entry["status"] = "rolled_back"
         entry["rolled_back_at"] = datetime.now(timezone.utc).isoformat()
 
-        _append_audit(
-            action="workflow_rolled_back",
-            resource=f"workflow:{workflow_id}",
-            status="success",
-            detail="Workflow rolled back. Side effects may remain.",
-        )
+        _append_audit(action="workflow_rolled_back", resource=f"workflow:{workflow_id}", status="success", detail="Workflow rolled back")
 
-        return _ok({
-            "rolled_back": True,
-            "workflow_id": workflow_id,
-            "status": "rolled_back",
-            "warning": "Rollback completed. Some side effects may persist.",
-        })
+        return _ok({"rolled_back": True, "workflow_id": workflow_id, "status": "rolled_back"})
     except Exception as exc:
         return _safe_err(exc, f"POST /api/v1/workflow/{workflow_id}/rollback", 500)
 
@@ -2371,24 +2209,20 @@ def rollback_workflow(workflow_id):
 
 @api_v1_bp.route("/webhooks/facebook", methods=["GET", "POST"])
 def facebook_webhook():
-    """
-    Facebook Graph API webhook receiver.
-    GET: Verification challenge (hub.mode=subscribe)
-    POST: Real-time page events (feed changes, token expiry warnings)
-    """
+    """Facebook Graph API webhook — verification challenge + real-time events."""
     if request.method == "GET":
         mode = request.args.get("hub.mode")
         token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
 
         if mode == "subscribe":
-            # Find account with matching verify_token
             from repositories.social_account_repository import SocialAccountRepository
             try:
                 repo = _get_container().resolve(SocialAccountRepository)
-                accounts = repo.find_all()
+                accounts = repo.find_by_platform("facebook")
                 for acc in accounts:
-                    if getattr(acc, "verify_token", None) == token:
+                    pc = getattr(acc, "platform_config", {}) or {}
+                    if pc.get("verify_token") == token:
                         logger.info("Facebook webhook verified for account %s", acc.id)
                         return challenge, 200
             except Exception:
@@ -2397,19 +2231,15 @@ def facebook_webhook():
         logger.warning("Facebook webhook verification failed")
         return "Verification failed", 403
 
-    # POST: Process events
+    # POST — process events
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Facebook webhook received: %s", str(payload)[:500])
 
-        # Update cache and health status for affected pages
         for entry in payload.get("entry", []):
             page_id = entry.get("id")
             for change in entry.get("changes", []):
-                field = change.get("field")
-                if field == "feed":
-                    logger.info("Feed change on page %s", page_id)
-                    # Invalidate health cache
+                if change.get("field") == "feed":
                     try:
                         container = _get_container()
                         if container:
@@ -2419,13 +2249,7 @@ def facebook_webhook():
                     except Exception:
                         pass
 
-        _append_audit(
-            action="webhook_facebook",
-            resource="webhook:facebook",
-            status="success",
-            detail=f"Received {len(payload.get('entry', []))} entries",
-        )
-
+        _append_audit(action="webhook_facebook", resource="webhook:facebook", status="success", detail=f"Received {len(payload.get('entry', []))} entries")
         return "OK", 200
     except Exception as exc:
         logger.error("Facebook webhook error: %s", exc)
@@ -2438,14 +2262,7 @@ def twitter_webhook():
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("Twitter webhook received: %s", str(payload)[:500])
-
-        _append_audit(
-            action="webhook_twitter",
-            resource="webhook:twitter",
-            status="success",
-            detail="Twitter webhook processed",
-        )
-
+        _append_audit(action="webhook_twitter", resource="webhook:twitter", status="success", detail="Twitter webhook processed")
         return "OK", 200
     except Exception as exc:
         logger.error("Twitter webhook error: %s", exc)
@@ -2458,14 +2275,7 @@ def linkedin_webhook():
     try:
         payload = request.get_json(force=True, silent=True) or {}
         logger.info("LinkedIn webhook received: %s", str(payload)[:500])
-
-        _append_audit(
-            action="webhook_linkedin",
-            resource="webhook:linkedin",
-            status="success",
-            detail="LinkedIn webhook processed",
-        )
-
+        _append_audit(action="webhook_linkedin", resource="webhook:linkedin", status="success", detail="LinkedIn webhook processed")
         return "OK", 200
     except Exception as exc:
         logger.error("LinkedIn webhook error: %s", exc)
@@ -2601,14 +2411,10 @@ def get_status():
             "environment": getattr(_s, "environment", "production"),
             "config": {
                 "ai_provider": getattr(_s, "ai_provider", "gemini"),
-                "content_posting_hours_utc": getattr(_s, "content_posting_hours_utc", []),
-                "news_posting_hours_utc": getattr(_s, "news_posting_hours_utc", []),
-                "environment": getattr(_s, "environment", "production"),
                 "facebook_configured": bool(getattr(_s, "page_access_token", "")),
                 "gemini_key_configured": bool(getattr(_s, "gemini_key", "")),
                 "gemini_model": getattr(_s, "gemini_model", "gemini-2.5-pro"),
                 "guardian_enabled": bool(getattr(_s, "guardian_enabled", False)),
-                "rate_limit_per_user": getattr(_s, "rate_limit_per_user", 10),
                 "supabase_enabled": bool(getattr(_s, "supabase_enabled", False)),
             },
         })
