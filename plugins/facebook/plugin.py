@@ -46,14 +46,32 @@ class FacebookPlugin(Plugin):
         page_id = None
         page_token = None
         
+        # If a brand is provided, look up the brand's Facebook account
         if brand and self._social_repo:
             try:
                 account = self._social_repo.find_by_brand_and_platform(brand.id, "facebook")
                 if account and account.access_token:
-                    page_id = account.provider_account_id
+                    page_id = account.platform_account_id
                     page_token = account.access_token
+                    logger.info(
+                        "FacebookPlugin: using brand-specific credentials for '%s' (page=%s)",
+                        brand.name, page_id,
+                    )
             except Exception as exc:
-                logger.error("FacebookPlugin: failed to load credentials for brand '%s': %s", brand.name, exc)
+                logger.error(
+                    "FacebookPlugin: failed to load credentials for brand '%s': %s",
+                    brand.name, exc,
+                )
+        
+        # If no brand-specific account found, fall back to env var defaults
+        if not page_token:
+            from config.settings import settings
+            page_id = settings.page_id
+            page_token = settings.page_access_token
+            logger.info("FacebookPlugin: using default env var credentials")
+        
+        if not page_token:
+            return {"ok": False, "error": "No Facebook credentials configured", "platform": "facebook"}
                 
         try:
             post_id = self._svc.post_to_page(
