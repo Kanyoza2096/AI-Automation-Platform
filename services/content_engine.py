@@ -18,7 +18,7 @@ Caption Builder  HTML Renderer   SVG Renderer
     │               │                │
     └───────────────┴────────────────┘
                     ▼
-         Playwright Screenshot
+         RenderQueue (async) or Playwright (sync)
                     ▼
              PNG (1080×1080)
                     ▼
@@ -26,6 +26,7 @@ Caption Builder  HTML Renderer   SVG Renderer
 
 - Brand-aware: each brand has its own tone, hashtags, and AI personality
 - generate_post_legacy() provides v10 backwards compatibility
+- Async rendering via Redis RenderQueue prevents scheduler timeouts
 """
 
 import random
@@ -204,79 +205,78 @@ TOPICS = {
         "1Password vs Bitwarden",
     ],
     "cars_motorbikes": [
-    "Tesla Model 3 vs BMW i4 electric comparison",
-    "Toyota Hilux vs Ford Ranger: best African pickup",
-    "Electric cars vs Petrol cars in 2025",
-    "Toyota Vitz vs Honda Fit: best used car",
-    "Hybrid vs Full Electric: which saves more money",
-    "SUV vs Sedan: what to buy for African roads",
-    "Tesla Cybertruck vs Rivian R1T",
-    "Automatic vs Manual transmission: pros and cons",
-    "Toyota RAV4 vs Honda CR-V comparison",
-    "Mercedes-Benz vs BMW: which brand wins",
-    "Best motorcycles for African roads",
-    "Honda CB vs Yamaha YZF for beginners",
-    "Electric motorcycles vs Petrol motorcycles",
-    "Bajaj vs TVS: best affordable bike",
-    "Sports bikes vs Cruisers: riding experience",
-    "Kawasaki Ninja vs Suzuki GSX comparison",
-    "Best commuter bikes under $5000",
-    "Dirt bikes vs Street bikes for adventure",
-    "Harley-Davidson vs Indian Motorcycle",
-    "Motorcycle safety gear: what's essential",
-    "Tesla Autopilot vs Mercedes Drive Pilot",
-    "Car maintenance tips every driver should know",
-    "Best fuel-efficient cars for city driving",
-    "Luxury cars vs Economy cars: total cost of ownership",
-    "Toyota vs Honda reliability comparison",
-    "Best 7-seater SUVs for families",
-    "Electric scooter vs Motorcycle for city commute",
-    "Turbocharged vs Naturally aspirated engines",
-],
-"tech_startups": [
-    "Bootstrapping vs VC funding: which path",
-    "SaaS vs Marketplace business model",
-    "How to validate your startup idea before building",
-    "MVP vs Full product launch strategy",
-    "Solo founder vs Co-founder: pros and cons",
-    "B2B vs B2C SaaS: which is easier",
-    "How to get your first 100 customers",
-    "Pricing strategies for SaaS products",
-    "When to pivot vs when to persevere",
-    "Building in public vs stealth mode",
-    "Remote team vs In-office for startups",
-    "How to pitch to investors effectively",
-    "Equity split between co-founders guide",
-    "Customer acquisition vs Product development priority",
-    "African tech startup ecosystem overview",
-],
-"blockchain_web3": [
-    "Bitcoin vs Ethereum: store of value vs smart contracts",
-    "Proof of Work vs Proof of Stake explained",
-    "DeFi vs Traditional banking",
-    "NFTs beyond art: real utility cases",
-    "Solana vs Ethereum for dApp development",
-    "Centralized exchange vs DEX comparison",
-    "Web3 vs Web2: what actually changes",
-    "Stablecoins vs Traditional currencies",
-    "Smart contract security best practices",
-    "Layer 1 vs Layer 2 blockchain scaling",
-    "Crypto wallet comparison: hardware vs software",
-    "DAO vs Traditional organization structure",
-],
-"internet_of_things": [
-    "Smart home: Google Home vs Amazon Alexa",
-    "IoT security risks every user should know",
-    "Raspberry Pi vs Arduino for IoT projects",
-    "MQTT vs HTTP for IoT communication",
-    "Edge computing vs Cloud for IoT data",
-    "Smart agriculture sensors for African farmers",
-    "Wearables: Apple Watch vs Garmin for health",
-    "Zigbee vs Z-Wave vs Wi-Fi for smart homes",
-    "IoT in manufacturing vs Traditional automation",
-    "Smart city technology: what's actually working",
-],
-
+        "Tesla Model 3 vs BMW i4 electric comparison",
+        "Toyota Hilux vs Ford Ranger: best African pickup",
+        "Electric cars vs Petrol cars in 2025",
+        "Toyota Vitz vs Honda Fit: best used car",
+        "Hybrid vs Full Electric: which saves more money",
+        "SUV vs Sedan: what to buy for African roads",
+        "Tesla Cybertruck vs Rivian R1T",
+        "Automatic vs Manual transmission: pros and cons",
+        "Toyota RAV4 vs Honda CR-V comparison",
+        "Mercedes-Benz vs BMW: which brand wins",
+        "Best motorcycles for African roads",
+        "Honda CB vs Yamaha YZF for beginners",
+        "Electric motorcycles vs Petrol motorcycles",
+        "Bajaj vs TVS: best affordable bike",
+        "Sports bikes vs Cruisers: riding experience",
+        "Kawasaki Ninja vs Suzuki GSX comparison",
+        "Best commuter bikes under $5000",
+        "Dirt bikes vs Street bikes for adventure",
+        "Harley-Davidson vs Indian Motorcycle",
+        "Motorcycle safety gear: what's essential",
+        "Tesla Autopilot vs Mercedes Drive Pilot",
+        "Car maintenance tips every driver should know",
+        "Best fuel-efficient cars for city driving",
+        "Luxury cars vs Economy cars: total cost of ownership",
+        "Toyota vs Honda reliability comparison",
+        "Best 7-seater SUVs for families",
+        "Electric scooter vs Motorcycle for city commute",
+        "Turbocharged vs Naturally aspirated engines",
+    ],
+    "tech_startups": [
+        "Bootstrapping vs VC funding: which path",
+        "SaaS vs Marketplace business model",
+        "How to validate your startup idea before building",
+        "MVP vs Full product launch strategy",
+        "Solo founder vs Co-founder: pros and cons",
+        "B2B vs B2C SaaS: which is easier",
+        "How to get your first 100 customers",
+        "Pricing strategies for SaaS products",
+        "When to pivot vs when to persevere",
+        "Building in public vs stealth mode",
+        "Remote team vs In-office for startups",
+        "How to pitch to investors effectively",
+        "Equity split between co-founders guide",
+        "Customer acquisition vs Product development priority",
+        "African tech startup ecosystem overview",
+    ],
+    "blockchain_web3": [
+        "Bitcoin vs Ethereum: store of value vs smart contracts",
+        "Proof of Work vs Proof of Stake explained",
+        "DeFi vs Traditional banking",
+        "NFTs beyond art: real utility cases",
+        "Solana vs Ethereum for dApp development",
+        "Centralized exchange vs DEX comparison",
+        "Web3 vs Web2: what actually changes",
+        "Stablecoins vs Traditional currencies",
+        "Smart contract security best practices",
+        "Layer 1 vs Layer 2 blockchain scaling",
+        "Crypto wallet comparison: hardware vs software",
+        "DAO vs Traditional organization structure",
+    ],
+    "internet_of_things": [
+        "Smart home: Google Home vs Amazon Alexa",
+        "IoT security risks every user should know",
+        "Raspberry Pi vs Arduino for IoT projects",
+        "MQTT vs HTTP for IoT communication",
+        "Edge computing vs Cloud for IoT data",
+        "Smart agriculture sensors for African farmers",
+        "Wearables: Apple Watch vs Garmin for health",
+        "Zigbee vs Z-Wave vs Wi-Fi for smart homes",
+        "IoT in manufacturing vs Traditional automation",
+        "Smart city technology: what's actually working",
+    ],
 }
 
 CATEGORY_THEMES: dict = {
@@ -535,6 +535,7 @@ class ContentEngine:
                     return {"caption": caption, "image_bytes": image_bytes, "topic": topic, "category": category}
                 except Exception as exc:
                     logger.warning("TechPost parse/render failed — falling back: %s", exc)
+
             # Fallback to legacy text
             post_body = gemini.generate_content_post(topic=topic, template_type="deep_dive")
             if not post_body:
@@ -578,7 +579,43 @@ class ContentEngine:
     # ── Image rendering ────────────────────────────────────────────────────
 
     def _render_image(self, post: TechPost, topic: str, brand=None) -> Optional[bytes]:
-        """Card rendering: SVG → HTML → Playwright → PNG."""
+        """
+        Card rendering: tries async RenderQueue first, falls back to sync.
+        
+        Async path: pushes HTML to Redis queue → background worker renders
+        Sync path: Playwright → HCTI fallback (current behavior)
+        """
+        # ── Try async RenderQueue first ─────────────────────────────────
+        try:
+            from core.render_queue import get_render_queue, RenderTask
+            from services.card_renderer import card_renderer
+            
+            # Generate the HTML now (fast, no browser needed)
+            html = card_renderer.render_html_only(post, brand=brand)
+            
+            if html:
+                # Generate caption for the post text
+                category = getattr(post, 'theme', None)
+                category_val = category.value if hasattr(category, 'value') else str(category or 'general')
+                caption = CaptionBuilder.build(post, category_val, brand=brand)
+                
+                # Push to async queue — returns immediately
+                task = RenderTask(
+                    brand_id=getattr(brand, 'id', 'default'),
+                    caption=caption,
+                    html=html,
+                    topic=topic,
+                )
+                rq = get_render_queue()
+                task_id = rq.enqueue_render(task)
+                logger.info("Render task %s queued for async processing", task_id)
+                
+                # Return None — image will be published by the queue worker
+                return None
+        except Exception as exc:
+            logger.debug("Async render queue unavailable, falling back to sync: %s", exc)
+        
+        # ── Sync fallback: Playwright → HCTI ───────────────────────────
         try:
             from services.card_renderer import card_renderer
             png = card_renderer.render(post)
