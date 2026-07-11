@@ -6,21 +6,25 @@ import time
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 
 from models.brand import Brand
 from models.ai_profile import AIProfile
 from repositories.brand_repository import BrandRepository
 from repositories.ai_profile_repository import AIProfileRepository
 
+if TYPE_CHECKING:
+    from service_container import ServiceContainer
+
 logger = logging.getLogger("kanyoza.scheduler.brand")
 
 class BrandScheduler:
     """A lightweight scheduler dedicated to a single brand."""
     
-    def __init__(self, brand: Brand, ai_profile: Optional[AIProfile]):
+    def __init__(self, brand: Brand, ai_profile: Optional[AIProfile], container: "ServiceContainer"):
         self.brand = brand
         self.ai_profile = ai_profile
+        self._container = container  # Store reference to the REAL container
         self._running = False
         self._thread = None
         self._fired_slots = set()
@@ -44,7 +48,6 @@ class BrandScheduler:
             self._thread.join(timeout=5)
 
     def _run(self):
-        # Give system time to fully start before firing
         time.sleep(30)
         while self._running:
             try:
@@ -52,7 +55,6 @@ class BrandScheduler:
             except Exception as e:
                 logger.error("BrandScheduler '%s' error: %s", self.brand.id, e)
             
-            # Check every minute
             for _ in range(60):
                 if not self._running:
                     break
@@ -63,7 +65,6 @@ class BrandScheduler:
             return
 
         now = datetime.now(timezone.utc)
-        # TODO: Handle timezone conversion (brand.timezone) if not UTC
         today = now.date()
         hour = now.hour
         
@@ -73,21 +74,13 @@ class BrandScheduler:
             self._trigger_workflow()
 
     def _trigger_workflow(self):
-        """Triggers the brand-aware PostPublishWorkflow."""
+        """Triggers the brand-aware PostPublishWorkflow using the real DI container."""
         try:
-            from dependency_registry import build_container
-            
-            # Note: We should ideally have the container injected into the Manager,
-            # but for this transition phase, we'll build or access the global one.
-            # Assuming main.py or lifecycle.py handles the global container.
-            # For this shim, we will instantiate a new container just to resolve
-            container = build_container()
-            workflow_factory = container.resolve("PostPublishWorkflowFactory")
-            
+            # Use the REAL container passed from BrandSchedulerManager — not a fresh one
+            workflow_factory = self._container.resolve("PostPublishWorkflowFactory")
             workflow = workflow_factory(brand=self.brand, ai_profile=self.ai_profile)
             result = workflow.run()
             logger.info("[%s] PostPublishWorkflow completed in %d ms.", self.brand.name, result.total_ms)
-            
         except Exception as e:
             logger.error("[%s] Failed to trigger workflow: %s", self.brand.name, e)
 
@@ -101,9 +94,19 @@ class BrandSchedulerManager:
         self._schedulers: Dict[str, BrandScheduler] = {}
         self._running = False
         self._manager_thread = None
+        self._container = None  # Will be set before start()
+
+    def set_container(self, container: "ServiceContainer") -> None:
+        """Set the DI container reference — must be called before start()."""
+        self._container = container
 
     def start(self):
-        if self._running: return
+        if self._running:
+            return
+        if not self._container:
+            logger.error("BrandSchedulerManager: container not set — cannot start.")
+            return
+            
         self._running = True
         self._sync_brands()
                 
@@ -131,11 +134,10 @@ class BrandSchedulerManager:
                         logger.warning("Brand '%s' has no AI Profile, scheduling skipped.", brand.name)
                         continue
                         
-                    scheduler = BrandScheduler(brand, ai_profile)
+                    scheduler = BrandScheduler(brand, ai_profile, self._container)
                     self._schedulers[brand.id] = scheduler
                     scheduler.start()
                     
-        # Clean up schedulers for brands that are no longer active
         for bid in list(self._schedulers.keys()):
             if bid not in active_ids:
                 logger.info("Stopping scheduler for inactive brand %s", bid)
@@ -144,11 +146,12 @@ class BrandSchedulerManager:
 
     def _sync_loop(self):
         while self._running:
-            for _ in range(300): # Sync every 5 mins
+            for _ in range(300):
                 if not self._running:
                     break
                 time.sleep(1)
-            if not self._running: break
+            if not self._running:
+                break
             
             try:
                 self._sync_brands()
