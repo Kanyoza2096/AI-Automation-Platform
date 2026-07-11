@@ -2340,35 +2340,59 @@ def ai_chat():
                     _mem.add_message("api_chat_user", "user", content)
                 elif role in ("assistant", "bot"):
                     _mem.add_message("api_chat_user", "assistant", content)
+try:
+    # Try command execution first
+    from services.command_executor import CommandExecutor
+    from services.gemini import GeminiService
+    
+    executor = CommandExecutor(
+        gemini_service=GeminiService(),
+        master_token=_s.master_api_token,
+        base_url=request.host_url.rstrip("/") + "/api/v1",
+    )
+    
+    intent = executor.parse_intent(message)
+    if intent and intent.get("action"):
+        result = executor.execute(intent)
+        _append_audit(
+            action="ai_command",
+            resource=intent.get("action", "unknown"),
+            status="success" if result.get("ok") else "failed",
+            detail=f"Command: {message[:100]}",
+        )
+        return _ok({
+            "reply": result.get("message", "Command processed."),
+            "model": "command-executor",
+            "tokens_used": 0,
+            "command_result": result,
+        })
 
-        try:
-            from services.gemini import GeminiService
-            gemini = GeminiService()
-            reply = gemini.generate_chat_response(
-                sender_id="api_chat_user",
-                user_message=message,
-            )
+    # Fall through to normal chat
+    gemini = GeminiService()
+    reply = gemini.generate_chat_response(
+        sender_id="api_chat_user",
+        user_message=message,
+    )
 
-            # [SECURITY] Audit log for AI usage
-            _append_audit(
-                action="ai_chat",
-                resource="gemini",
-                status="success",
-                detail=f"Chat request processed ({len(message)} chars input, {len(reply)} chars output)",
-            )
+    _append_audit(
+        action="ai_chat",
+        resource="gemini",
+        status="success",
+        detail=f"Chat request processed ({len(message)} chars input, {len(reply)} chars output)",
+    )
 
-            return _ok({
-                "reply": reply,
-                "model": _s.gemini_model,
-                "tokens_used": len(reply.split()),
-            })
-        except Exception as exc:
-            logger.warning("Gemini chat failed: %s", exc)
-            return _ok({
-                "reply": "The AI service is temporarily unavailable. Please check your GEMINI_KEY configuration and try again.",
-                "model": "unavailable",
-                "tokens_used": 0,
-            })
+    return _ok({
+        "reply": reply,
+        "model": _s.gemini_model,
+        "tokens_used": len(reply.split()),
+    })
+except Exception as exc:
+    logger.warning("Gemini chat failed: %s", exc)
+    return _ok({
+        "reply": "The AI service is temporarily unavailable. Please check your GEMINI_KEY configuration and try again.",
+        "model": "unavailable",
+        "tokens_used": 0,
+    })
     except Exception as exc:
         return _safe_err(exc, "POST /api/v1/ai/chat", 500)
 
