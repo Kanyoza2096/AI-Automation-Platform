@@ -64,3 +64,14 @@ class BrandRepository(Repository[Brand]):
         except Exception as e:
             logger.error("Failed to find brands by workspace %s: %s", workspace_id, e)
             return [b for b in self._in_memory.values() if b.workspace_id == workspace_id]
+
+    def find_all(self) -> List[Brand]:
+        """Return all brands regardless of workspace."""
+        if not self.supabase:
+            return list(self._in_memory.values())
+        try:
+            res = self.supabase.table('brands').select('*').execute()
+            return [Brand(**row) for row in (res.data or [])]
+        except Exception as e:
+            logger.error("Failed to find all brands: %s", e)
+            return list(self._in_memory.values())
