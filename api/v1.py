@@ -1418,11 +1418,10 @@ def verify_publish(account_id):
         # Update health status
         account_dict = account.model_dump(mode="json")
         account_dict["health_status"] = "healthy" if ready else "unhealthy"
-        account_dict["last_checked"] = datetime.now(timezone.utc).isoformat()
+        account_dict["last_health_check"] = datetime.now(timezone.utc).isoformat()  # ← FIXED
         from models.social_account import SocialAccount
         updated = SocialAccount(**account_dict)
         repo.save(updated)
-
         # Generate summary
         failed = [k.replace("_", " ").title() for k, c in checks.items() if not c.get("ok")]
         if ready:
@@ -1553,76 +1552,7 @@ def _verify_facebook(account) -> dict:
             )
             if resp.status_code == 200:
                 perms = {p["permission"]: p["status"] for p in resp.json().get("data", [])}
-                required = ["pages_manage_posts", "pages_read_engagement"]
-                missing = [p for p in required if perms.get(p) != "granted"]
-                if not missing:
-                    checks["publish_permission"] = {"ok": True, "detail": "Required permissions granted"}
-                else:
-                    checks["publish_permission"] = {"ok": False, "detail": f"Missing: {', '.join(missing)}"}
-    except _requests_mod.exceptions.Timeout:
-        checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-    except Exception as e:
-        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
 
-    return checks
-
-
-def _verify_twitter(account) -> dict:
-    """Verify Twitter/X OAuth 2.0 token and publish permissions."""
-    checks = {
-        "token_valid": {"ok": False, "detail": "Not checked"},
-        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
-        "publish_permission": {"ok": False, "detail": "Not checked"},
-        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
-    }
-    token = getattr(account, "access_token", None)
-    if not token:
-        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
-        return checks
-
-    try:
-        resp = _requests_mod.get(
-            "https://api.twitter.com/2/users/me",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=PLATFORM_VERIFY_TIMEOUT,
-        )
-        if resp.status_code == 200:
-            user = resp.json().get("data", {})
-            name = user.get("username", account.account_name)
-            checks["token_valid"] = {"ok": True, "detail": f"Authenticated as @{name}"}
-            checks["page_access"] = {"ok": True, "detail": f"Account @{name} accessible", "page_name": f"@{name}"}
-            # Twitter OAuth 2.0 with write scope implies publish permission
-            scopes = resp.headers.get("x-scopes", "")
-            if "tweet.write" in scopes or "tweet.read" in scopes:
-                checks["publish_permission"] = {"ok": True, "detail": "Tweet write permission granted"}
-            else:
-                checks["publish_permission"] = {"ok": True, "detail": "Permissions assumed from OAuth scope"}
-        elif resp.status_code == 401:
-            checks["token_valid"] = {"ok": False, "detail": "Token expired or revoked"}
-        else:
-            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
-    except _requests_mod.exceptions.Timeout:
-        checks["token_valid"] = {"ok": False, "detail": f"Twitter API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-    except Exception as e:
-        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
-
-    return checks
-
-
-def _verify_linkedin(account) -> dict:
-    """Verify LinkedIn OAuth token and organization access."""
-    checks = {
-        "token_valid": {"ok": False, "detail": "Not checked"},
-        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
-        "publish_permission": {"ok": False, "detail": "Not checked"},
-        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
-    }
-    token = getattr(account, "access_token", None)
-    person_urn = getattr(account, "person_urn", None)
-
-    if not token:
-        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
-        return checks
 
     try:
         resp = _requests_mod.get(
@@ -1701,9 +1631,234 @@ def _verify_whatsapp(account) -> dict:
         "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
         "publish_permission": {"ok": False, "detail": "Not checked"},
         "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
+# ─── Platform Verifiers (Corrected for SocialAccount Model) ────────────────
+
+def _get_account_token(account) -> str:
+    """Extract access token from account, checking both field and platform_config."""
+    token = getattr(account, "access_token", "") or ""
+    if not token:
+        # Check platform_config for platform-specific token keys
+        pc = getattr(account, "platform_config", {}) or {}
+        token = pc.get("page_access_token") or pc.get("access_token") or pc.get("bot_token") or ""
+    return token
+
+
+def _get_account_platform_id(account) -> str:
+    """Extract platform account ID from account."""
+    pid = getattr(account, "platform_account_id", "") or ""
+    if not pid:
+        pc = getattr(account, "platform_config", {}) or {}
+        pid = pc.get("page_id") or pc.get("phone_number_id") or pc.get("person_urn") or ""
+    return pid
+
+
+def _verify_facebook(account) -> dict:
+    """Verify Facebook Page token, page access, and publish permissions."""
+    checks = {
+        "token_valid": {"ok": False, "detail": "Not checked"},
+        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
+        "publish_permission": {"ok": False, "detail": "Not checked"},
+        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
     }
-    token = getattr(account, "access_token", None)
-    phone_id = getattr(account, "phone_number_id", None)
+
+    token = _get_account_token(account)
+    page_id = _get_account_platform_id(account)
+
+    if not token or not page_id:
+        checks["token_valid"] = {"ok": False, "detail": "Missing access token or page ID"}
+        return checks
+
+    try:
+        resp = _requests_mod.get(
+            "https://graph.facebook.com/v22.0/debug_token",
+            params={"input_token": token, "access_token": token},
+            timeout=PLATFORM_VERIFY_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json().get("data", {})
+            if data.get("is_valid"):
+                expires = data.get("expires_at", 0)
+                if expires == 0:
+                    checks["token_valid"] = {"ok": True, "detail": "Long-lived token (no expiration)"}
+                else:
+                    days = (datetime.fromtimestamp(expires) - datetime.utcnow()).days
+                    checks["token_valid"] = {"ok": True, "detail": f"Token valid, expires in {days} days"}
+            else:
+                checks["token_valid"] = {"ok": False, "detail": data.get("error", {}).get("message", "Token invalid")}
+        else:
+            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
+
+        if checks["token_valid"]["ok"]:
+            resp = _requests_mod.get(
+                f"https://graph.facebook.com/v22.0/{page_id}",
+                params={"fields": "name", "access_token": token},
+                timeout=PLATFORM_VERIFY_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                name = resp.json().get("name", account.account_name)
+                checks["page_access"] = {"ok": True, "detail": f"Page '{name}' accessible", "page_name": name}
+            else:
+                checks["page_access"] = {"ok": False, "detail": "Cannot access page — token may be revoked"}
+
+        if token:
+            resp = _requests_mod.get(
+                "https://graph.facebook.com/v22.0/me/permissions",
+                params={"access_token": token},
+                timeout=PLATFORM_VERIFY_TIMEOUT,
+            )
+            if resp.status_code == 200:
+                perms = {p["permission"]: p["status"] for p in resp.json().get("data", [])}
+                required = ["pages_manage_posts", "pages_read_engagement"]
+                missing = [p for p in required if perms.get(p) != "granted"]
+                if not missing:
+                    checks["publish_permission"] = {"ok": True, "detail": "Required permissions granted"}
+                else:
+                    checks["publish_permission"] = {"ok": False, "detail": f"Missing: {', '.join(missing)}"}
+    except _requests_mod.exceptions.Timeout:
+        checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+    except Exception as e:
+        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+
+    return checks
+
+
+def _verify_twitter(account) -> dict:
+    """Verify Twitter/X OAuth 2.0 token and publish permissions."""
+    checks = {
+        "token_valid": {"ok": False, "detail": "Not checked"},
+        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
+        "publish_permission": {"ok": False, "detail": "Not checked"},
+        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
+    }
+
+    token = _get_account_token(account)
+    if not token:
+        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
+        return checks
+
+    try:
+        resp = _requests_mod.get(
+            "https://api.twitter.com/2/users/me",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=PLATFORM_VERIFY_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            user = resp.json().get("data", {})
+            name = user.get("username", account.account_name)
+            checks["token_valid"] = {"ok": True, "detail": f"Authenticated as @{name}"}
+            checks["page_access"] = {"ok": True, "detail": f"Account @{name} accessible", "page_name": f"@{name}"}
+            checks["publish_permission"] = {"ok": True, "detail": "Tweet write permission assumed from OAuth scope"}
+        elif resp.status_code == 401:
+            checks["token_valid"] = {"ok": False, "detail": "Token expired or revoked"}
+        else:
+            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
+    except _requests_mod.exceptions.Timeout:
+        checks["token_valid"] = {"ok": False, "detail": f"Twitter API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+    except Exception as e:
+        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+
+    return checks
+
+
+def _verify_linkedin(account) -> dict:
+    """Verify LinkedIn OAuth token and organization access."""
+    checks = {
+        "token_valid": {"ok": False, "detail": "Not checked"},
+        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
+        "publish_permission": {"ok": False, "detail": "Not checked"},
+        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
+    }
+
+    token = _get_account_token(account)
+    if not token:
+        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
+        return checks
+
+    try:
+        resp = _requests_mod.get(
+            "https://api.linkedin.com/v2/userinfo",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=PLATFORM_VERIFY_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            user = resp.json()
+            name = user.get("name", account.account_name)
+            checks["token_valid"] = {"ok": True, "detail": f"Authenticated as {name}"}
+            checks["page_access"] = {"ok": True, "detail": "Profile accessible", "page_name": name}
+            checks["publish_permission"] = {"ok": True, "detail": "Publish permissions assumed from OAuth scope"}
+        elif resp.status_code == 401:
+            checks["token_valid"] = {"ok": False, "detail": "Token expired or revoked"}
+        else:
+            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
+    except _requests_mod.exceptions.Timeout:
+        checks["token_valid"] = {"ok": False, "detail": f"LinkedIn API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+    except Exception as e:
+        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+
+    return checks
+
+
+def _verify_instagram(account) -> dict:
+    """Verify Instagram Business account via Facebook Graph API."""
+    checks = {
+        "token_valid": {"ok": False, "detail": "Not checked"},
+        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
+        "publish_permission": {"ok": False, "detail": "Not checked"},
+        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
+    }
+
+    token = _get_account_token(account)
+    ig_id = _get_account_platform_id(account)
+
+    if not token:
+        checks["token_valid"] = {"ok": False, "detail": "Missing access token"}
+        return checks
+
+    try:
+        resp = _requests_mod.get(
+            "https://graph.facebook.com/v22.0/me",
+            params={"access_token": token, "fields": "id,name"},
+            timeout=PLATFORM_VERIFY_TIMEOUT,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            checks["token_valid"] = {"ok": True, "detail": f"Token valid for {data.get('name', 'user')}"}
+            if ig_id:
+                resp2 = _requests_mod.get(
+                    f"https://graph.facebook.com/v22.0/{ig_id}",
+                    params={"fields": "username", "access_token": token},
+                    timeout=PLATFORM_VERIFY_TIMEOUT,
+                )
+                if resp2.status_code == 200:
+                    name = resp2.json().get("username", account.account_name)
+                    checks["page_access"] = {"ok": True, "detail": f"Instagram @{name} accessible", "page_name": f"@{name}"}
+                    checks["publish_permission"] = {"ok": True, "detail": "Content publish permissions assumed"}
+                else:
+                    checks["page_access"] = {"ok": False, "detail": "Instagram account not found or not linked"}
+            else:
+                checks["page_access"] = {"ok": True, "detail": "Token valid (no specific page checked)"}
+                checks["publish_permission"] = {"ok": True, "detail": "Publish permissions assumed"}
+        else:
+            checks["token_valid"] = {"ok": False, "detail": f"API error: HTTP {resp.status_code}"}
+    except _requests_mod.exceptions.Timeout:
+        checks["token_valid"] = {"ok": False, "detail": f"Instagram API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+    except Exception as e:
+        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+
+    return checks
+
+
+def _verify_whatsapp(account) -> dict:
+    """Verify WhatsApp Cloud API token and phone number."""
+    checks = {
+        "token_valid": {"ok": False, "detail": "Not checked"},
+        "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name},
+        "publish_permission": {"ok": False, "detail": "Not checked"},
+        "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
+    }
+
+    token = _get_account_token(account)
+    phone_id = _get_account_platform_id(account)
 
     if not token or not phone_id:
         checks["token_valid"] = {"ok": False, "detail": "Missing access token or phone number ID"}
@@ -1741,15 +1896,17 @@ def _verify_telegram(account) -> dict:
         "publish_permission": {"ok": False, "detail": "Not checked"},
         "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"},
     }
-    bot_token = getattr(account, "bot_token", None) or getattr(account, "access_token", None)
 
-    if not bot_token:
+    # Telegram token can be in access_token or platform_config.bot_token
+    token = _get_account_token(account)
+
+    if not token:
         checks["token_valid"] = {"ok": False, "detail": "Missing bot token"}
         return checks
 
     try:
         resp = _requests_mod.get(
-            f"https://api.telegram.org/bot{bot_token}/getMe",
+            f"https://api.telegram.org/bot{token}/getMe",
             timeout=PLATFORM_VERIFY_TIMEOUT,
         )
         if resp.status_code == 200:
@@ -1770,8 +1927,6 @@ def _verify_telegram(account) -> dict:
         checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
 
     return checks
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE
 # ═══════════════════════════════════════════════════════════════════════════
