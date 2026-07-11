@@ -74,6 +74,7 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
         from plugins.base import PluginRegistry
         container.resolve(PluginRegistry)
         logger.info("PluginRegistry ready (connector plugins).")
+    _register_industry_plugins(container)
     except Exception as exc:
         logger.warning("PluginRegistry boot failed: %s", exc)
 
