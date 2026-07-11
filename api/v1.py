@@ -215,12 +215,12 @@ def _safe_err(exc: Exception, endpoint: str, status: int = 500):
         return _err(str(exc), status)
     return _err("An internal error occurred. Please try again later.", status)
 
-
 def _append_audit(action: str, resource: str, user: str = "system",
                    status: str = "success", detail: str = "") -> None:
     entry = {
         "id": _uuid_mod.uuid4().hex[:16],
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": g.get("correlation_id", "unknown"),
         "user": user,
         "action": action,
         "resource": resource,
@@ -229,8 +229,6 @@ def _append_audit(action: str, resource: str, user: str = "system",
     }
     with _audit_log_lock:
         _audit_log.appendleft(entry)
-
-
 # ── Credential Helpers for Verifiers ───────────────────────────────────────
 
 def _get_account_token(account) -> str:
@@ -255,8 +253,22 @@ def _get_account_platform_id(account) -> str:
 # BEFORE REQUEST
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BEFORE REQUEST — Correlation ID + Size Limit
+# ═══════════════════════════════════════════════════════════════════════════
+
+@api_v1_bp.before_request
+def _attach_correlation_id():
+    """Attach a unique correlation ID to every request for audit tracing."""
+    g.correlation_id = (
+        request.headers.get("X-Correlation-ID")
+        or _uuid_mod.uuid4().hex[:12]
+    )
+
+
 @api_v1_bp.before_request
 def _enforce_request_size_limit():
+    """Reject requests with body larger than MAX_REQUEST_BODY_SIZE."""
     content_length = request.content_length
     if content_length and content_length > MAX_REQUEST_BODY_SIZE:
         return jsonify({
@@ -264,6 +276,21 @@ def _enforce_request_size_limit():
             "error": "payload_too_large",
             "message": f"Request body exceeds maximum size of {MAX_REQUEST_BODY_SIZE} bytes.",
         }), 413
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AFTER REQUEST — Security Headers
+# ═══════════════════════════════════════════════════════════════════════════
+
+@api_v1_bp.after_request
+def _add_security_headers(response):
+    """Add security headers to every response."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["X-Correlation-ID"] = g.get("correlation_id", "unknown")
+    response.headers["Server"] = ""  # Hide Flask version
+    return response
 
 
 # ═══════════════════════════════════════════════════════════════════════════
