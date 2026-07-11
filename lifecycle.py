@@ -101,6 +101,14 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("BrowserManager boot failed (card rendering will use one-shot fallback): %s", exc)
 
+    # RenderQueue — async card rendering pipeline
+    try:
+        from core.render_queue import get_render_queue
+        get_render_queue()
+        logger.info("RenderQueue ready.")
+    except Exception as exc:
+        logger.warning("RenderQueue boot failed: %s", exc)
+
     # SocketIO event bridge — subscribe EventBus events → push to /dashboard
     _wire_socket_events(container)
 
@@ -330,6 +338,15 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
         logger.info("BrowserManager stopped.")
     except Exception as exc:
         logger.warning("Error stopping BrowserManager: %s", exc)
+
+    # RenderQueue — stop async rendering workers
+    try:
+        from core.render_queue import get_render_queue
+        rq = get_render_queue()
+        rq.stop()
+        logger.info("RenderQueue stopped.")
+    except Exception as exc:
+        logger.warning("Error stopping RenderQueue: %s", exc)
 
     _service_singletons = [
         ("services.gemini", "gemini"),
