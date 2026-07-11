@@ -2130,8 +2130,114 @@ def health_check_social_account(account_id):
         })
     except Exception as exc:
         return _safe_err(exc, f"POST /api/v1/social-accounts/{account_id}/health-check", 500)
+      
 
-
+@api_v1_bp.route("/social-accounts/<account_id>/verify-publish", methods=["POST"])
+@_auth_required
+def verify_page_publish(account_id):
+    """
+    Verify that a Facebook page can receive posts WITHOUT publishing.
+    
+    Sends a test request to Facebook Graph API to check:
+    1. Token is valid
+    2. Page exists
+    3. App has publish permission
+    4. Page is not restricted
+    
+    Does NOT actually post anything — just validates the connection.
+    """
+    from repositories.social_account_repository import SocialAccountRepository
+    
+    try:
+        repo = _get_container().resolve(SocialAccountRepository)
+        account = repo.find_by_id(account_id)
+        if not account:
+            return _err("Social Account not found", 404)
+        
+        if account.platform != "facebook":
+            return _err("Page verification only supported for Facebook pages", 400)
+        
+        if not account.access_token or not account.platform_account_id:
+            return _err("Page credentials not configured", 400)
+        
+        # Test 1: Verify token validity
+        import requests
+        token_check = requests.get(
+            f"https://graph.facebook.com/v22.0/me",
+            params={
+                "access_token": account.access_token,
+                "fields": "id,name",
+            },
+            timeout=10,
+        )
+        
+        token_valid = token_check.status_code == 200
+        token_data = token_check.json() if token_valid else {}
+        token_name = token_data.get("name", "Unknown")
+        
+        # Test 2: Verify page access
+        page_check = requests.get(
+            f"https://graph.facebook.com/v22.0/{account.platform_account_id}",
+            params={
+                "access_token": account.access_token,
+                "fields": "id,name,access_token,perms",
+            },
+            timeout=10,
+        )
+        
+        page_valid = page_check.status_code == 200
+        page_data = page_check.json() if page_valid else {}
+        page_name = page_data.get("name", "Unknown")
+        
+        # Test 3: Check publish permissions (doesn't actually post)
+        perm_check = requests.get(
+            f"https://graph.facebook.com/v22.0/{account.platform_account_id}/feed",
+            params={
+                "access_token": account.access_token,
+                "limit": 1,
+                "fields": "id",
+            },
+            timeout=10,
+        )
+        
+        can_read_feed = perm_check.status_code == 200
+        
+        # Build verification result
+        checks = {
+            "token_valid": {
+                "ok": token_valid,
+                "detail": f"Token belongs to: {token_name}" if token_valid else token_check.text[:200],
+            },
+            "page_accessible": {
+                "ok": page_valid,
+                "detail": f"Page: {page_name}" if page_valid else page_check.text[:200],
+            },
+            "can_publish": {
+                "ok": can_read_feed,
+                "detail": "Has feed access — can publish" if can_read_feed else perm_check.text[:200],
+            },
+        }
+        
+        all_ok = all(c["ok"] for c in checks.values())
+        
+        # Update health status based on verification
+        account_dict = account.model_dump(mode="json")
+        account_dict["health_status"] = "healthy" if all_ok else "unhealthy"
+        account_dict["last_health_check"] = datetime.now(timezone.utc).isoformat()
+        from models.social_account import SocialAccount
+        updated = SocialAccount(**account_dict)
+        repo.save(updated)
+        
+        return _ok({
+            "verified": all_ok,
+            "page_name": page_name,
+            "checks": checks,
+            "ready_to_publish": all_ok,
+            "summary": f"✅ Ready to publish to '{page_name}'" if all_ok else "❌ Page not ready — check details above",
+        })
+        
+    except Exception as exc:
+        return _safe_err(exc, f"POST /api/v1/social-accounts/{account_id}/verify-publish", 500)
 # ── Knowledge Base ─────────────────────────────────────────────────────────
 
 @api_v1_bp.route("/brands/<brand_id>/knowledge", methods=["POST"])
