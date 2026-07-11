@@ -102,7 +102,6 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
         logger.warning("BrowserManager boot failed (card rendering will use one-shot fallback): %s", exc)
 
     # SocketIO event bridge — subscribe EventBus events → push to /dashboard
-    # Must use the DI-resolved bus (same instance used by workflows/services)
     _wire_socket_events(container)
 
 
@@ -112,24 +111,16 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
 
 
 def _wire_socket_events(container: ServiceContainer) -> None:
-    """
-    Subscribe to every domain event on the EventBus and forward it as a
-    SocketIO emission to the /dashboard namespace.
-
-    IMPORTANT: Uses the DI-resolved EventBus (same instance used by workflows,
-    the EventRecorder, and all services) — NOT the get_event_bus() module
-    singleton which is a separate instance and would miss all DI-published events.
-    """
+    """Subscribe to every domain event on the EventBus and forward it as a
+    SocketIO emission to the /dashboard namespace."""
     try:
         from core.event_bus import EventBus
         from core.events import EventType
         from core.socket_server import emit_to_dashboard, increment
 
-        # Resolve the same bus the rest of the app uses
         bus = container.resolve(EventBus)
 
         def _safe_payload(event) -> dict:
-            """Convert a DomainEvent to a JSON-safe dict."""
             return {
                 "event_id": event.event_id,
                 "occurred_at": event.occurred_at.isoformat(),
@@ -189,9 +180,7 @@ def _wire_socket_events(container: ServiceContainer) -> None:
         bus.subscribe(EventType.IMAGE_RENDERED,   on_image_rendered)
         bus.subscribe(EventType.WORKER_ERROR,     on_worker_error)
 
-        logger.info(
-            "SocketIO event bridge wired — 7 EventBus subscriptions active."
-        )
+        logger.info("SocketIO event bridge wired — 7 EventBus subscriptions active.")
     except Exception as exc:
         logger.warning("SocketIO event bridge skipped: %s", exc)
 
@@ -203,7 +192,7 @@ def _wire_socket_events(container: ServiceContainer) -> None:
 
 def _start_schedulers(container: ServiceContainer) -> None:
     _start_post_scheduler(container)
-    #_start_guardian_scheduler(container)
+    _start_brand_schedulers(container)
 
 
 def _start_post_scheduler(container: ServiceContainer) -> None:
@@ -211,26 +200,20 @@ def _start_post_scheduler(container: ServiceContainer) -> None:
         from scheduler.post_scheduler import scheduler as post_scheduler
 
         try:
-            from supabase import Client as SupabaseClient  # type: ignore[import-untyped]
+            from supabase import Client as SupabaseClient
             supabase = container.try_resolve(SupabaseClient)
             if supabase:
                 post_scheduler.supabase = supabase
         except Exception:
             pass
 
-        # M6: inject the PostPublishWorkflow factory so the scheduler uses the
-        # full pipeline (topic selection → generation → render → all plugins →
-        # analytics → event bus) instead of calling Facebook directly.
         try:
             from workflows.post_workflow import PostPublishWorkflow
             if container.is_registered(PostPublishWorkflow):
                 post_scheduler.workflow_factory = lambda: container.resolve(PostPublishWorkflow)
                 logger.info("PostPublishWorkflow wired into scheduler.")
             else:
-                logger.info(
-                    "PostPublishWorkflow not registered in DI container — "
-                    "scheduler will use the legacy direct-publish path."
-                )
+                logger.info("PostPublishWorkflow not registered — scheduler will use legacy path.")
         except Exception as exc:
             logger.warning("Could not wire PostPublishWorkflow into scheduler: %s", exc)
 
@@ -238,6 +221,17 @@ def _start_post_scheduler(container: ServiceContainer) -> None:
         logger.info("Post scheduler started.")
     except Exception as exc:
         logger.warning("Post scheduler could not start: %s", exc)
+
+
+def _start_brand_schedulers(container: ServiceContainer) -> None:
+    """Start per-brand schedulers for multi-tenant posting."""
+    try:
+        from scheduler.brand_scheduler import BrandSchedulerManager
+        manager = container.resolve(BrandSchedulerManager)
+        manager.start()
+        logger.info("BrandSchedulerManager started.")
+    except Exception as exc:
+        logger.warning("BrandSchedulerManager could not start: %s", exc)
 
 
 def _start_guardian_scheduler(container: ServiceContainer) -> None:
@@ -254,7 +248,6 @@ def _start_guardian_scheduler(container: ServiceContainer) -> None:
 
         guardian = container.resolve(GuardianService)
 
-        # Wire the /scan slash command in the webhook to use this service
         try:
             from routes.webhook import set_guardian_runner
             set_guardian_runner(guardian.scan_all)
@@ -296,7 +289,6 @@ def _register_signal_handlers(container: ServiceContainer) -> None:
 def _graceful_shutdown(container: ServiceContainer) -> None:
     """Stop all running services cleanly."""
 
-    # Stop plugin registry
     try:
         from plugins.base import PluginRegistry
         registry = container.try_resolve(PluginRegistry)
@@ -306,7 +298,6 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping PluginRegistry: %s", exc)
 
-    # Stop task queue
     try:
         from workers.task_queue import TaskQueue
         tq = container.try_resolve(TaskQueue)
@@ -316,7 +307,6 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping TaskQueue: %s", exc)
 
-    # Post scheduler
     try:
         from scheduler.post_scheduler import scheduler as post_scheduler
         post_scheduler.stop(timeout=30)
@@ -324,7 +314,15 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping post scheduler: %s", exc)
 
-    # BrowserManager (M5) — close the persistent page pool
+    try:
+        from scheduler.brand_scheduler import BrandSchedulerManager
+        brand_manager = container.try_resolve(BrandSchedulerManager)
+        if brand_manager:
+            brand_manager.stop()
+            logger.info("BrandSchedulerManager stopped.")
+    except Exception as exc:
+        logger.warning("Error stopping BrandSchedulerManager: %s", exc)
+
     try:
         from services.browser_manager import browser_manager
         browser_manager.stop()
@@ -332,7 +330,6 @@ def _graceful_shutdown(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.warning("Error stopping BrowserManager: %s", exc)
 
-    # Module-level service singletons with .close()
     _service_singletons = [
         ("services.gemini", "gemini"),
         ("services.facebook", "facebook"),
