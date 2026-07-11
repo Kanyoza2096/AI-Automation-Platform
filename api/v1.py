@@ -1451,7 +1451,9 @@ def verify_publish(account_id):
         if not account:
             return _err("Social Account not found", 404)
 
-        platform = str(account.platform).lower()
+        # Extract the enum value, not the enum repr
+raw = getattr(account.platform, "value", None) or str(account.platform)
+platform = raw.lower().replace("platform.", "")
         verifier_map = {
             "facebook":  _verify_facebook,
             "twitter":   _verify_twitter,
