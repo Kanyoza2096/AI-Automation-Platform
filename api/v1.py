@@ -1651,10 +1651,10 @@ def get_workspace(workspace_id):
     except Exception as exc:
         return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}", 500)
 
-
 @api_v1_bp.route("/workspaces/<workspace_id>", methods=["PUT"])
 @_auth_required
 def update_workspace(workspace_id):
+    from models.workspace import Workspace
     from repositories.workspace_repository import WorkspaceRepository
     try:
         # [SECURITY] Verify workspace ownership
@@ -1666,12 +1666,16 @@ def update_workspace(workspace_id):
             return _err("Workspace not found", 404)
 
         data = request.get_json(force=True, silent=True) or {}
-        # [SECURITY] Don't allow changing the workspace ID
+        update_data = {}
         for k, v in data.items():
-            if hasattr(ws, k) and k not in ("id", "created_at"):
-                setattr(ws, k, v)
-        ws.updated_at = datetime.now(timezone.utc)
-        saved = repo.save(ws)
+            if k not in ("id", "created_at"):
+                update_data[k] = v
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        ws_dict = ws.model_dump(mode="json")
+        ws_dict.update(update_data)
+        updated_ws = Workspace(**ws_dict)
+        saved = repo.save(updated_ws)
 
         _append_audit(
             action="workspace_updated",
@@ -1780,26 +1784,10 @@ def list_brands(workspace_id):
         return _safe_err(exc, f"GET /api/v1/workspaces/{workspace_id}/brands", 500)
 
 
-@api_v1_bp.route("/brands/<brand_id>", methods=["GET"])
-@_auth_required
-def get_brand(brand_id):
-    from repositories.brand_repository import BrandRepository
-    try:
-        # [SECURITY] Verify brand ownership
-        _require_workspace_ownership("brand", brand_id)
-
-        repo = _get_container().resolve(BrandRepository)
-        brand = repo.find_by_id(brand_id)
-        if not brand:
-            return _err("Brand not found", 404)
-        return _ok({"brand": brand.model_dump(mode="json")})
-    except Exception as exc:
-        return _safe_err(exc, f"GET /api/v1/brands/{brand_id}", 500)
-
-
 @api_v1_bp.route("/brands/<brand_id>", methods=["PUT"])
 @_auth_required
 def update_brand(brand_id):
+    from models.brand import Brand
     from repositories.brand_repository import BrandRepository
     try:
         # [SECURITY] Verify brand ownership
@@ -1811,11 +1799,16 @@ def update_brand(brand_id):
             return _err("Brand not found", 404)
 
         data = request.get_json(force=True, silent=True) or {}
+        update_data = {}
         for k, v in data.items():
-            if hasattr(brand, k) and k not in ("id", "workspace_id", "created_at"):
-                setattr(brand, k, v)
-        brand.updated_at = datetime.now(timezone.utc)
-        saved = repo.save(brand)
+            if k not in ("id", "workspace_id", "created_at"):
+                update_data[k] = v
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        brand_dict = brand.model_dump(mode="json")
+        brand_dict.update(update_data)
+        updated_brand = Brand(**brand_dict)
+        saved = repo.save(updated_brand)
 
         _append_audit(
             action="brand_updated",
@@ -1826,7 +1819,6 @@ def update_brand(brand_id):
         return _ok({"brand": saved.model_dump(mode="json")})
     except Exception as exc:
         return _safe_err(exc, f"PUT /api/v1/brands/{brand_id}", 500)
-
 
 @api_v1_bp.route("/brands/<brand_id>", methods=["DELETE"])
 @_auth_required
@@ -1924,6 +1916,7 @@ def list_ai_profiles(workspace_id):
 @api_v1_bp.route("/ai-profiles/<profile_id>", methods=["PUT"])
 @_auth_required
 def update_ai_profile(profile_id):
+    from models.ai_profile import AIProfile
     from repositories.ai_profile_repository import AIProfileRepository
     try:
         # [SECURITY] Verify profile ownership
@@ -1935,11 +1928,16 @@ def update_ai_profile(profile_id):
             return _err("AI Profile not found", 404)
 
         data = request.get_json(force=True, silent=True) or {}
+        update_data = {}
         for k, v in data.items():
-            if hasattr(profile, k) and k not in ("id", "workspace_id", "created_at"):
-                setattr(profile, k, v)
-        profile.updated_at = datetime.now(timezone.utc)
-        saved = repo.save(profile)
+            if k not in ("id", "workspace_id", "created_at"):
+                update_data[k] = v
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        profile_dict = profile.model_dump(mode="json")
+        profile_dict.update(update_data)
+        updated_profile = AIProfile(**profile_dict)
+        saved = repo.save(updated_profile)
 
         _append_audit(
             action="ai_profile_updated",
@@ -1950,8 +1948,6 @@ def update_ai_profile(profile_id):
         return _ok({"ai_profile": saved.model_dump(mode="json")})
     except Exception as exc:
         return _safe_err(exc, f"PUT /api/v1/ai-profiles/{profile_id}", 500)
-
-
 @api_v1_bp.route("/ai-profiles/<profile_id>", methods=["DELETE"])
 @_auth_required
 def delete_ai_profile(profile_id):
