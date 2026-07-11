@@ -2740,7 +2740,62 @@ def get_audit_logs():
     except Exception as exc:
         return _safe_err(exc, "GET /api/v1/audit-logs", 500)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# PLUGIN DISCOVERY & EXECUTION
+# ═══════════════════════════════════════════════════════════════════════════
 
+@api_v1_bp.route("/plugins", methods=["GET"])
+@_auth_required
+def list_plugins():
+    """List all registered industry plugins and their commands."""
+    try:
+        container = _get_container()
+        plugins_registry = getattr(container, "plugins", {}) if container else {}
+
+        result = []
+        for name, plugin in plugins_registry.items():
+            result.append({
+                "name": name,
+                "commands": plugin.get_commands(),
+                "webhooks": plugin.get_webhooks(),
+            })
+
+        return _ok({"plugins": result, "count": len(result)})
+    except Exception as exc:
+        return _safe_err(exc, "GET /api/v1/plugins", 500)
+
+
+@api_v1_bp.route("/plugins/<plugin_name>/execute", methods=["POST"])
+@_auth_required
+def execute_plugin_command(plugin_name):
+    """Execute a command on a registered industry plugin."""
+    try:
+        container = _get_container()
+        if not container:
+            return _err("Plugin system not available", 503)
+
+        plugins_registry = getattr(container, "plugins", {})
+        plugin = plugins_registry.get(plugin_name)
+        if not plugin:
+            return _err(f"Plugin '{plugin_name}' not found", 404)
+
+        data = request.get_json(force=True, silent=True) or {}
+        command = data.get("command", "")
+        params = data.get("params", {})
+        workspace_id = data.get("workspace_id", "default")
+
+        if not command:
+            return _err("command is required", 400)
+
+        result = plugin.execute(command, params, workspace_id)
+        return _ok(result)
+    except Exception as exc:
+        return _safe_err(exc, f"POST /api/v1/plugins/{plugin_name}/execute", 500)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AUDIT LOGS
+# ═══════════════════════════════════════════════════════════════════════════
 # ═══════════════════════════════════════════════════════════════════════════
 # WORKSPACE ANALYTICS
 # ═══════════════════════════════════════════════════════════════════════════
