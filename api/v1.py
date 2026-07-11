@@ -1674,6 +1674,7 @@ def update_workspace(workspace_id):
 
         ws_dict = ws.model_dump(mode="json")
         ws_dict.update(update_data)
+        from models.workspace import Workspace
         updated_ws = Workspace(**ws_dict)
         saved = repo.save(updated_ws)
 
@@ -1807,6 +1808,7 @@ def update_brand(brand_id):
 
         brand_dict = brand.model_dump(mode="json")
         brand_dict.update(update_data)
+        from models.brand import Brand
         updated_brand = Brand(**brand_dict)
         saved = repo.save(updated_brand)
 
@@ -1936,6 +1938,7 @@ def update_ai_profile(profile_id):
 
         profile_dict = profile.model_dump(mode="json")
         profile_dict.update(update_data)
+        from models.ai_profile import AIProfile
         updated_profile = AIProfile(**profile_dict)
         saved = repo.save(updated_profile)
 
@@ -2059,6 +2062,7 @@ def update_social_account(account_id):
         # Create a new entity with merged data
         account_dict = account.model_dump(mode="json")
         account_dict.update(update_data)
+        from models.social_account import SocialAccount
         updated_account = SocialAccount(**account_dict)
         saved = repo.save(updated_account)
 
