@@ -2,198 +2,728 @@
 <html>
 <head>
 <meta charset="UTF-8">
+{{ font_face_css | safe }}
 <style>
+/* ─── Reset ──────────────────────────────────────────────────────────────── */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { width: 1080px; height: 1080px; overflow: hidden; }
 
+/* ─── Body ───────────────────────────────────────────────────────────────── */
 :root {
   --bg-color: {% if dark_mode %}#07090F{% else %}#F8FAFC{% endif %};
+  --card-bg: {% if dark_mode %}linear-gradient(150deg, #111827 0%, #0C1218 55%, #090E16 100%){% else %}linear-gradient(150deg, #FFFFFF 0%, #F3F4F6 55%, #E5E7EB 100%){% endif %};
   --text-color: {% if dark_mode %}#F8FAFC{% else %}#111827{% endif %};
-  --panel-bg: rgba(255,255,255,0.03);
-  --panel-border: rgba(255,255,255,0.08);
-  --bullet-text: #D6E2F0;
+  --panel-bg: {% if dark_mode %}linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%){% else %}linear-gradient(180deg, rgba(0,0,0,0.02) 0%, rgba(0,0,0,0.01) 100%){% endif %};
+  --panel-border: {% if dark_mode %}rgba(255,255,255,0.07){% else %}rgba(0,0,0,0.08){% endif %};
+  --bullet-text: {% if dark_mode %}#D6E2F0{% else %}#374151{% endif %};
 }
 
 body {
+  position: relative;
   width: 1080px; height: 1080px;
   background: var(--bg-color);
   display: flex; align-items: center; justify-content: center;
-  font-family: -apple-system, 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Inter', 'Geist', 'Manrope', -apple-system, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "ss01" 1, "cv05" 1;
   overflow: hidden;
 }
 
+/* ─── Background glow layer ──────────────────────────────────────────────── */
+.bg-layer {
+  position: absolute; inset: 0; z-index: 0; pointer-events: none;
+}
+.bg-layer svg { display: block; width: 100%; height: 100%; }
+
+/* ─── Card shell ─────────────────────────────────────────────────────────── */
 .card {
+  position: relative; z-index: 1;
   width: 1008px; height: 1008px;
-  border-radius: 24px;
-  background: linear-gradient(150deg, #111827 0%, #0C1218 55%, #090E16 100%);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,0.038) 1.2px, transparent 0),
+    var(--card-bg);
+  background-size: 24px 24px, 100% 100%;
   border: 1px solid var(--panel-border);
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.03) inset,
+    0 52px 110px rgba(0,0,0,0.7),
+    0 0 150px {{ palette.glow_rgba }};
   overflow: hidden;
+}
+
+/* Top gradient accent stripe */
+.card::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, {{ palette.a }} 0%, {{ palette.b }} 100%);
+  z-index: 10;
 }
 
 .card-inner {
+  position: relative; z-index: 2;
   display: flex; flex-direction: column;
-  height: 100%; padding: 40px 48px 36px;
+  height: 100%; padding: 48px 52px 40px;
 }
 
-.header { flex-shrink: 0; margin-bottom: 24px; }
-.header-top { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+/* ─── Header ─────────────────────────────────────────────────────────────── */
+.header { flex-shrink: 0; margin-bottom: 32px; }
+
+.header-top {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+}
+
+.topic-icon {
+  width: 36px; height: 36px;
+  background: {{ palette.badge_bg }};
+  border: 1px solid {{ palette.a }}2A;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.topic-icon svg { width: 20px; height: 20px; }
 
 .badge {
+  display: inline-flex; align-items: center;
   background: {{ palette.badge_bg }};
   color: {{ palette.badge_text }};
   border: 1px solid {{ palette.a }}2A;
-  padding: 5px 14px; border-radius: 100px;
-  font-size: 13px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 6px 16px; border-radius: 100px;
+  font-size: {{ font_size.badge }}px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
 }
 
 h1 {
   color: #F8FAFC;
-  font-size: 42px; font-weight: 800; line-height: 1.15;
-  max-height: 100px; overflow: hidden;
+  font-size: {{ font_size.title_max }}px;
+  font-weight: 800; line-height: 1.14;
+  letter-spacing: -0.028em;
+  overflow: hidden;
+  max-height: {{ (font_size.title_max * 1.14 * 2.1) | round | int }}px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
 }
 
-.content { flex: 1; min-height: 0; margin-bottom: 20px; }
+/* ─── Content ────────────────────────────────────────────────────────────── */
+.content {
+  flex: 1; min-height: 0; display: flex;
+  flex-direction: column; margin-bottom: 24px;
+}
 
-/* VS Layout — simplified */
-.vs-layout { display: flex; gap: 12px; height: 100%; }
+/* ═══════════════════════════════════════════════════
+   VS / COMPARISON — professional dual comparison panels
+═══════════════════════════════════════════════════ */
+.vs-layout {
+  display: flex; gap: 16px; align-items: stretch; height: 100%;
+}
+
 .vs-panel {
-  flex: 1; background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 16px; padding: 18px 20px;
-  display: flex; flex-direction: column;
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px; overflow: hidden;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset;
 }
+
+.vs-panel-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+
+.vs-panel-icon {
+  width: 34px; height: 34px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+.vs-panel-icon svg { width: 18px; height: 18px; }
+
+.vs-panel-headtext { min-width: 0; flex: 1; }
+
+.vs-panel-strength-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.11em;
+  text-transform: uppercase; opacity: 0.75; margin-bottom: 3px;
+}
+
 .vs-panel-name {
-  font-size: 26px; font-weight: 800; margin-bottom: 12px;
-  padding-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: {{ font_size.heading_max }}px;
+  font-weight: 800; line-height: 1.12;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  letter-spacing: -0.012em;
 }
-.vs-bullets { list-style: none; flex: 1; display: flex; flex-direction: column; gap: 10px; }
-.vs-bullet { display: flex; align-items: flex-start; gap: 8px; }
-.vs-bullet-text { color: #D6E2F0; font-size: 16px; font-weight: 500; line-height: 1.35; }
+
+.vs-bullets {
+  list-style: none;
+  display: flex; flex-direction: column;
+  justify-content: space-evenly; gap: 15px;
+  padding: 18px 22px 22px; flex: 1; overflow: hidden;
+}
+
+.vs-bullet { display: flex; align-items: flex-start; gap: 11px; }
+
+.check-icon { flex-shrink: 0; margin-top: 2px; }
+
+.vs-bullet-text {
+  color: #D6E2F0;
+  font-size: {{ bullet_font | default(font_size.bullet_max) }}px;
+  font-weight: 500; line-height: 1.42;
+  overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+
 .vs-divider {
-  width: 36px; display: flex; align-items: center; justify-content: center;
-  font-size: 14px; font-weight: 900; color: #4B5D7A;
+  flex-shrink: 0; width: 46px;
+  display: flex; align-items: center; justify-content: center;
+}
+.vs-badge {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: #0B1220; border: 1px solid rgba(255,255,255,0.12);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 900; color: #4B5D7A;
+  letter-spacing: -0.04em;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
 }
 
-/* Grid — simplified */
-.grid-layout { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 12px; height: 100%; }
+/* ═══════════════════════════════════════════════════
+   BEFORE / AFTER
+═══════════════════════════════════════════════════ */
+.ba-layout {
+  display: flex; gap: 16px; align-items: stretch; height: 100%;
+}
+
+.ba-panel {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border-radius: 20px; overflow: hidden;
+}
+.ba-panel.before {
+  background: linear-gradient(180deg, rgba(239,68,68,0.07) 0%, rgba(239,68,68,0.025) 100%);
+  border: 1px solid rgba(239,68,68,0.2);
+  border-top: 3px solid #EF4444;
+}
+.ba-panel.after {
+  background: linear-gradient(180deg, rgba(16,185,129,0.07) 0%, rgba(16,185,129,0.025) 100%);
+  border: 1px solid rgba(16,185,129,0.2);
+  border-top: 3px solid #10B981;
+}
+
+.ba-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+.ba-header-icon {
+  width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ba-panel.before .ba-header-icon { background: rgba(239,68,68,0.14); }
+.ba-panel.after  .ba-header-icon { background: rgba(16,185,129,0.14); }
+
+.ba-label {
+  font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.11em; text-transform: uppercase; margin-bottom: 3px;
+}
+.ba-panel.before .ba-label { color: #F87171; }
+.ba-panel.after  .ba-label { color: #34D399; }
+
+.ba-panel-name {
+  color: #E7EEF7;
+  font-size: {{ (font_size.heading_max * 0.9) | round | int }}px;
+  font-weight: 800; line-height: 1.2;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+
+.ba-bullets {
+  list-style: none;
+  display: flex; flex-direction: column;
+  justify-content: space-evenly; gap: 14px;
+  padding: 17px 22px 20px; flex: 1; overflow: hidden;
+}
+.ba-bullet { display: flex; align-items: flex-start; gap: 11px; }
+.ba-bullet-text {
+  color: #D6E2F0;
+  font-size: {{ bullet_font | default(font_size.bullet_max) }}px;
+  font-weight: 500; line-height: 1.42;
+  overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+
+/* ═══════════════════════════════════════════════════
+   GRID (2×2) — decision matrix / architecture facts
+═══════════════════════════════════════════════════ */
+.grid-layout {
+  display: grid; grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr; gap: 16px; height: 100%;
+}
 .grid-cell {
-  background: var(--panel-bg); border: 1px solid var(--panel-border);
-  border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; justify-content: center;
+  background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.012) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px; padding: 24px 26px;
+  display: flex; flex-direction: column; justify-content: center;
+  overflow: hidden;
 }
-.grid-label { font-size: 12px; font-weight: 700; text-transform: uppercase; color: {{ palette.tagline }}; margin-bottom: 8px; }
-.grid-text { color: #E7EEF7; font-size: 18px; font-weight: 600; line-height: 1.3; }
+.grid-cell.accent {
+  background: linear-gradient(180deg, {{ palette.a }}18 0%, {{ palette.a }}08 100%);
+  border-color: {{ palette.a }}45;
+  border-left: 3px solid {{ palette.a }};
+}
+.grid-label {
+  display: flex; align-items: center; gap: 8px;
+  font-size: {{ font_size.label }}px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: {{ palette.tagline }}; margin-bottom: 12px;
+}
+.grid-label::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: {{ palette.tagline }}; flex-shrink: 0;
+}
+.grid-text {
+  color: #E7EEF7; font-size: {{ cell_font | default(23) }}px; font-weight: 600;
+  line-height: 1.38; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+}
 
-/* List — simplified */
-.list-layout { display: flex; flex-direction: column; height: 100%; justify-content: space-evenly; gap: 10px; }
+/* ═══════════════════════════════════════════════════
+   PIPELINE (horizontal flow) — sequence / API request flow
+═══════════════════════════════════════════════════ */
+.pipeline-layout {
+  display: flex; align-items: stretch; height: 100%; gap: 14px;
+  position: relative;
+}
+.pipe-step {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 18px;
+  padding: 32px 16px; min-width: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.012) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+}
+.pipe-node {
+  width: 68px; height: 68px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, {{ palette.a }}, {{ palette.b }});
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 800; color: #fff;
+  box-shadow: 0 10px 26px {{ palette.glow_rgba }}, 0 0 0 6px rgba(255,255,255,0.04);
+}
+.pipe-step-label {
+  font-size: {{ font_size.label }}px; font-weight: 700; color: {{ palette.tagline }};
+  text-transform: uppercase; letter-spacing: 0.09em; text-align: center;
+}
+.pipe-step-text {
+  color: #D6E2F0; font-size: {{ cell_font | default(20) }}px; font-weight: 500;
+  text-align: center; line-height: 1.4; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+}
+.pipe-arrow {
+  flex-shrink: 0; color: rgba(255,255,255,0.22);
+  display: flex; align-items: center; justify-content: center;
+  align-self: center;
+}
+
+/* ═══════════════════════════════════════════════════
+   LIST / CHECKLIST
+═══════════════════════════════════════════════════ */
+.list-layout {
+  display: flex; flex-direction: column;
+  height: 100%; justify-content: space-evenly;
+}
 .list-item {
-  display: flex; align-items: center; gap: 14px;
-  background: var(--panel-bg); border: 1px solid var(--panel-border);
-  border-left: 3px solid {{ palette.a }}; border-radius: 12px; padding: 14px 18px;
+  display: flex; align-items: center; gap: 18px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 3px solid {{ palette.a }};
+  border-radius: 16px; padding: 20px 22px; overflow: hidden;
 }
 .list-num {
-  width: 28px; height: 28px; border-radius: 50%;
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
   background: linear-gradient(135deg, {{ palette.a }}, {{ palette.b }});
-  color: #fff; font-size: 13px; font-weight: 800;
-  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  color: #fff; font-size: 15px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25);
 }
-.list-text { color: #E7EEF7; font-size: 16px; font-weight: 500; }
+.list-text {
+  color: #E7EEF7;
+  font-size: {{ item_font | default(font_size.bullet_max) }}px;
+  font-weight: 500; line-height: 1.3; overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
 
-/* Winner box */
+/* ═══════════════════════════════════════════════════
+   COMPARISON MATRIX — balanced 6-section engineering comparison
+   (left / right / trade-off / best-for / verdict + recommendation box)
+═══════════════════════════════════════════════════ */
+.cm-layout {
+  display: flex; flex-direction: column; gap: 16px; height: 100%;
+}
+.cm-panels {
+  display: flex; gap: 16px; flex: 1.05; min-height: 0;
+}
+.cm-panel {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px; padding: 22px 24px;
+  overflow: hidden;
+}
+.cm-panel-title {
+  font-size: {{ font_size.heading_max }}px;
+  font-weight: 800; line-height: 1.14;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  letter-spacing: -0.012em;
+}
+.cm-panel-text {
+  color: #D6E2F0;
+  font-size: 18px; font-weight: 500; line-height: 1.42;
+  overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+  flex: 1;
+}
+.cm-facts {
+  display: flex; gap: 14px; flex: 0.85; min-height: 0;
+}
+.cm-fact-cell {
+  flex: 1; min-width: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.012) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px; padding: 18px 20px;
+  display: flex; flex-direction: column; justify-content: center;
+  overflow: hidden;
+}
+.cm-fact-label {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: {{ palette.tagline }}; margin-bottom: 8px;
+}
+.cm-fact-text {
+  color: #E7EEF7; font-size: 16px; font-weight: 600; line-height: 1.36;
+  overflow: hidden;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+}
+
+/* ─── Recommendation / Winner box ────────────────────────────────────────── */
 .winner-box {
   flex-shrink: 0;
-  background: linear-gradient(135deg, {{ palette.a }}22 0%, {{ palette.b }}22 100%);
-  border: 1px solid {{ palette.a }}4A; border-radius: 16px;
-  padding: 18px 24px; margin-bottom: 18px; text-align: center;
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 6px;
+  background:
+    linear-gradient(135deg, {{ palette.a }}22 0%, {{ palette.b }}22 100%),
+    rgba(255,255,255,0.02);
+  border: 1px solid {{ palette.a }}4A;
+  border-radius: 20px; padding: 26px 32px 24px;
+  margin-bottom: 22px; overflow: hidden;
+  box-shadow: 0 0 40px {{ palette.glow_rgba }} inset;
 }
-.winner-label { font-size: 13px; font-weight: 800; text-transform: uppercase; color: {{ palette.accent }}; letter-spacing: 0.1em; }
-.winner-name { color: #FBFDFF; font-size: 28px; font-weight: 800; margin-top: 4px; }
-.winner-reason { color: rgba(226,238,255,0.72); font-size: 16px; font-weight: 500; margin-top: 6px; }
 
-/* Footer */
-.footer {
-  flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-  padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.06);
+.winner-trophy-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 2px;
 }
-.brand { color: #46597A; font-size: 14px; font-weight: 600; }
-.hashtags { color: #354764; font-size: 11px; margin-top: 3px; }
-.tagline { color: {{ palette.tagline }}; font-size: 13px; font-weight: 600; }
+
+.winner-trophy {
+  width: 34px; height: 34px;
+  background: linear-gradient(135deg, {{ palette.a }}, {{ palette.b }});
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 6px 18px {{ palette.glow_rgba }};
+  flex-shrink: 0;
+}
+
+.winner-label {
+  font-size: {{ font_size.label }}px; font-weight: 800;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: {{ palette.accent }};
+}
+
+.winner-name {
+  color: #FBFDFF;
+  font-size: {{ font_size.winner_max }}px;
+  font-weight: 800; line-height: 1.08;
+  letter-spacing: -0.02em;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  max-width: 100%;
+}
+.winner-reason {
+  color: rgba(226,238,255,0.72);
+  font-size: {{ font_size.reason_max }}px; font-weight: 500;
+  line-height: 1.4;
+  overflow: hidden; max-width: 780px;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+
+/* ─── Footer ─────────────────────────────────────────────────────────────── */
+.footer {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+.brand { color: #46597A; font-size: {{ font_size.footer }}px; font-weight: 600; }
+.footer-right { text-align: right; }
+.tagline { color: {{ palette.tagline }}; font-size: 14px; font-weight: 600; }
+.hashtags { color: #354764; font-size: 12px; margin-top: 4px; }
 </style>
 </head>
 <body>
 
+<!-- Themed SVG background (radial colour glows + subtle theme pattern) -->
+<div class="bg-layer">{{ bg_decoration | safe }}</div>
+
 <div class="card">
 <div class="card-inner">
 
+  <!-- ── HEADER ──────────────────────────────────────────────────────────── -->
   <div class="header">
     <div class="header-top">
+      <div class="topic-icon">{{ icon_svg | safe }}</div>
       <span class="badge">{{ theme_label }}</span>
     </div>
-    <h1>{{ title }}</h1>
+    <h1 data-autofit data-autofit-min="{{ font_size.title_min }}">{{ title }}</h1>
   </div>
 
+  <!-- ── CONTENT ─────────────────────────────────────────────────────────── -->
   <div class="content">
 
-    {% if layout_kind == "vs" %}
-    <div class="vs-layout">
+    {% if layout_kind == "comparison_matrix" %}
+    <!-- ═══════════ COMPARISON MATRIX (balanced 6-section) ═══════════ -->
+    <div class="cm-layout">
+      <div class="cm-panels" data-balance-group>
+        <div class="cm-panel" data-balance-item style="border-top: 3px solid {{ palette.a }};">
+          <div class="cm-panel-title" style="color: {{ palette.a }};"
+               data-autofit data-autofit-min="16">{{ cm_left.title }}</div>
+          <div class="cm-panel-text" data-autofit data-autofit-min="14">{{ cm_left.content }}</div>
+        </div>
+        <div class="cm-panel" data-balance-item style="border-top: 3px solid {{ palette.b }};">
+          <div class="cm-panel-title" style="color: {{ palette.b }};"
+               data-autofit data-autofit-min="16">{{ cm_right.title }}</div>
+          <div class="cm-panel-text" data-autofit data-autofit-min="14">{{ cm_right.content }}</div>
+        </div>
+      </div>
+      <div class="cm-facts">
+        {% for f in cm_facts %}
+        <div class="cm-fact-cell">
+          <div class="cm-fact-label">{{ f.label }}</div>
+          <div class="cm-fact-text" data-autofit data-autofit-min="13">{{ f.text }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% elif layout_kind == "vs" %}
+    <!-- ═══════════ VS / COMPARISON ═══════════ -->
+    <div class="vs-layout" data-balance-group>
       {% for col in columns %}
-      <div class="vs-panel" style="border-top: 3px solid {{ col.color }};">
-        <div class="vs-panel-name" style="color: {{ col.color }};">{{ col.name }}</div>
+      <div class="vs-panel" data-balance-item style="border-top: 3px solid {{ col.color }};">
+        <div class="vs-panel-header">
+          <div class="vs-panel-icon" style="background: {{ col.color }}20;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                 stroke="{{ col.color }}" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"/>
+              <path d="M12 1v4M12 19v4M1 12h4M19 12h4
+                       M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83
+                       M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+            </svg>
+          </div>
+          <div class="vs-panel-headtext">
+            <div class="vs-panel-strength-label" style="color: {{ col.color }};">{{ col.strength_label }}</div>
+            <div class="vs-panel-name"
+                 style="color: {{ col.color }};"
+                 data-autofit
+                 data-autofit-min="{{ font_size.heading_min }}">{{ col.name }}</div>
+          </div>
+        </div>
         <ul class="vs-bullets">
           {% for b in col.bullets %}
           <li class="vs-bullet">
-            <span style="color:{{ col.color }};font-weight:700;flex-shrink:0;">•</span>
+            <svg class="check-icon" width="20" height="20"
+                 viewBox="0 0 20 20" fill="none">
+              <circle cx="10" cy="10" r="8.5"
+                      stroke="{{ col.color }}" stroke-width="1.5"
+                      fill="{{ col.color }}1C"/>
+              <path d="M6.5 10l2.5 2.5 4.5-4.5"
+                    stroke="{{ col.color }}" stroke-width="2.2"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
             <span class="vs-bullet-text">{{ b }}</span>
           </li>
           {% endfor %}
         </ul>
       </div>
       {% if loop.first %}
-      <div class="vs-divider">VS</div>
+      <div class="vs-divider"><div class="vs-badge">VS</div></div>
       {% endif %}
       {% endfor %}
     </div>
 
-    {% elif layout_kind == "grid" %}
-    <div class="grid-layout">
-      {% for cell in cells %}
-      <div class="grid-cell"{% if cell.accent %} style="border-left:3px solid {{ palette.a }};"{% endif %}>
-        <div class="grid-label">{{ cell.label }}</div>
-        <div class="grid-text">{{ cell.text }}</div>
+    {% elif layout_kind == "before_after" %}
+    <!-- ═══════════ BEFORE / AFTER ═══════════ -->
+    <div class="ba-layout" data-balance-group>
+      {% for col in columns %}
+      <div class="ba-panel {{ 'before' if col.side == 'left' else 'after' }}" data-balance-item>
+        <div class="ba-header">
+          {% if col.side == 'left' %}
+          <div class="ba-header-icon">
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+              <circle cx="9" cy="9" r="8" stroke="#EF4444" stroke-width="1.5"
+                      fill="#EF44441C"/>
+              <path d="M5.5 5.5l7 7M12.5 5.5l-7 7"
+                    stroke="#EF4444" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="ba-label">BEFORE</div>
+            <div class="ba-panel-name">{{ col.name }}</div>
+          </div>
+          {% else %}
+          <div class="ba-header-icon">
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+              <circle cx="9" cy="9" r="8" stroke="#10B981" stroke-width="1.5"
+                      fill="#10B9811C"/>
+              <path d="M4.5 9l3.5 3.5 6-6"
+                    stroke="#10B981" stroke-width="1.8"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div>
+            <div class="ba-label">AFTER</div>
+            <div class="ba-panel-name">{{ col.name }}</div>
+          </div>
+          {% endif %}
+        </div>
+        <ul class="ba-bullets">
+          {% for b in col.bullets %}
+          <li class="ba-bullet">
+            {% if col.side == 'left' %}
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="flex-shrink:0;margin-top:3px;">
+              <circle cx="8" cy="8" r="7" stroke="#EF4444" stroke-width="1.2"
+                      fill="#EF44441C"/>
+              <path d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+                    stroke="#EF4444" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            {% else %}
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="flex-shrink:0;margin-top:3px;">
+              <circle cx="8" cy="8" r="7" stroke="#10B981" stroke-width="1.2"
+                      fill="#10B9811C"/>
+              <path d="M4 8l2.5 2.5 4.5-4.5"
+                    stroke="#10B981" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {% endif %}
+            <span class="ba-bullet-text">{{ b }}</span>
+          </li>
+          {% endfor %}
+        </ul>
       </div>
       {% endfor %}
     </div>
 
+    {% elif layout_kind == "grid" %}
+    <!-- ═══════════ GRID 2×2 (decision matrix) ═══════════ -->
+    <div class="grid-layout">
+      {% for cell in cells %}
+      <div class="grid-cell{% if cell.accent %} accent{% endif %}">
+        <div class="grid-label">{{ cell.label }}</div>
+        <div class="grid-text"
+             data-autofit data-autofit-min="16">{{ cell.text }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% elif layout_kind == "pipeline" %}
+    <!-- ═══════════ PIPELINE FLOW (sequence / API request flow) ═══════════ -->
+    <div class="pipeline-layout">
+      {% for cell in cells %}
+      <div class="pipe-step">
+        <div class="pipe-node">{{ loop.index }}</div>
+        <div class="pipe-step-label">{{ cell.label }}</div>
+        <div class="pipe-step-text">{{ cell.text }}</div>
+      </div>
+      {% if not loop.last %}
+      <div class="pipe-arrow">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14M13 6l6 6-6 6"/>
+        </svg>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </div>
+
     {% else %}
+    <!-- ═══════════ LIST / CHECKLIST ═══════════ -->
     <div class="list-layout">
       {% for item in items %}
       <div class="list-item">
         <span class="list-num">{{ item.num }}</span>
-        <span class="list-text">{{ item.text }}</span>
+        <span class="list-text"
+              data-autofit data-autofit-min="15">{{ item.text }}</span>
       </div>
       {% endfor %}
     </div>
     {% endif %}
 
-  </div>
+  </div><!-- /content -->
 
-  {% if winner %}
+  <!-- ── RECOMMENDATION / WINNER BOX ─────────────────────────────────────── -->
+  {% if cm_recommendation %}
   <div class="winner-box">
-    <div class="winner-label">{{ winner.label }}</div>
-    <div class="winner-name">{{ winner.name }}</div>
-    {% if winner.reason %}<div class="winner-reason">{{ winner.reason }}</div>{% endif %}
+    <div class="winner-trophy-row">
+      <div class="winner-trophy">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="white" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 4h12v3a6 6 0 01-6 6 6 6 0 01-6-6V4z"/>
+          <path d="M6 5H3.5v1A3.5 3.5 0 007 9.5M18 5h2.5v1A3.5 3.5 0 0117 9.5"/>
+          <path d="M12 14v4M8.5 21h7"/>
+        </svg>
+      </div>
+      <div class="winner-label">{{ cm_recommendation.label }}</div>
+    </div>
+    <div class="winner-reason"
+         style="font-size: 19px; max-width: 860px; -webkit-line-clamp: 3;"
+         data-autofit data-autofit-min="14">{{ cm_recommendation.text }}</div>
+  </div>
+  {% elif winner %}
+  <div class="winner-box">
+    <div class="winner-trophy-row">
+      <div class="winner-trophy">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="white" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M6 4h12v3a6 6 0 01-6 6 6 6 0 01-6-6V4z"/>
+          <path d="M6 5H3.5v1A3.5 3.5 0 007 9.5M18 5h2.5v1A3.5 3.5 0 0117 9.5"/>
+          <path d="M12 14v4M8.5 21h7"/>
+        </svg>
+      </div>
+      <div class="winner-label">{{ winner.label }}</div>
+    </div>
+    <div class="winner-name"
+         data-autofit
+         data-autofit-min="{{ font_size.winner_min }}">{{ winner.name }}</div>
+    {% if winner.reason %}
+    <div class="winner-reason">{{ winner.reason }}</div>
+    {% endif %}
   </div>
   {% endif %}
 
+  <!-- ── FOOTER ───────────────────────────────────────────────────────────── -->
   <div class="footer">
-    <div class="brand">{{ brand_name }}</div>
+    <div style="display: flex; align-items: center; gap: 10px;">
+      {% if brand_logo %}
+      <img src="{{ brand_logo }}" style="height: 24px; max-width: 80px; object-fit: contain; border-radius: 4px;" />
+      {% endif %}
+      <div class="brand">{{ brand_name }}</div>
+    </div>
     <div class="footer-right">
       <div class="tagline">Engineering Insights</div>
-      {% if hashtags %}<div class="hashtags">{% for tag in hashtags %}#{{ tag }} {% endfor %}</div>{% endif %}
+      {% if hashtags %}
+      <div class="hashtags">{% for tag in hashtags %}#{{ tag }} {% endfor %}</div>
+      {% endif %}
     </div>
   </div>
 
-</div>
-</div>
+</div><!-- /card-inner -->
+</div><!-- /card -->
 </body>
 </html>
