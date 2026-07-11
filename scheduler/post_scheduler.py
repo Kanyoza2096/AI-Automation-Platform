@@ -84,7 +84,6 @@ class PostScheduler:
 
     def _load_state(self):
         """Load persisted state from Supabase (preferred) or local JSON file."""
-        # Try Supabase first
         if self.supabase:
             try:
                 result = self.supabase.table('scheduler_state').select('*').execute()
@@ -100,7 +99,6 @@ class PostScheduler:
             except Exception as e:
                 logger.error("Failed to load scheduler state from Supabase: %s", e)
 
-        # Fallback: local JSON file — survives restarts without Supabase
         try:
             state_path = os.path.abspath(_STATE_FILE)
             if not os.path.exists(state_path):
@@ -113,14 +111,13 @@ class PostScheduler:
             if data.get("last_news_post_time"):
                 self.last_news_post_time = datetime.fromisoformat(data["last_news_post_time"])
 
-            # Restore fired slots for today only
             today = datetime.now(timezone.utc).date()
             for entry in data.get("fired_slots", []):
                 try:
                     d = date.fromisoformat(entry[0])
                     h = int(entry[1])
                     k = str(entry[2])
-                    if d == today:  # Only restore today's slots
+                    if d == today:
                         self._fired_slots.add((d, h, k))
                 except Exception:
                     pass
@@ -143,7 +140,6 @@ class PostScheduler:
             except Exception as e:
                 logger.error("Failed to save scheduler state to Supabase: %s", e)
 
-        # Always write the JSON file as the reliable fallback
         self._flush_state_file()
 
     def _flush_state_file(self):
@@ -224,12 +220,10 @@ class PostScheduler:
         today = now.date()
 
         with self._lock:
-            # Prune slots from previous days — uniform 3-tuple shape throughout
             self._fired_slots = {
                 (d, h, k) for d, h, k in self._fired_slots if d == today
             }
 
-            # ── Content posts (10/day) ─────────────────────────────────────────
             content_slot = (today, now.hour, "content")
             content_due = now.hour in self.content_hours_utc
             already_fired = content_slot in self._fired_slots
@@ -245,7 +239,6 @@ class PostScheduler:
             else:
                 enqueue_content = False
 
-        # Flush state to disk when a slot is claimed
         if enqueue_content:
             self._flush_state_file()
             self._enqueue_job("content")
@@ -367,17 +360,39 @@ class PostScheduler:
 
     # ── Publishers ─────────────────────────────────────────────────────────────
 
+    def _publish_to_all_platforms(self, caption: str, image_bytes=None) -> dict:
+        """Publish content to ALL connected social accounts via PluginRegistry."""
+        results = {}
+        try:
+            from flask import current_app
+            from plugins.base import PluginRegistry
+            container = current_app.extensions.get("service_container")
+            if container:
+                registry = container.resolve(PluginRegistry)
+                for plugin in registry.get_all():
+                    try:
+                        res = plugin.publish(caption, image_bytes=image_bytes)
+                        results[plugin.name] = {"ok": res.get("ok", False), "error": res.get("reason")}
+                        if res.get("ok"):
+                            logger.info("Published to %s", plugin.name)
+                        else:
+                            logger.warning("Failed to publish to %s: %s", plugin.name, res.get("reason"))
+                    except Exception as e:
+                        logger.warning("Plugin %s error: %s", plugin.name, e)
+                        results[plugin.name] = {"ok": False, "error": str(e)}
+                return results
+        except Exception as e:
+            logger.error("PluginRegistry error: %s", e)
+        
+        # Fallback to legacy Facebook singleton
+        success = facebook.post_to_page(caption, image_bytes=image_bytes)
+        return {"facebook": {"ok": bool(success)}}
+
     def _publish_content(self):
-        """
-        Generate and post one comparison card via PostPublishWorkflow (or legacy fallback).
-
-        Acquires _publish_lock so only ONE publish can run at a time —
-        prevents a manual /post command from racing with a scheduled post.
-        """
+        """Generate and post via PostPublishWorkflow (or legacy fallback)."""
         if not self._publish_lock.acquire(blocking=True, timeout=300):
-            logger.warning("_publish_content: could not acquire publish lock within 300 s — skipping")
+            logger.warning("_publish_content: could not acquire publish lock — skipping")
             return
-
         try:
             self._do_publish_content()
         finally:
@@ -385,7 +400,6 @@ class PostScheduler:
 
     def _do_publish_content(self):
         """Inner publish logic — must only be called while _publish_lock is held."""
-        # ── v10 path: delegate to the full PostPublishWorkflow ─────────────────
         if self.workflow_factory is not None:
             try:
                 workflow = self.workflow_factory()
@@ -406,7 +420,6 @@ class PostScheduler:
             except Exception as exc:
                 logger.error("PostPublishWorkflow raised unexpectedly: %s — falling back to legacy path", exc)
 
-        # ── Legacy fallback: direct Facebook call ──────────────────────────────
         result = content_engine.generate_post()
         caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
         image_bytes = result.get("image_bytes") if isinstance(result, dict) else (result[1] if len(result) > 1 else None)
@@ -415,18 +428,20 @@ class PostScheduler:
             logger.warning("ContentEngine returned empty caption — skipping post")
             return
 
-        success = facebook.post_to_page(caption, image_bytes=image_bytes)
+        results = self._publish_to_all_platforms(caption, image_bytes=image_bytes)
+        success = any(v.get("ok") for v in results.values())
         if success:
             self.last_post_time = datetime.now(timezone.utc)
             self._save_state('last_post_time', self.last_post_time.isoformat())
             category = result.get("category", "") if isinstance(result, dict) else ""
+            platforms = [k for k, v in results.items() if v.get("ok")]
             logger.info(
-                "Post published successfully (legacy)  category='%s'  image=%s",
-                category,
+                "Post published successfully — platforms=%s category='%s' image=%s",
+                platforms, category,
                 f"{len(image_bytes)} bytes" if image_bytes else "none",
             )
         else:
-            logger.warning("Facebook post_to_page returned falsy — post may have failed")
+            logger.warning("Post failed on all platforms: %s", results)
 
     def _publish_news(self, category: str = None):
         if (
@@ -456,29 +471,14 @@ class PostScheduler:
         return "content post queued" if queued else "queue full — try again shortly"
 
     def run_content_now(self) -> dict:
-        """
-        Synchronously run one content publish cycle and return the result.
-
-        Unlike post_now() / force_post(), this BLOCKS until the workflow
-        completes (or fails) and returns a dict describing the outcome.
-
-        Uses _publish_lock so a manual /post cannot overlap with a scheduled
-        worker publish — only one publish can run at a time.
-        """
-        # ── Pre-flight: fail fast if Gemini is currently rate-limited ─────────
-        try:
-            import time as _time
-            from services.gemini import gemini as _gemini
-            from services.gemini import RATE_LIMIT_BACKOFF_SECONDS
-            elapsed = _time.time() - _gemini._last_rate_limit_time
-            if elapsed < RATE_LIMIT_BACKOFF_SECONDS:
-                wait_s = int(RATE_LIMIT_BACKOFF_SECONDS - elapsed) + 1
-                return {
-                    "ok": False,
-                    "error": f"Gemini AI is rate-limited — try again in {wait_s}s",
-                }
-        except Exception:
-            pass
+        """Synchronously run one content publish cycle and return the result."""
+        import time as _time
+        from services.gemini import gemini as _gemini
+        from services.gemini import RATE_LIMIT_BACKOFF_SECONDS
+        elapsed = _time.time() - _gemini._last_rate_limit_time
+        if elapsed < RATE_LIMIT_BACKOFF_SECONDS:
+            wait_s = int(RATE_LIMIT_BACKOFF_SECONDS - elapsed) + 1
+            return {"ok": False, "error": f"Gemini AI is rate-limited — try again in {wait_s}s"}
 
         if not self._publish_lock.acquire(blocking=False):
             return {"ok": False, "error": "a publish is already in progress — try again shortly"}
@@ -498,63 +498,37 @@ class PostScheduler:
                         elif step.step_name == "publish":
                             publish_step_ok = step.ok
                             if step.ok:
-                                publish_results = (
-                                    step.output if isinstance(step.output, dict) else {}
-                                )
+                                publish_results = step.output if isinstance(step.output, dict) else {}
                             else:
-                                logger.warning(
-                                    "run_content_now: publish step failed — %s",
-                                    step.error,
-                                )
+                                logger.warning("run_content_now: publish step failed — %s", step.error)
 
                     if publish_step_ok:
                         self.last_post_time = datetime.now(timezone.utc)
                         self._save_state("last_post_time", self.last_post_time.isoformat())
-                        successful_platforms = [
-                            k for k, v in publish_results.items() if v.get("ok")
-                        ]
+                        successful_platforms = [k for k, v in publish_results.items() if v.get("ok")]
                         return {
-                            "ok": True,
-                            "topic": topic,
-                            "platforms": successful_platforms,
-                            "results": publish_results,
-                            "duration_ms": round(wf_result.total_ms),
+                            "ok": True, "topic": topic, "platforms": successful_platforms,
+                            "results": publish_results, "duration_ms": round(wf_result.total_ms),
                         }
 
-                    failed = [s.step_name for s in wf_result.steps if not s.ok]
-                    publish_err = next(
-                        (s.error for s in wf_result.steps if s.step_name == "publish"),
-                        "publish step not reached",
-                    )
-                    logger.warning(
-                        "run_content_now: workflow publish failed (%s) — trying legacy path",
-                        publish_err,
-                    )
-
                 except Exception as wf_exc:
-                    logger.error(
-                        "run_content_now: workflow raised unexpectedly (%s) — trying legacy path",
-                        wf_exc,
-                    )
+                    logger.error("run_content_now: workflow raised unexpectedly (%s) — trying legacy path", wf_exc)
 
-            # ── Legacy path: direct Facebook call ─────────────────────────────
             logger.info("run_content_now: running legacy direct-publish path")
             result = content_engine.generate_post()
-            caption = (
-                result.get("caption", "") if isinstance(result, dict)
-                else (result[0] if result else "")
-            )
-            image_bytes = (
-                result.get("image_bytes") if isinstance(result, dict) else None
-            )
+            caption = result.get("caption", "") if isinstance(result, dict) else (result[0] if result else "")
+            image_bytes = result.get("image_bytes") if isinstance(result, dict) else None
             if not caption:
                 return {"ok": False, "error": "ContentEngine returned empty caption"}
-            post_id = facebook.post_to_page(caption, image_bytes=image_bytes)
-            if post_id:
+
+            results = self._publish_to_all_platforms(caption, image_bytes=image_bytes)
+            success = any(v.get("ok") for v in results.values())
+            if success:
                 self.last_post_time = datetime.now(timezone.utc)
                 self._save_state("last_post_time", self.last_post_time.isoformat())
-                return {"ok": True, "platforms": ["facebook"], "topic": ""}
-            return {"ok": False, "error": "facebook.post_to_page returned falsy — check PAGE_ACCESS_TOKEN"}
+                platforms = [k for k, v in results.items() if v.get("ok")]
+                return {"ok": True, "platforms": platforms, "topic": ""}
+            return {"ok": False, "error": str(results)}
 
         except Exception as exc:
             logger.error("run_content_now failed: %s", exc, exc_info=True)
