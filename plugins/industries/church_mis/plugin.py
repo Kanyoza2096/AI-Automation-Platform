@@ -4,13 +4,7 @@ import logging
 from typing import Any
 
 from plugins.industries.base import IndustryPlugin
-class ChurchMISPlugin(IndustryPlugin):
-    def __init__(self, supabase_client=None, redis_client=None):
-        super().__init__(supabase_client, redis_client)
-        from .repository import ChurchMISRepository
-        from .commands import ChurchMISCommands
-        self.repo = ChurchMISRepository(supabase_client)
-        self.commands = ChurchMISCommands(self.repo, redis_client)
+
 logger = logging.getLogger("kanyoza.plugins.church_mis")
 
 
@@ -28,14 +22,18 @@ class ChurchMISPlugin(IndustryPlugin):
 
     def __init__(self, supabase_client=None, redis_client=None):
         super().__init__(supabase_client, redis_client)
+        # Lazy imports to avoid circular dependencies
+        from .repository import ChurchMISRepository
+        from .commands import ChurchMISCommands
+        
         self.repo = ChurchMISRepository(supabase_client)
-        self.commands = ChurchMISCommands(self.repo, redis_client)
+        self.commands_handler = ChurchMISCommands(self.repo, redis_client)
 
     def get_commands(self) -> list[dict]:
-        return self.commands.list_all()
+        return self.commands_handler.list_all()
 
     def execute(self, command: str, params: dict, workspace_id: str = "default") -> dict:
-        return self.commands.handle(command, params, workspace_id)
+        return self.commands_handler.handle(command, params, workspace_id)
 
     def get_webhooks(self) -> list[dict]:
         return [
@@ -50,6 +48,6 @@ class ChurchMISPlugin(IndustryPlugin):
     def _handle_member_webhook(self, data: dict) -> dict:
         """Handle incoming member registration webhook."""
         workspace_id = data.get("workspace_id", "default")
-        result = self.commands.handle("add_member", data, workspace_id)
+        result = self.commands_handler.handle("add_member", data, workspace_id)
         logger.info("Church webhook processed: %s", result.get("message"))
         return result
