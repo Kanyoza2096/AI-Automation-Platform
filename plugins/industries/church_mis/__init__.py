@@ -1,2 +1,4 @@
-# After (correct):
-from plugins.industries.church_mis import ChurchMISPlugin
+# Lazy import to avoid circular dependency
+def get_plugin():
+    from .plugin import ChurchMISPlugin
+    return ChurchMISPlugin
