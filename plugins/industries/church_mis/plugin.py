@@ -36,14 +36,14 @@ class ChurchMISPlugin(IndustryPlugin):
         return self.commands_handler.handle(command, params, workspace_id)
 
     def get_webhooks(self) -> list[dict]:
-        return [
-            {
-                "path": "/webhooks/church/member",
-                "method": "POST",
-                "handler": self._handle_member_webhook,
-                "description": "Member registration from external form",
-            },
-        ]
+    return [
+        {
+            "path": "/webhooks/church/member",
+            "method": "POST",
+            "handler": "handle_member_webhook",  # ← String, not function
+            "description": "Member registration from external form",
+        },
+    ]
 
     def _handle_member_webhook(self, data: dict) -> dict:
         """Handle incoming member registration webhook."""
