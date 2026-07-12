@@ -169,7 +169,7 @@ def _register_industry_plugins(container: ServiceContainer) -> None:
             len(church_plugin.get_commands()),
         )
     except ImportError as exc:
-    logger.warning("Church MIS plugin IMPORT FAILED: %s", exc)
+        logger.warning("Church MIS plugin IMPORT FAILED: %s", exc)
     except Exception as exc:
         logger.warning("Church MIS plugin failed to load: %s", exc)
 
