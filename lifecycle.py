@@ -158,7 +158,7 @@ def _register_industry_plugins(container: ServiceContainer) -> None:
 
     # Church MIS
     try:
-        from plugins.industries.church_mis import ChurchMISPlugin
+        from plugins.industries.church_mis.plugin import ChurchMISPlugin
         church_plugin = ChurchMISPlugin(
             supabase_client=supabase_client,
             redis_client=redis_client,
