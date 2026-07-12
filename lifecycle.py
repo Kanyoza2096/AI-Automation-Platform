@@ -121,23 +121,22 @@ def _boot_infrastructure(container: ServiceContainer) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 # INDUSTRY PLUGIN REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════════
-
-
 def _register_industry_plugins(container: ServiceContainer) -> None:
     """
-    Register all industry-specific plugins (Church MIS, School MIS, etc.).
+    Auto-discover and register all industry plugins.
 
-    These are DIFFERENT from connector plugins (Facebook, Twitter).
-    Industry plugins handle domain logic — members, attendance, donations.
-    Connector plugins handle outbound publishing to social platforms.
+    Scans plugins/industries/ for any folder containing plugin.py
+    with a Plugin class that implements IndustryPlugin.
 
-    Each industry plugin registers its commands with the CommandExecutor
-    so natural-language queries like "Add member John Doe" are routed
-    to the correct handler.
+    To add a new industry: create a folder, add plugin.py, deploy.
+    No lifecycle.py edits needed.
     """
+    import os
+    import importlib
+
     from config.settings import settings
 
-    # Resolve dependencies that plugins may need
+    # Resolve dependencies
     supabase_client = None
     redis_client = None
 
@@ -153,110 +152,76 @@ def _register_industry_plugins(container: ServiceContainer) -> None:
     except Exception:
         logger.debug("Redis client not available for industry plugins.")
 
-    # ── Discover and register industry plugins ──────────────────────────
+    # ── Auto-discover plugins ──────────────────────────────────────────
     industry_plugins: dict = {}
+    plugins_dir = os.path.join(os.path.dirname(__file__), "plugins", "industries")
 
-    # Church MIS
-    try:
-        from plugins.industries.church_mis.plugin import ChurchMISPlugin
-        church_plugin = ChurchMISPlugin(
-            supabase_client=supabase_client,
-            redis_client=redis_client,
-        )
-        industry_plugins["church_mis"] = church_plugin
-        logger.info(
-            "Industry plugin registered: church_mis (%d commands)",
-            len(church_plugin.get_commands()),
-        )
-    except ImportError as exc:
-        logger.warning("Church MIS plugin IMPORT FAILED: %s", exc)
-    except Exception as exc:
-        logger.warning("Church MIS plugin failed to load: %s", exc)
+    if not os.path.isdir(plugins_dir):
+        logger.info("No plugins/industries directory — skipping industry plugins.")
+        container.industry_plugins = {}
+        return
 
-    # School MIS — uncomment when ready
-    # try:
-    #     from plugins.industries.school_mis import SchoolMISPlugin
-    #     school_plugin = SchoolMISPlugin(
-    #         supabase_client=supabase_client,
-    #         redis_client=redis_client,
-    #     )
-    #     industry_plugins["school_mis"] = school_plugin
-    #     logger.info(
-    #         "Industry plugin registered: school_mis (%d commands)",
-    #         len(school_plugin.get_commands()),
-    #     )
-    # except ImportError:
-    #     logger.debug("School MIS plugin not installed — skipping.")
-    # except Exception as exc:
-    #     logger.warning("School MIS plugin failed to load: %s", exc)
+    for folder in sorted(os.listdir(plugins_dir)):
+        folder_path = os.path.join(plugins_dir, folder)
 
-    # Hospital — uncomment when ready
-    # try:
-    #     from plugins.industries.hospital import HospitalPlugin
-    #     hospital_plugin = HospitalPlugin(
-    #         supabase_client=supabase_client,
-    #         redis_client=redis_client,
-    #     )
-    #     industry_plugins["hospital"] = hospital_plugin
-    #     logger.info(
-    #         "Industry plugin registered: hospital (%d commands)",
-    #         len(hospital_plugin.get_commands()),
-    #     )
-    # except ImportError:
-    #     logger.debug("Hospital plugin not installed — skipping.")
-    # except Exception as exc:
-    #     logger.warning("Hospital plugin failed to load: %s", exc)
+        # Skip files, __pycache__, base.py, generator.py, etc.
+        if not os.path.isdir(folder_path):
+            continue
+        if folder.startswith("__") or folder in ("base", "specs", "addons"):
+            continue
 
-    # CRM — uncomment when ready
-    # try:
-    #     from plugins.industries.crm import CRMPlugin
-    #     crm_plugin = CRMPlugin(
-    #         supabase_client=supabase_client,
-    #         redis_client=redis_client,
-    #     )
-    #     industry_plugins["crm"] = crm_plugin
-    #     logger.info(
-    #         "Industry plugin registered: crm (%d commands)",
-    #         len(crm_plugin.get_commands()),
-    #     )
-    # except ImportError:
-    #     logger.debug("CRM plugin not installed — skipping.")
-    # except Exception as exc:
-    #     logger.warning("CRM plugin failed to load: %s", exc)
+        plugin_file = os.path.join(folder_path, "plugin.py")
+        if not os.path.isfile(plugin_file):
+            continue
 
-    # ERP — uncomment when ready
-    # try:
-    #     from plugins.industries.erp import ERPPlugin
-    #     erp_plugin = ERPPlugin(
-    #         supabase_client=supabase_client,
-    #         redis_client=redis_client,
-    #     )
-    #     industry_plugins["erp"] = erp_plugin
-    #     logger.info(
-    #         "Industry plugin registered: erp (%d commands)",
-    #         len(erp_plugin.get_commands()),
-    #     )
-    # except ImportError:
-    #     logger.debug("ERP plugin not installed — skipping.")
-    # except Exception as exc:
-    #     logger.warning("ERP plugin failed to load: %s", exc)
+        try:
+            module = importlib.import_module(f"plugins.industries.{folder}.plugin")
+            
+            # Look for a class that implements IndustryPlugin
+            plugin_class = None
+            for name in dir(module):
+                obj = getattr(module, name)
+                if isinstance(obj, type) and name.endswith("Plugin") and name != "IndustryPlugin":
+                    plugin_class = obj
+                    break
 
-    # ── Store in DI container so API endpoints can discover plugins ─────
+            if plugin_class is None:
+                logger.warning("No Plugin class found in %s — skipping.", folder)
+                continue
+
+            plugin_instance = plugin_class(
+                supabase_client=supabase_client,
+                redis_client=redis_client,
+            )
+            industry_plugins[folder] = plugin_instance
+            logger.info(
+                "Industry plugin registered: %s (%d commands)",
+                folder, len(plugin_instance.get_commands()),
+            )
+
+        except ImportError as exc:
+            logger.debug("Plugin '%s' import skipped: %s", folder, exc)
+        except Exception as exc:
+            logger.warning("Plugin '%s' failed to load: %s", folder, exc)
+
+    # ── Store and register ─────────────────────────────────────────────
     container.industry_plugins = industry_plugins
 
     if not industry_plugins:
         logger.info("No industry plugins registered.")
         return
 
-    # ── Register commands with the Command Executor ─────────────────────
     _register_plugin_commands(industry_plugins)
 
     logger.info(
         "Industry plugins loaded: %s (%d total commands)",
         list(industry_plugins.keys()),
         sum(len(p.get_commands()) for p in industry_plugins.values()),
-    )
+  )
 
+ 
+
+    
 
 def _register_plugin_commands(industry_plugins: dict) -> None:
     """
