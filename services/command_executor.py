@@ -122,14 +122,17 @@ API_ACTIONS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# ── External plugin command registry ──────────────────────────────────────
 
-_external_commands: Dict[str, Dict[str, Any]] = {}
+
 
 
 class CommandExecutor:
     """Parses natural language and executes commands against the Kanyoza API."""
-
+    
+    
+    # ── External plugin command registry ──────────────────────────────────────
+    _external_commands: Dict[str, Dict[str, Any]] = {}
+    
     def __init__(self, gemini_service, master_token: str, base_url: str):
         self._gemini = gemini_service
         self._token = master_token
