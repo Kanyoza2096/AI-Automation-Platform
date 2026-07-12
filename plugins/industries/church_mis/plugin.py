@@ -4,9 +4,13 @@ import logging
 from typing import Any
 
 from plugins.base import IndustryPlugin
-from .repository import ChurchMISRepository
-from .commands import ChurchMISCommands
-
+class ChurchMISPlugin(IndustryPlugin):
+    def __init__(self, supabase_client=None, redis_client=None):
+        super().__init__(supabase_client, redis_client)
+        from .repository import ChurchMISRepository
+        from .commands import ChurchMISCommands
+        self.repo = ChurchMISRepository(supabase_client)
+        self.commands = ChurchMISCommands(self.repo, redis_client)
 logger = logging.getLogger("kanyoza.plugins.church_mis")
 
 
