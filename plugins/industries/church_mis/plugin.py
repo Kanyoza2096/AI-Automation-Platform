@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from plugins.base import IndustryPlugin
+from plugins.industries.base import IndustryPlugin
 class ChurchMISPlugin(IndustryPlugin):
     def __init__(self, supabase_client=None, redis_client=None):
         super().__init__(supabase_client, redis_client)
