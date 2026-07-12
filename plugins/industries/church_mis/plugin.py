@@ -36,7 +36,7 @@ class ChurchMISPlugin(IndustryPlugin):
         return self.commands_handler.handle(command, params, workspace_id)
 
     def get_webhooks(self) -> list[dict]:
-    return [
+        return [
         {
             "path": "/webhooks/church/member",
             "method": "POST",
