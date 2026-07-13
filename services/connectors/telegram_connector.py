@@ -38,12 +38,11 @@ class TelegramConnector:
         self._account = social_account
         if social_account:
             self._bot_token = social_account.access_token or ""
-            self._chat_id = social_account.provider_account_id or ""
+            self._chat_id = getattr(social_account, 'platform_account_id', '') or getattr(social_account, 'provider_account_id', '') or ""
         else:
             from config.settings import settings
-            self._bot_token = getattr(settings, "telegram_bot_token", "")
-            self._chat_id = getattr(settings, "telegram_chat_id", "")
-
+            self._bot_token = getattr(settings, "telegram_bot_token", "") or ""
+            self._chat_id = getattr(settings, "telegram_chat_id", "") or ""
     @property
     def _base(self) -> str:
         return f"{_API_BASE}/bot{self._bot_token}"
