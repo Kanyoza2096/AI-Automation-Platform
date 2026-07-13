@@ -1543,33 +1543,32 @@ def _verify_facebook(account) -> dict:
                 checks["page_access"] = {"ok": True, "detail": f"Page '{name}' accessible", "page_name": name}
             else:
                 checks["page_access"] = {"ok": False, "detail": f"Cannot access page — HTTP {resp.status_code}"}
-    # Check 3: Publish permissions
-    # Valid long-lived token + page access = publish capability
-    if checks["token_valid"]["ok"] and checks["page_access"]["ok"]:
-        checks["publish_permission"] = {
-            "ok": True,
-            "detail": "Token valid and page accessible — publish permissions confirmed",
-        }
-    elif not checks["token_valid"]["ok"]:
-        checks["publish_permission"] = {
-            "ok": False,
-            "detail": "Cannot verify — token is invalid",
-        }
-    else:
-        checks["publish_permission"] = {
-            "ok": False,
-            "detail": "Cannot verify — page access failed",
-        }
+        
+        # Check 3: Publish permissions
+        if checks["token_valid"]["ok"] and checks["page_access"]["ok"]:
+            checks["publish_permission"] = {
+                "ok": True,
+                "detail": "Token valid and page accessible — publish permissions confirmed",
+            }
+        elif not checks["token_valid"]["ok"]:
+            checks["publish_permission"] = {
+                "ok": False,
+                "detail": "Cannot verify — token is invalid",
+            }
+        else:
+            checks["publish_permission"] = {
+                "ok": False,
+                "detail": "Cannot verify — page access failed",
+            }
 
-except _requests_mod.exceptions.Timeout:
-    if checks["token_valid"]["detail"] == "Not checked":
-        checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-except Exception as e:
-    if checks["token_valid"]["detail"] == "Not checked":
-        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+    except _requests_mod.exceptions.Timeout:
+        if checks["token_valid"]["detail"] == "Not checked":
+            checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+    except Exception as e:
+        if checks["token_valid"]["detail"] == "Not checked":
+            checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
 
-return checks
-
+    return checks
 def _verify_twitter(account) -> dict:
     checks = {"token_valid": {"ok": False, "detail": "Not checked"}, "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name}, "publish_permission": {"ok": False, "detail": "Not checked"}, "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"}}
     token = _get_account_token(account)
