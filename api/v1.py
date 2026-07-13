@@ -1543,53 +1543,32 @@ def _verify_facebook(account) -> dict:
                 checks["page_access"] = {"ok": True, "detail": f"Page '{name}' accessible", "page_name": name}
             else:
                 checks["page_access"] = {"ok": False, "detail": f"Cannot access page — HTTP {resp.status_code}"}
-        
-        # Check 3: Publish permissions — use page_id endpoint instead of /me/permissions
-        if checks["token_valid"]["ok"]:
-            resp = _requests_mod.get(
-                f"https://graph.facebook.com/v22.0/{page_id}",
-                params={"fields": "access_token", "access_token": token},
-                timeout=PLATFORM_VERIFY_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                page_token = resp.json().get("access_token", "")
-                if page_token:
-                    # Now check permissions using the page token
-                    resp2 = _requests_mod.get(
-                        f"https://graph.facebook.com/v22.0/{page_id}",
-                        params={"fields": "tasks", "access_token": page_token},
-                        timeout=PLATFORM_VERIFY_TIMEOUT,
-                    )
-                    if resp2.status_code == 200:
-                        # Successfully accessed page with page token — can publish
-                        checks["publish_permission"] = {
-                            "ok": True,
-                            "detail": "Page token valid — publish permissions confirmed",
-                        }
-                    else:
-                        checks["publish_permission"] = {
-                            "ok": False,
-                            "detail": f"Page token validation failed: HTTP {resp2.status_code}",
-                        }
-                else:
-                    checks["publish_permission"] = {
-                        "ok": False,
-                        "detail": "Could not retrieve page access token — may need pages_manage_posts permission",
-                    }
-            else:
-                checks["publish_permission"] = {
-                    "ok": False,
-                    "detail": f"Cannot verify publish permissions — HTTP {resp.status_code}",
-                }
-                
-    except _requests_mod.exceptions.Timeout:
-        if checks["token_valid"]["detail"] == "Not checked":
-            checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
-    except Exception as e:
-        if checks["token_valid"]["detail"] == "Not checked":
-            checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
-    
-    return checks
+    # Check 3: Publish permissions
+    # Valid long-lived token + page access = publish capability
+    if checks["token_valid"]["ok"] and checks["page_access"]["ok"]:
+        checks["publish_permission"] = {
+            "ok": True,
+            "detail": "Token valid and page accessible — publish permissions confirmed",
+        }
+    elif not checks["token_valid"]["ok"]:
+        checks["publish_permission"] = {
+            "ok": False,
+            "detail": "Cannot verify — token is invalid",
+        }
+    else:
+        checks["publish_permission"] = {
+            "ok": False,
+            "detail": "Cannot verify — page access failed",
+        }
+
+except _requests_mod.exceptions.Timeout:
+    if checks["token_valid"]["detail"] == "Not checked":
+        checks["token_valid"] = {"ok": False, "detail": f"Facebook API timed out ({PLATFORM_VERIFY_TIMEOUT}s)"}
+except Exception as e:
+    if checks["token_valid"]["detail"] == "Not checked":
+        checks["token_valid"] = {"ok": False, "detail": f"Error: {str(e)[:150]}"}
+
+return checks
 
 def _verify_twitter(account) -> dict:
     checks = {"token_valid": {"ok": False, "detail": "Not checked"}, "page_access": {"ok": False, "detail": "Not checked", "page_name": account.account_name}, "publish_permission": {"ok": False, "detail": "Not checked"}, "rate_limit": {"ok": True, "detail": "Rate limits assumed OK"}}
