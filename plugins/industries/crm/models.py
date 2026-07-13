@@ -1,4 +1,4 @@
-"""Church MIS data models."""
+"""CRM data models."""
 
 from datetime import datetime
 from typing import Optional
@@ -7,54 +7,54 @@ from models.base import KanyozaModel
 
 
 class Contact(KanyozaModel):
-    """A church contact."""
+    """A CRM contact or lead."""
     id: str
     workspace_id: str
-    full_name: str
+    contact_name: str
     phone: str = Field(default="")
     email: Optional[str] = Field(default=None)
-    address: Optional[str] = Field(default=None)
-    department: str = Field(default="congregation")
-    role: str = Field(default="contact")
-    baptism_date: Optional[datetime] = Field(default=None)
+    company: Optional[str] = Field(default=None)
+    status: str = Field(default="lead")
+    source: Optional[str] = Field(default=None)
+    notes: Optional[str] = Field(default=None)
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=KanyozaModel.utcnow)
     updated_at: Optional[datetime] = Field(default=None)
 
 
-class Attendance(KanyozaModel):
-    """Service attendance record."""
+class Deal(KanyozaModel):
+    """Sales deal or opportunity."""
     id: str
     workspace_id: str
-    contact_id: str
+    contact_id: str = Field(default="")
     contact_name: str = Field(default="")
-    service_date: str
-    service_type: str = Field(default="sunday_service")
-    present: bool = Field(default=True)
+    amount: float = Field(default=0)
+    stage: str = Field(default="lead")
+    deal_date: str = Field(default="")
+    expected_close_date: Optional[str] = Field(default=None)
+    probability: int = Field(default=20)
     created_at: datetime = Field(default_factory=KanyozaModel.utcnow)
 
 
-class Donation(KanyozaModel):
-    """Donation or tithe record."""
+class FollowUp(KanyozaModel):
+    """Scheduled follow-up activity."""
     id: str
     workspace_id: str
-    donor_id: str
-    donor_name: str = Field(default="")
-    amount: float
-    currency: str = Field(default="MWK")
-    purpose: str = Field(default="tithe")
-    payment_method: str = Field(default="cash")
-    donation_date: str
+    contact_id: str = Field(default="")
+    contact_name: str = Field(default="")
+    followup_date: str
+    notes: str = Field(default="")
+    status: str = Field(default="scheduled")
     created_at: datetime = Field(default_factory=KanyozaModel.utcnow)
 
 
-class Event(KanyozaModel):
-    """Church event."""
+class Meeting(KanyozaModel):
+    """Meeting or call."""
     id: str
     workspace_id: str
     title: str
     description: Optional[str] = Field(default=None)
-    event_date: str
+    meeting_date: str
     start_time: Optional[str] = Field(default=None)
-    location: Optional[str] = Field(default=None)
+    location: str = Field(default="Virtual")
     created_at: datetime = Field(default_factory=KanyozaModel.utcnow)
