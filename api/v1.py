@@ -99,22 +99,6 @@ _AVAILABLE_WORKFLOWS = {
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _get_container():
-    from flask import current_app
-    return current_app.extensions.get("service_container")
-
-
-def _get_rate_limiter():
-    from flask import current_app
-    container = current_app.extensions.get("service_container")
-    if container:
-        try:
-            from core.rate_limiter import RateLimiter
-            return container.resolve(RateLimiter)
-        except Exception:
-            pass
-    return None
-
 
 def _sanitize(value: str) -> str:
     """Strip HTML tags, normalize whitespace, escape entities."""
