@@ -1447,49 +1447,49 @@ def create_app(director: Director):
         actor: str = "admin"
         reason: str = ""
 
-    @app.get("/director/status")
+    @app.get("/status")
     def get_status():
         return director.status()
 
-    @app.get("/director/briefing")
+    @app.get("/briefing")
     def get_briefing():
         return director.briefings[-1] if director.briefings else director.briefing()
 
-    @app.get("/director/tasks")
+    @app.get("/tasks")
     def get_tasks():
         return [safe(asdict(t)) for t in director.tasks.values()]
 
-    @app.get("/director/approvals")
+    @app.get("/approvals")
     def get_approvals():
         return [
             safe(asdict(t)) for t in director.tasks.values()
             if t.status == Status.APPROVAL
         ]
 
-    @app.get("/director/decisions")
+    @app.get("/decisions")
     def get_decisions():
         return [safe(asdict(d)) for d in list(director.decisions)[-100:]]
 
-    @app.post("/director/observe")
+    @app.post("/observe")
     def run_observe():
         director.observe_all()
         return director.status()
 
-    @app.post("/director/plan")
+    @app.post("/plan")
     def run_plan():
         return director.build_plan()
 
-    @app.post("/director/start")
+    @app.post("/start")
     def run_start():
         director.start()
         return director.status()
 
-    @app.post("/director/stop")
+    @app.post("/stop")
     def run_stop():
         director.stop()
         return director.status()
 
-    @app.post("/director/tasks/{task_id}/approve")
+    @app.post("/tasks/{task_id}/approve")
     def approve_task(task_id: str, body: ApprovalBody):
         try:
             return safe(asdict(director.approve(task_id, body.actor)))
@@ -1498,7 +1498,7 @@ def create_app(director: Director):
         except ValueError as e:
             raise HTTPException(409, str(e))
 
-    @app.post("/director/tasks/{task_id}/reject")
+    @app.post("/tasks/{task_id}/reject")
     def reject_task(task_id: str, body: RejectBody):
         try:
             return safe(asdict(director.reject(task_id, body.actor, body.reason)))
@@ -1506,7 +1506,6 @@ def create_app(director: Director):
             raise HTTPException(404, "Task not found")
 
     return app
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # INITIALIZER
