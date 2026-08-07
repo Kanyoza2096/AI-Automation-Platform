@@ -1,16 +1,21 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # EMAIL SERVICE — v1.2
-# Transactional and notification email delivery.
+# Transactional and notification delivery service.
 # Integrates with Condition Engine for autonomous alerting.
 #
-# Providers: Resend API → Gmail SMTP → Telegram (all with fallback)
-# Templates: Jinja2 (already in your stack)
+# Providers (auto-selected in order):
+#   - Resend API (primary email)
+#   - Gmail SMTP (fallback email)
+#   - Telegram Bot (instant alerts, always works, free)
+#
+# Templates: Jinja2
 # ═══════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 import smtplib
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
@@ -32,14 +37,15 @@ class EmailService:
     Multi-provider notification delivery service.
 
     Providers (auto-selected in order):
-        - Resend API (primary email)
-        - Gmail SMTP (fallback email)
-        - Telegram Bot (instant alerts, free)
+        - Resend API (primary email, set RESEND_API_KEY)
+        - Gmail SMTP (fallback email, set SMTP_USERNAME + SMTP_PASSWORD)
+        - Telegram Bot (instant alerts, set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
 
     Usage:
         email = EmailService()
         email.send(to="admin@org.com", subject="Alert", body="Something happened")
         email.send_telegram("🚨 System alert: something happened")
+        email.alert("Title", "Message")  # sends to all channels
     """
 
     def __init__(self):
@@ -78,9 +84,7 @@ class EmailService:
         """Initialize Jinja2 for email templates."""
         templates_dir = Path(__file__).parent.parent / "templates" / "emails"
         if templates_dir.exists():
-            self._jinja = Environment(
-                loader=FileSystemLoader(str(templates_dir)),
-            )
+            self._jinja = Environment(loader=FileSystemLoader(str(templates_dir)))
             logger.info("Email templates loaded from %s", templates_dir)
         else:
             logger.debug("No email templates directory at %s", templates_dir)
@@ -98,20 +102,7 @@ class EmailService:
         context: Dict[str, Any] = None,
         html: bool = True,
     ) -> bool:
-        """
-        Send an email.
-
-        Args:
-            to: Recipient email address
-            subject: Email subject line
-            body: Plain text or HTML body (ignored if template is set)
-            template: Jinja2 template name (e.g., "weekly_report")
-            context: Template variables
-            html: Whether body contains HTML
-
-        Returns:
-            True if sent successfully
-        """
+        """Send an email. Tries Resend → SMTP. Falls back to Telegram on total failure."""
         if template and self._jinja:
             try:
                 tmpl = self._jinja.get_template(f"{template}.html")
@@ -125,26 +116,18 @@ class EmailService:
         if not body:
             body = subject
 
-        # Try Resend API first
-        if self.resend_api_key:
-            if self._send_resend(to, subject, body, html):
-                return True
-            logger.warning("Resend failed, trying SMTP fallback...")
+        if self.resend_api_key and self._send_resend(to, subject, body, html):
+            return True
 
-        # Fall back to SMTP
         if self._send_smtp(to, subject, body, html):
             return True
 
-        # Last resort: send summary via Telegram
-        if self.telegram_bot_token:
-            alert_id = self.telegram_chat_id or self.health_alert_chat_id
-            if alert_id:
-                self._send_telegram(f"⚠️ Email delivery failed\nTo: {to}\nSubject: {subject}\n\n{body[:500]}")
-        
+        # Total failure — notify via Telegram
+        self.send_telegram(f"⚠️ <b>Email delivery failed</b>\nTo: {to}\nSubject: {subject}")
         return False
 
     def send_to_admins(self, subject: str, body: str = "", **kwargs) -> bool:
-        """Send to all configured admin emails + Telegram alert."""
+        """Send to all configured admin emails + Telegram."""
         if not self.admin_emails:
             logger.warning("No admin emails configured")
             return False
@@ -157,17 +140,14 @@ class EmailService:
         return success
 
     def send_telegram(self, message: str, chat_id: str = "") -> bool:
-        """
-        Send a Telegram message.
-        
-        Args:
-            message: Text to send (supports HTML formatting)
-            chat_id: Override default chat ID
-        
-        Returns:
-            True if sent successfully
-        """
+        """Send a Telegram message. Supports <b>, <i>, <u>, <s>, <code>, <pre>, <a> HTML tags."""
         return self._send_telegram(message, chat_id)
+
+    def alert(self, title: str, message: str) -> bool:
+        """Send to all channels: email + Telegram."""
+        telegram_ok = self.send_telegram(f"<b>🚨 {title}</b>\n\n{message}")
+        email_ok = self.send_to_admins(subject=title, body=message)
+        return telegram_ok or email_ok
 
     # ═══════════════════════════════════════════════════════════════════
     # PROVIDERS
@@ -207,7 +187,7 @@ class EmailService:
     def _send_smtp(self, to: str, subject: str, body: str, html: bool) -> bool:
         """Send via SMTP (Gmail or custom server)."""
         if not self.smtp_username or not self.smtp_password:
-            logger.error("SMTP not configured")
+            logger.debug("SMTP not configured")
             return False
 
         try:
@@ -230,16 +210,16 @@ class EmailService:
             return True
 
         except smtplib.SMTPAuthenticationError:
-            logger.error("SMTP authentication failed")
+            logger.error("SMTP authentication failed — check username/password")
         except smtplib.SMTPConnectError:
-            logger.error("SMTP connection failed")
+            logger.error("SMTP connection failed — check SMTP_HOST and SMTP_PORT")
         except Exception as exc:
             logger.error("SMTP send failed: %s", exc)
 
         return False
 
     def _send_telegram(self, message: str, chat_id: str = "") -> bool:
-        """Send message via Telegram Bot API."""
+        """Send message via Telegram Bot API. Strips unsupported HTML tags."""
         try:
             import requests
 
@@ -250,12 +230,22 @@ class EmailService:
                 logger.debug("Telegram not configured")
                 return False
 
+            # Strip HTML tags Telegram doesn't support
+            # Keeps: <b>, <i>, <u>, <s>, <code>, <pre>, <a>
+            clean = re.sub(
+                r'</?(div|p|h[1-6]|span|ol|ul|li|table|tr|td|th|hr|br|strong|em|blockquote)\b[^>]*>',
+                '',
+                message,
+            )
+            clean = clean.replace('<br>', '\n').replace('<br/>', '\n').replace('<hr>', '\n――――――\n')
+            clean = clean.replace('</p>', '\n').replace('<p>', '')
+
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             response = requests.post(
                 url,
                 json={
                     "chat_id": target_chat,
-                    "text": message,
+                    "text": clean[:4000],
                     "parse_mode": "HTML",
                     "disable_web_page_preview": True,
                 },
@@ -263,13 +253,47 @@ class EmailService:
             )
 
             if response.status_code == 200:
-                logger.info("Telegram message sent")
-                return True
+                data = response.json()
+                if data.get("ok"):
+                    logger.info("Telegram message sent to %s", target_chat)
+                    return True
+                else:
+                    # If HTML parse fails, retry without formatting
+                    logger.warning("Telegram HTML parse failed, retrying as plain text")
+                    return self._send_telegram_plain(clean[:4000], target_chat, token)
             else:
                 logger.error("Telegram returned %d: %s", response.status_code, response.text[:200])
 
         except Exception as exc:
             logger.error("Telegram send failed: %s", exc)
+
+        return False
+
+    def _send_telegram_plain(self, message: str, chat_id: str, token: str) -> bool:
+        """Fallback: send plain text without HTML parsing."""
+        try:
+            import requests
+
+            # Strip ALL HTML tags for plain text
+            clean = re.sub(r'<[^>]+>', '', message)
+
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            response = requests.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": clean[:4000],
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
+            )
+
+            if response.status_code == 200 and response.json().get("ok"):
+                logger.info("Telegram plain text sent")
+                return True
+
+        except Exception as exc:
+            logger.error("Telegram plain text failed: %s", exc)
 
         return False
 
@@ -279,32 +303,31 @@ class EmailService:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class KanyozaNotifications:
-    """
-    Pre-built notifications for common events.
-    Used by Condition Engine and other services.
-    """
+    """Pre-built notifications for common events."""
 
     def __init__(self, email_service: EmailService):
         self.email = email_service
 
     def alert(self, title: str, message: str):
         """Send alert via all channels."""
-        self.email.send_to_admins(subject=title, body=message)
-        self.email.send_telegram(f"<b>🚨 {title}</b>\n\n{message}")
+        self.email.alert(title, message)
 
     def director_alert(self, payload: dict):
         """Format and send a Director alert."""
         alert_type = payload.get("type", "Unknown")
         task = payload.get("task", {})
-        description = task.get("description", "No description")
-        reason = task.get("reason", "")
-        
-        message = f"<b>👔 Director: {alert_type}</b>\n{description}"
+        description = task.get("description", "No description") if isinstance(task, dict) else str(task)
+        reason = task.get("reason", "") if isinstance(task, dict) else ""
+
+        telegram_msg = f"<b>👔 Director: {alert_type}</b>\n{description}"
         if reason:
-            message += f"\n\n<i>{reason}</i>"
-        
-        self.email.send_telegram(message)
-        self.email.send_to_admins(subject=f"Director: {alert_type}", body=message.replace("<b>","").replace("</b>","").replace("<i>","").replace("</i>",""))
+            telegram_msg += f"\n\n<i>{reason}</i>"
+
+        self.email.send_telegram(telegram_msg)
+        self.email.send_to_admins(
+            subject=f"Director: {alert_type}",
+            body=telegram_msg.replace("<b>", "").replace("</b>", "").replace("<i>", "").replace("</i>", ""),
+        )
 
     def render_failure_cascade(self, error_count: int, brand_name: str = "") -> str:
         return f"""
@@ -388,14 +411,11 @@ class KanyozaNotifications:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def register_email_actions(condition_engine, email_service: EmailService):
-    """
-    Register email-related actions in the Condition Engine.
-    Call this after initializing both services.
-    """
+    """Register email-related actions in the Condition Engine."""
     notifications = KanyozaNotifications(email_service)
 
     def send_email(value, params, context):
-        to = params.get("to") or email_service.admin_emails[0] if email_service.admin_emails else None
+        to = params.get("to") or (email_service.admin_emails[0] if email_service.admin_emails else None)
         if not to:
             logger.warning("No recipient for email action")
             return
@@ -404,13 +424,7 @@ def register_email_actions(condition_engine, email_service: EmailService):
         template = params.get("template", "")
         body = params.get("body", "")
 
-        email_service.send(
-            to=to,
-            subject=subject,
-            body=body,
-            template=template,
-            context=context,
-        )
+        email_service.send(to=to, subject=subject, body=body, template=template, context=context)
 
     def notify_admins_email(value, params, context):
         template = params.get("template", "")
@@ -436,9 +450,8 @@ def register_email_actions(condition_engine, email_service: EmailService):
             body = notifications.weekly_report(context.get("stats", {}))
 
         email_service.send_to_admins(subject=subject, body=body)
-        email_service.send_telegram(f"<b>📧 {subject}</b>\n\n{body[:500]}")
+        email_service.send_telegram(f"<b>📧 {subject}</b>")
 
-    # Register with Condition Engine
     if hasattr(condition_engine, '_executor'):
         condition_engine._executor.register("send_email", send_email)
         condition_engine._executor.register("notify_admins_email", notify_admins_email)
