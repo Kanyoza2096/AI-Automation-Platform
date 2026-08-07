@@ -2,36 +2,7 @@
 Brand-aware scheduling engine — UNIFIED v3.3
 Replaces PostScheduler with a multi-tenant BrandSchedulerManager.
 
-v3.3 — RETRY FIX:
-  When a job fails with retryable=True, the scheduler now REUSES the
-  existing automation_job record (resetting RETRY_PENDING → PENDING)
-  instead of creating a new job with the same idempotency key.
-  This prevents DuplicateJobError from permanently killing slots.
-
-v3.3 — DIRECTOR INTELLIGENCE:
-  BrandSchedulerManager now emits events to the Director on every sync,
-  enabling autonomous detection of "0 brands active" and other anomalies.
-
-Handles:
-  - Automated posting per brand (content_hours)
-  - Manual triggers from API routes (/bot/post, /workflow/trigger)
-  - Scheduled post scanning and execution
-  - Dashboard events: mission_status, ai_decision
-  - Per-brand AI profile resolution
-  - Graceful startup (30s delay to prevent stampede)
-  - Slots marked fired ONLY on successful publish (not on enqueue)
-  - Database-level idempotency protection (Architecture §8)
-  - Distributed tracing via job_id across all logs and events
-  - Persistent job state via JobService (replaces in-memory sets)
-
-Architecture §7-8 — Persistent Job Lifecycle & Database Idempotency:
-  In-memory _fired_slots and _published_keys replaced by JobService.
-  Jobs survive restarts and work correctly across multiple workers.
-  UNIQUE(idempotency_key) prevents duplicate execution.
-  RETRY_PENDING jobs are reused instead of re-created.
-
-Architecture §16 — Scheduler Restart Recovery:
-  On startup, detects stale jobs and recovers missed scheduled slots.
+v3.3 — RETRY FIX + DIRECTOR INTELLIGENCE + DEBUG LOGGING
 """
 
 import time
@@ -114,10 +85,6 @@ class BrandScheduler:
         except Exception:
             return False
 
-    # ═══════════════════════════════════════════════════════════════════
-    # Lifecycle
-    # ═══════════════════════════════════════════════════════════════════
-
     def start(self) -> None:
         if self._running:
             return
@@ -172,10 +139,6 @@ class BrandScheduler:
         except Exception as e:
             logger.error("BrandScheduler '%s': startup recovery failed: %s", self.brand.name, e)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # Schedule Checking
-    # ═══════════════════════════════════════════════════════════════════
-
     def _check_schedule(self) -> None:
         status = str(getattr(self.brand, "status", "")).lower()
         if status != "active" or not self.ai_profile:
@@ -200,7 +163,6 @@ class BrandScheduler:
     def _check_scheduled_posts(self) -> None:
         if not self._job_service:
             return
-
         try:
             from services.supabase import supabase_service
             if not supabase_service or not supabase_service.client:
@@ -243,25 +205,10 @@ class BrandScheduler:
         except Exception as e:
             logger.error("[%s] Scheduled post scan failed: %s", self.brand.name, e)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # RETRY FIX: Reuse existing RETRY_PENDING jobs
-    # ═══════════════════════════════════════════════════════════════════
-
     def _get_or_create_automation_job(
         self, brand_id: str, workspace_id: str, slot_date: str,
         slot_hour: int, job_id: str, source: str = "scheduled",
     ) -> tuple[Optional[AutomationJob], Optional[str]]:
-        """Get existing retryable job or create a new one.
-
-        ARCHITECTURE FIX (v3.3):
-        If a RETRY_PENDING job already exists for this slot, REUSE it
-        by resetting to PENDING instead of creating a new job.
-        This prevents DuplicateJobError from permanently killing slots.
-
-        Returns:
-            (automation_job, idempotency_key) — both None if slot is
-            already claimed by another worker with a non-retryable job.
-        """
         if not self._job_service:
             return None, f"{brand_id}-{slot_date}-{slot_hour:02d}-content"
 
@@ -270,52 +217,35 @@ class BrandScheduler:
         existing = self._job_service.find_by_idempotency_key(idempotency_key)
         if existing:
             if existing.status == JobStatus.RETRY_PENDING:
-                logger.info(
-                    "[%s] job=%s — reusing RETRY_PENDING job %s for retry",
-                    self.brand.name, job_id, existing.id,
-                )
+                logger.info("[%s] job=%s — reusing RETRY_PENDING job %s for retry",
+                            self.brand.name, job_id, existing.id)
                 job = self._job_service.reset_to_pending(existing.id)
                 if job:
                     return job, idempotency_key
             elif existing.status in (JobStatus.COMPLETED, JobStatus.PUBLISHED):
-                logger.info(
-                    "[%s] job=%s — slot already completed by job %s",
-                    self.brand.name, job_id, existing.id,
-                )
+                logger.info("[%s] job=%s — slot already completed by job %s",
+                            self.brand.name, job_id, existing.id)
                 return None, None
             else:
-                logger.info(
-                    "[%s] job=%s — slot already claimed (status=%s) by job %s",
-                    self.brand.name, job_id, existing.status.value, existing.id,
-                )
+                logger.info("[%s] job=%s — slot already claimed (status=%s) by job %s",
+                            self.brand.name, job_id, existing.status.value, existing.id)
                 return None, None
 
         try:
             automation_job = self._job_service.create_scheduled_job(
-                brand_id=brand_id,
-                workspace_id=workspace_id,
-                slot_date=slot_date,
-                slot_hour=slot_hour,
-                job_id=job_id,
+                brand_id=brand_id, workspace_id=workspace_id,
+                slot_date=slot_date, slot_hour=slot_hour, job_id=job_id,
             )
-            logger.info(
-                "[%s] job=%s — slot reserved (idempotency_key=%s)",
-                self.brand.name, job_id, idempotency_key,
-            )
+            logger.info("[%s] job=%s — slot reserved (idempotency_key=%s)",
+                        self.brand.name, job_id, idempotency_key)
             return automation_job, idempotency_key
         except Exception as e:
             from core.errors import DuplicateJobError
             if isinstance(e, DuplicateJobError):
-                logger.info(
-                    "[%s] job=%s — slot already claimed (race condition, another worker won)",
-                    self.brand.name, job_id,
-                )
+                logger.info("[%s] job=%s — slot already claimed (race condition, another worker won)",
+                            self.brand.name, job_id)
                 return None, None
             raise
-
-    # ═══════════════════════════════════════════════════════════════════
-    # Workflow Trigger
-    # ═══════════════════════════════════════════════════════════════════
 
     def _trigger_workflow(
         self, source: str = "scheduled", today=None, hour=None,
@@ -333,17 +263,11 @@ class BrandScheduler:
 
             if self._job_service:
                 automation_job, idempotency_key = self._get_or_create_automation_job(
-                    brand_id=self.brand.id,
-                    workspace_id=workspace_id,
-                    slot_date=slot_date,
-                    slot_hour=hour,
-                    job_id=job_id,
-                    source=source,
+                    brand_id=self.brand.id, workspace_id=workspace_id,
+                    slot_date=slot_date, slot_hour=hour, job_id=job_id, source=source,
                 )
-
                 if automation_job is None and idempotency_key is None:
                     return
-
                 if automation_job:
                     try:
                         automation_job = self._job_service.transition(automation_job, JobStatus.RUNNING)
@@ -401,7 +325,6 @@ class BrandScheduler:
                     self._fired_slots.add((today, hour, "content"))
 
                 job_durable_confirmed = False
-
                 if automation_job and self._job_service:
                     try:
                         post_id = ""
@@ -492,14 +415,9 @@ class BrandScheduler:
         except Exception as e:
             logger.error("[%s] News post failed: %s", self.brand.name, e)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # Manual Trigger
-    # ═══════════════════════════════════════════════════════════════════
-
     def trigger_manual(self) -> dict:
         if not self._publish_lock.acquire(blocking=False):
             return {"ok": False, "error": "A publish is already in progress for this brand"}
-
         try:
             job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
             agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
@@ -628,9 +546,16 @@ class BrandSchedulerManager:
 
     def _sync_brands(self) -> None:
         brands = self.brand_repo.find_all()
+        logger.info("BrandSchedulerManager: fetched %d brands from repository", len(brands))
         active_ids = set()
         for brand in brands:
-            if str(getattr(brand, "status", "")).lower() != "active":
+            brand_status = str(getattr(brand, "status", "") or "").lower()
+            logger.info("BrandSchedulerManager: brand='%s' id=%s status='%s' ai_profile_id=%s",
+                         getattr(brand, "name", "unknown"), getattr(brand, "id", "?"),
+                         brand_status, getattr(brand, "ai_profile_id", "?"))
+            if brand_status != "active":
+                logger.info("BrandSchedulerManager: skipping '%s' — status is '%s' (not 'active')",
+                             getattr(brand, "name", "unknown"), brand_status)
                 continue
             active_ids.add(brand.id)
             if brand.id not in self._schedulers:
@@ -642,7 +567,7 @@ class BrandSchedulerManager:
                 self._schedulers[brand.id] = scheduler
                 scheduler.start()
 
-        # ── Director Intelligence: notify on every sync ──────────────
+        # ── Director Intelligence ──────────────────────────────────
         try:
             from services.director import director
             if director and hasattr(director, '_event'):
