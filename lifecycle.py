@@ -486,41 +486,40 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
     ))
     
     # ═══ Phase 3: OBSERVABILITY (Optional) ═══
-    
-    steps.append(BootStep(
-        name="HealthMonitor",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_health_monitor(container),
-        rollback=lambda: _stop_health_monitor(container),
-    ))
-    
-    steps.append(BootStep(
-        name="EnterpriseEmitters",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_enterprise_emitters(container),
-        rollback=lambda: _stop_enterprise_emitters(),
-    ))
-    
-    steps.append(BootStep(
-        name="APICallCounter",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _register_api_call_counter(app),
-    ))
-    steps.append(BootStep(
-        name="MonitorPlugin",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_monitor_plugin(container),
-   ))
 
-   steps.append(BootStep(
-       name="BackupPlugin",
-       phase=BootPhase.OBSERVABILITY,
-       action=lambda: _boot_backup_plugin(container),
-   ))
-    
-    return steps
+steps.append(BootStep(
+    name="HealthMonitor",
+    phase=BootPhase.OBSERVABILITY,
+    action=lambda: _boot_health_monitor(container),
+    rollback=lambda: _stop_health_monitor(container),
+))
 
+steps.append(BootStep(
+    name="EnterpriseEmitters",
+    phase=BootPhase.OBSERVABILITY,
+    action=lambda: _boot_enterprise_emitters(container),
+    rollback=lambda: _stop_enterprise_emitters(),
+))
 
+steps.append(BootStep(
+    name="APICallCounter",
+    phase=BootPhase.OBSERVABILITY,
+    action=lambda: _register_api_call_counter(app),
+))
+
+steps.append(BootStep(
+    name="MonitorPlugin",
+    phase=BootPhase.OBSERVABILITY,
+    action=lambda: _boot_monitor_plugin(container),
+))
+
+steps.append(BootStep(
+    name="BackupPlugin",
+    phase=BootPhase.OBSERVABILITY,
+    action=lambda: _boot_backup_plugin(container),
+))
+
+return steps
 def _rollback(completed_steps: list[BootStep]) -> None:
     """Rollback completed steps in reverse order."""
     logger.warning("Rolling back %d completed steps...", len(completed_steps))
