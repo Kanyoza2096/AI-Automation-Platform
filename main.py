@@ -602,6 +602,30 @@ def _mount_routes(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("Growthbridge mount failed: %s", exc)
 
+    # Monitor plugin — system administrator
+    try:
+        from plugins.monitor.routes.public import router as monitor_public
+        from plugins.monitor.routes.admin import router as monitor_admin
+        app.include_router(monitor_public)
+        app.include_router(monitor_admin)
+        logger.info("Monitor plugin routes mounted.")
+    except ImportError:
+        logger.debug("Monitor plugin not available — skipping.")
+    except Exception as exc:
+        logger.warning("Monitor mount failed: %s", exc)
+
+   # Backup plugin — automated database backups
+   try:
+       from plugins.backup.routes.public import router as backup_public
+       from plugins.backup.routes.admin import router as backup_admin
+       app.include_router(backup_public)
+       app.include_router(backup_admin)
+       logger.info("Backup plugin routes mounted.")
+   except ImportError:
+       logger.debug("Backup plugin not available — skipping.")
+   except Exception as exc:
+       logger.warning("Backup mount failed: %s", exc)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # APPLICATION ASSEMBLY
