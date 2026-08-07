@@ -8,6 +8,10 @@ v3.3 — RETRY FIX:
   instead of creating a new job with the same idempotency key.
   This prevents DuplicateJobError from permanently killing slots.
 
+v3.3 — DIRECTOR INTELLIGENCE:
+  BrandSchedulerManager now emits events to the Director on every sync,
+  enabling autonomous detection of "0 brands active" and other anomalies.
+
 Handles:
   - Automated posting per brand (content_hours)
   - Manual triggers from API routes (/bot/post, /workflow/trigger)
@@ -263,7 +267,6 @@ class BrandScheduler:
 
         idempotency_key = f"{brand_id}-{slot_date}-{slot_hour:02d}-content"
 
-        # Check if a RETRY_PENDING job already exists for this slot
         existing = self._job_service.find_by_idempotency_key(idempotency_key)
         if existing:
             if existing.status == JobStatus.RETRY_PENDING:
@@ -281,14 +284,12 @@ class BrandScheduler:
                 )
                 return None, None
             else:
-                # RUNNING, PENDING, or other — already claimed
                 logger.info(
                     "[%s] job=%s — slot already claimed (status=%s) by job %s",
                     self.brand.name, job_id, existing.status.value, existing.id,
                 )
                 return None, None
 
-        # No existing job — create a new one
         try:
             automation_job = self._job_service.create_scheduled_job(
                 brand_id=brand_id,
@@ -341,7 +342,7 @@ class BrandScheduler:
                 )
 
                 if automation_job is None and idempotency_key is None:
-                    return  # Slot already claimed/completed
+                    return
 
                 if automation_job:
                     try:
@@ -587,7 +588,7 @@ class BrandScheduler:
 
 
 class BrandSchedulerManager:
-    """Manages all active BrandSchedulers."""
+    """Manages all active BrandSchedulers. Single entry point for API routes."""
 
     def __init__(self, brand_repository: BrandRepository, ai_profile_repository: AIProfileRepository) -> None:
         self.brand_repo = brand_repository
@@ -640,6 +641,20 @@ class BrandSchedulerManager:
                 scheduler = BrandScheduler(brand, ai_profile, self._container, job_service=self._job_service)
                 self._schedulers[brand.id] = scheduler
                 scheduler.start()
+
+        # ── Director Intelligence: notify on every sync ──────────────
+        try:
+            from services.director import director
+            if director and hasattr(director, '_event'):
+                director._event("brand_scheduler_sync", {
+                    "total_brands": len(brands),
+                    "active_brands": len(active_ids),
+                    "schedulers_running": len(self._schedulers),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+        except Exception:
+            pass
+
         for bid in list(self._schedulers.keys()):
             if bid not in active_ids:
                 self._schedulers[bid].stop()
