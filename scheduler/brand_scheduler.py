@@ -1,8 +1,12 @@
 """
-Brand-aware scheduling engine — UNIFIED v3.3
+Brand-aware scheduling engine — UNIFIED v3.4
 Replaces PostScheduler with a multi-tenant BrandSchedulerManager.
 
-v3.3 — RETRY FIX + DIRECTOR INTELLIGENCE + DEBUG LOGGING
+v3.4 — BRAND STATUS ENUM FIX:
+  Brand status is stored as an enum (BrandStatus.ACTIVE). The scheduler
+  now correctly extracts the .value attribute from enum types.
+
+v3.3 — RETRY FIX + DIRECTOR INTELLIGENCE
 """
 
 import time
@@ -140,7 +144,11 @@ class BrandScheduler:
             logger.error("BrandScheduler '%s': startup recovery failed: %s", self.brand.name, e)
 
     def _check_schedule(self) -> None:
-        status = str(getattr(self.brand, "status", "")).lower()
+        status_raw = getattr(self.brand, "status", "")
+        if hasattr(status_raw, 'value'):
+            status = str(status_raw.value).lower()
+        else:
+            status = str(status_raw or "").lower()
         if status != "active" or not self.ai_profile:
             return
 
@@ -201,7 +209,6 @@ class BrandScheduler:
                     .execute()
                 logger.error("[%s] Scheduled post failed: id=%s, attempt=%d/%d",
                              self.brand.name, post_id, attempts, max_attempts)
-
         except Exception as e:
             logger.error("[%s] Scheduled post scan failed: %s", self.brand.name, e)
 
@@ -545,47 +552,26 @@ class BrandSchedulerManager:
             self._manager_thread.join(timeout=5)
 
     def _sync_brands(self) -> None:
-    brands = self.brand_repo.find_all()
-    logger.info("BrandSchedulerManager: fetched %d brands from repository", len(brands))
-    active_ids = set()
-    for brand in brands:
-        brand_status_raw = getattr(brand, "status", "")
-        if hasattr(brand_status_raw, 'value'):
-            brand_status = str(brand_status_raw.value).lower()
-        else:
-            brand_status = str(brand_status_raw or "").lower()
-        logger.info("BrandSchedulerManager: brand='%s' id=%s status='%s'",
-                     getattr(brand, "name", "unknown"), getattr(brand, "id", "?"), brand_status)
-        if brand_status != "active":
-            continue
-        active_ids.add(brand.id)
-        if brand.id not in self._schedulers:
-            ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
-            if not ai_profile:
-                logger.warning("Brand '%s' has no AI Profile — skipping.", brand.name)
+        brands = self.brand_repo.find_all()
+        active_ids = set()
+        for brand in brands:
+            brand_status_raw = getattr(brand, "status", "")
+            if hasattr(brand_status_raw, 'value'):
+                brand_status = str(brand_status_raw.value).lower()
+            else:
+                brand_status = str(brand_status_raw or "").lower()
+            if brand_status != "active":
                 continue
-            scheduler = BrandScheduler(brand, ai_profile, self._container, job_service=self._job_service)
-            self._schedulers[brand.id] = scheduler
-            scheduler.start()
+            active_ids.add(brand.id)
+            if brand.id not in self._schedulers:
+                ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
+                if not ai_profile:
+                    logger.warning("Brand '%s' has no AI Profile — skipping.", brand.name)
+                    continue
+                scheduler = BrandScheduler(brand, ai_profile, self._container, job_service=self._job_service)
+                self._schedulers[brand.id] = scheduler
+                scheduler.start()
 
-    try:
-        from services.director import director
-        if director and hasattr(director, '_event'):
-            director._event("brand_scheduler_sync", {
-                "total_brands": len(brands),
-                "active_brands": len(active_ids),
-                "schedulers_running": len(self._schedulers),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-    except Exception:
-        pass
-
-    for bid in list(self._schedulers.keys()):
-        if bid not in active_ids:
-            self._schedulers[bid].stop()
-            del self._schedulers[bid]
-
-        # ── Director Intelligence ──────────────────────────────────
         try:
             from services.director import director
             if director and hasattr(director, '_event'):
