@@ -39,3 +39,8 @@ PyPDF2
 PyMuPDF 
 python-multipart==0.0.9
 
+#Gdrive backup 
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
