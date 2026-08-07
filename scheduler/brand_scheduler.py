@@ -224,7 +224,7 @@ class BrandScheduler:
                 job = self._job_service.reset_to_pending(existing.id)
                 if job:
                     return job, idempotency_key
-            elif existing.status in (JobStatus.COMPLETED, JobStatus.PUBLISHED):
+            elif existing.status in (JobStatus.PUBLISHED,):
                 logger.info("[%s] job=%s — slot already completed by job %s",
                             self.brand.name, job_id, existing.id)
                 return None, None
