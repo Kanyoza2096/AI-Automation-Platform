@@ -545,27 +545,45 @@ class BrandSchedulerManager:
             self._manager_thread.join(timeout=5)
 
     def _sync_brands(self) -> None:
-        brands = self.brand_repo.find_all()
-        logger.info("BrandSchedulerManager: fetched %d brands from repository", len(brands))
-        active_ids = set()
-        for brand in brands:
-            brand_status = str(getattr(brand, "status", "") or "").lower()
-            logger.info("BrandSchedulerManager: brand='%s' id=%s status='%s' ai_profile_id=%s",
-                         getattr(brand, "name", "unknown"), getattr(brand, "id", "?"),
-                         brand_status, getattr(brand, "ai_profile_id", "?"))
-            if brand_status != "active":
-                logger.info("BrandSchedulerManager: skipping '%s' — status is '%s' (not 'active')",
-                             getattr(brand, "name", "unknown"), brand_status)
+    brands = self.brand_repo.find_all()
+    logger.info("BrandSchedulerManager: fetched %d brands from repository", len(brands))
+    active_ids = set()
+    for brand in brands:
+        brand_status_raw = getattr(brand, "status", "")
+        if hasattr(brand_status_raw, 'value'):
+            brand_status = str(brand_status_raw.value).lower()
+        else:
+            brand_status = str(brand_status_raw or "").lower()
+        logger.info("BrandSchedulerManager: brand='%s' id=%s status='%s'",
+                     getattr(brand, "name", "unknown"), getattr(brand, "id", "?"), brand_status)
+        if brand_status != "active":
+            continue
+        active_ids.add(brand.id)
+        if brand.id not in self._schedulers:
+            ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
+            if not ai_profile:
+                logger.warning("Brand '%s' has no AI Profile — skipping.", brand.name)
                 continue
-            active_ids.add(brand.id)
-            if brand.id not in self._schedulers:
-                ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
-                if not ai_profile:
-                    logger.warning("Brand '%s' has no AI Profile — skipping.", brand.name)
-                    continue
-                scheduler = BrandScheduler(brand, ai_profile, self._container, job_service=self._job_service)
-                self._schedulers[brand.id] = scheduler
-                scheduler.start()
+            scheduler = BrandScheduler(brand, ai_profile, self._container, job_service=self._job_service)
+            self._schedulers[brand.id] = scheduler
+            scheduler.start()
+
+    try:
+        from services.director import director
+        if director and hasattr(director, '_event'):
+            director._event("brand_scheduler_sync", {
+                "total_brands": len(brands),
+                "active_brands": len(active_ids),
+                "schedulers_running": len(self._schedulers),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+    except Exception:
+        pass
+
+    for bid in list(self._schedulers.keys()):
+        if bid not in active_ids:
+            self._schedulers[bid].stop()
+            del self._schedulers[bid]
 
         # ── Director Intelligence ──────────────────────────────────
         try:
