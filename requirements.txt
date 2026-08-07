@@ -1,0 +1,41 @@
+# Core web framework
+fastapi==0.115.0
+gunicorn==23.0.0
+uvicorn[standard]==0.30.0
+flask==3.1.1
+python-socketio==5.12.1
+
+# HTTP (async + sync fallback)
+httpx==0.27.0
+requests==2.32.3
+
+# HTML parsing (news scraper)
+beautifulsoup4==4.13.4
+lxml==5.4.0
+
+# Configuration & models
+pydantic==2.13.4
+pydantic-settings==2.7.0
+cryptography>=42.0.0
+
+# Persistence
+supabase==2.15.2
+
+# Environment
+python-dotenv==1.1.0
+
+# Image card rendering (Pillow — no browser required)
+Pillow>=10.4.0
+# pycairo is optional (Cairo typography); omitted here because it requires
+# the system pkg-config + libcairo headers. Install manually if needed.
+
+# Testing
+pytest==8.3.4
+pytest-mock==3.14.0
+google-genai
+
+#Pdf merger 
+PyPDF2
+PyMuPDF 
+python-multipart==0.0.9
+
