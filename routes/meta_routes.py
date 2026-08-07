@@ -3,7 +3,7 @@ from api.v1 import require_auth
 from services.meta_engine import meta_engine
 
 # §3/§13: All meta-engine routes require authentication
-router = APIRouter(prefix="/meta", tags=["meta"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/v1/meta", tags=["meta"], dependencies=[Depends(require_auth)])
 
 @router.get("/status")
 async def get_status():
