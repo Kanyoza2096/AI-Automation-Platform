@@ -506,6 +506,17 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _register_api_call_counter(app),
     ))
+    steps.append(BootStep(
+        name="MonitorPlugin",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _boot_monitor_plugin(container),
+   ))
+
+   steps.append(BootStep(
+       name="BackupPlugin",
+       phase=BootPhase.OBSERVABILITY,
+       action=lambda: _boot_backup_plugin(container),
+   ))
     
     return steps
 
@@ -973,6 +984,27 @@ def _register_api_call_counter(app) -> None:
     """Register API call counter middleware."""
     # Middleware registration handled in main.py
     logger.info("API call counter ready.")
+
+def _boot_monitor_plugin(container):
+    try:
+        from plugins.monitor.plugin import init_monitor_plugin
+        from services.supabase import get_service_client_from_settings
+        client = get_service_client_from_settings()
+        init_monitor_plugin(supabase_client=client)
+        logger.info("MonitorPlugin: started")
+    except Exception as exc:
+        logger.warning("MonitorPlugin: could not start: %s", exc)
+
+
+def _boot_backup_plugin(container):
+    try:
+        from plugins.backup.plugin import init_backup_plugin
+        from services.supabase import get_service_client_from_settings
+        client = get_service_client_from_settings()
+        init_backup_plugin(supabase_client=client)
+        logger.info("BackupPlugin: started")
+    except Exception as exc:
+        logger.warning("BackupPlugin: could not start: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
