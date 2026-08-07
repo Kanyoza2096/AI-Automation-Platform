@@ -12,7 +12,7 @@ from api.v1 import require_auth
 from services.email_service import email_service
 
 # §3/§13: Router-level auth — every endpoint requires a valid token
-router = APIRouter(prefix="/email", tags=["email"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/v1/email", tags=["email"], dependencies=[Depends(require_auth)])
 
 
 def _get_supabase():
