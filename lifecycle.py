@@ -39,8 +39,8 @@ from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import partial
 from typing import Any, Callable, Protocol, runtime_checkable
-from plugins.base import PluginRegistry
 
+from plugins.base import PluginRegistry
 from service_container import ServiceContainer
 
 logger = logging.getLogger("kanyoza.lifecycle")
@@ -486,40 +486,42 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
     ))
     
     # ═══ Phase 3: OBSERVABILITY (Optional) ═══
+    
+    steps.append(BootStep(
+        name="HealthMonitor",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _boot_health_monitor(container),
+        rollback=lambda: _stop_health_monitor(container),
+    ))
+    
+    steps.append(BootStep(
+        name="EnterpriseEmitters",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _start_enterprise_emitters(container),
+        rollback=lambda: _stop_enterprise_emitters(),
+    ))
+    
+    steps.append(BootStep(
+        name="APICallCounter",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _register_api_call_counter(app),
+    ))
+    
+    steps.append(BootStep(
+        name="MonitorPlugin",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _boot_monitor_plugin(container),
+    ))
+    
+    steps.append(BootStep(
+        name="BackupPlugin",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _boot_backup_plugin(container),
+    ))
+    
+    return steps
 
-steps.append(BootStep(
-    name="HealthMonitor",
-    phase=BootPhase.OBSERVABILITY,
-    action=lambda: _boot_health_monitor(container),
-    rollback=lambda: _stop_health_monitor(container),
-))
 
-steps.append(BootStep(
-    name="EnterpriseEmitters",
-    phase=BootPhase.OBSERVABILITY,
-    action=lambda: _boot_enterprise_emitters(container),
-    rollback=lambda: _stop_enterprise_emitters(),
-))
-
-steps.append(BootStep(
-    name="APICallCounter",
-    phase=BootPhase.OBSERVABILITY,
-    action=lambda: _register_api_call_counter(app),
-))
-
-steps.append(BootStep(
-    name="MonitorPlugin",
-    phase=BootPhase.OBSERVABILITY,
-    action=lambda: _boot_monitor_plugin(container),
-))
-
-steps.append(BootStep(
-    name="BackupPlugin",
-    phase=BootPhase.OBSERVABILITY,
-    action=lambda: _boot_backup_plugin(container),
-))
-
-return steps
 def _rollback(completed_steps: list[BootStep]) -> None:
     """Rollback completed steps in reverse order."""
     logger.warning("Rolling back %d completed steps...", len(completed_steps))
@@ -545,6 +547,7 @@ def _boot_event_bus(container: ServiceContainer) -> None:
     # Register EventBus as a health provider
     health_registry.register(_EventBusHealthProvider(bus))
     logger.info("EventBus ready.")
+
 
 def _boot_supabase(container: ServiceContainer) -> None:
     """Verify Supabase connectivity."""
@@ -973,16 +976,11 @@ def _boot_health_monitor(container: ServiceContainer) -> None:
     logger.info("HealthMonitorService started.")
 
 
-def _boot_enterprise_emitters(container: ServiceContainer) -> None:
-    """Start background emitters for enterprise dashboard."""
-    _start_enterprise_emitters(container)
-    logger.info("Enterprise emitters started.")
-
-
 def _register_api_call_counter(app) -> None:
     """Register API call counter middleware."""
     # Middleware registration handled in main.py
     logger.info("API call counter ready.")
+
 
 def _boot_monitor_plugin(container):
     try:
@@ -1064,487 +1062,4 @@ class _PluginRegistryHealthProvider:
     def check_health(self) -> HealthReport:
         try:
             plugin_count = len(getattr(self._registry, "plugins", []))
-            return HealthReport(
-                status=HealthStatus.HEALTHY,
-                service_name=self.service_name,
-                metadata={"plugins": plugin_count},
-            )
-        except Exception as exc:
-            return HealthReport(
-                status=HealthStatus.UNHEALTHY,
-                service_name=self.service_name,
-                error_message=str(exc),
-            )
-
-
-class _JobServiceHealthProvider:
-    def __init__(self, job_service):
-        self._js = job_service
-        self.service_name = "job_service"
-    
-    def check_health(self) -> HealthReport:
-        try:
-            return HealthReport(
-                status=HealthStatus.HEALTHY,
-                service_name=self.service_name,
-            )
-        except Exception as exc:
-            return HealthReport(
-                status=HealthStatus.UNHEALTHY,
-                service_name=self.service_name,
-                error_message=str(exc),
-            )
-
-
-class _RenderQueueHealthProvider:
-    def __init__(self, rq):
-        self._rq = rq
-        self.service_name = "render_queue"
-    
-    def check_health(self) -> HealthReport:
-        try:
-            pending = len(getattr(self._rq, "_pending", []))
-            return HealthReport(
-                status=HealthStatus.HEALTHY,
-                service_name=self.service_name,
-                metadata={"pending_tasks": pending},
-            )
-        except Exception as exc:
-            return HealthReport(
-                status=HealthStatus.UNHEALTHY,
-                service_name=self.service_name,
-                error_message=str(exc),
-            )
-
-
-class _EventRecorderHealthProvider:
-    def __init__(self, recorder):
-        self._recorder = recorder
-        self.service_name = "event_recorder"
-    
-    def check_health(self) -> HealthReport:
-        return HealthReport(
-            status=HealthStatus.HEALTHY,
-            service_name=self.service_name,
-        )
-
-
-class _AIOrchestratorHealthProvider:
-    def __init__(self, orch):
-        self._orch = orch
-        self.service_name = "ai_orchestrator"
-    
-    def check_health(self) -> HealthReport:
-        try:
-            health = self._orch.health()
-            available = sum(1 for h in health.values() if h.get("available"))
-            total = len(health)
-            return HealthReport(
-                status=HealthStatus.HEALTHY if available > 0 else HealthStatus.DEGRADED,
-                service_name=self.service_name,
-                metadata={"available": available, "total": total},
-            )
-        except Exception as exc:
-            return HealthReport(
-                status=HealthStatus.UNHEALTHY,
-                service_name=self.service_name,
-                error_message=str(exc),
-            )
-
-
-class _ConditionEngineHealthProvider:
-    def __init__(self, engine):
-        self._engine = engine
-        self.service_name = "condition_engine"
-    
-    def check_health(self) -> HealthReport:
-        try:
-            decisions = len(getattr(self._engine, "_decisions", []))
-            return HealthReport(
-                status=HealthStatus.HEALTHY,
-                service_name=self.service_name,
-                metadata={"decisions_tracked": decisions},
-            )
-        except Exception as exc:
-            return HealthReport(
-                status=HealthStatus.UNHEALTHY,
-                service_name=self.service_name,
-                error_message=str(exc),
-            )
-
-
-class _EmailServiceHealthProvider:
-    def __init__(self, email_service):
-        self._es = email_service
-        self.service_name = "email_service"
-    
-    def check_health(self) -> HealthReport:
-        return HealthReport(
-            status=HealthStatus.HEALTHY,
-            service_name=self.service_name,
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ENTERPRISE EMITTERS — Refactored
-# ═══════════════════════════════════════════════════════════════════════════
-
-_emitter_started = False
-_emitter_lock = threading.Lock()
-_emitter_stop_event = threading.Event()
-
-
-def _start_enterprise_emitters(container: ServiceContainer) -> None:
-    """Start background emitter threads with thread-safe guard."""
-    global _emitter_started
-    
-    with _emitter_lock:
-        if _emitter_started:
-            logger.warning("Enterprise emitters already started — skipping.")
-            return
-        _emitter_started = True
-        _emitter_stop_event.clear()
-    
-    emitters = [
-        _EmitterConfig(
-            name="system_resources",
-            interval=30,
-            emitter_fn=partial(_collect_system_resources),
-        ),
-        _EmitterConfig(
-            name="service_health",
-            interval=30,
-            emitter_fn=partial(_collect_service_health),
-        ),
-        _EmitterConfig(
-            name="ai_provider_health",
-            interval=60,
-            emitter_fn=partial(_collect_ai_provider_health, container),
-        ),
-        _EmitterConfig(
-            name="plugin_status",
-            interval=120,
-            emitter_fn=partial(_collect_plugin_status, container),
-        ),
-    ]
-    
-    for config in emitters:
-        thread = threading.Thread(
-            target=_emitter_loop,
-            args=(config,),
-            daemon=True,
-            name=f"emitter-{config.name}",
-        )
-        thread.start()
-    
-    logger.info(
-        "Enterprise emitters started: %s",
-        ", ".join(f"{e.name} ({e.interval}s)" for e in emitters),
-    )
-
-
-@dataclass
-class _EmitterConfig:
-    name: str
-    interval: int
-    emitter_fn: Callable[[], dict[str, Any]]
-
-
-def _emitter_loop(config: _EmitterConfig) -> None:
-    """Standardized emitter loop with error isolation and logging."""
-    logger.debug("Emitter '%s' starting (interval=%ds)...", config.name, config.interval)
-    
-    while not _emitter_stop_event.is_set():
-        try:
-            payload = config.emitter_fn()
-            if payload:
-                payload["timestamp"] = datetime.now(timezone.utc).isoformat()
-                _schedule_socketio_emit(config.name, payload)
-                logger.debug("Emitted %s: %d keys", config.name, len(payload))
-        except Exception as exc:
-            logger.error(
-                "Emitter '%s' error (will retry in %ds): %s",
-                config.name,
-                config.interval,
-                exc,
-            )
-        
-        _emitter_stop_event.wait(config.interval)
-    
-    logger.debug("Emitter '%s' stopped.", config.name)
-
-
-def _collect_system_resources() -> dict[str, Any]:
-    """Collect CPU, memory, and disk metrics."""
-    cpu = mem = disk = 0.0
-    try:
-        import psutil
-        cpu = psutil.cpu_percent(interval=1)
-        mem = psutil.virtual_memory().percent
-        disk = psutil.disk_usage("/").percent
-    except ImportError:
-        pass  # psutil not installed — expected in some environments
-    except Exception as exc:
-        logger.debug("System resource collection failed: %s", exc)
-    
-    return {
-        "cpu_percent": round(cpu, 1),
-        "memory_percent": round(mem, 1),
-        "disk_percent": round(disk, 1),
-    }
-
-
-def _collect_service_health() -> dict[str, Any]:
-    """Collect health from all registered providers."""
-    reports = health_registry.check_all()
-    
-    services = {}
-    for name, report in reports.items():
-        services[name] = report.to_dict()
-    
-    # Add any registered services that might be pending check
-    all_providers = health_registry.get_all()
-    for provider in all_providers:
-        name = provider.service_name
-        if name not in services:
-            services[name] = {
-                "name": name,
-                "status": HealthStatus.STARTING.value,
-                "latency": 0,
-                "lastChecked": datetime.now(timezone.utc).isoformat(),
-                "error": "Health check pending",
-            }
-    
-    return {"services": services}
-
-
-
-def _collect_ai_provider_health(container: ServiceContainer) -> dict[str, Any]:
-    """Collect AI provider health from orchestrator."""
-    try:
-        from ai.orchestrator import AIOrchestrator
-        orch = container.try_resolve(AIOrchestrator)
-        if not orch:
-            return {"providers": []}
-        
-        health = orch.health()
-        providers = []
-        for provider_name, h in health.items():
-            providers.append({
-                "provider": provider_name,
-                "model": h.get("model", "unknown"),
-                "available": h.get("available", False),
-                "latency_ms": h.get("latency_ms", 0),
-                "last_checked": datetime.now(timezone.utc).isoformat(),
-            })
-        return {"providers": providers}
-    except Exception:
-        return {"providers": []}
-
-
-def _collect_plugin_status(container: ServiceContainer) -> dict[str, Any]:
-    """Collect plugin status information."""
-    industry_plugins = getattr(container, "industry_plugins", {})
-    plugins_data = []
-    
-    for name, plugin in industry_plugins.items():
-        try:
-            plugins_data.append({
-                "name": name,
-                "commands": len(plugin.get_commands()) if hasattr(plugin, "get_commands") else 0,
-                "webhooks": len(plugin.get_webhooks()) if hasattr(plugin, "get_webhooks") else 0,
-                "status": "active",
-            })
-        except Exception:
-            plugins_data.append({
-                "name": name,
-                "commands": 0,
-                "webhooks": 0,
-                "status": "degraded",
-            })
-    
-    return {"plugins": plugins_data}
-
-
-def _stop_enterprise_emitters() -> None:
-    """Signal all emitter threads to stop."""
-    global _emitter_started
-    _emitter_stop_event.set()
-    _emitter_started = False
-    logger.info("Enterprise emitters stopped.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SOCKETIO HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _schedule_socketio_emit(event_name: str, payload: dict) -> None:
-    """Schedule an async SocketIO emission with error tracking."""
-    try:
-        from core.socket_server import emit_to_dashboard
-        loop = asyncio.get_running_loop()
-        future = asyncio.run_coroutine_threadsafe(
-            emit_to_dashboard(event_name, payload),
-            loop,
-        )
-        # Log if the coroutine raises
-        def _log_error(fut):
-            try:
-                fut.result()
-            except Exception as exc:
-                logger.debug("SocketIO emit failed (%s): %s", event_name, exc)
-        future.add_done_callback(_log_error)
-    except RuntimeError:
-        # No running event loop — expected during shutdown
-        pass
-    except Exception as exc:
-        logger.debug("SocketIO schedule failed (%s): %s", event_name, exc)
-
-
-def _wire_socket_events(container: ServiceContainer) -> None:
-    """Bridge EventBus events to SocketIO dashboard."""
-    try:
-        from core.event_bus import EventBus
-        from core.events import EventType
-        from core.socket_server import emit_to_dashboard, increment
-
-        bus = container.resolve(EventBus)
-
-        def _safe_payload(event) -> dict:
-            return {
-                "event_id": event.event_id,
-                "occurred_at": event.occurred_at.isoformat(),
-                "source": event.source,
-                **event.payload,
-            }
-
-        def _emit(event_name: str, payload: dict) -> None:
-            try:
-                loop = asyncio.get_running_loop()
-                task = asyncio.create_task(emit_to_dashboard(event_name, payload))
-                task.add_done_callback(
-                    lambda t: logger.debug("Socket emit error (%s): %s", event_name, t.exception())
-                    if t.exception() else None
-                )
-            except RuntimeError:
-                pass
-
-        # Event type → socket event mapping
-        mappings = [
-            (EventType.MESSAGE_RECEIVED, "new_message", True),
-            (EventType.POST_PUBLISHED, "post_published", True),
-            (EventType.SCAN_COMPLETED, "scan_complete", False),
-            (EventType.PROVIDER_FAILED, "provider_failed", False),
-            (EventType.POST_GENERATED, "post_generated", False),
-            (EventType.IMAGE_RENDERED, "image_rendered", False),
-            (EventType.WORKER_ERROR, "worker_error", False),
-        ]
-
-        for event_type, socket_event, track_metric in mappings:
-            def make_handler(se=socket_event, tm=track_metric):
-                def handler(event):
-                    try:
-                        if tm:
-                            if se == "new_message":
-                                increment("messages_today")
-                            elif se == "post_published":
-                                increment("posts_today")
-                        _emit(se, _safe_payload(event))
-                    except Exception as exc:
-                        logger.debug("Socket bridge error (%s): %s", se, exc)
-                return handler
-            
-            bus.subscribe(event_type, make_handler())
-
-        logger.info(
-            "SocketIO bridge active: %d event subscriptions.",
-            len(mappings),
-        )
-    except Exception as exc:
-        logger.warning("SocketIO bridge initialization failed: %s", exc)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# SHUTDOWN HELPERS (for rollback)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _stop_task_queue(container: ServiceContainer) -> None:
-    from workers.task_queue import TaskQueue
-    tq = container.try_resolve(TaskQueue)
-    if tq:
-        tq.stop(timeout=5)
-
-
-def _stop_plugin_registry(container: ServiceContainer) -> None:
-    from plugins.base import PluginRegistry
-    registry = container.try_resolve(PluginRegistry)
-    if registry:
-        registry.stop_all()
-
-
-def _stop_industry_plugins(container: ServiceContainer) -> None:
-    plugins = getattr(container, "industry_plugins", {})
-    for name, plugin in plugins.items():
-        if hasattr(plugin, "shutdown"):
-            try:
-                plugin.shutdown()
-            except Exception as exc:
-                logger.warning("Plugin '%s' shutdown failed: %s", name, exc)
-
-
-def _stop_brand_schedulers(container: ServiceContainer) -> None:
-    from scheduler.brand_scheduler import BrandSchedulerManager
-    manager = container.try_resolve(BrandSchedulerManager)
-    if manager:
-        manager.stop()
-
-
-def _stop_health_monitor(container: ServiceContainer) -> None:
-    from services.health_monitor_service import HealthMonitorService
-    hm = container.try_resolve(HealthMonitorService)
-    if hm:
-        hm.stop()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BACKWARD COMPATIBILITY
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def register_lifecycle(app, container: ServiceContainer) -> None:
-    """Deprecated — use boot_infrastructure() instead.
-    
-    Kept for backward compatibility with existing test suites.
-    """
-    # Backward-compatibility service mapping references:
-    # _service_singletons = [
-    #     ("services.gemini", "gemini"),
-    #     ("services.facebook", "facebook"),
-    #     ("services.news_scraper", "news_scraper"),
-    # ]
-    # _init_job_service _recover_stale_jobs
-    logger.warning(
-        "register_lifecycle() is deprecated. Use boot_infrastructure() instead."
-    )
-    boot_infrastructure(app, container)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# EXPOSED FOR TESTING
-# ═══════════════════════════════════════════════════════════════════════════
-
-__all__ = [
-    "boot_infrastructure",
-    "graceful_shutdown",
-    "register_lifecycle",
-    "health_registry",
-    "shutdown_registry",
-    "HealthStatus",
-    "HealthReport",
-    "HealthProvider",
-    "BootPhase",
-    "ServiceHealthRegistry",
-    "ShutdownRegistry",
-]
+            return Health
