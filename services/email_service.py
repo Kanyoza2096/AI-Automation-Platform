@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# EMAIL SERVICE — v1.0
+# EMAIL SERVICE — v1.1
 # Transactional and notification email delivery.
 # Integrates with Condition Engine for autonomous alerting.
 #
-# Providers: Gmail SMTP (free) or SendGrid (scale)
+# Providers: Resend API (primary) or Gmail SMTP (fallback)
 # Templates: Jinja2 (already in your stack)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -32,8 +32,8 @@ class EmailService:
     Multi-provider email delivery service.
 
     Providers (auto-selected):
-        - Gmail SMTP (default, 500/day free)
-        - SendGrid API (set SENDGRID_API_KEY to use)
+        - Resend API (primary, set RESEND_API_KEY)
+        - Gmail SMTP (fallback, 500/day free)
 
     Usage:
         email = EmailService()
@@ -47,8 +47,8 @@ class EmailService:
         self.smtp_username = os.environ.get("SMTP_USERNAME", "")
         self.smtp_password = os.environ.get("SMTP_PASSWORD", "")
 
-        # SendGrid config
-        self.sendgrid_api_key = os.environ.get("SENDGRID_API_KEY", "")
+        # Resend config
+        self.resend_api_key = os.environ.get("RESEND_API_KEY", "")
 
         # Default sender
         self.default_from = os.environ.get(
@@ -91,7 +91,21 @@ class EmailService:
         context: Dict[str, Any] = None,
         html: bool = True,
     ) -> bool:
-        """Send an email using the best available provider."""
+        """
+        Send an email.
+
+        Args:
+            to: Recipient email address
+            subject: Email subject line
+            body: Plain text or HTML body (ignored if template is set)
+            template: Jinja2 template name (e.g., "weekly_report")
+            context: Template variables
+            html: Whether body contains HTML
+
+        Returns:
+            True if sent successfully
+        """
+        # Build content from template if specified
         if template and self._jinja:
             try:
                 tmpl = self._jinja.get_template(f"{template}.html")
@@ -105,11 +119,14 @@ class EmailService:
         if not body:
             body = subject
 
-        # Use SendGrid if available, otherwise fall back to SMTP
-        if self.sendgrid_api_key:
-            return self._send_sendgrid(to, subject, body, html)
-        else:
-            return self._send_smtp(to, subject, body, html)
+        # Try Resend API first
+        if self.resend_api_key:
+            if self._send_resend(to, subject, body, html):
+                return True
+            logger.warning("Resend failed, trying SMTP fallback...")
+
+        # Fall back to SMTP
+        return self._send_smtp(to, subject, body, html)
 
     def send_to_admins(self, subject: str, body: str = "", **kwargs) -> bool:
         """Send to all configured admin emails."""
@@ -127,6 +144,37 @@ class EmailService:
     # ═══════════════════════════════════════════════════════════════════
     # PROVIDERS
     # ═══════════════════════════════════════════════════════════════════
+
+    def _send_resend(self, to: str, subject: str, body: str, html: bool) -> bool:
+        """Send via Resend API."""
+        try:
+            import requests
+
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {self.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": self.default_from,
+                    "to": [to],
+                    "subject": subject,
+                    "html" if html else "text": body,
+                },
+                timeout=15,
+            )
+
+            if response.status_code in (200, 201, 202):
+                logger.info("Email sent (Resend): to=%s subject='%s'", to, subject)
+                return True
+            else:
+                logger.error("Resend returned %d: %s", response.status_code, response.text[:200])
+
+        except Exception as exc:
+            logger.error("Resend send failed: %s", exc)
+
+        return False
 
     def _send_smtp(self, to: str, subject: str, body: str, html: bool) -> bool:
         """Send via SMTP (Gmail or custom server)."""
@@ -159,42 +207,6 @@ class EmailService:
             logger.error("SMTP connection failed — check SMTP_HOST and SMTP_PORT")
         except Exception as exc:
             logger.error("SMTP send failed: %s", exc)
-
-        return False
-
-    def _send_sendgrid(self, to: str, subject: str, body: str, html: bool) -> bool:
-        """Send via SendGrid API."""
-        try:
-            import requests
-
-            response = requests.post(
-                "https://api.sendgrid.com/v3/mail/send",
-                headers={
-                    "Authorization": f"Bearer {self.sendgrid_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "personalizations": [{"to": [{"email": to}]}],
-                    "from": {"email": self.default_from},
-                    "subject": subject,
-                    "content": [
-                        {
-                            "type": "text/html" if html else "text/plain",
-                            "value": body,
-                        }
-                    ],
-                },
-                timeout=15,
-            )
-
-            if response.status_code in (200, 201, 202):
-                logger.info("Email sent (SendGrid): to=%s subject='%s'", to, subject)
-                return True
-            else:
-                logger.error("SendGrid returned %d: %s", response.status_code, response.text[:200])
-
-        except Exception as exc:
-            logger.error("SendGrid send failed: %s", exc)
 
         return False
 
