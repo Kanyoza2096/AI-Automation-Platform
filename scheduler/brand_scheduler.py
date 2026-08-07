@@ -168,41 +168,45 @@ class BrandScheduler:
             self._fired_slots.add((today, hour, "news"))
             self._trigger_news()
 
-def _check_scheduled_posts(self) -> None:
-    if not self._job_service:
-        return
-    try:
-        from services.supabase import supabase_service
-        if not supabase_service or not supabase_service.client:
+    def _check_scheduled_posts(self) -> None:
+        """Check and process scheduled posts from the database."""
+        if not self._job_service:
             return
+        try:
+            from services.supabase import supabase_service
+            if not supabase_service or not supabase_service.client:
+                return
 
-        now_utc = datetime.now(timezone.utc)
-        
-        # First: find a queued post
-        result = supabase_service.client.table("scheduled_posts") \
-            .select("*") \
-            .lte("scheduled_for", now_utc.isoformat()) \
-            .eq("status", "queued") \
-            .eq("brand_id", self.brand.id) \
-            .order("scheduled_for", ascending=True) \
-            .limit(1) \
-            .execute()
+            now_utc = datetime.now(timezone.utc)
+            
+            # First: find a queued post
+            result = supabase_service.client.table("scheduled_posts") \
+                .select("*") \
+                .lte("scheduled_for", now_utc.isoformat()) \
+                .eq("status", "queued") \
+                .eq("brand_id", self.brand.id) \
+                .order("scheduled_for", ascending=True) \
+                .limit(1) \
+                .execute()
 
-        claimed = result.data or []
-        if not claimed:
-            return
+            claimed = result.data or []
+            if not claimed:
+                return
 
-        post = claimed[0]
-        post_id = post.get("id")
-        
-        # Then: update it to processing
-        supabase_service.client.table("scheduled_posts") \
-            .update({"status": "processing", "started_at": now_utc.isoformat()}) \
-            .eq("id", post_id) \
-            .execute()
+            post = claimed[0]
+            post_id = post.get("id")
+            
+            # Then: update it to processing
+            supabase_service.client.table("scheduled_posts") \
+                .update({"status": "processing", "started_at": now_utc.isoformat()}) \
+                .eq("id", post_id) \
+                .execute()
 
-        logger.info("[%s] Scheduled post claimed: id=%s", self.brand.name, post_id)
-        # ... rest of the method
+            logger.info("[%s] Scheduled post claimed: id=%s", self.brand.name, post_id)
+            self._trigger_workflow("scheduled", scheduled_post_id=post_id)
+        except Exception as e:
+            logger.error("[%s] Error processing scheduled post: %s", self.brand.name, e)
+
     def _get_or_create_automation_job(
         self, brand_id: str, workspace_id: str, slot_date: str,
         slot_hour: int, job_id: str, source: str = "scheduled",
