@@ -82,49 +82,29 @@ class EmailService:
     # PUBLIC API
     # ═══════════════════════════════════════════════════════════════════
 
-    def send(
-        self,
-        to: str,
-        subject: str,
-        body: str = "",
-        template: str = "",
-        context: Dict[str, Any] = None,
-        html: bool = True,
-    ) -> bool:
-        """
-        Send an email.
+def send(
+    self,
+    to: str,
+    subject: str,
+    body: str = "",
+    template: str = "",
+    context: Dict[str, Any] = None,
+    html: bool = True,
+) -> bool:
+    if template and self._jinja:
+        try:
+            tmpl = self._jinja.get_template(f"{template}.html")
+            body = tmpl.render(**(context or {}))
+            html = True
+        except Exception as exc:
+            logger.error("Email template '%s' failed: %s", template, exc)
+            if not body:
+                body = f"Kanyoza Notification\n\nTemplate '{template}' failed to render."
 
-        Args:
-            to: Recipient email address
-            subject: Email subject line
-            body: Plain text or HTML body (ignored if template is set)
-            template: Jinja2 template name (e.g., "weekly_report")
-            context: Template variables
-            html: Whether body contains HTML
+    if not body:
+        body = subject
 
-        Returns:
-            True if sent successfully
-        """
-        # Build content from template if specified
-        if template and self._jinja:
-            try:
-                tmpl = self._jinja.get_template(f"{template}.html")
-                body = tmpl.render(**(context or {}))
-                html = True
-            except Exception as exc:
-                logger.error("Email template '%s' failed: %s", template, exc)
-                if not body:
-                    body = f"Kanyoza Notification\n\nTemplate '{template}' failed to render."
-
-        if not body:
-            body = subject
-
-        # Try SendGrid first, fall back to SMTP
-        if self.sendgrid_api_key:
-            return self._send_sendgrid(to, subject, body, html)
-
-        return self._send_smtp(to, subject, body, html)
-
+    return self._send_smtp(to, subject, body, html)
     def send_to_admins(self, subject: str, body: str = "", **kwargs) -> bool:
         """Send to all configured admin emails."""
         if not self.admin_emails:
