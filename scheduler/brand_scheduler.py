@@ -185,7 +185,7 @@ class BrandScheduler:
                 .lte("scheduled_for", now_utc.isoformat()) \
                 .eq("status", "queued") \
                 .eq("brand_id", self.brand.id) \
-                .order("scheduled_for", ascending=True) \
+                .order("scheduled_for", desc=False) \
                 .limit(1) \
                 .execute()
 
