@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("kanyoza.routes.rules")
 
-router = APIRouter(prefix="/rules", tags=["rules"])
+router = APIRouter(prefix="/api/v1/rules", tags=["rules"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
