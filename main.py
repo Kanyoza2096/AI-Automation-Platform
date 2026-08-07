@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -151,38 +151,18 @@ async def lifespan(app: FastAPI):
     event_bus = _resolve_event_bus(container)
 
     # ── Phase 0–3: Core infrastructure boot ───────────────────────────
-    # This replaces ALL the individual service wiring that was previously
-    # scattered throughout this function. boot_infrastructure() handles:
-    #   - EventBus, TaskQueue, PluginRegistry
-    #   - AIOrchestrator, ConditionEngine, EngagementTracker
-    #   - JobService, stale job recovery
-    #   - Brand schedulers, Guardian scheduler
-    #   - Industry plugins (discovery, commands, webhooks)
-    #   - Enterprise emitters (system resources, service health, AI health)
-    #   - SocketIO event bridge
-    #   - Health monitor service
     try:
         boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
     except SystemExit:
-        # Critical boot failure — re-raise to prevent app from starting
         raise
     except Exception as exc:
         _record_boot_warning("boot_sequence", exc)
 
     # ── Post-boot: Wire cross-cutting concerns ────────────────────────
-    # These run AFTER the core boot so all services are available
-
-    # ContentEngine — wire Redis and container reference
     _wire_content_engine(container, redis_client)
-
-    # MetaEngine (Overseer) — supervise all registered engines
     _wire_meta_engine(container, event_bus)
-
-    # Director — auto-discover engines and plugins, start supervision
     _wire_director(app, container, event_bus)
-
-    # Brand scheduler — force initial sync after all plugins loaded
     _sync_brand_schedulers(container)
 
     # ── Initialize API stores ──────────────────────────────────────────
@@ -197,8 +177,6 @@ async def lifespan(app: FastAPI):
     )
 
     # ── Mark boot as complete ─────────────────────────────────────────
-    # NOTE: health_registry.mark_startup_complete() is called inside
-    # boot_infrastructure() (lifecycle.py). Do NOT call it again here.
     app.state.boot_completed = True
     app.state.boot_warnings = _boot_warnings
 
@@ -229,17 +207,13 @@ async def lifespan(app: FastAPI):
 
     shutdown_start = time.monotonic()
 
-    # Cancel background tasks first
     cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
         pass
 
-    # Stop Director before other services (it orchestrates them)
     _stop_director()
-
-    # Execute all registered shutdown hooks in reverse order
     graceful_shutdown(container)
 
     shutdown_duration = time.monotonic() - shutdown_start
@@ -252,7 +226,6 @@ async def lifespan(app: FastAPI):
 
 
 def _resolve_redis(container: ServiceContainer):
-    """Resolve Redis client once for reuse across wiring functions."""
     try:
         from core.redis_client import UpstashRedisClient
         redis = container.try_resolve(UpstashRedisClient)
@@ -265,7 +238,6 @@ def _resolve_redis(container: ServiceContainer):
 
 
 def _resolve_event_bus(container: ServiceContainer):
-    """Resolve EventBus once for reuse."""
     try:
         from core.event_bus import EventBus
         return container.try_resolve(EventBus)
@@ -274,7 +246,6 @@ def _resolve_event_bus(container: ServiceContainer):
 
 
 def _wire_content_engine(container: ServiceContainer, redis_client) -> None:
-    """Wire ContentEngine with Redis and DI container reference."""
     try:
         from services.content_engine import content_engine
         if redis_client:
@@ -286,7 +257,6 @@ def _wire_content_engine(container: ServiceContainer, redis_client) -> None:
 
 
 def _wire_meta_engine(container: ServiceContainer, event_bus) -> None:
-    """Initialize MetaEngine v2.0 (The Overseer)."""
     try:
         from services.meta_engine import init_meta_engine
         meta = init_meta_engine(event_bus=event_bus, container=container)
@@ -296,11 +266,9 @@ def _wire_meta_engine(container: ServiceContainer, event_bus) -> None:
 
 
 def _wire_director(app, container: ServiceContainer, event_bus) -> None:
-    """Initialize Director with auto-discovery, alerting, and event bus."""
     try:
         from services.director import init_director, auto_discover_engines
 
-        # Resolve Supabase client for Director persistence
         supabase_client = None
         try:
             from services.supabase import get_service_client_from_settings
@@ -309,14 +277,9 @@ def _wire_director(app, container: ServiceContainer, event_bus) -> None:
             logger.debug("Director: Supabase not available — in-memory mode.")
 
         director = init_director(supabase_client=supabase_client, auto_start=False)
-
-        # Auto-discover every engine and plugin in the container
         discovered = auto_discover_engines(director, container)
-
-        # Wire email alerts
         _wire_director_alerts(director)
 
-        # Wire EventBus
         if event_bus:
             director.set_event_callback(
                 lambda event_name, payload: _safe_emit(event_bus, event_name, payload)
@@ -325,13 +288,11 @@ def _wire_director(app, container: ServiceContainer, event_bus) -> None:
 
         director.start()
         logger.info("👔 Director: %d engines under supervision.", discovered)
-
     except Exception as exc:
         _record_boot_warning("Director", exc)
 
 
 def _wire_director_alerts(director) -> None:
-    """Wire Director alert callbacks to email."""
     try:
         from services.email_service import email_service
 
@@ -347,7 +308,6 @@ def _wire_director_alerts(director) -> None:
 
 
 def _safe_emit(event_bus, event_name: str, payload: dict) -> None:
-    """Safely emit to EventBus without propagating exceptions."""
     try:
         event_bus.emit(event_name, payload)
     except Exception:
@@ -355,7 +315,6 @@ def _safe_emit(event_bus, event_name: str, payload: dict) -> None:
 
 
 def _sync_brand_schedulers(container: ServiceContainer) -> None:
-    """Force brand scheduler sync after all plugins loaded."""
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
         manager = container.try_resolve(BrandSchedulerManager)
@@ -369,7 +328,6 @@ def _sync_brand_schedulers(container: ServiceContainer) -> None:
 
 
 def _stop_director() -> None:
-    """Stop Director if running."""
     try:
         from services.director import director as dir_instance
         if dir_instance:
@@ -385,7 +343,6 @@ def _stop_director() -> None:
 
 
 def _init_api_stores(app, redis_client) -> None:
-    """Initialize async stores for drafts, audit log, workflow history, keys."""
     from api.v1 import DraftStore, AsyncAuditLog, AsyncWorkflowHistory, AsyncKeyStore
 
     app.state.draft_store = DraftStore(redis_client=redis_client)
@@ -393,7 +350,6 @@ def _init_api_stores(app, redis_client) -> None:
     app.state.workflow_history = AsyncWorkflowHistory(maxlen=20)
     app.state.key_store = AsyncKeyStore()
 
-    # Seed audit log from Supabase (best-effort)
     try:
         asyncio.create_task(app.state.audit_log.seed_from_supabase())
     except Exception as exc:
@@ -403,7 +359,6 @@ def _init_api_stores(app, redis_client) -> None:
 
 
 async def _draft_cleanup_loop(app) -> None:
-    """Periodic cleanup of expired drafts (every hour)."""
     while True:
         await asyncio.sleep(3600)
         try:
@@ -416,14 +371,13 @@ async def _draft_cleanup_loop(app) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HEALTH / READINESS / LIVENESS PROBES (Kubernetes-native)
+# HEALTH / READINESS / LIVENESS PROBES
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _build_health_response() -> dict[str, Any]:
-    """Build a comprehensive health response using the health registry."""
     booted = getattr(fastapi_app.state, "boot_completed", False)
-    
+
     if not booted:
         return {
             "status": "starting",
@@ -431,12 +385,10 @@ def _build_health_response() -> dict[str, Any]:
             "uptime_seconds": 0,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
-    
-    # Get health from all registered providers
+
     service_health = health_registry.check_all()
-    
-    # Determine aggregate status
     statuses = [r.status for r in service_health.values()]
+
     if any(s == HealthStatus.UNHEALTHY for s in statuses):
         overall = "unhealthy"
     elif any(s == HealthStatus.DEGRADED for s in statuses):
@@ -445,9 +397,9 @@ def _build_health_response() -> dict[str, Any]:
         overall = "degraded"
     else:
         overall = "healthy"
-    
+
     uptime = (datetime.now(timezone.utc) - _startup_started_at).total_seconds() if _startup_started_at else 0
-    
+
     return {
         "status": overall,
         "version": "13.0.0",
@@ -468,11 +420,7 @@ def _build_health_response() -> dict[str, Any]:
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application.
-
-    Returns a fully-configured but not-yet-started application.
-    The lifespan context manager handles the actual boot sequence.
-    """
+    """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
         description="Multi-tenant social media AI platform with industry plugins",
@@ -483,25 +431,12 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.is_development else None,
     )
 
-    # ═══ Security Middleware Stack (innermost to outermost) ═══
     _configure_middleware(app)
-
-    # ═══ CORS Configuration ═══
     _configure_cors(app)
-
-    # ═══ Startup Gate (503 until ready) ═══
     app.add_middleware(StartupGateMiddleware)
-
-    # ═══ API Call Counter ═══
     app.add_middleware(ApiCallCounterMiddleware)
-
-    # ═══ Health Probe Endpoints ═══
     _register_health_endpoints(app)
-
-    # ═══ Mount Routes ═══
     _mount_routes(app)
-
-    # ═══ Root Endpoint ═══
 
     @app.get("/")
     @app.head("/")
@@ -517,7 +452,6 @@ def create_app() -> FastAPI:
 
 
 def _configure_middleware(app: FastAPI) -> None:
-    """Configure the security middleware stack."""
     from api.v1 import (
         SecurityHeadersMiddleware,
         RequestSizeLimitMiddleware,
@@ -525,13 +459,11 @@ def _configure_middleware(app: FastAPI) -> None:
         CorrelationIDMiddleware,
     )
 
-    # Order matters — outermost first
     app.add_middleware(CorrelationIDMiddleware)
-    app.add_middleware(RequestSizeLimitMiddleware, max_size=1_048_576)  # 1MB
+    app.add_middleware(RequestSizeLimitMiddleware, max_size=1_048_576)
     app.add_middleware(RequestTracingMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # Traffic capture (optional)
     try:
         from middleware.traffic_capture import TrafficCaptureMiddleware
         app.add_middleware(TrafficCaptureMiddleware)
@@ -541,7 +473,6 @@ def _configure_middleware(app: FastAPI) -> None:
 
 
 def _configure_cors(app: FastAPI) -> None:
-    """Configure CORS with production-safe origin validation."""
     if settings.is_production:
         origins = settings.cors_allowed_origins
         if not origins:
@@ -560,24 +491,15 @@ def _configure_cors(app: FastAPI) -> None:
         allow_credentials=allow_creds,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
-        max_age=86400,  # 24 hours — browsers cache preflight
+        max_age=86400,
     )
 
     logger.info("CORS origins: %s", origins if len(origins) < 5 else f"{origins[:3]}... ({len(origins)} total)")
 
 
-
 def _register_health_endpoints(app: FastAPI) -> None:
-    """Register Kubernetes-compatible health endpoints.
-
-    /health       — Liveness probe: Is the process alive?
-    /health/ready — Readiness probe: Can this pod receive traffic?
-    /health/detailed — Full health report (authenticated in production)
-    """
-
     @app.get("/health")
     async def liveness_check():
-        """Liveness probe — always returns 200 if the process is alive."""
         return {
             "status": "alive",
             "version": "13.0.0",
@@ -588,7 +510,6 @@ def _register_health_endpoints(app: FastAPI) -> None:
 
     @app.get("/health/ready")
     async def readiness_check():
-        """Readiness probe — 200 when boot is complete and services are healthy."""
         if not getattr(app.state, "boot_completed", False):
             return Response(
                 content=json.dumps({"status": "not_ready", "reason": "Boot in progress"}),
@@ -596,7 +517,6 @@ def _register_health_endpoints(app: FastAPI) -> None:
                 media_type="application/json",
             )
 
-        # Quick health check — only flag UNHEALTHY services
         service_health = health_registry.check_all()
         unhealthy = [
             name for name, r in service_health.items()
@@ -618,22 +538,17 @@ def _register_health_endpoints(app: FastAPI) -> None:
 
     @app.get("/health/detailed")
     async def detailed_health(request: Request):
-        """Detailed health report — all services with metrics.
-
-        In production, this endpoint requires authentication via Master API Token or API Key.
-        """
         if settings.is_production:
             token = request.headers.get("X-API-Key", "")
             if not token and request.headers.get("Authorization", "").startswith("Bearer "):
                 token = request.headers.get("Authorization", "")[7:]
-            
+
             import hmac
             master_token = getattr(settings, "master_api_token", "") or ""
             if not master_token or not token or not hmac.compare_digest(token, master_token):
                 raise HTTPException(status_code=401, detail="Authentication required for detailed health report")
-                
-        return _build_health_response()
 
+        return _build_health_response()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -663,7 +578,7 @@ def _mount_routes(app: FastAPI) -> None:
         except Exception as exc:
             logger.warning("%s routes failed to mount: %s", name, exc)
 
-    # Director gets special treatment (it's a sub-application)
+    # Director sub-application
     try:
         from services.director import create_app as create_director_app, director as dir_instance
         if dir_instance:
@@ -674,6 +589,18 @@ def _mount_routes(app: FastAPI) -> None:
         logger.debug("Director routes not available.")
     except Exception as exc:
         logger.warning("Director mount failed: %s", exc)
+
+    # Growthbridge plugin — business ecosystem
+    try:
+        from plugins.growthbridge.routes.public import router as gb_public
+        from plugins.growthbridge.routes.admin import router as gb_admin
+        app.include_router(gb_public)
+        app.include_router(gb_admin)
+        logger.info("Growthbridge plugin routes mounted.")
+    except ImportError:
+        logger.debug("Growthbridge plugin not available — skipping.")
+    except Exception as exc:
+        logger.warning("Growthbridge mount failed: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -686,14 +613,12 @@ fastapi_app = create_app()
 app = create_socket_app(fastapi_app)
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 # UTILITY
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _record_boot_warning(service: str, exc: Exception) -> None:
-    """Record a non-fatal boot warning for health reporting."""
     _boot_warnings.append({
         "service": service,
         "error": str(exc),
