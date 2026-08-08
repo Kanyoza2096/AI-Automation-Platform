@@ -1,6 +1,6 @@
 """
 Monitor Plugin — Autonomous system administrator.
-Checks websites and APIs, alerts on failure.
+Checks websites and APIs, alerts on failure via Telegram.
 """
 
 import logging
@@ -22,6 +22,7 @@ class MonitorPlugin:
         self.name = "monitor"
         self._running = False
         self._thread = None
+        self._last_alerted: Dict[str, float] = {}
 
     def get_commands(self) -> List[Dict[str, Any]]:
         return [
@@ -78,7 +79,10 @@ class MonitorPlugin:
             }).execute()
 
             if status == "down":
-                self._alert(target, f"HTTP {resp.status_code} (expected {target.get('expected_status', 200)})")
+                self._send_alert(target, f"HTTP {resp.status_code} (expected {target.get('expected_status', 200)})")
+            else:
+                # Clear alert cooldown on recovery
+                self._last_alerted.pop(target["id"], None)
         except Exception as e:
             elapsed_ms = int((time.monotonic() - start) * 1000)
             self.supabase.table("monitor_checks").insert({
@@ -88,10 +92,32 @@ class MonitorPlugin:
                 "error_message": str(e)[:500],
                 "checked_at": datetime.now(timezone.utc).isoformat(),
             }).execute()
-            self._alert(target, str(e)[:200])
+            self._send_alert(target, str(e)[:200])
 
-    def _alert(self, target: dict, message: str):
+    def _send_alert(self, target: dict, message: str):
+        """Send alert via Telegram with 5-minute cooldown per target."""
         logger.warning("MonitorPlugin: %s is DOWN — %s", target["name"], message)
+        
+        # Cooldown: don't spam alerts for the same target
+        now_ts = time.monotonic()
+        last = self._last_alerted.get(target["id"], 0)
+        if now_ts - last < 300:  # 5 minute cooldown
+            return
+        self._last_alerted[target["id"]] = now_ts
+        
+        # Telegram alert
+        try:
+            from services.email_service import email_service
+            email_service.send_telegram(
+                f"🔴 <b>SITE DOWN: {target['name']}</b>\n"
+                f"URL: {target['url']}\n"
+                f"Error: {message}\n"
+                f"<i>{datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>"
+            )
+        except Exception as exc:
+            logger.error("MonitorPlugin: Telegram alert failed: %s", exc)
+        
+        # Director event
         try:
             from services.director import director
             if director and hasattr(director, '_event'):
