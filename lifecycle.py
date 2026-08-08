@@ -518,7 +518,12 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _boot_backup_plugin(container),
     ))
-    
+  
+    steps.append(BootStep(
+        name="TrendIntelligence",
+        phase=BootPhase.OBSERVABILITY,
+        action=lambda: _boot_trend_plugin(container),
+    ))
     return steps
 
 
@@ -1002,6 +1007,16 @@ def _boot_backup_plugin(container):
         logger.info("BackupPlugin: started")
     except Exception as exc:
         logger.warning("BackupPlugin: could not start: %s", exc)
+
+def _boot_trend_plugin(container):
+    try:
+        from plugins.trend_intelligence.plugin import init_trend_plugin
+        from services.supabase import get_service_client_from_settings
+        client = get_service_client_from_settings()
+        init_trend_plugin(supabase_client=client)
+        logger.info("TrendIntelligence: started")
+    except Exception as exc:
+        logger.warning("TrendIntelligence: could not start: %s", exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
