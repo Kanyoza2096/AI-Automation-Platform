@@ -67,13 +67,7 @@ _boot_warnings: list[dict[str, Any]] = []
 
 
 class ApiCallCounterMiddleware(BaseHTTPMiddleware):
-    """Tracks daily API call counts in Redis with minimal overhead.
-
-    Design decisions:
-      - Uses UTC day boundary for key rotation
-      - 2-day TTL prevents orphaned keys
-      - Failure is silent — metrics are best-effort, not critical path
-    """
+    """Tracks daily API call counts in Redis with minimal overhead."""
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/"):
@@ -89,20 +83,15 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
                         if count == 1:
                             redis.expire(key, 86400 * 2)
             except Exception:
-                pass  # Metrics are best-effort
+                pass
         return await call_next(request)
 
 
 class StartupGateMiddleware(BaseHTTPMiddleware):
-    """Returns 503 until boot is complete.
-
-    Prevents requests from hitting partially-initialized services
-    during the boot sequence. Essential for Kubernetes readiness gates.
-    """
+    """Returns 503 until boot is complete."""
 
     async def dispatch(self, request: Request, call_next):
         if not getattr(request.app.state, "boot_completed", False):
-            # Allow health/readiness endpoints through
             if request.url.path in ("/health", "/health/live", "/health/ready"):
                 return await call_next(request)
             return Response(
@@ -138,19 +127,15 @@ async def lifespan(app: FastAPI):
     logger.info("  Python      : %s", _get_python_version())
     logger.info("=" * 60)
 
-    # Validate configuration before doing any work
     settings.validate_required()
 
-    # ── Build DI container ─────────────────────────────────────────────
     logger.info("Building service container...")
     container: ServiceContainer = build_container()
     app.state.container = container
 
-    # ── Resolve shared infrastructure early (avoids repeated resolution) ──
     redis_client = _resolve_redis(container)
     event_bus = _resolve_event_bus(container)
 
-    # ── Phase 0–3: Core infrastructure boot ───────────────────────────
     try:
         boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
@@ -159,16 +144,23 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _record_boot_warning("boot_sequence", exc)
 
-    # ── Post-boot: Wire cross-cutting concerns ────────────────────────
     _wire_content_engine(container, redis_client)
     _wire_meta_engine(container, event_bus)
     _wire_director(app, container, event_bus)
-    _sync_brand_schedulers(container)
 
-    # ── Initialize API stores ──────────────────────────────────────────
+    # ── Mount Director sub-app AFTER director is initialized ──────────
+    try:
+        from services.director import create_app as create_director_app, director as dir_instance
+        if dir_instance:
+            director_app = create_director_app(dir_instance)
+            app.mount("/director", director_app)
+            logger.info("Director routes mounted at /director.")
+    except Exception as exc:
+        logger.warning("Director mount failed: %s", exc)
+
+    _sync_brand_schedulers(container)
     _init_api_stores(app, redis_client)
 
-    # ── Start background cleanup task ──────────────────────────────────
     cleanup_task = asyncio.create_task(_draft_cleanup_loop(app))
     shutdown_registry.register(
         "DraftCleanup",
@@ -176,7 +168,6 @@ async def lifespan(app: FastAPI):
         timeout_seconds=5.0,
     )
 
-    # ── Mark boot as complete ─────────────────────────────────────────
     app.state.boot_completed = True
     app.state.boot_warnings = _boot_warnings
 
@@ -197,7 +188,6 @@ async def lifespan(app: FastAPI):
     logger.info("Application ready to accept requests.")
     logger.info("=" * 60)
 
-    # ═══════════════════ YIELD: App is running ═════════════════════════
     yield
 
     # ═══════════════════ SHUTDOWN ═════════════════════════════════════
@@ -577,18 +567,6 @@ def _mount_routes(app: FastAPI) -> None:
             logger.debug("%s routes not available — skipping.", name)
         except Exception as exc:
             logger.warning("%s routes failed to mount: %s", name, exc)
-
-    # Director sub-application
-    try:
-        from services.director import create_app as create_director_app, director as dir_instance
-        if dir_instance:
-            director_app = create_director_app(dir_instance)
-            app.mount("/director", director_app)
-            logger.info("Director routes mounted at /director.")
-    except ImportError:
-        logger.debug("Director routes not available.")
-    except Exception as exc:
-        logger.warning("Director mount failed: %s", exc)
 
     # Growthbridge plugin — business ecosystem
     try:
