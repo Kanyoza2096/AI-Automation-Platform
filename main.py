@@ -604,6 +604,18 @@ def _mount_routes(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("Backup mount failed: %s", exc)
 
+    # Trend Intelligence plugin
+    try:
+        from plugins.trend_intelligence.routes.public import router as trends_public
+        from plugins.trend_intelligence.routes.admin import router as trends_admin
+        app.include_router(trends_public)
+        app.include_router(trends_admin)
+        logger.info("Trend Intelligence plugin routes mounted.")
+    except ImportError:
+        logger.debug("Trend Intelligence plugin not available — skipping.")
+    except Exception as exc:
+        logger.warning("Trend Intelligence mount failed: %s", exc)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # APPLICATION ASSEMBLY
