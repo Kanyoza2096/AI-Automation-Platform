@@ -9,6 +9,7 @@ import time
 import os
 import uuid
 import base64
+import io
 import requests
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
@@ -178,174 +179,78 @@ class TrendIntelligencePlugin:
                 logger.debug("TrendIntelligence: duplicate or insert error: %s", e)
 
     # ═══════════════════════════════════════════════════════════════════
-    # AI IMAGE GENERATION — Cloudflare Workers AI
+    # AI IMAGE GENERATION — Cloudflare Workers AI + Pillow overlay
     # ═══════════════════════════════════════════════════════════════════
 
     def _generate_trend_image(self, trend: dict) -> Optional[str]:
-    """Generate AI background + CardRenderer text overlay."""
-    try:
-        import os
-        import base64
-        import uuid
-        import io
-        import requests
-        from PIL import Image, ImageDraw, ImageFont
-
-        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-        api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-        if not account_id or not api_token:
-            logger.warning("Cloudflare credentials missing — skipping image generation")
-            return None
-
-        # ─── Step 1: Generate background with Cloudflare ──────────
-        prompt = (
-            "Abstract professional background, modern tech aesthetic, "
-            "gradient, no text, no letters, no words, clean geometric design, "
-            "suitable for social media post, high quality, 4k"
-        )
-        
-        response = requests.post(
-            f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0",
-            headers={"Authorization": f"Bearer {api_token}"},
-            json={"prompt": prompt},
-            timeout=30,
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Cloudflare API error: {response.status_code}")
-            return None
-            
-        data = response.json()
-        if not data.get("success"):
-            logger.error(f"Cloudflare API failed: {data.get('errors', 'Unknown error')}")
-            return None
-        
-        image_bytes = base64.b64decode(data["result"]["image"])
-        
-        # ─── Step 2: Add text overlay with Pillow ─────────────────
-        bg = Image.open(io.BytesIO(image_bytes)).resize((1200, 630))
-        draw = ImageDraw.Draw(bg)
-        
-        # Semi-transparent overlay at bottom
-        overlay = Image.new('RGBA', (1200, 200), (0, 0, 0, 180))
-        bg.paste(overlay, (0, 430), overlay)
-        
-        # Headline font
+        """Generate AI background + text overlay."""
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-            small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-        except:
-            font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
-        
-        # Wrap text
-        title = trend.get('title', 'Trending Topic')
-        words = title.split()
-        lines = []
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            if draw.textlength(test, font=font) < 1100:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-        
-        # Draw title (max 2 lines)
-        y = 455
-        for line in lines[:2]:
-            draw.text((50, y), line, fill="white", font=font)
-            y += 45
-        
-        # Source badge
-        source = trend.get('author', 'Trending')
-        draw.text((50, y + 10), f"📰 {source}", fill=(200, 200, 200), font=small_font)
-        
-def _generate_trend_image(self, trend: dict) -> Optional[str]:
-    """Generate AI background + CardRenderer text overlay."""
-    try:
-        account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-        api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-        if not account_id or not api_token: return None
+            from PIL import Image, ImageDraw, ImageFont
 
-        # Step 1: Generate background with Cloudflare
-        prompt = f"Abstract professional background, modern tech aesthetic, gradient, no text, no letters, no words, clean geometric design"
-        
-        response = requests.post(
-            f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0",
-            headers={"Authorization": f"Bearer {api_token}"},
-            json={"prompt": prompt},
-            timeout=30,
-        )
-        
-        if response.status_code != 200: return None
-        data = response.json()
-        if not data.get("success"): return None
-        
-        image_bytes = base64.b64decode(data["result"]["image"])
-        
-        # Step 2: Add text overlay with CardRenderer (Pillow)
-        from PIL import Image, ImageDraw, ImageFont
-        import io
-        
-        bg = Image.open(io.BytesIO(image_bytes)).resize((1200, 630))
-        draw = ImageDraw.Draw(bg)
-        
-        # Semi-transparent overlay at bottom
-        overlay = Image.new('RGBA', (1200, 200), (0, 0, 0, 180))
-        bg.paste(overlay, (0, 430), overlay)
-        
-        # Headline
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
-        except:
-            font = ImageFont.load_default()
-        
-        # Wrap text
-        words = trend['title'].split()
-        lines = []; current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            if draw.textlength(test, font=font) < 1100:
-                current = test
-            else:
-                lines.append(current); current = word
-        if current: lines.append(current)
-        
-        y = 455
-        for line in lines[:2]:
-            draw.text((50, y), line, fill="white", font=font)
-            y += 45
-        
-        # Source badge
-        try:
-            small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
-        except:
-            small_font = ImageFont.load_default()
-        
-        source = trend.get('author', 'Trending')
-        draw.text((50, y + 10), f"📰 {source}", fill=(200, 200, 200), font=small_font)
-        
-        # Save and upload
-        filename = f"trend_{uuid.uuid4().hex[:8]}.png"
-        output = io.BytesIO()
-        bg.save(output, format="PNG", quality=95)
-        
-        self.supabase.storage.from_("trend-images").upload(
-            filename, output.getvalue(), {"content-type": "image/png"}
-        )
-        
-        url = self.supabase.storage.from_("trend-images").get_public_url(filename)
-        logger.info("TrendIntelligence: Image generated with text overlay — %s", url)
-        return url
-        
-    except Exception as e:
-        logger.error("TrendIntelligence: Image generation error: %s", e)
-    
-    return None
+            account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+            api_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+            if not account_id or not api_token: return None
+
+            prompt = "Abstract professional background, modern tech aesthetic, gradient, no text, no letters, no words, clean geometric design"
+
+            response = requests.post(
+                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0",
+                headers={"Authorization": f"Bearer {api_token}"},
+                json={"prompt": prompt}, timeout=30,
+            )
+
+            if response.status_code != 200: return None
+            data = response.json()
+            if not data.get("success"): return None
+
+            image_bytes = base64.b64decode(data["result"]["image"])
+            bg = Image.open(io.BytesIO(image_bytes)).resize((1200, 630))
+            draw = ImageDraw.Draw(bg)
+
+            overlay_bg = Image.new('RGBA', (1200, 200), (0, 0, 0, 180))
+            bg.paste(overlay_bg, (0, 430), overlay_bg)
+
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 20)
+            except:
+                font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
+
+            words = trend['title'].split()
+            lines = []; current = ""
+            for word in words:
+                test = f"{current} {word}".strip()
+                if draw.textlength(test, font=font) < 1100:
+                    current = test
+                else:
+                    lines.append(current); current = word
+            if current: lines.append(current)
+
+            y = 455
+            for line in lines[:2]:
+                draw.text((50, y), line, fill="white", font=font)
+                y += 45
+
+            source = trend.get('author', 'Trending')
+            draw.text((50, y + 10), f"📰 {source}", fill=(200, 200, 200), font=small_font)
+
+            filename = f"trend_{uuid.uuid4().hex[:8]}.png"
+            output = io.BytesIO()
+            bg.save(output, format="PNG", quality=95)
+
+            self.supabase.storage.from_("trend-images").upload(
+                filename, output.getvalue(), {"content-type": "image/png"}
+            )
+
+            url = self.supabase.storage.from_("trend-images").get_public_url(filename)
+            logger.info("TrendIntelligence: Image generated with text overlay — %s", url)
+            return url
+
+        except Exception as e:
+            logger.error("TrendIntelligence: Image generation error: %s", e)
+        return None
+
     # ═══════════════════════════════════════════════════════════════════
     # BRAND ROUTING — The Smart Filter
     # ═══════════════════════════════════════════════════════════════════
