@@ -77,31 +77,119 @@ class TrendIntelligencePlugin:
                 logger.error("TrendIntelligence: %s failed: %s", source["name"], e)
 
     def _fetch_from_source(self, source: dict) -> List[dict]:
-        """Fetch trends from a source. Currently uses mock data — replace with real APIs."""
-        platform = source["platform"]
-        query = source["query"]
-        
-        # TODO: Replace with real API calls
-        # - Twitter/X API v2: https://api.twitter.com/2/tweets/search/recent
-        # - Reddit API: https://www.reddit.com/r/{subreddit}/hot.json
-        # - NewsAPI: https://newsapi.org/v2/everything
-        
-        # Mock trending posts for now
-        mock_trends = {
-            "newsapi": [
-                {"title": f"Breaking: {query} advances reshape industry", "content": f"Major developments in {query}...", "url": "https://example.com/1", "author": "TechCrunch", "engagement_count": 12400},
-                {"title": f"Why {query} matters more than ever in 2026", "content": f"Experts weigh in on {query} trends...", "url": "https://example.com/2", "author": "The Verge", "engagement_count": 8900},
-            ],
-            "reddit": [
-                {"title": f"Discussion: The future of {query}", "content": "Reddit community shares insights...", "url": "https://reddit.com/r/{query}/hot", "author": "u/techwriter", "engagement_count": 3400},
-            ],
-            "twitter": [
-                {"title": f"#{query.replace('#', '')} trending now", "content": f"Twitter is buzzing about {query}...", "url": "https://twitter.com/search?q={query}", "author": "trending", "engagement_count": 25000},
-            ],
-        }
-        
-        return mock_trends.get(platform, [])
+    """Fetch trends from real APIs."""
+    platform = source["platform"]
+    query = source["query"]
+    
+    if platform == "newsapi":
+        return self._fetch_newsapi(query)
+    elif platform == "reddit":
+        return self._fetch_reddit(query)
+    elif platform == "twitter":
+        return self._fetch_twitter(query)
+    
+    return []
 
+def _fetch_newsapi(self, query: str) -> List[dict]:
+    """Fetch from NewsAPI."""
+    try:
+        import os, requests
+        api_key = os.environ.get("NEWSAPI_KEY", "")
+        if not api_key: return []
+        
+        url = f"https://newsapi.org/v2/everything?q={query}&sortBy=popularity&pageSize=5&apiKey={api_key}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200: return []
+        
+        data = resp.json()
+        posts = []
+        for article in (data.get("articles", []) or [])[:5]:
+            posts.append({
+                "title": article.get("title", ""),
+                "content": article.get("description", ""),
+                "url": article.get("url", ""),
+                "author": article.get("source", {}).get("name", ""),
+                "platform": "newsapi",
+                "engagement_count": 0,
+            })
+        return posts
+    except Exception as e:
+        logger.error("NewsAPI fetch failed: %s", e)
+        return []
+
+def _fetch_reddit(self, query: str) -> List[dict]:
+    """Fetch from Reddit."""
+    try:
+        import os, requests
+        client_id = os.environ.get("REDDIT_CLIENT_ID", "")
+        client_secret = os.environ.get("REDDIT_CLIENT_SECRET", "")
+        if not client_id: return []
+        
+        # Get access token
+        auth = requests.auth.HTTPBasicAuth(client_id, client_secret)
+        headers = {"User-Agent": "KanyozaTrendBot/1.0"}
+        token_resp = requests.post(
+            "https://www.reddit.com/api/v1/access_token",
+            data={"grant_type": "client_credentials"},
+            headers=headers, auth=auth, timeout=10
+        )
+        if token_resp.status_code != 200: return []
+        token = token_resp.json().get("access_token", "")
+        
+        # Fetch hot posts
+        headers["Authorization"] = f"Bearer {token}"
+        resp = requests.get(
+            f"https://oauth.reddit.com/r/{query}/hot?limit=5",
+            headers=headers, timeout=10
+        )
+        if resp.status_code != 200: return []
+        
+        posts = []
+        for post in (resp.json().get("data", {}).get("children", []) or [])[:5]:
+            data = post.get("data", {})
+            posts.append({
+                "title": data.get("title", ""),
+                "content": data.get("selftext", "")[:300],
+                "url": f"https://reddit.com{data.get('permalink', '')}",
+                "author": f"u/{data.get('author', 'unknown')}",
+                "platform": "reddit",
+                "engagement_count": data.get("score", 0),
+            })
+        return posts
+    except Exception as e:
+        logger.error("Reddit fetch failed: %s", e)
+        return []
+
+def _fetch_twitter(self, query: str) -> List[dict]:
+    """Fetch from Twitter/X API."""
+    try:
+        import os, requests
+        token = os.environ.get("TWITTER_BEARER_TOKEN", "")
+        if not token: return []
+        
+        resp = requests.get(
+            f"https://api.twitter.com/2/tweets/search/recent?query={query}&max_results=5&tweet.fields=public_metrics,author_id",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10
+        )
+        if resp.status_code != 200: return []
+        
+        posts = []
+        for tweet in (resp.json().get("data", []) or [])[:5]:
+            metrics = tweet.get("public_metrics", {})
+            posts.append({
+                "title": tweet.get("text", "")[:200],
+                "content": tweet.get("text", ""),
+                "url": f"https://twitter.com/i/web/status/{tweet['id']}",
+                "author": tweet.get("author_id", ""),
+                "platform": "twitter",
+                "engagement_count": metrics.get("like_count", 0) + metrics.get("retweet_count", 0),
+            })
+        return posts
+    except Exception as e:
+        logger.error("Twitter fetch failed: %s", e)
+        return []
+        
     def _store_posts(self, source_id: str, posts: List[dict]):
         """Store fetched posts in database."""
         for post in posts:
