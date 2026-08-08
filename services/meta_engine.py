@@ -705,9 +705,10 @@ def init_meta_engine(event_bus: Any = None, container: Any = None) -> MetaEngine
     try: meta_engine.stop()
     except: pass
 
-    meta_engine = MetaEngine(event_bus=event_bus, container=container)
+    global meta_engine
+    meta_engine.event_bus = event_bus
+    meta_engine.container = container
     meta_engine.register_all_engines()
-
     # ── Recovery handlers ────────────────────────────────────────────
 
     def restart_card_renderer(d: Diagnosis) -> None:
