@@ -77,7 +77,7 @@ class TrendIntelligencePlugin:
                 logger.error("TrendIntelligence: %s failed: %s", source["name"], e)
 
     def _fetch_from_source(self, source: dict) -> List[dict]:
-    """Fetch trends from real APIs."""
+        """Fetch trends from real APIs."""
     platform = source["platform"]
     query = source["query"]
     
