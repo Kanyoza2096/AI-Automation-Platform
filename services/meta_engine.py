@@ -699,16 +699,15 @@ class MetaEngine:
 
 meta_engine = MetaEngine()
 
-
 def init_meta_engine(event_bus: Any = None, container: Any = None) -> MetaEngine:
     global meta_engine
     try: meta_engine.stop()
     except: pass
 
-    global meta_engine
     meta_engine.event_bus = event_bus
     meta_engine.container = container
     meta_engine.register_all_engines()
+    
     # ── Recovery handlers ────────────────────────────────────────────
 
     def restart_card_renderer(d: Diagnosis) -> None:
@@ -720,7 +719,7 @@ def init_meta_engine(event_bus: Any = None, container: Any = None) -> MetaEngine
         else: logger.warning("Card Renderer has no restart/reset/start method")
 
     meta_engine.register_recovery_handler("card_renderer", restart_card_renderer)
-
+  
     def generic_restart(d: Diagnosis) -> None:
         engine = meta_engine._engines.get(d.engine)
         if not engine: raise RuntimeError(f"Engine not registered: {d.engine}")
