@@ -26,12 +26,14 @@ Architecture:
 """
 
 import asyncio
+import hmac
 import json
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,10 +57,13 @@ logger = logging.getLogger("kanyoza.main")
 # STARTUP METADATA — Used by health/readiness probes
 # ═══════════════════════════════════════════════════════════════════════════
 
-_startup_started_at: datetime | None = None
-_startup_completed_at: datetime | None = None
+_startup_started_at: Optional[datetime] = None
+_startup_completed_at: Optional[datetime] = None
 _startup_duration_seconds: float = 0.0
 _boot_warnings: list[dict[str, Any]] = []
+
+# Will be set after app creation — avoids forward-reference fragility
+_app_instance: Optional[FastAPI] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -75,6 +80,7 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
                 container = getattr(request.app.state, "container", None)
                 if container:
                     from core.redis_client import UpstashRedisClient
+
                     redis = container.try_resolve(UpstashRedisClient)
                     if redis and redis.is_available:
                         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -116,7 +122,7 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan context manager with phased boot sequence."""
     global _startup_started_at, _startup_completed_at, _startup_duration_seconds
 
-    # ═══════════════════ STARTUP ═══════════════════════════════════════
+    # ── STARTUP ───────────────────────────────────────────────────────
     _startup_started_at = datetime.now(timezone.utc)
     startup_start = time.monotonic()
 
@@ -148,9 +154,12 @@ async def lifespan(app: FastAPI):
     _wire_meta_engine(container, event_bus)
     _wire_director(app, container, event_bus)
 
-    # ── Mount Director sub-app AFTER director is initialized ──────────
+    # Mount Director sub-app AFTER director is initialized
     try:
-        from services.director import create_app as create_director_app, director as dir_instance
+        from services.director import (
+            create_app as create_director_app,
+            director as dir_instance,
+        )
         if dir_instance:
             director_app = create_director_app(dir_instance)
             app.mount("/director", director_app)
@@ -183,25 +192,29 @@ async def lifespan(app: FastAPI):
         for w in _boot_warnings:
             logger.warning("  ⚠ %s: %s", w["service"], w["error"])
     else:
-        logger.info("Boot complete — all services healthy (%.2fs).", _startup_duration_seconds)
+        logger.info(
+            "Boot complete — all services healthy (%.2fs).",
+            _startup_duration_seconds,
+        )
 
     logger.info("Application ready to accept requests.")
     logger.info("=" * 60)
 
     yield
 
-    # ═══════════════════ SHUTDOWN ═════════════════════════════════════
+    # ── SHUTDOWN ──────────────────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("Kanyoza AI Platform v13.0 — Shutting down...")
     logger.info("=" * 60)
 
     shutdown_start = time.monotonic()
 
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    if not cleanup_task.done():
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
     _stop_director()
     graceful_shutdown(container)
@@ -218,6 +231,7 @@ async def lifespan(app: FastAPI):
 def _resolve_redis(container: ServiceContainer):
     try:
         from core.redis_client import UpstashRedisClient
+
         redis = container.try_resolve(UpstashRedisClient)
         if redis:
             logger.info("Redis client resolved for wiring.")
@@ -230,6 +244,7 @@ def _resolve_redis(container: ServiceContainer):
 def _resolve_event_bus(container: ServiceContainer):
     try:
         from core.event_bus import EventBus
+
         return container.try_resolve(EventBus)
     except Exception:
         return None
@@ -238,6 +253,7 @@ def _resolve_event_bus(container: ServiceContainer):
 def _wire_content_engine(container: ServiceContainer, redis_client) -> None:
     try:
         from services.content_engine import content_engine
+
         if redis_client:
             content_engine._redis = redis_client
         content_engine._container = container
@@ -249,8 +265,11 @@ def _wire_content_engine(container: ServiceContainer, redis_client) -> None:
 def _wire_meta_engine(container: ServiceContainer, event_bus) -> None:
     try:
         from services.meta_engine import init_meta_engine
+
         meta = init_meta_engine(event_bus=event_bus, container=container)
-        logger.info("MetaEngine v2.0: supervising %d engines", len(meta._engines))
+        logger.info(
+            "MetaEngine v2.0: supervising %d engines", len(meta._engines)
+        )
     except Exception as exc:
         _record_boot_warning("MetaEngine", exc)
 
@@ -262,17 +281,22 @@ def _wire_director(app, container: ServiceContainer, event_bus) -> None:
         supabase_client = None
         try:
             from services.supabase import get_service_client_from_settings
+
             supabase_client = get_service_client_from_settings()
         except Exception:
             logger.debug("Director: Supabase not available — in-memory mode.")
 
-        director = init_director(supabase_client=supabase_client, auto_start=False)
+        director = init_director(
+            supabase_client=supabase_client, auto_start=False
+        )
         discovered = auto_discover_engines(director, container)
         _wire_director_alerts(director)
 
         if event_bus:
             director.set_event_callback(
-                lambda event_name, payload: _safe_emit(event_bus, event_name, payload)
+                lambda event_name, payload: _safe_publish(
+                    event_bus, event_name, payload
+                )
             )
             logger.info("Director: EventBus wired.")
 
@@ -297,9 +321,10 @@ def _wire_director_alerts(director) -> None:
         logger.debug("Director: Email alerts not wired: %s", exc)
 
 
-def _safe_emit(event_bus, event_name: str, payload: dict) -> None:
+def _safe_publish(event_bus, event_name: str, payload: dict) -> None:
+    """Publish an event to the EventBus, silently ignoring failures."""
     try:
-        event_bus.emit(event_name, payload)
+        event_bus.publish(event_name, payload)
     except Exception:
         pass
 
@@ -307,6 +332,7 @@ def _safe_emit(event_bus, event_name: str, payload: dict) -> None:
 def _sync_brand_schedulers(container: ServiceContainer) -> None:
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
+
         manager = container.try_resolve(BrandSchedulerManager)
         if manager:
             manager.set_container(container)
@@ -320,6 +346,7 @@ def _sync_brand_schedulers(container: ServiceContainer) -> None:
 def _stop_director() -> None:
     try:
         from services.director import director as dir_instance
+
         if dir_instance:
             dir_instance.stop()
             logger.info("👔 Director: Shut down.")
@@ -333,7 +360,12 @@ def _stop_director() -> None:
 
 
 def _init_api_stores(app, redis_client) -> None:
-    from api.v1 import DraftStore, AsyncAuditLog, AsyncWorkflowHistory, AsyncKeyStore
+    from api.v1 import (
+        DraftStore,
+        AsyncAuditLog,
+        AsyncWorkflowHistory,
+        AsyncKeyStore,
+    )
 
     app.state.draft_store = DraftStore(redis_client=redis_client)
     app.state.audit_log = AsyncAuditLog(maxlen=200)
@@ -345,7 +377,9 @@ def _init_api_stores(app, redis_client) -> None:
     except Exception as exc:
         logger.debug("Audit log seeding skipped: %s", exc)
 
-    logger.info("API stores initialized (DraftStore, AuditLog, WorkflowHistory, KeyStore).")
+    logger.info(
+        "API stores initialized (DraftStore, AuditLog, WorkflowHistory, KeyStore)."
+    )
 
 
 async def _draft_cleanup_loop(app) -> None:
@@ -365,8 +399,9 @@ async def _draft_cleanup_loop(app) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _build_health_response() -> dict[str, Any]:
-    booted = getattr(fastapi_app.state, "boot_completed", False)
+def _build_health_response(app: FastAPI) -> dict[str, Any]:
+    """Build the detailed health response from the given app instance."""
+    booted = getattr(app.state, "boot_completed", False)
 
     if not booted:
         return {
@@ -388,7 +423,11 @@ def _build_health_response() -> dict[str, Any]:
     else:
         overall = "healthy"
 
-    uptime = (datetime.now(timezone.utc) - _startup_started_at).total_seconds() if _startup_started_at else 0
+    uptime = (
+        (datetime.now(timezone.utc) - _startup_started_at).total_seconds()
+        if _startup_started_at
+        else 0
+    )
 
     return {
         "status": overall,
@@ -456,6 +495,7 @@ def _configure_middleware(app: FastAPI) -> None:
 
     try:
         from middleware.traffic_capture import TrafficCaptureMiddleware
+
         app.add_middleware(TrafficCaptureMiddleware)
         logger.info("Traffic capture middleware registered.")
     except ImportError:
@@ -480,11 +520,16 @@ def _configure_cors(app: FastAPI) -> None:
         allow_origins=origins,
         allow_credentials=allow_creds,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
+        allow_headers=[
+            "Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID",
+        ],
         max_age=86400,
     )
 
-    logger.info("CORS origins: %s", origins if len(origins) < 5 else f"{origins[:3]}... ({len(origins)} total)")
+    logger.info(
+        "CORS origins: %s",
+        origins if len(origins) < 5 else f"{origins[:3]}... ({len(origins)} total)",
+    )
 
 
 def _register_health_endpoints(app: FastAPI) -> None:
@@ -494,7 +539,8 @@ def _register_health_endpoints(app: FastAPI) -> None:
             "status": "alive",
             "version": "13.0.0",
             "uptime_seconds": round(
-                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
+                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(),
+                1,
             ) if _startup_started_at else 0,
         }
 
@@ -502,14 +548,18 @@ def _register_health_endpoints(app: FastAPI) -> None:
     async def readiness_check():
         if not getattr(app.state, "boot_completed", False):
             return Response(
-                content=json.dumps({"status": "not_ready", "reason": "Boot in progress"}),
+                content=json.dumps({
+                    "status": "not_ready",
+                    "reason": "Boot in progress",
+                }),
                 status_code=503,
                 media_type="application/json",
             )
 
         service_health = health_registry.check_all()
         unhealthy = [
-            name for name, r in service_health.items()
+            name
+            for name, r in service_health.items()
             if r.status == HealthStatus.UNHEALTHY
         ]
 
@@ -524,21 +574,31 @@ def _register_health_endpoints(app: FastAPI) -> None:
                 media_type="application/json",
             )
 
-        return {"status": "ready", "services_monitored": len(service_health)}
+        return {
+            "status": "ready",
+            "services_monitored": len(service_health),
+        }
 
     @app.get("/health/detailed")
     async def detailed_health(request: Request):
         if settings.is_production:
             token = request.headers.get("X-API-Key", "")
-            if not token and request.headers.get("Authorization", "").startswith("Bearer "):
-                token = request.headers.get("Authorization", "")[7:]
+            auth_header = request.headers.get("Authorization", "")
+            if not token and auth_header.startswith("Bearer "):
+                token = auth_header[7:]
 
-            import hmac
             master_token = getattr(settings, "master_api_token", "") or ""
-            if not master_token or not token or not hmac.compare_digest(token, master_token):
-                raise HTTPException(status_code=401, detail="Authentication required for detailed health report")
+            if (
+                not master_token
+                or not token
+                or not hmac.compare_digest(token, master_token)
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Authentication required for detailed health report",
+                )
 
-        return _build_health_response()
+        return _build_health_response(app)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -568,60 +628,39 @@ def _mount_routes(app: FastAPI) -> None:
         except Exception as exc:
             logger.warning("%s routes failed to mount: %s", name, exc)
 
-    # Growthbridge plugin — business ecosystem
-    try:
-        from plugins.growthbridge.routes.public import router as gb_public
-        from plugins.growthbridge.routes.admin import router as gb_admin
-        app.include_router(gb_public)
-        app.include_router(gb_admin)
-        logger.info("Growthbridge plugin routes mounted.")
-    except ImportError:
-        logger.debug("Growthbridge plugin not available — skipping.")
-    except Exception as exc:
-        logger.warning("Growthbridge mount failed: %s", exc)
+    # Plugin routes
+    _mount_plugin(app, "growthbridge", "Growthbridge")
+    _mount_plugin(app, "monitor", "Monitor")
+    _mount_plugin(app, "backup", "Backup")
+    _mount_plugin(app, "trend_intelligence", "Trend Intelligence")
 
-    # Monitor plugin — system administrator
-    try:
-        from plugins.monitor.routes.public import router as monitor_public
-        from plugins.monitor.routes.admin import router as monitor_admin
-        app.include_router(monitor_public)
-        app.include_router(monitor_admin)
-        logger.info("Monitor plugin routes mounted.")
-    except ImportError:
-        logger.debug("Monitor plugin not available — skipping.")
-    except Exception as exc:
-        logger.warning("Monitor mount failed: %s", exc)
-
-    # Backup plugin — automated database backups
-    try:
-        from plugins.backup.routes.public import router as backup_public
-        from plugins.backup.routes.admin import router as backup_admin
-        app.include_router(backup_public)
-        app.include_router(backup_admin)
-        logger.info("Backup plugin routes mounted.")
-    except ImportError:
-        logger.debug("Backup plugin not available — skipping.")
-    except Exception as exc:
-        logger.warning("Backup mount failed: %s", exc)
-
-    # Trend Intelligence plugin
-    try:
-        from plugins.trend_intelligence.routes.public import router as trends_public
-        from plugins.trend_intelligence.routes.admin import router as trends_admin
-        app.include_router(trends_public)
-        app.include_router(trends_admin)
-        logger.info("Trend Intelligence plugin routes mounted.")
-    except ImportError:
-        logger.debug("Trend Intelligence plugin not available — skipping.")
-    except Exception as exc:
-        logger.warning("Trend Intelligence mount failed: %s", exc)
-
+    # Code Intelligence
     try:
         from routes.code_intel_routes import router as code_intel_router
         app.include_router(code_intel_router)
         logger.info("Code Intelligence routes mounted.")
     except ImportError:
         logger.debug("Code Intelligence routes not available — skipping.")
+
+
+def _mount_plugin(app: FastAPI, plugin_name: str, display_name: str) -> None:
+    """Mount a plugin's public and admin routes if available."""
+    try:
+        public_module = __import__(
+            f"plugins.{plugin_name}.routes.public", fromlist=["router"]
+        )
+        admin_module = __import__(
+            f"plugins.{plugin_name}.routes.admin", fromlist=["router"]
+        )
+        app.include_router(public_module.router)
+        app.include_router(admin_module.router)
+        logger.info("%s plugin routes mounted.", display_name)
+    except ImportError:
+        logger.debug(
+            "%s plugin not available — skipping.", display_name
+        )
+    except Exception as exc:
+        logger.warning("%s mount failed: %s", display_name, exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -649,7 +688,6 @@ def _record_boot_warning(service: str, exc: Exception) -> None:
 
 
 def _get_python_version() -> str:
-    import sys
     return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
 
@@ -659,6 +697,7 @@ def _get_python_version() -> str:
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
