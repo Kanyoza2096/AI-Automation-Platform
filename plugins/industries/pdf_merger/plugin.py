@@ -36,7 +36,9 @@ class PDFMergerPlugin(IndustryPlugin):
     def get_commands(self) -> list[dict]:
         return self.commands_handler.list_all()
 
-    def execute(self, command: str, params: dict, workspace_id: str = "default") -> dict:
+    def execute(
+        self, command: str, params: dict, workspace_id: str = "default"
+    ) -> dict:
         return self.commands_handler.handle(command, params, workspace_id)
 
     def get_webhooks(self) -> list[dict]:
@@ -49,7 +51,7 @@ class PDFMergerPlugin(IndustryPlugin):
             },
         ]
 
-    def _handle_pdf_upload(self, data: dict) -> dict:
+    def handle_pdf_upload(self, data: dict) -> dict:
         """Handle incoming PDF upload webhook."""
         workspace_id = data.get("workspace_id", "default")
         command = data.get("command", "merge_pdfs")
