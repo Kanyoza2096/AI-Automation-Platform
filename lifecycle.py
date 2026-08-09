@@ -484,6 +484,13 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         phase=BootPhase.BUSINESS,
         action=lambda: _wire_socket_events(container),
     ))
+
+    steps.append(BootStep(
+        name="CodeIntelligence",
+        phase=BootPhase.BUSINESS,
+        action=lambda: _boot_code_intelligence(container),
+    
+    ))
     
     # ═══ Phase 3: OBSERVABILITY (Optional) ═══
     
