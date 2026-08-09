@@ -616,6 +616,13 @@ def _mount_routes(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("Trend Intelligence mount failed: %s", exc)
 
+    try:
+        from routes.code_intel_routes import router as code_intel_router
+        app.include_router(code_intel_router)
+        logger.info("Code Intelligence routes mounted.")
+    except ImportError:
+        logger.debug("Code Intelligence routes not available — skipping.")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # APPLICATION ASSEMBLY
