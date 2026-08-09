@@ -114,20 +114,29 @@ def _register_supabase(c: ServiceContainer, bindings: list[BindingMetadata]) -> 
         return
 
     def _factory() -> SupabaseClient:
-        from supabase import create_client
-        # PREFER service_role key for backend writes
-        # FALL BACK to anon key only in development
-        key = settings.supabase_service_role_key or settings.supabase_anon_key
-        if settings.supabase_service_role_key:
-            logger.info("Supabase client created with SERVICE_ROLE key (backend writes enabled).")
-        else:
-            logger.warning("Supabase client created with ANON key — backend writes WILL FAIL on RLS-protected tables.")
-        return create_client(settings.supabase_url, key)
+    from supabase import create_client
+    import httpx
+    
+    # PREFER service_role key for backend writes
+    # FALL BACK to anon key only in development
+    key = settings.supabase_service_role_key or settings.supabase_anon_key
+    if settings.supabase_service_role_key:
+        logger.info("Supabase client created with SERVICE_ROLE key (backend writes enabled).")
+    else:
+        logger.warning("Supabase client created with ANON key — backend writes WILL FAIL on RLS-protected tables.")
+    
+    client = create_client(settings.supabase_url, key)
+    
+    # Force HTTP/1.1 to prevent connection termination errors
+    transport = httpx.HTTPTransport(http2=False)
+    client.postgrest.session.mount("https://", transport)
+    if hasattr(client, 'auth') and hasattr(client.auth, 'session'):
+        client.auth.session.mount("https://", transport)
+    
+    return client
 
-    c.register(SupabaseClient, _factory, singleton=True)
-    bindings.append(BindingMetadata("SupabaseClient", ServiceCriticality.REQUIRED, has_fallback=True, description="Supabase client (service_role preferred)"))
-
-
+c.register(SupabaseClient, _factory, singleton=True)
+bindings.append(BindingMetadata("SupabaseClient", ServiceCriticality.REQUIRED, has_fallback=True, description="Supabase client (service_role preferred)"))
 def _build_task_queue():
     from workers.task_queue import TaskQueue
     q = TaskQueue(workers=3)
