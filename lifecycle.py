@@ -1459,40 +1459,31 @@ def _boot_guardian_scheduler(
     logger.info("Guardian started.")
 
 
-def _boot_code_intelligence(
-    container: ServiceContainer,
-) -> None:
-    from config.settings import settings
-
-    if not settings.guardian_configured:
-        return
-
+def _boot_code_intelligence(container):
     try:
         from services.code_intelligence_engine import init_code_intelligence
+        from guardian.github_client import GitHubClient
         from core.event_bus import EventBus
-
-        event_bus = container.try_resolve(
-            EventBus
-        )
+        
+        if not settings.guardian_configured:
+            logger.info("Code Intelligence: GitHub not configured — skipping")
+            return
+        
+        github = GitHubClient(settings.github_username, settings.github_token)
+        event_bus = container.try_resolve(EventBus)
+        
         engine = init_code_intelligence(
-            github_client=None,
+            github_client=github,
             event_bus=event_bus,
             container=container,
-            auto_start=True,
         )
-        shutdown_registry.register(
-            "CodeIntelligence",
-            engine.stop,
-            timeout_seconds=10.0,
-        )
-        logger.info(
-            "CodeIntelligence: started."
-        )
+        
+        from services.meta_engine import meta_engine
+        meta_engine.register("code_intelligence", engine)
+        
+        logger.info("CodeIntelligenceEngine: started")
     except Exception as exc:
-        logger.warning(
-            "CodeIntelligence: %s", exc
-        )
-
+        logger.warning("CodeIntelligenceEngine: could not start: %s", exc)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 3: OBSERVABILITY
