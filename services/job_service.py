@@ -1,13 +1,13 @@
 """
 Persistent Job Service — Architecture §7-8.
 
-v3.5 — Added 30-second stats cache to prevent query storms from
-       MetaEngine health checks. Added recover_and_retry().
-       Fixed recursion with reentry guard.
-
-Architecture §7 — Persistent Job Lifecycle:
-  CREATED → QUEUED → RUNNING → GENERATING → VALIDATING →
-  RENDERING → READY → PUBLISHING → PUBLISHED
+v4.0 — MAJOR REFACTOR:
+  - Removed ALL stats computation (moved to JobStatsService)
+  - Removed ALL recursion guards (no longer needed)
+  - Removed ALL _safe_* wrappers (no longer needed)
+  - Removed ALL hardcoded status strings (use model constants)
+  - Removed RLock (simple Lock for recovery state only)
+  - Single responsibility: CRUD + state transitions + recovery
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, List
 
 from models.automation_job import (
@@ -24,6 +24,7 @@ from models.automation_job import (
     WorkflowType,
     ACTIVE_STATES,
     TERMINAL_STATES,
+    ACTIVE_STATUS_VALUES,
 )
 from core.errors import (
     DatabaseQueryError,
@@ -35,9 +36,10 @@ logger = logging.getLogger("kanyoza.services.job_service")
 
 
 class JobService:
-    """Persistent CRUD service for automation jobs."""
+    """Persistent CRUD service for automation jobs.
 
-    STATS_CACHE_TTL_SECONDS = 30
+    v4.0: Stats removed. Use JobStatsService for all metrics.
+    """
 
     def __init__(
         self, supabase_client=None, event_bus=None
@@ -45,10 +47,10 @@ class JobService:
         self._client = supabase_client
         self._event_bus = event_bus
         self._table = "automation_jobs"
-        self._stats_cache: Optional[dict] = None
-        self._stats_cache_time: float = 0.0
-        self._stats_lock = threading.Lock()
-        self._computing_stats = False
+
+        # Only used for recovery state tracking
+        self._recovery_lock = threading.Lock()
+        self._recovery_in_progress: set = set()
 
     # ------------------------------------------------------------------
     # EventBus wiring
@@ -57,6 +59,9 @@ class JobService:
     def set_event_bus(self, event_bus) -> None:
         self._event_bus = event_bus
         logger.info("JobService: EventBus wired")
+
+    def set_client(self, client) -> None:
+        self._client = client
 
     def _emit(self, event_name: str, payload: dict) -> None:
         if not self._event_bus:
@@ -67,9 +72,7 @@ class JobService:
             elif hasattr(self._event_bus, "emit"):
                 self._event_bus.emit(event_name, payload)
         except Exception as exc:
-            logger.debug(
-                "JobService event emission failed: %s", exc
-            )
+            logger.debug("JobService event emission failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Client resolution
@@ -109,6 +112,11 @@ class JobService:
         job_id: str,
         platform: str = "facebook",
     ) -> AutomationJob:
+        """Create a scheduled job for a specific time slot."""
+        # Validate inputs
+        if slot_hour < 0 or slot_hour > 23:
+            raise ValueError(f"Invalid slot_hour: {slot_hour}")
+
         job = AutomationJob.for_scheduled_slot(
             brand_id=brand_id, workspace_id=workspace_id,
             slot_date=slot_date, slot_hour=slot_hour,
@@ -128,7 +136,6 @@ class JobService:
                     "job_id": saved.job_id, "brand_id": brand_id,
                     "workflow_type": "scheduled", "platform": platform,
                 })
-                self._invalidate_stats_cache()
                 return saved
             raise DatabaseQueryError(
                 message="Insert returned no data",
@@ -148,6 +155,7 @@ class JobService:
     def create_manual_job(
         self, brand_id: str, workspace_id: str, job_id: str, platform: str = "facebook",
     ) -> AutomationJob:
+        """Create a manual trigger job."""
         job = AutomationJob.for_manual_trigger(
             brand_id=brand_id, workspace_id=workspace_id, job_id=job_id, platform=platform,
         )
@@ -161,7 +169,6 @@ class JobService:
                     "job_id": saved.job_id, "brand_id": brand_id,
                     "workflow_type": "manual", "platform": platform,
                 })
-                self._invalidate_stats_cache()
                 return saved
             raise DatabaseQueryError(message="Insert returned no data")
         except Exception as e:
@@ -174,6 +181,7 @@ class JobService:
     # ═══════════════════════════════════════════════════════════════════
 
     def find_by_id(self, job_id: str) -> Optional[AutomationJob]:
+        """Find a job by its ID."""
         client = self._require_client()
         try:
             result = client.table(self._table).select("*").eq("job_id", job_id).execute()
@@ -184,9 +192,16 @@ class JobService:
             )
 
     def find_by_idempotency_key(self, idempotency_key: str) -> Optional[AutomationJob]:
+        """Find a job by its idempotency key."""
         client = self._require_client()
         try:
-            result = client.table(self._table).select("*").eq("idempotency_key", idempotency_key).limit(1).execute()
+            result = (
+                client.table(self._table)
+                .select("*")
+                .eq("idempotency_key", idempotency_key)
+                .limit(1)
+                .execute()
+            )
             return AutomationJob(**result.data[0]) if result.data else None
         except Exception as e:
             logger.error("Failed to find job by idempotency key: %s", e)
@@ -195,6 +210,7 @@ class JobService:
     def find_by_brand(
         self, brand_id: str, status: Optional[JobStatus] = None, limit: int = 50,
     ) -> List[AutomationJob]:
+        """Find jobs for a brand, optionally filtered by status."""
         client = self._require_client()
         try:
             query = client.table(self._table).select("*").eq("brand_id", brand_id)
@@ -208,10 +224,14 @@ class JobService:
             )
 
     def find_active_jobs(self, brand_id: Optional[str] = None) -> List[AutomationJob]:
+        """Find all active (non-terminal) jobs."""
         client = self._require_client()
         try:
-            active_statuses = [s.value for s in ACTIVE_STATES]
-            query = client.table(self._table).select("*").in_("status", active_statuses)
+            query = (
+                client.table(self._table)
+                .select("*")
+                .in_("status", list(ACTIVE_STATUS_VALUES))
+            )
             if brand_id:
                 query = query.eq("brand_id", brand_id)
             result = query.execute()
@@ -222,9 +242,16 @@ class JobService:
             )
 
     def is_slot_claimed(self, idempotency_key: str) -> bool:
+        """Check if a time slot is already claimed."""
         client = self._require_client()
         try:
-            result = client.table(self._table).select("id").eq("idempotency_key", idempotency_key).limit(1).execute()
+            result = (
+                client.table(self._table)
+                .select("id")
+                .eq("idempotency_key", idempotency_key)
+                .limit(1)
+                .execute()
+            )
             return bool(result.data)
         except Exception as e:
             logger.error("Database unavailable — failing closed: %s", e)
@@ -235,6 +262,7 @@ class JobService:
     # ═══════════════════════════════════════════════════════════════════
 
     def transition(self, job: AutomationJob, new_status: JobStatus) -> AutomationJob:
+        """Transition a job to a new status with validation."""
         old_status = job.status
         if not job.transition_to(new_status):
             raise ValueError(
@@ -252,14 +280,21 @@ class JobService:
                 update_data["completed_at"] = job.completed_at.isoformat()
             if job.duration_ms is not None:
                 update_data["duration_ms"] = job.duration_ms
-            result = client.table(self._table).update(update_data).eq("id", job.id).execute()
+
+            result = (
+                client.table(self._table)
+                .update(update_data)
+                .eq("id", job.id)
+                .execute()
+            )
             if result.data:
                 updated = AutomationJob(**result.data[0])
                 self._emit("job.status_changed", {
-                    "job_id": updated.job_id, "old_status": old_status.value,
-                    "new_status": new_status.value, "brand_id": updated.brand_id,
+                    "job_id": updated.job_id,
+                    "old_status": old_status.value,
+                    "new_status": new_status.value,
+                    "brand_id": updated.brand_id,
                 })
-                self._invalidate_stats_cache()
                 return updated
             raise DatabaseQueryError(
                 message=f"Update returned no data for job {job.id}"
@@ -272,12 +307,20 @@ class JobService:
             )
 
     def reset_to_pending(self, job_id: str) -> Optional[AutomationJob]:
+        """Reset a RETRY_PENDING job to PENDING for retry."""
         client = self._require_client()
         try:
-            result = client.table(self._table).select("*").eq("id", job_id).limit(1).execute()
+            result = (
+                client.table(self._table)
+                .select("*")
+                .eq("id", job_id)
+                .limit(1)
+                .execute()
+            )
             if not result.data:
                 logger.warning("JobService: job %s not found", job_id)
                 return None
+
             job = AutomationJob(**result.data[0])
             if job.status != JobStatus.RETRY_PENDING:
                 logger.warning(
@@ -285,12 +328,18 @@ class JobService:
                     job_id, job.status.value,
                 )
                 return None
+
             update_data = {
                 "status": JobStatus.PENDING.value,
                 "attempt_count": job.attempt_count + 1,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            update_result = client.table(self._table).update(update_data).eq("id", job_id).execute()
+            update_result = (
+                client.table(self._table)
+                .update(update_data)
+                .eq("id", job_id)
+                .execute()
+            )
             if update_result.data:
                 updated = AutomationJob(**update_result.data[0])
                 logger.info(
@@ -298,9 +347,9 @@ class JobService:
                     job_id, updated.attempt_count,
                 )
                 self._emit("job.retry_scheduled", {
-                    "job_id": updated.job_id, "attempt": updated.attempt_count,
+                    "job_id": updated.job_id,
+                    "attempt": updated.attempt_count,
                 })
-                self._invalidate_stats_cache()
                 return updated
             return None
         except Exception as e:
@@ -308,8 +357,11 @@ class JobService:
             return None
 
     def record_attempt(
-        self, job: AutomationJob, error: Optional[str] = None, error_code: Optional[str] = None,
+        self, job: AutomationJob,
+        error: Optional[str] = None,
+        error_code: Optional[str] = None,
     ) -> AutomationJob:
+        """Record an attempt for a job."""
         job.record_attempt(error=error, error_code=error_code)
         client = self._require_client()
         try:
@@ -319,7 +371,12 @@ class JobService:
                 "last_error_code": job.last_error_code,
                 "updated_at": job.updated_at.isoformat(),
             }
-            result = client.table(self._table).update(update_data).eq("id", job.id).execute()
+            result = (
+                client.table(self._table)
+                .update(update_data)
+                .eq("id", job.id)
+                .execute()
+            )
             return AutomationJob(**result.data[0]) if result.data else job
         except Exception as e:
             logger.error("Failed to record attempt for job %s: %s", job.job_id, e)
@@ -328,15 +385,24 @@ class JobService:
     def mark_published(
         self, job: AutomationJob, post_id: str, result: Optional[dict] = None,
     ) -> AutomationJob:
+        """Mark a job as successfully published."""
         job.mark_success(post_id=post_id, result=result)
         client = self._require_client()
         try:
             update_data = {
-                "status": JobStatus.PUBLISHED.value, "platform_post_id": post_id,
-                "result": result, "completed_at": job.completed_at.isoformat(),
-                "duration_ms": job.duration_ms, "updated_at": job.updated_at.isoformat(),
+                "status": JobStatus.PUBLISHED.value,
+                "platform_post_id": post_id,
+                "result": result,
+                "completed_at": job.completed_at.isoformat(),
+                "duration_ms": job.duration_ms,
+                "updated_at": job.updated_at.isoformat(),
             }
-            response = client.table(self._table).update(update_data).eq("id", job.id).execute()
+            response = (
+                client.table(self._table)
+                .update(update_data)
+                .eq("id", job.id)
+                .execute()
+            )
             if response.data:
                 saved = AutomationJob(**response.data[0])
                 logger.info(
@@ -344,10 +410,11 @@ class JobService:
                     job.job_id, post_id, job.duration_ms,
                 )
                 self._emit("job.published", {
-                    "job_id": saved.job_id, "brand_id": saved.brand_id,
-                    "post_id": post_id, "duration_ms": job.duration_ms,
+                    "job_id": saved.job_id,
+                    "brand_id": saved.brand_id,
+                    "post_id": post_id,
+                    "duration_ms": job.duration_ms,
                 })
-                self._invalidate_stats_cache()
                 return saved
             return job
         except Exception as e:
@@ -359,16 +426,24 @@ class JobService:
         self, job: AutomationJob, error: str,
         error_code: Optional[str] = None, retryable: bool = False,
     ) -> AutomationJob:
+        """Mark a job as failed."""
         job.mark_failed(error=error, error_code=error_code, retryable=retryable)
         client = self._require_client()
         try:
             update_data = {
-                "status": job.status.value, "last_error": job.last_error,
+                "status": job.status.value,
+                "last_error": job.last_error,
                 "last_error_code": job.last_error_code,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                "duration_ms": job.duration_ms, "updated_at": job.updated_at.isoformat(),
+                "duration_ms": job.duration_ms,
+                "updated_at": job.updated_at.isoformat(),
             }
-            response = client.table(self._table).update(update_data).eq("id", job.id).execute()
+            response = (
+                client.table(self._table)
+                .update(update_data)
+                .eq("id", job.id)
+                .execute()
+            )
             if response.data:
                 saved = AutomationJob(**response.data[0])
                 logger.warning(
@@ -376,11 +451,12 @@ class JobService:
                     job.status.value, job.job_id, error[:100],
                 )
                 self._emit("job.failed", {
-                    "job_id": saved.job_id, "brand_id": saved.brand_id,
-                    "status": saved.status.value, "error": error[:200],
+                    "job_id": saved.job_id,
+                    "brand_id": saved.brand_id,
+                    "status": saved.status.value,
+                    "error": error[:200],
                     "retryable": retryable,
                 })
-                self._invalidate_stats_cache()
                 return saved
             return job
         except Exception as e:
@@ -393,6 +469,7 @@ class JobService:
     # ═══════════════════════════════════════════════════════════════════
 
     def detect_stale_jobs(self, stale_minutes: int = 15) -> List[AutomationJob]:
+        """Detect jobs that have been in active states too long."""
         client = self._require_client()
         try:
             result = client.rpc(
@@ -401,30 +478,36 @@ class JobService:
             ).execute()
             return [AutomationJob(**row) for row in result.data] if result.data else []
         except Exception as e:
-            logger.error("Failed to detect stale jobs: %s", e)
+            logger.error("Failed to detect stale jobs via RPC: %s", e)
             return self._detect_stale_jobs_fallback(stale_minutes)
 
     def _detect_stale_jobs_fallback(self, stale_minutes: int) -> List[AutomationJob]:
+        """Fallback method for stale job detection."""
         client = self._require_client()
-        from datetime import timedelta
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
         try:
-            result = client.table(self._table).select("*").in_(
-                "status", ["RUNNING", "GENERATING", "RENDERING", "PUBLISHING"]
-            ).lt("updated_at", cutoff).execute()
+            result = (
+                client.table(self._table)
+                .select("*")
+                .in_("status", ["RUNNING", "GENERATING", "RENDERING", "PUBLISHING"])
+                .lt("updated_at", cutoff)
+                .execute()
+            )
             return [AutomationJob(**row) for row in (result.data or [])]
         except Exception as e:
             logger.error("Fallback stale detection failed: %s", e)
             return []
 
     def recover_stale_jobs(self, stale_minutes: int = 15) -> int:
+        """Recover stale jobs by marking them as STALE."""
         stale_jobs = self.detect_stale_jobs(stale_minutes)
         recovered = 0
         for job in stale_jobs:
             try:
                 self.transition(job, JobStatus.STALE)
                 self._emit("job.stale_detected", {
-                    "job_id": job.job_id, "brand_id": job.brand_id,
+                    "job_id": job.job_id,
+                    "brand_id": job.brand_id,
                     "previous_status": job.status.value,
                     "stale_minutes": stale_minutes,
                 })
@@ -436,11 +519,7 @@ class JobService:
         return recovered
 
     def recover_and_retry(self, stale_minutes: int = 15) -> int:
-        """Recover stale jobs AND reset them to PENDING for retry.
-
-        More aggressive than recover_stale_jobs() — attempts to
-        re-queue stale jobs instead of just marking them STALE.
-        """
+        """Recover stale jobs AND reset them to PENDING for retry."""
         stale_jobs = self.detect_stale_jobs(stale_minutes)
         retried = 0
         for job in stale_jobs:
@@ -455,129 +534,57 @@ class JobService:
                 else:
                     self.transition(job, JobStatus.STALE)
             except Exception as e:
-                logger.error(
-                    "Failed to recover job %s: %s", job.job_id, e
-                )
+                logger.error("Failed to recover job %s: %s", job.job_id, e)
         if retried:
-            logger.warning(
-                "Recovered and retried %d stale jobs", retried
-            )
+            logger.warning("Recovered and retried %d stale jobs", retried)
         return retried
 
     def get_retry_pending_jobs(self, limit: int = 10) -> List[AutomationJob]:
+        """Get jobs waiting for retry."""
         client = self._require_client()
         try:
-            result = client.table(self._table).select("*").eq(
-                "status", JobStatus.RETRY_PENDING.value
-            ).order("updated_at", ascending=True).limit(limit).execute()
+            result = (
+                client.table(self._table)
+                .select("*")
+                .eq("status", JobStatus.RETRY_PENDING.value)
+                .order("updated_at", ascending=True)
+                .limit(limit)
+                .execute()
+            )
             return [AutomationJob(**row) for row in (result.data or [])]
         except Exception as e:
             logger.error("Failed to get retry-pending jobs: %s", e)
             return []
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.5 — Health & Metrics (WITH CACHE + REENTRY GUARD)
+    # v4.0 — Health (delegated to JobStatsService)
     # ═══════════════════════════════════════════════════════════════════
 
-    def _get_cached_stats(self, brand_id: Optional[str] = None) -> Optional[dict]:
-        with self._stats_lock:
-            if self._stats_cache is not None:
-                if time.monotonic() - self._stats_cache_time < self.STATS_CACHE_TTL_SECONDS:
-                    return self._stats_cache
-        return None
-
-    def _set_cached_stats(self, stats: dict) -> None:
-        with self._stats_lock:
-            self._stats_cache = stats
-            self._stats_cache_time = time.monotonic()
-
-    def _invalidate_stats_cache(self) -> None:
-        with self._stats_lock:
-            self._stats_cache = None
-
-    def get_status_counts(self, brand_id: Optional[str] = None) -> dict:
-        cached = self._get_cached_stats(brand_id)
-        if cached and "status_counts" in cached:
-            return cached["status_counts"]
-        client = self._require_client()
-        try:
-            query = client.table(self._table).select("status")
-            if brand_id:
-                query = query.eq("brand_id", brand_id)
-            result = query.execute()
-            counts: dict[str, int] = {}
-            for row in result.data or []:
-                status = row.get("status", "unknown")
-                counts[status] = counts.get(status, 0) + 1
-            return counts
-        except Exception as e:
-            logger.error("Failed to get status counts: %s", e)
-            return {}
-
-    def get_today_stats(self, brand_id: Optional[str] = None) -> dict:
-        cached = self._get_cached_stats(brand_id)
-        if cached and "today" in cached:
-            return cached["today"]
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        client = self._require_client()
-        try:
-            query = client.table(self._table).select("status").gte(
-                "created_at", f"{today}T00:00:00Z"
-            )
-            if brand_id:
-                query = query.eq("brand_id", brand_id)
-            result = query.execute()
-            stats = {"total": 0, "published": 0, "failed": 0, "retrying": 0, "active": 0}
-            for row in result.data or []:
-                stats["total"] += 1
-                status = row.get("status", "")
-                if status == "PUBLISHED":
-                    stats["published"] += 1
-                elif status == "FAILED":
-                    stats["failed"] += 1
-                elif status == "RETRY_PENDING":
-                    stats["retrying"] += 1
-                elif status in [s.value for s in ACTIVE_STATES]:
-                    stats["active"] += 1
-            return stats
-        except Exception as e:
-            logger.error("Failed to get today stats: %s", e)
-            return {"total": 0, "published": 0, "failed": 0, "retrying": 0, "active": 0}
-
-    def get_stats(self, brand_id: Optional[str] = None) -> dict:
-        # Reentry guard — prevents infinite recursion from MetaEngine health checks
-        if self._computing_stats:
-            return {
-                "today": {"total": 0, "published": 0, "failed": 0, "retrying": 0, "active": 0},
-                "status_counts": {}, "active_jobs": 0, "oldest_active_minutes": 0,
-            }
-
-        cached = self._get_cached_stats(brand_id)
-        if cached:
-            return cached
-
-        try:
-            self._computing_stats = True
-            today_stats = self.get_today_stats(brand_id)
-            status_counts = self.get_status_counts(brand_id)
-            active_jobs = self.find_active_jobs(brand_id)
-            stats = {
-                "today": today_stats,
-                "status_counts": status_counts,
-                "active_jobs": len(active_jobs),
-                "oldest_active_minutes": (
-                    round(
-                        (datetime.now(timezone.utc) - min(
-                            j.updated_at for j in active_jobs
-                        )).total_seconds() / 60, 1
-                    ) if active_jobs else 0
-                ),
-            }
-            self._set_cached_stats(stats)
-            return stats
-        finally:
-            self._computing_stats = False
-
     def health_check(self) -> dict:
-        stats = self.get_stats()
-        return {"status": "healthy", "stats": stats}
+        """
+        Health check that delegates to JobStatsService.
+        No stats computation in this class. No recursion possible.
+        """
+        try:
+            from services.job_stats_service import get_job_stats_service
+            stats_service = get_job_stats_service()
+            return stats_service.health_check()
+        except Exception as e:
+            logger.error("JobService health check failed: %s", e)
+            return {
+                "status": "degraded",
+                "error": str(e),
+            }
+
+    def get_status(self) -> dict:
+        """Legacy get_status — delegates to health_check."""
+        return self.health_check()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# EXPOSED FOR TESTING
+# ═══════════════════════════════════════════════════════════════════════
+
+__all__ = [
+    "JobService",
+]
