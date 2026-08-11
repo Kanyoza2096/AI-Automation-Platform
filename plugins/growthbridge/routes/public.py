@@ -9,14 +9,33 @@ from typing import Optional
 
 router = APIRouter(prefix="/api/v1/growthbridge", tags=["growthbridge"])
 
+# ═══════════════════════════════════════════════════════════════════════
+# Shared Supabase client — created once, reused across all requests
+# ═══════════════════════════════════════════════════════════════════════
+
+_supabase_client = None
+
 
 def _get_supabase():
-    """Get Supabase client from the plugin context."""
+    """Get or create the shared Supabase client."""
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+    
     try:
         from services.supabase import get_service_client_from_settings
-        return get_service_client_from_settings()
+        _supabase_client = get_service_client_from_settings()
     except Exception:
-        return None
+        pass
+    
+    return _supabase_client
+
+
+# Optionally wire from lifecycle.py
+def set_supabase_client(client):
+    """Allow lifecycle.py to inject the client at boot."""
+    global _supabase_client
+    _supabase_client = client
 
 
 # ── Services ──────────────────────────────────────────────────────────────
@@ -28,12 +47,14 @@ async def get_services(category: Optional[str] = None):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    query = client.table("growthbridge_services").select("*").eq("is_published", True).order("sort_order")
-    if category:
-        query = query.eq("category", category)
-    
-    result = query.execute()
-    return {"services": result.data or []}
+    try:
+        query = client.table("growthbridge_services").select("*").eq("is_published", True).order("sort_order")
+        if category:
+            query = query.eq("category", category)
+        result = query.execute()
+        return {"services": result.data or []}
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 @router.get("/services/{slug}")
@@ -43,10 +64,15 @@ async def get_service(slug: str):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("growthbridge_services").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
-    if not result.data:
-        raise HTTPException(404, "Service not found")
-    return result.data[0]
+    try:
+        result = client.table("growthbridge_services").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
+        if not result.data:
+            raise HTTPException(404, "Service not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 # ── Projects ──────────────────────────────────────────────────────────────
@@ -58,12 +84,14 @@ async def get_projects(featured: Optional[bool] = None):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    query = client.table("growthbridge_projects").select("*").eq("is_published", True).order("created_at", desc=True)
-    if featured:
-        query = query.eq("is_featured", True)
-    
-    result = query.execute()
-    return {"projects": result.data or []}
+    try:
+        query = client.table("growthbridge_projects").select("*").eq("is_published", True).order("created_at", desc=True)
+        if featured:
+            query = query.eq("is_featured", True)
+        result = query.execute()
+        return {"projects": result.data or []}
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 @router.get("/projects/{slug}")
@@ -73,10 +101,15 @@ async def get_project(slug: str):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("growthbridge_projects").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
-    if not result.data:
-        raise HTTPException(404, "Project not found")
-    return result.data[0]
+    try:
+        result = client.table("growthbridge_projects").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
+        if not result.data:
+            raise HTTPException(404, "Project not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 # ── Blog ──────────────────────────────────────────────────────────────────
@@ -88,11 +121,13 @@ async def get_blog_posts(page: int = Query(1, ge=1), limit: int = Query(10, le=5
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    offset = (page - 1) * limit
-    result = client.table("growthbridge_blog").select("*").eq("is_published", True) \
-        .order("published_at", desc=True).range(offset, offset + limit - 1).execute()
-    
-    return {"posts": result.data or [], "page": page, "limit": limit}
+    try:
+        offset = (page - 1) * limit
+        result = client.table("growthbridge_blog").select("*").eq("is_published", True) \
+            .order("published_at", desc=True).range(offset, offset + limit - 1).execute()
+        return {"posts": result.data or [], "page": page, "limit": limit}
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 @router.get("/blog/{slug}")
@@ -102,10 +137,15 @@ async def get_blog_post(slug: str):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("growthbridge_blog").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
-    if not result.data:
-        raise HTTPException(404, "Post not found")
-    return result.data[0]
+    try:
+        result = client.table("growthbridge_blog").select("*").eq("slug", slug).eq("is_published", True).limit(1).execute()
+        if not result.data:
+            raise HTTPException(404, "Post not found")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 # ── Testimonials ──────────────────────────────────────────────────────────
@@ -117,8 +157,11 @@ async def get_testimonials():
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("growthbridge_testimonials").select("*").eq("is_published", True).order("created_at", desc=True).execute()
-    return {"testimonials": result.data or []}
+    try:
+        result = client.table("growthbridge_testimonials").select("*").eq("is_published", True).order("created_at", desc=True).execute()
+        return {"testimonials": result.data or []}
+    except Exception as e:
+        raise HTTPException(502, f"Database query failed: {str(e)[:200]}")
 
 
 # ── Applications & Registrations (POST — public) ──────────────────────────
@@ -135,17 +178,19 @@ async def apply_talent(data: dict):
         if not data.get(field):
             raise HTTPException(400, f"'{field}' is required")
     
-    result = client.table("growthbridge_talent").insert({
-        "name": data["name"],
-        "email": data["email"],
-        "bio": data.get("bio", ""),
-        "skills": data.get("skills", []),
-        "experience_level": data.get("experience_level", ""),
-        "portfolio_url": data.get("portfolio_url", ""),
-        "availability": data.get("availability", ""),
-    }).execute()
-    
-    return {"ok": True, "message": "Application submitted successfully", "id": result.data[0]["id"] if result.data else None}
+    try:
+        result = client.table("growthbridge_talent").insert({
+            "name": data["name"],
+            "email": data["email"],
+            "bio": data.get("bio", ""),
+            "skills": data.get("skills", []),
+            "experience_level": data.get("experience_level", ""),
+            "portfolio_url": data.get("portfolio_url", ""),
+            "availability": data.get("availability", ""),
+        }).execute()
+        return {"ok": True, "message": "Application submitted successfully", "id": result.data[0]["id"] if result.data else None}
+    except Exception as e:
+        raise HTTPException(502, f"Failed to submit application: {str(e)[:200]}")
 
 
 @router.post("/partners/apply")
@@ -158,15 +203,17 @@ async def apply_partner(data: dict):
     if not data.get("organization_name") or not data.get("email"):
         raise HTTPException(400, "'organization_name' and 'email' are required")
     
-    result = client.table("growthbridge_partners").insert({
-        "organization_name": data["organization_name"],
-        "contact_person": data.get("contact_person", ""),
-        "email": data["email"],
-        "industry": data.get("industry", ""),
-        "website": data.get("website", ""),
-    }).execute()
-    
-    return {"ok": True, "message": "Partnership request submitted", "id": result.data[0]["id"] if result.data else None}
+    try:
+        result = client.table("growthbridge_partners").insert({
+            "organization_name": data["organization_name"],
+            "contact_person": data.get("contact_person", ""),
+            "email": data["email"],
+            "industry": data.get("industry", ""),
+            "website": data.get("website", ""),
+        }).execute()
+        return {"ok": True, "message": "Partnership request submitted", "id": result.data[0]["id"] if result.data else None}
+    except Exception as e:
+        raise HTTPException(502, f"Failed to submit partnership request: {str(e)[:200]}")
 
 
 @router.post("/contact")
@@ -179,13 +226,15 @@ async def contact(data: dict):
     if not data.get("name") or not data.get("email") or not data.get("application_type"):
         raise HTTPException(400, "'name', 'email', and 'application_type' are required")
     
-    result = client.table("growthbridge_applications").insert({
-        "name": data["name"],
-        "email": data["email"],
-        "phone": data.get("phone", ""),
-        "application_type": data["application_type"],
-        "skills": data.get("skills", ""),
-        "message": data.get("message", ""),
-    }).execute()
-    
-    return {"ok": True, "message": "Your message has been received", "id": result.data[0]["id"] if result.data else None}
+    try:
+        result = client.table("growthbridge_applications").insert({
+            "name": data["name"],
+            "email": data["email"],
+            "phone": data.get("phone", ""),
+            "application_type": data["application_type"],
+            "skills": data.get("skills", ""),
+            "message": data.get("message", ""),
+        }).execute()
+        return {"ok": True, "message": "Your message has been received", "id": result.data[0]["id"] if result.data else None}
+    except Exception as e:
+        raise HTTPException(502, f"Failed to submit contact form: {str(e)[:200]}")
