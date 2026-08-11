@@ -1457,32 +1457,56 @@ def _boot_guardian_scheduler(
     logger.info("Guardian started.")
 
 
-def _boot_code_intelligence(container):
+def _boot_code_intelligence(
+    container: ServiceContainer,
+) -> None:
+    """Start Code Intelligence engine if GitHub is configured."""
+    from config.settings import settings
+
+    if not settings.guardian_configured:
+        logger.info(
+            "CodeIntelligence: GitHub not configured — skipping."
+        )
+        return
+
     try:
-        from services.code_intelligence_engine import init_code_intelligence
+        from services.code_intelligence_engine import (
+            init_code_intelligence,
+        )
         from guardian.github_client import GitHubClient
         from core.event_bus import EventBus
-        
-        if not settings.guardian_configured:
-            logger.info("Code Intelligence: GitHub not configured — skipping")
-            return
-        
-        github = GitHubClient(settings.github_username, settings.github_token)
+
+        github = GitHubClient(
+            settings.github_username,
+            settings.github_token,
+        )
         event_bus = container.try_resolve(EventBus)
-        
+
         engine = init_code_intelligence(
             github_client=github,
             event_bus=event_bus,
             container=container,
+            auto_start=True,
         )
-        
-        from services.meta_engine import meta_engine
-        meta_engine.register("code_intelligence", engine)
-        
-        logger.info("CodeIntelligenceEngine: started")
-    except Exception as exc:
-        logger.warning("CodeIntelligenceEngine: could not start: %s", exc)
 
+        shutdown_registry.register(
+            "CodeIntelligence",
+            engine.stop,
+            timeout_seconds=10.0,
+        )
+
+        # Register with MetaEngine for health monitoring
+        try:
+            from services.meta_engine import meta_engine
+            meta_engine.register("code_intelligence", engine)
+        except Exception:
+            pass
+
+        logger.info("CodeIntelligenceEngine: started.")
+    except Exception as exc:
+        logger.warning(
+            "CodeIntelligenceEngine: could not start: %s", exc
+  )
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 3: OBSERVABILITY
 # ═══════════════════════════════════════════════════════════════════════════
