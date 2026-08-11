@@ -164,6 +164,54 @@ class _JobServiceHealthProvider:
                 service_name=self.service_name,
                 error_message=str(exc)[:200],
             )
+
+
+class ServiceHealthRegistry:
+    def __init__(self):
+        self._providers: dict[str, HealthProvider] = {}
+        self._lock = threading.RLock()
+        self._startup_complete = threading.Event()
+
+    def register(self, provider: HealthProvider) -> None:
+        with self._lock:
+            if provider.service_name in self._providers:
+                logger.warning(
+                    "Health provider '%s' registered twice — overwriting.",
+                    provider.service_name,
+                )
+            self._providers[provider.service_name] = provider
+
+    def unregister(self, service_name: str) -> None:
+        with self._lock:
+            self._providers.pop(service_name, None)
+
+    def get_all(self) -> list[HealthProvider]:
+        with self._lock:
+            return list(self._providers.values())
+
+    def get(self, service_name: str) -> HealthProvider | None:
+        with self._lock:
+            return self._providers.get(service_name)
+
+    def check_all(
+        self, timeout_per_service: float = 5.0
+    ) -> dict[str, HealthReport]:
+        results: dict[str, HealthReport] = {}
+        providers = self.get_all()
+        for provider in providers:
+            try:
+                start = time.monotonic()
+                report = provider.check_health()
+                report.latency_ms = (
+                    time.monotonic() - start
+                ) * 1000
+                results[provider.service_name] = report
+            except Exception as exc:
+                results[provider.service_name] = HealthReport(
+                    status=HealthStatus.UNHEALTHY,
+                    service_name=provider.service_name,
+                    error_message=str(exc),
+                )
         if self._startup_complete.is_set():
             for name in self._providers:
                 if name not in results:
@@ -184,7 +232,6 @@ class _JobServiceHealthProvider:
 
 
 health_registry = ServiceHealthRegistry()
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SHUTDOWN HOOK REGISTRY
