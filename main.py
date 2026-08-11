@@ -53,6 +53,9 @@ from core.socket_server import create_socket_app
 
 logger = logging.getLogger("kanyoza.main")
 
+# Suppress garbage collection noise from supabase-auth library
+logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # STARTUP METADATA — Used by health/readiness probes
 # ═══════════════════════════════════════════════════════════════════════════
