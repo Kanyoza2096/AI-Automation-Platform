@@ -576,7 +576,16 @@ def _boot_supabase(
         logger.info("Supabase disabled — skipping.")
         return
 
-    get_service_client_from_settings()
+    client = get_service_client_from_settings()
+
+    # v2.0 — Wire API Token Manager to persistent storage
+    try:
+        from core.api_tokens import api_token_manager
+        api_token_manager.set_supabase_client(client)
+        logger.info("APITokenManager: persistent storage wired")
+    except Exception as exc:
+        logger.warning("APITokenManager wiring failed: %s", exc)
+
     logger.info("Supabase connected.")
 
 
@@ -586,17 +595,11 @@ def _boot_redis(
     from core.redis_client import UpstashRedisClient
 
     try:
-        redis = container.resolve(
-            UpstashRedisClient
-        )
+        redis = container.resolve(UpstashRedisClient)
         redis.ping()
         logger.info("Redis connected.")
     except Exception as exc:
-        logger.warning(
-            "Redis not available: %s", exc
-        )
-
-
+        logger.warning("Redis not available: %s", exc)
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 1: CORE
 # ═══════════════════════════════════════════════════════════════════════════
