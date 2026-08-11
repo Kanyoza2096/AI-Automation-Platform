@@ -9,6 +9,9 @@ v3.0 FIXES:
   - mark_failed() now transitions through RETRY_PENDING correctly
     for all active states.
 
+v3.1 — Added ACTIVE_STATUS_VALUES and TERMINAL_STATUS_VALUES
+       string tuples for database queries.
+
 Job Lifecycle (Architecture §22):
   CREATED → QUEUED → RUNNING → GENERATING → VALIDATING →
   RENDERING → READY → PUBLISHING → PUBLISHED
@@ -64,7 +67,7 @@ class JobStatus(str, enum.Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Transition Rules
+# Status Sets
 # ═══════════════════════════════════════════════════════════════════════════
 
 ACTIVE_STATES: frozenset[JobStatus] = frozenset({
@@ -85,6 +88,22 @@ TERMINAL_STATES: frozenset[JobStatus] = frozenset({
     JobStatus.FAILED,
     JobStatus.CANCELLED,
 })
+
+# ═══════════════════════════════════════════════════════════════════════════
+# String Constants (for database queries — single source of truth)
+# ═══════════════════════════════════════════════════════════════════════════
+
+ACTIVE_STATUS_VALUES: tuple[str, ...] = tuple(
+    s.value for s in ACTIVE_STATES
+)
+
+TERMINAL_STATUS_VALUES: tuple[str, ...] = tuple(
+    s.value for s in TERMINAL_STATES
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Transition Rules
+# ═══════════════════════════════════════════════════════════════════════════
 
 RETRYABLE_SOURCE_STATES: frozenset[JobStatus] = frozenset({
     JobStatus.RETRY_PENDING,
