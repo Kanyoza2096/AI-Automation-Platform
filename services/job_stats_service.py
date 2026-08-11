@@ -21,15 +21,31 @@ from core.errors import DatabaseQueryError
 
 logger = logging.getLogger("kanyoza.services.job_stats_service")
 
-# Single source of truth for active statuses
+# ═══════════════════════════════════════════════════════════════════════
+# Single source of truth — hardcoded to avoid circular imports
+# Must match models.automation_job.ACTIVE_STATUS_VALUES exactly
+# ═══════════════════════════════════════════════════════════════════════
+
 ACTIVE_STATUS_VALUES = (
-    "QUEUED", "RUNNING", "GENERATING", "VALIDATING",
-    "RENDERING", "READY", "PUBLISHING", "PENDING",
+    "CREATED",
+    "QUEUED",
+    "RUNNING",
+    "GENERATING",
+    "VALIDATING",
+    "RENDERING",
+    "READY",
+    "PUBLISHING",
+    "RETRY_PENDING",
+    "STALE",
 )
 
 TERMINAL_STATUS_VALUES = (
-    "PUBLISHED", "FAILED", "CANCELLED", "STALE",
+    "PUBLISHED",
+    "FAILED",
+    "CANCELLED",
 )
+
+# Rest of the file is unchanged from the refactored version I provided earlier...
 
 
 class JobStatsService:
