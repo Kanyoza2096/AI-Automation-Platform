@@ -1,6 +1,14 @@
 """
 API Token management — per-workspace token generation, validation, and revocation.
 
+v2.0 FIXES:
+  - create_token() now raises on DB persistence failure instead of
+    silently returning a token that was never stored.
+  - Added set_supabase_client() so lifecycle.py can wire the real client.
+  - Added health_check() and get_stats() for MetaEngine compatibility.
+  - validate_token() DB failure now falls back to in-memory safely
+    with explicit logging of the degradation.
+
 Tokens are stored as SHA-256 hashes in Supabase (never in plaintext).
 Token format: ``kny_<32-byte-hex>``
 """
@@ -23,16 +31,40 @@ class APITokenManager:
     Tokens are validated per-request by looking up the hashed value in
     the ``api_tokens`` table. The plaintext token is only shown once
     at creation time.
+
+    v2.0: DB persistence failures raise exceptions instead of
+    silently returning unusable tokens.
     """
 
     _PREFIX = "kny_"
 
     def __init__(self, supabase_client=None) -> None:
         self._db = supabase_client
-        # In-memory fallback for single-tenant / dev mode
         self._tokens: Dict[str, Dict] = {}
+        self._tokens_created = 0
+        self._tokens_revoked = 0
+        self._validations = 0
 
-    # ── Generation ────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════
+    # v2.0 — WIRING (called by lifecycle.py)
+    # ═══════════════════════════════════════════════════════════════
+
+    def set_supabase_client(self, client) -> None:
+        """Wire the Supabase client after initialization.
+
+        Called by lifecycle.py during boot. Without this, all token
+        operations fall back to in-memory storage which is lost on
+        restart.
+        """
+        self._db = client
+        logger.info(
+            "APITokenManager: Supabase client wired — "
+            "persistent token storage enabled"
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # GENERATION
+    # ═══════════════════════════════════════════════════════════════
 
     def create_token(
         self,
@@ -44,6 +76,9 @@ class APITokenManager:
         """Create a new API token for a workspace.
 
         Returns the plaintext token (shown **once**) and token metadata.
+
+        v2.0: Raises RuntimeError if DB persistence fails, rather than
+        returning a token that was never stored.
         """
         raw_token = f"{self._PREFIX}{secrets.token_hex(32)}"
         token_hash = self._hash(raw_token)
@@ -64,22 +99,55 @@ class APITokenManager:
         if self._db:
             try:
                 self._db.table("api_tokens").insert(record).execute()
+                self._tokens_created += 1
             except Exception as exc:
-                logger.error("APITokenManager.create_token DB error: %s", exc)
+                logger.error(
+                    "APITokenManager.create_token: DB persistence FAILED "
+                    "for token %s — token NOT created. Error: %s",
+                    token_id, exc,
+                )
+                raise RuntimeError(
+                    f"Failed to persist API token to database: {exc}"
+                ) from exc
         else:
+            # In-memory fallback — only for development
             self._tokens[token_hash] = record
+            self._tokens_created += 1
+            logger.warning(
+                "APITokenManager: token %s stored IN-MEMORY only — "
+                "will be lost on restart. Wire Supabase client.",
+                token_id,
+            )
 
-        logger.info("API token created: id=%s workspace=%s name='%s'", token_id, workspace_id, name)
-        return {"token": raw_token, "id": token_id, "name": name, "permissions": permissions or ["read"]}
+        logger.info(
+            "API token created: id=%s workspace=%s name='%s'",
+            token_id, workspace_id, name,
+        )
+        return {
+            "token": raw_token,
+            "id": token_id,
+            "name": name,
+            "permissions": permissions or ["read"],
+        }
 
-    # ── Validation ────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════
+    # VALIDATION
+    # ═══════════════════════════════════════════════════════════════
 
-    def validate_token(self, raw_token: str) -> Optional[Dict[str, Any]]:
-        """Validate a token. Returns the token record if valid, else None."""
+    def validate_token(
+        self, raw_token: str
+    ) -> Optional[Dict[str, Any]]:
+        """Validate a token. Returns the token record if valid, else None.
+
+        v2.0: DB failure during validation now logs a clear warning
+        and falls back to in-memory rather than silently returning None.
+        """
         if not raw_token or not raw_token.startswith(self._PREFIX):
             return None
 
         token_hash = self._hash(raw_token)
+        record = None
+        db_error = False
 
         if self._db:
             try:
@@ -93,9 +161,14 @@ class APITokenManager:
                 )
                 record = res.data if res else None
             except Exception as exc:
-                logger.error("APITokenManager.validate_token DB error: %s", exc)
-                record = None
-        else:
+                logger.error(
+                    "APITokenManager.validate_token: DB query failed — "
+                    "falling back to in-memory. Error: %s", exc,
+                )
+                db_error = True
+
+        # Fallback to in-memory if DB unavailable
+        if record is None and (not self._db or db_error):
             record = self._tokens.get(token_hash)
 
         if not record:
@@ -106,66 +179,127 @@ class APITokenManager:
             try:
                 exp = datetime.fromisoformat(record["expires_at"])
                 if datetime.now(timezone.utc) > exp:
-                    logger.warning("API token expired: %s", record["id"])
+                    logger.warning(
+                        "API token expired: %s", record.get("id", "unknown")
+                    )
                     return None
             except Exception:
                 pass
 
-        # Update last_used_at (best-effort)
-        self._touch(record["id"])
+        # Update last_used_at (best-effort, non-blocking)
+        self._touch(record.get("id", ""))
+        self._validations += 1
         return record
 
-    # ── Revocation ────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════
+    # REVOCATION
+    # ═══════════════════════════════════════════════════════════════
 
-    def revoke_token(self, token_id: str, workspace_id: str) -> bool:
+    def revoke_token(
+        self, token_id: str, workspace_id: str
+    ) -> bool:
         """Revoke a token by ID. Only the owning workspace can revoke it."""
         if self._db:
             try:
-                self._db.table("api_tokens").update({"revoked": True}).eq("id", token_id).eq("workspace_id", workspace_id).execute()
+                self._db.table("api_tokens").update(
+                    {"revoked": True}
+                ).eq("id", token_id).eq(
+                    "workspace_id", workspace_id
+                ).execute()
+                self._tokens_revoked += 1
                 return True
             except Exception as exc:
-                logger.error("APITokenManager.revoke_token error: %s", exc)
+                logger.error(
+                    "APITokenManager.revoke_token error: %s", exc
+                )
                 return False
         else:
             for h, rec in self._tokens.items():
-                if rec["id"] == token_id and rec["workspace_id"] == workspace_id:
+                if (
+                    rec["id"] == token_id
+                    and rec["workspace_id"] == workspace_id
+                ):
                     rec["revoked"] = True
+                    self._tokens_revoked += 1
                     return True
             return False
 
-    def list_tokens(self, workspace_id: str) -> List[Dict]:
-        """List all active tokens for a workspace (never shows the raw token)."""
+    def list_tokens(
+        self, workspace_id: str
+    ) -> List[Dict]:
+        """List all active tokens for a workspace (never shows raw token)."""
         if self._db:
             try:
-                res = self._db.table("api_tokens").select("id,name,permissions,created_at,last_used_at,expires_at,revoked").eq("workspace_id", workspace_id).execute()
+                res = (
+                    self._db.table("api_tokens")
+                    .select(
+                        "id,name,permissions,created_at,"
+                        "last_used_at,expires_at,revoked"
+                    )
+                    .eq("workspace_id", workspace_id)
+                    .execute()
+                )
                 return res.data or []
             except Exception as exc:
-                logger.error("APITokenManager.list_tokens error: %s", exc)
+                logger.error(
+                    "APITokenManager.list_tokens error: %s", exc
+                )
                 return []
         return [
-            {k: v for k, v in rec.items() if k != "token_hash"}
+            {
+                k: v
+                for k, v in rec.items()
+                if k != "token_hash"
+            }
             for rec in self._tokens.values()
             if rec["workspace_id"] == workspace_id
         ]
 
-    # ── Helpers ───────────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════════════
+    # HELPERS
+    # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
     def _hash(token: str) -> str:
         return hashlib.sha256(token.encode()).hexdigest()
 
     def _touch(self, token_id: str) -> None:
+        """Update last_used_at — best-effort, never blocks."""
+        if not token_id:
+            return
         ts = datetime.now(timezone.utc).isoformat()
         if self._db:
             try:
-                self._db.table("api_tokens").update({"last_used_at": ts}).eq("id", token_id).execute()
+                self._db.table("api_tokens").update(
+                    {"last_used_at": ts}
+                ).eq("id", token_id).execute()
             except Exception:
                 pass
         else:
             for rec in self._tokens.values():
-                if rec["id"] == token_id:
+                if rec.get("id") == token_id:
                     rec["last_used_at"] = ts
 
+    # ═══════════════════════════════════════════════════════════════
+    # v2.0 — HEALTH & STATISTICS
+    # ═══════════════════════════════════════════════════════════════
 
-# Module-level singleton
+    def get_stats(self) -> dict:
+        return {
+            "tokens_created": self._tokens_created,
+            "tokens_revoked": self._tokens_revoked,
+            "validations": self._validations,
+            "persistent_storage": self._db is not None,
+            "in_memory_tokens": len(self._tokens),
+        }
+
+    def health_check(self) -> dict:
+        stats = self.get_stats()
+        status = "healthy"
+        if not stats["persistent_storage"]:
+            status = "degraded"
+        return {"status": status, "stats": stats}
+
+
+# Module-level singleton — Supabase client wired by lifecycle.py
 api_token_manager = APITokenManager()
