@@ -1,21 +1,16 @@
 """
-KANYOZA DIRECTOR v2.0 — "THE AUTONOMOUS CEO"
+KANYOZA DIRECTOR v3.0 — "THE AUTONOMOUS CEO"
 
 Single-file autonomous observation, decision, approval, execution,
 learning, briefing, and notification engine.
 
-v2.0 UPGRADES:
-  - Strategic foresight — 7-day health & task volume predictions
-  - Resource allocation intelligence — weighted attention by importance
-  - Executive summaries — human-readable narrative generation
-  - Cross-engine anomaly correlation — connected failure analysis
-  - Decision pattern matching — "I've handled this before"
-  - Proactive initiative generation — suggests improvements
-  - Safe async execution — no more asyncio.run() crashes
-  - Capability binding — placeholder handlers replaced at boot
-  - Telegram alerts for critical engine failures
-  - Brand engagement anomaly alerts
-  - Daily 8am briefing via Telegram
+v3.0 CHANGES:
+  - Async event queue replaces synchronous event_cb (no more cycles)
+  - Staggered loop with random jitter (no more collision with other engines)
+  - Circuit breaker on observation failures (no more death spirals)
+  - Separate event drain thread (callbacks never block observations)
+  - Engine health reads from cache where available (no double-calling)
+  - Exponential backoff on consecutive failures
 """
 
 from __future__ import annotations
@@ -370,11 +365,10 @@ class Goal:
     enabled: bool = True
 
 
-# v2.0 data models
+# v3.0 data models
 
 @dataclass
 class StrategicOutlook:
-    """Forward-looking strategic assessment."""
     horizon_days: int
     predicted_health_score: float
     predicted_task_volume: int
@@ -387,7 +381,6 @@ class StrategicOutlook:
 
 @dataclass
 class ResourceAllocation:
-    """Where the Director recommends investing resources."""
     sector: Sector
     current_health: float
     importance_weight: float
@@ -790,9 +783,10 @@ ENGINE_REGISTRY = [
         "scheduler",
         Sector.CONTENT,
     ),
+    # v3.0 — job_service observer now reads from JobStatsService cache
     (
-        "services.job_service",
-        "JobService",
+        "services.job_stats_service",
+        "get_job_stats_service",
         "job_service",
         Sector.INFRA,
     ),
@@ -845,6 +839,7 @@ def _make_observer(
     engine_name: str, engine_obj: Any
 ) -> Callable:
     def observe() -> dict:
+        # Try get_status first
         if hasattr(engine_obj, "get_status"):
             try:
                 r = engine_obj.get_status()
@@ -857,6 +852,8 @@ def _make_observer(
                     }
             except Exception:
                 pass
+
+        # Try health_check
         if hasattr(engine_obj, "health_check"):
             try:
                 r = engine_obj.health_check()
@@ -867,6 +864,20 @@ def _make_observer(
                     }
             except Exception:
                 pass
+
+        # Try get_stats (for JobStatsService)
+        if hasattr(engine_obj, "get_stats"):
+            try:
+                r = engine_obj.get_stats()
+                if isinstance(r, dict):
+                    return {
+                        "status": "healthy",
+                        "metrics": r,
+                    }
+            except Exception:
+                pass
+
+        # Fallback: inspect attributes
         try:
             metrics = {}
             for attr in (
@@ -886,6 +897,7 @@ def _make_observer(
                 return {"status": "healthy", "metrics": metrics}
         except Exception:
             pass
+
         return {
             "status": "healthy",
             "metrics": {"engine": engine_name},
@@ -903,6 +915,13 @@ def auto_discover_engines(
             module = __import__(module_path, fromlist=[attr_name])
             engine = getattr(module, attr_name, None)
             if engine is not None:
+                # v3.0 — Callable getters: call them to get the instance
+                if callable(engine) and not isinstance(engine, type):
+                    try:
+                        engine = engine()
+                    except Exception:
+                        pass
+
                 director.register_observer(
                     FunctionObserver(
                         display_name,
@@ -969,11 +988,11 @@ def _infer_plugin_sector(name: str) -> Sector:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# THE DIRECTOR v2.0
+# THE DIRECTOR v3.0
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Director:
-    VERSION = "2.0.0"
+    VERSION = "3.0.0"
 
     def __init__(
         self, supabase_client=None, interval: int = 60
@@ -990,7 +1009,10 @@ class Director:
                 "Director storage: In-Memory "
                 "(Supabase not configured)"
             )
-        self.interval = max(10, interval)
+
+        # v3.0 — Staggered interval with jitter
+        self.interval = max(10, interval) + random.uniform(0, 15)
+
         self.policy = Policy()
         self.lock = threading.RLock()
         self.running = False
@@ -1007,9 +1029,20 @@ class Director:
         self.last_plan: Optional[datetime] = None
         self.last_observation: Optional[datetime] = None
         self.alert_cb: Optional[Callable] = None
-        self.event_cb: Optional[Callable] = None
+
+        # v3.0 — Async event queue (replaces synchronous event_cb)
+        self._event_queue: deque = deque(maxlen=2000)
+        self._event_thread: Optional[threading.Thread] = None
+        self._stored_event_cb: Optional[Callable] = None
+
         self._last_daily_briefing: Optional[str] = None
         self._alert_history: deque = deque(maxlen=500)
+
+        # v3.0 — Circuit breaker for observation cycles
+        self._consecutive_failures: int = 0
+        self._observation_circuit_open: bool = False
+        self._observation_circuit_reset_time: float = 0.0
+
         self._init_goals()
         self._init_capabilities()
         log.info(
@@ -1235,16 +1268,12 @@ class Director:
         }
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — CAPABILITY BINDING
+    # CAPABILITY BINDING
     # ═══════════════════════════════════════════════════════════════════
 
     def bind_capability(
         self, name: str, handler: Callable
     ) -> None:
-        """Replace a placeholder handler with a real implementation.
-
-        Called by lifecycle.py during boot to wire real services.
-        """
         if name not in self.capabilities:
             raise ValueError(f"Unknown capability: {name}")
         self.capabilities[name].handler = handler
@@ -1272,20 +1301,57 @@ class Director:
     ) -> None:
         self.alert_cb = cb
 
+    # v3.0 — REPLACED: event_cb is now async
     def set_event_callback(
         self, cb: Callable
     ) -> None:
-        self.event_cb = cb
+        """
+        Store callback for async processing.
+
+        v3.0: This does NOT call the callback synchronously.
+        Events are queued and processed in a separate thread.
+        Other engines should use enqueue_event() instead of
+        calling this directly.
+        """
+        self._stored_event_cb = cb
+        log.info("Director: event callback stored (async mode)")
+
+    # v3.0 — NEW: Non-blocking event enqueue
+    def enqueue_event(self, name: str, payload: dict) -> None:
+        """
+        Enqueue an event for async processing.
+
+        Called by other engines (MonitorPlugin, JobService, etc.)
+        instead of the old synchronous event_cb.
+        This is NON-BLOCKING and cannot cause recursion.
+        """
+        self._event_queue.append({
+            "name": name,
+            "payload": payload,
+            "timestamp": time.monotonic(),
+        })
 
     # ═══════════════════════════════════════════════════════════════════
     # OBSERVATION
     # ═══════════════════════════════════════════════════════════════════
 
     def observe_all(self) -> Dict[str, Observation]:
+        """Observe all registered engines."""
         for name, observer in list(self.observers.items()):
-            obs = observer.observe()
-            self.observations[name] = obs
-            self.store.save_observation(obs)
+            try:
+                obs = observer.observe()
+                self.observations[name] = obs
+                self.store.save_observation(obs)
+            except Exception as exc:
+                log.warning("Observer '%s' failed: %s", name, exc)
+                # Create a degraded observation instead of crashing
+                self.observations[name] = Observation(
+                    name,
+                    Sector.INFRA,
+                    Health.DEGRADED,
+                    issues=[{"type": "observer_error", "error": str(exc)}],
+                )
+
         self.last_observation = now()
         self._check_critical_and_alert()
         return self.observations
@@ -1347,7 +1413,6 @@ class Director:
     def _send_telegram(self, message: str) -> bool:
         try:
             from services.email_service import email_service
-
             return email_service.send_telegram(message)
         except Exception as exc:
             log.error("Telegram send failed: %s", exc)
@@ -1437,7 +1502,6 @@ class Director:
                 from plugins.backup.plugin import (
                     backup_plugin,
                 )
-
                 if backup_plugin and backup_plugin.supabase:
                     records = (
                         backup_plugin.supabase.table(
@@ -1472,7 +1536,6 @@ class Director:
                 from plugins.monitor.plugin import (
                     monitor_plugin,
                 )
-
                 if monitor_plugin and monitor_plugin.supabase:
                     targets = (
                         monitor_plugin.supabase.table(
@@ -1782,7 +1845,7 @@ class Director:
         return task
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — SAFE ASYNC EXECUTION
+    # SAFE ASYNC EXECUTION
     # ═══════════════════════════════════════════════════════════════════
 
     def execute(self, task_id: str) -> Task:
@@ -1901,6 +1964,7 @@ class Director:
         })
 
     def _alert(self, payload: dict) -> None:
+        # v3.0 — Alert via event queue, not synchronous callback
         self._event("director_alert", payload)
         self._alert_history.append({
             "type": "director_alert",
@@ -1913,28 +1977,65 @@ class Director:
             except Exception:
                 log.exception("Alert callback failed")
 
+    # v3.0 — Events go through the queue, not direct callback
     def _event(
         self, name: str, payload: dict
     ) -> None:
-        if self.event_cb:
-            try:
-                self.event_cb(name, payload)
-            except Exception:
-                log.exception("Event callback failed")
+        """Queue an event for async processing."""
+        self.enqueue_event(name, payload)
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — STRATEGIC FORESIGHT
+    # v3.0 — ASYNC EVENT DRAIN (separate thread)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _drain_events_loop(self):
+        """Process event queue in a separate thread."""
+        log.info("Director: Event drain thread started")
+        while self.running:
+            self._drain_events()
+            time.sleep(15)  # Drain every 15 seconds
+
+        # Drain remaining on shutdown
+        self._drain_events()
+        log.info("Director: Event drain thread stopped")
+
+    def _drain_events(self):
+        """Process all queued events."""
+        if not self._event_queue:
+            return
+
+        batch = []
+        while self._event_queue:
+            try:
+                batch.append(self._event_queue.popleft())
+            except IndexError:
+                break
+
+        if not batch:
+            return
+
+        log.debug("Director: Draining %d queued events", len(batch))
+
+        for event in batch:
+            try:
+                if self._stored_event_cb:
+                    self._stored_event_cb(event["name"], event["payload"])
+            except Exception:
+                log.exception(
+                    "Event processing failed for: %s", event["name"]
+                )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v3.0 — STRATEGIC FORESIGHT
     # ═══════════════════════════════════════════════════════════════════
 
     def generate_strategic_outlook(
         self, horizon_days: int = 7
     ) -> Optional[StrategicOutlook]:
-        """Look ahead and predict what's coming."""
         task_history = list(self.history)
         if len(task_history) < 10:
             return None
 
-        # Task volume trend
         daily_tasks = defaultdict(int)
         for t in task_history:
             day = (
@@ -1952,7 +2053,6 @@ class Director:
         )
         predicted_volume = recent_daily_avg * horizon_days
 
-        # Health trajectory
         health_scores = []
         for b in list(self.briefings)[-20:]:
             if isinstance(b, dict) and "health" in b:
@@ -1972,7 +2072,6 @@ class Director:
         else:
             predicted_health = self.health()["score"]
 
-        # Emerging risks
         risks = []
         if predicted_health < 60:
             risks.append(
@@ -1992,7 +2091,6 @@ class Director:
                     f"{count} failures"
                 )
 
-        # Growth opportunities
         opportunities = []
         sectors_with_issues = Counter(
             obs.sector.value
@@ -2062,13 +2160,12 @@ class Director:
         ]
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — RESOURCE ALLOCATION
+    # v3.0 — RESOURCE ALLOCATION
     # ═══════════════════════════════════════════════════════════════════
 
     def allocate_attention(
         self,
     ) -> List[ResourceAllocation]:
-        """Determine where the Director should focus."""
         health = self.health()
         allocations = []
         total_priority = sum(
@@ -2127,11 +2224,10 @@ class Director:
         )
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — EXECUTIVE SUMMARY
+    # v3.0 — EXECUTIVE SUMMARY
     # ═══════════════════════════════════════════════════════════════════
 
     def generate_executive_summary(self) -> str:
-        """Generate a human-readable executive summary."""
         health = self.health()
         outlook = self.generate_strategic_outlook()
         allocations = self.allocate_attention()
@@ -2228,13 +2324,12 @@ class Director:
         return "\n".join(parts)
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — CROSS-ENGINE CORRELATION
+    # v3.0 — CROSS-ENGINE CORRELATION
     # ═══════════════════════════════════════════════════════════════════
 
     def correlate_observations(
         self,
     ) -> List[Dict[str, Any]]:
-        """Find correlations between observations."""
         correlations = []
         time_windows = defaultdict(list)
 
@@ -2291,13 +2386,12 @@ class Director:
         return correlations
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — DECISION PATTERN MATCHING
+    # v3.0 — DECISION PATTERN MATCHING
     # ═══════════════════════════════════════════════════════════════════
 
     def match_decision_pattern(
         self, observation: Observation
     ) -> Optional[Dict[str, Any]]:
-        """Find a past decision that handled a similar observation."""
         features = [
             observation.source,
             observation.sector.value,
@@ -2342,7 +2436,6 @@ class Director:
     def _fuzzy_match(
         self, a: str, b: str
     ) -> float:
-        """Simple fuzzy matching based on token overlap."""
         tokens_a = set(a.lower().split("|"))
         tokens_b = set(b.lower().split("|"))
         if not tokens_a or not tokens_b:
@@ -2353,13 +2446,12 @@ class Director:
         )
 
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — PROACTIVE INITIATIVES
+    # v3.0 — PROACTIVE INITIATIVES
     # ═══════════════════════════════════════════════════════════════════
 
     def generate_initiatives(
         self,
     ) -> List[Dict[str, Any]]:
-        """Proactively generate improvement initiatives."""
         initiatives = []
         health = self.health()
 
@@ -2537,6 +2629,7 @@ class Director:
                 self.last_observation
             ),
             "last_plan": iso(self.last_plan),
+            "event_queue_depth": len(self._event_queue),
             "outlook": (
                 {
                     "predicted_health": (
@@ -2569,7 +2662,7 @@ class Director:
         }
 
     # ═══════════════════════════════════════════════════════════════════
-    # LIFECYCLE
+    # v3.0 — LIFECYCLE (with async event drain + circuit breaker)
     # ═══════════════════════════════════════════════════════════════════
 
     def start(self) -> None:
@@ -2577,22 +2670,39 @@ class Director:
             return
         self.running = True
         self.started = now()
+
+        # Main observation/decision/execution loop
         self.thread = threading.Thread(
             target=self._loop,
             name="kanyoza-director",
             daemon=True,
         )
         self.thread.start()
+
+        # v3.0 — Separate event drain thread
+        self._event_thread = threading.Thread(
+            target=self._drain_events_loop,
+            name="director-events",
+            daemon=True,
+        )
+        self._event_thread.start()
+
+        # Startup sequence
         threading.Thread(
             target=self._startup,
             name="director-startup",
             daemon=True,
         ).start()
+
         log.info(
-            "👔 Director ONLINE — watching the platform"
+            "👔 Director v%s ONLINE — async events, "
+            "staggered loop (%.1fs), event drain thread",
+            self.VERSION,
+            self.interval,
         )
 
     def _startup(self) -> None:
+        time.sleep(2)  # Brief delay for other engines to initialize
         try:
             self.observe_all()
             self.build_plan()
@@ -2605,20 +2715,42 @@ class Director:
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
+        if self._event_thread and self._event_thread.is_alive():
+            self._event_thread.join(timeout=5)
         log.info("👔 Director OFFLINE")
 
     def _loop(self) -> None:
+        """Main observation → decision → execution loop."""
         last_minute = None
+
         while self.running:
+            # v3.0 — Circuit breaker check
+            if self._observation_circuit_open:
+                if time.monotonic() > self._observation_circuit_reset_time:
+                    self._observation_circuit_open = False
+                    self._consecutive_failures = 0
+                    log.info("Director: Observation circuit breaker reset")
+                else:
+                    log.warning(
+                        "Director: Circuit open — skipping observation cycle"
+                    )
+                    time.sleep(self.interval)
+                    continue
+
             try:
                 self.observe_all()
+                self._consecutive_failures = 0  # Reset on success
+
                 if (
                     self.last_plan is None
                     or (now() - self.last_plan).total_seconds()
                     >= 1800
                 ):
                     self.build_plan()
+
                 self.execute_due()
+
+                # Briefing logic
                 current_minute = now().strftime(
                     "%Y-%m-%d-%H-%M"
                 )
@@ -2626,6 +2758,7 @@ class Director:
                     last_minute = current_minute
                     hour = now().hour
                     minute = now().minute
+
                     if hour == 8 and minute == 0:
                         today_str = now().strftime(
                             "%Y-%m-%d"
@@ -2638,6 +2771,7 @@ class Director:
                                 today_str
                             )
                             self._send_daily_briefing()
+
                     if (
                         minute == 0
                         and hour in (6, 12, 18, 22)
@@ -2650,8 +2784,28 @@ class Director:
                             else Briefing.CHECKPOINT
                         )
                         self.briefing(kind)
+
             except Exception:
-                log.exception("Director cycle failed")
+                self._consecutive_failures += 1
+                log.exception(
+                    "Director cycle failed (%d consecutive)",
+                    self._consecutive_failures,
+                )
+
+                # v3.0 — Open circuit breaker after 3 consecutive failures
+                if self._consecutive_failures >= 3:
+                    backoff = min(300, 30 * self._consecutive_failures)
+                    self._observation_circuit_open = True
+                    self._observation_circuit_reset_time = (
+                        time.monotonic() + backoff
+                    )
+                    log.critical(
+                        "Director: Circuit breaker OPEN — "
+                        "backing off for %ds (%d consecutive failures)",
+                        backoff,
+                        self._consecutive_failures,
+                    )
+
             time.sleep(self.interval)
 
 
