@@ -187,57 +187,91 @@ class DependencyGraph:
         return result
 
 
-@dataclass class MetricEvent:
-    timestamp: datetime; kind: str; engine: str; value: float = 0.0
+@dataclass
+class MetricEvent:
+    timestamp: datetime
+    kind: str
+    engine: str
+    value: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass class Anomaly:
-    id: str; engine: str; anomaly_type: AnomalyType; description: str; severity: AlertLevel
-    observed_value: float = 0.0; expected_value: float = 0.0; deviation: float = 0.0
+@dataclass
+class Anomaly:
+    id: str
+    engine: str
+    anomaly_type: AnomalyType
+    description: str
+    severity: AlertLevel
+    observed_value: float = 0.0
+    expected_value: float = 0.0
+    deviation: float = 0.0
     confidence: float = 0.0
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     resolved: bool = False
 
 
-@dataclass class RecoveryAttempt:
-    id: str; engine: str; reason: str; started_at: datetime
-    finished_at: Optional[datetime] = None; status: RecoveryStatus = RecoveryStatus.NOT_ATTEMPTED
-    action: str = ""; error: Optional[str] = None; verification_passed: bool = False
+@dataclass
+class RecoveryAttempt:
+    id: str
+    engine: str
+    reason: str
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    status: RecoveryStatus = RecoveryStatus.NOT_ATTEMPTED
+    action: str = ""
+    error: Optional[str] = None
+    verification_passed: bool = False
 
 
-@dataclass class Incident:
-    id: str; title: str; severity: AlertLevel; status: IncidentStatus; primary_engine: str
+@dataclass
+class Incident:
+    id: str
+    title: str
+    severity: AlertLevel
+    status: IncidentStatus
+    primary_engine: str
     affected_engines: List[str] = field(default_factory=list)
     diagnoses: List[str] = field(default_factory=list)
     anomalies: List[str] = field(default_factory=list)
-    root_cause: str = ""; confidence: float = 0.0
+    root_cause: str = ""
+    confidence: float = 0.0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: Optional[datetime] = None
     recovery_attempts: List[str] = field(default_factory=list)
 
 
-@dataclass class CircuitState:
-    engine: str; failures: int = 0; state: str = "closed"
-    opened_at: Optional[datetime] = None; half_open_at: Optional[datetime] = None
+@dataclass
+class CircuitState:
+    engine: str
+    failures: int = 0
+    state: str = "closed"
+    opened_at: Optional[datetime] = None
+    half_open_at: Optional[datetime] = None
     cooldown_seconds: int = 60
 
 
-@dataclass class Prediction:
-    engine: str; predicted_failure: str; confidence: float
+@dataclass
+class Prediction:
+    engine: str
+    predicted_failure: str
+    confidence: float
     estimated_time_to_failure_minutes: float
     contributing_factors: List[str] = field(default_factory=list)
     detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-@dataclass class FailurePattern:
-    id: str; signature: str; conditions: Dict[str, Any] = field(default_factory=dict)
-    root_cause: str = ""; fix_applied: str = ""; success_rate: float = 0.5
+@dataclass
+class FailurePattern:
+    id: str
+    signature: str
+    conditions: Dict[str, Any] = field(default_factory=dict)
+    root_cause: str = ""
+    fix_applied: str = ""
+    success_rate: float = 0.5
     occurrences: int = 0
     last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════
