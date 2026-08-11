@@ -55,6 +55,8 @@ logger = logging.getLogger("kanyoza.main")
 
 # Suppress garbage collection noise from supabase-auth library
 logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
+import warnings
+warnings.filterwarnings("ignore", message=".*_refresh_token_timer.*")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # STARTUP METADATA — Used by health/readiness probes
