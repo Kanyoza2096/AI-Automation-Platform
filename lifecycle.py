@@ -1468,9 +1468,7 @@ def _boot_code_intelligence(
         return
 
     try:
-        from services.code_intel import (
-            init_code_intelligence,
-        )
+        from services.code_intelligence_engine import init_code_intelligence
         from core.event_bus import EventBus
 
         event_bus = container.try_resolve(
