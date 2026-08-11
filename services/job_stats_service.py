@@ -7,6 +7,7 @@ Architecture:
   - Simple threading.Lock cache (not RLock — no reentrancy needed)
   - Cache invalidation via event subscription
   - Returns real errors, never fake zeros
+  - NO auto-resolution of dependencies (that causes recursion)
 """
 
 from __future__ import annotations
@@ -45,63 +46,77 @@ TERMINAL_STATUS_VALUES = (
     "CANCELLED",
 )
 
-# Rest of the file is unchanged from the refactored version I provided earlier...
-
 
 class JobStatsService:
-    """Read-only stats service. Zero dependencies on JobService."""
+    """Read-only stats service. Zero dependencies on other services.
+
+    The Supabase client MUST be injected via constructor or set_client().
+    Never auto-resolves. Never imports supabase_service.
+    """
 
     CACHE_TTL_SECONDS = 30
 
     def __init__(self, supabase_client=None, event_bus=None):
         self._client = supabase_client
         self._event_bus = event_bus
-        self._cache: Optional[dict] = None
+        self._cache: dict = {}
         self._cache_time: float = 0.0
-        self._lock = threading.Lock()  # Simple lock, not RLock
+        self._lock = threading.Lock()
 
-        # Subscribe to invalidation events
         if self._event_bus:
             self._subscribe_to_events()
+
+    # ------------------------------------------------------------------
+    # Client injection (NO AUTO-RESOLUTION)
+    # ------------------------------------------------------------------
+
+    def set_client(self, client) -> None:
+        """Inject the Supabase client. Required before use."""
+        self._client = client
+
+    def set_event_bus(self, event_bus) -> None:
+        """Inject the event bus for cache invalidation."""
+        self._event_bus = event_bus
+        self._subscribe_to_events()
+
+    def _require_client(self):
+        """Get client or raise immediately. NO FALLBACK."""
+        if self._client is None:
+            raise DatabaseQueryError(
+                message=(
+                    "JobStatsService: Supabase client not configured. "
+                    "Call set_client() before use."
+                ),
+                context={"operation": "job_stats_service"},
+            )
+        return self._client
+
+    # ------------------------------------------------------------------
+    # Event subscription (cache invalidation)
+    # ------------------------------------------------------------------
 
     def _subscribe_to_events(self) -> None:
         """Listen for job changes to invalidate cache."""
         try:
             if hasattr(self._event_bus, "subscribe"):
-                self._event_bus.subscribe("job.created", self._on_job_changed)
-                self._event_bus.subscribe("job.status_changed", self._on_job_changed)
-                self._event_bus.subscribe("job.published", self._on_job_changed)
-                self._event_bus.subscribe("job.failed", self._on_job_changed)
-                self._event_bus.subscribe("job.stale_detected", self._on_job_changed)
-                self._event_bus.subscribe("job.retry_scheduled", self._on_job_changed)
+                events = [
+                    "job.created",
+                    "job.status_changed",
+                    "job.published",
+                    "job.failed",
+                    "job.stale_detected",
+                    "job.retry_scheduled",
+                ]
+                for event in events:
+                    self._event_bus.subscribe(event, self._on_job_changed)
         except Exception as exc:
             logger.debug("JobStatsService: event subscription failed: %s", exc)
 
     def _on_job_changed(self, payload: dict = None) -> None:
         """Invalidate cache when any job changes."""
         with self._lock:
-            self._cache = None
-
-    def set_client(self, client) -> None:
-        self._client = client
-
-    def _get_client(self):
-        if self._client:
-            return self._client
-        try:
-            from services.supabase import supabase_service
-            return supabase_service.service_client or supabase_service.client
-        except Exception:
-            return None
-
-    def _require_client(self):
-        client = self._get_client()
-        if client is None:
-            raise DatabaseQueryError(
-                message="Supabase client not available",
-                context={"operation": "job_stats_service"},
-            )
-        return client
+            self._cache = {}
+            self._cache_time = 0.0
 
     # ------------------------------------------------------------------
     # Public API — single-query, no method chaining
@@ -113,29 +128,33 @@ class JobStatsService:
 
         Uses Postgres function for server-side aggregation.
         Falls back to client-side aggregation if RPC unavailable.
-        No Python method calls. No recursion possible.
+        No Python method calls to other services. No recursion possible.
         """
+        # Guard: no client = no stats
+        if self._client is None:
+            return self._empty_stats()
+
         # Check cache
         with self._lock:
-            if self._cache is not None:
+            cache_key = brand_id or "__all__"
+            if cache_key in self._cache:
                 if time.monotonic() - self._cache_time < self.CACHE_TTL_SECONDS:
-                    cache_key = brand_id or "__all__"
-                    if cache_key in self._cache:
-                        return self._cache[cache_key]
+                    return self._cache[cache_key]
 
         try:
             stats = self._compute_stats_via_rpc(brand_id)
-        except Exception:
-            logger.warning(
-                "JobStatsService: RPC failed, using client-side aggregation"
-            )
-            stats = self._compute_stats_client_side(brand_id)
+        except Exception as e:
+            logger.debug("JobStatsService: RPC failed (%s), using fallback", e)
+            try:
+                stats = self._compute_stats_client_side(brand_id)
+            except Exception as e2:
+                logger.error("JobStatsService: All stats methods failed: %s", e2)
+                return self._empty_stats()
 
         # Update cache
         with self._lock:
-            if self._cache is None:
+            if not self._cache:
                 self._cache = {}
-            cache_key = brand_id or "__all__"
             self._cache[cache_key] = stats
             self._cache_time = time.monotonic()
 
@@ -150,20 +169,21 @@ class JobStatsService:
 
         result = client.rpc("get_job_stats", params).execute()
 
-        if result.data:
+        if result.data and isinstance(result.data, dict):
             return result.data
 
-        return self._empty_stats()
+        # RPC returned unexpected format, try client-side
+        raise ValueError("RPC returned non-dict data")
 
     def _compute_stats_client_side(self, brand_id: Optional[str]) -> dict:
         """
-        Fallback: single query with server-side aggregation.
-        Still no Python method chaining.
+        Fallback: single query with in-memory aggregation.
+        Still no Python method chaining to other services.
         """
         client = self._require_client()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Single query with COUNT and FILTER
+        # Single query
         query = client.table("automation_jobs").select("status,created_at,updated_at")
 
         if brand_id:
@@ -177,7 +197,7 @@ class JobStatsService:
         rows = result.data
         now = datetime.now(timezone.utc)
 
-        # Aggregate in one pass
+        # One-pass aggregation
         today_total = 0
         today_published = 0
         today_failed = 0
@@ -214,7 +234,8 @@ class JobStatsService:
                         oldest_active = updated_dt
 
         active_count = sum(
-            count for status, count in status_counts.items()
+            count
+            for status, count in status_counts.items()
             if status in ACTIVE_STATUS_VALUES
         )
 
@@ -238,7 +259,14 @@ class JobStatsService:
         }
 
     def health_check(self) -> dict:
-        """Health check that never lies."""
+        """Health check that never lies. Returns real status."""
+        if self._client is None:
+            return {
+                "status": "not_configured",
+                "error": "Supabase client not injected",
+                "stats": None,
+            }
+
         try:
             stats = self.get_stats()
             return {
@@ -249,9 +277,17 @@ class JobStatsService:
             logger.error("JobStatsService health check failed: %s", e)
             return {
                 "status": "unhealthy",
-                "error": str(e),
+                "error": str(e)[:200],
                 "stats": None,
             }
+
+    def get_status(self) -> dict:
+        """Legacy interface for Director/MetaEngine compatibility."""
+        return self.health_check()
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _empty_stats() -> dict:
@@ -272,12 +308,11 @@ class JobStatsService:
     def _parse_timestamp(value) -> Optional[datetime]:
         if not value:
             return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
         try:
-            if isinstance(value, datetime):
-                if value.tzinfo is None:
-                    return value.replace(tzinfo=timezone.utc)
-                return value
-            # String parsing
             s = str(value).replace("Z", "+00:00")
             dt = datetime.fromisoformat(s)
             if dt.tzinfo is None:
@@ -287,14 +322,20 @@ class JobStatsService:
             return None
 
 
-# Module singleton
+# ═══════════════════════════════════════════════════════════════════════
+# Module Singleton — NO AUTO-RESOLUTION
+# ═══════════════════════════════════════════════════════════════════════
+
 job_stats_service: Optional[JobStatsService] = None
 
 
 def init_job_stats_service(
-    supabase_client=None, event_bus=None
+    supabase_client=None,
+    event_bus=None,
 ) -> JobStatsService:
+    """Initialize the singleton. Client MUST be passed explicitly."""
     global job_stats_service
+
     if job_stats_service is None:
         job_stats_service = JobStatsService(
             supabase_client=supabase_client,
@@ -303,54 +344,26 @@ def init_job_stats_service(
     else:
         if supabase_client:
             job_stats_service.set_client(supabase_client)
+        if event_bus:
+            job_stats_service.set_event_bus(event_bus)
+
+    if supabase_client is None:
+        logger.warning(
+            "JobStatsService: No Supabase client provided. "
+            "Stats will be unavailable. Call init_job_stats_service(client=...) "
+            "during boot."
+        )
+
     return job_stats_service
 
 
-def get_job_stats_service(
-    supabase_client=None,
-    event_bus=None,
-) -> JobStatsService:
-    """
-    Get or create the JobStatsService singleton.
-    
-    Accepts optional explicit dependencies for testing/lifecycle wiring.
-    Falls back to auto-resolution if not provided.
-    """
+def get_job_stats_service() -> JobStatsService:
+    """Get the singleton. Returns unconfigured instance if not initialized."""
     global job_stats_service
-    
-    if job_stats_service is not None:
-        # Already initialized — update clients if provided
-        if supabase_client:
-            job_stats_service.set_client(supabase_client)
-        return job_stats_service
-    
-    # Auto-resolve if not provided
-    if supabase_client is None:
-        try:
-            from services.supabase import supabase_service
-            supabase_client = (
-                supabase_service.service_client 
-                or supabase_service.client
-            )
-        except Exception:
-            pass
-    
-    if event_bus is None:
-        try:
-            from core.event_bus import get_event_bus
-            event_bus = get_event_bus()
-        except Exception:
-            pass
-    
-    job_stats_service = JobStatsService(
-        supabase_client=supabase_client,
-        event_bus=event_bus,
-    )
-    
-    logger.info(
-        "JobStatsService initialized (client=%s, event_bus=%s)",
-        "yes" if supabase_client else "no",
-        "yes" if event_bus else "no",
-    )
-    
+    if job_stats_service is None:
+        job_stats_service = JobStatsService()
+        logger.warning(
+            "JobStatsService: Not initialized. "
+            "Call init_job_stats_service(client=...) during boot."
+        )
     return job_stats_service
