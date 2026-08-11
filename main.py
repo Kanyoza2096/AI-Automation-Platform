@@ -431,25 +431,31 @@ def _safe_publish(
 ) -> None:
     """Publish an event to the EventBus.
 
-    v14.0: Failures are now LOGGED instead of silently swallowed.
-    The EventBus is critical cross-engine infrastructure — if it
-    fails, we need to know.
+    v14.0: Tries publish_event() first (string-based), then publish()
+    (DomainEvent-based), then emit() as last resort.
     """
     try:
-        if hasattr(event_bus, "publish"):
-            event_bus.publish(event_name, payload)
+        # v3.0 EventBus has publish_event() for string-based events
+        if hasattr(event_bus, "publish_event"):
+            event_bus.publish_event(event_name, payload)
+        # Legacy EventBus — wrap in DomainEvent
+        elif hasattr(event_bus, "publish"):
+            from core.events import DomainEvent
+            event = DomainEvent(
+                event_type=event_name,
+                payload=payload,
+                source="director",
+            )
+            event_bus.publish(event)
+        # Absolute fallback
         elif hasattr(event_bus, "emit"):
             event_bus.emit(event_name, payload)
     except Exception as exc:
         logger.error(
-            "EventBus publish FAILED [%s]: %s — payload keys=%s",
-            event_name,
-            exc,
-            list(payload.keys()) if isinstance(payload, dict) else "?",
+            "EventBus publish FAILED [%s]: %s",
+            event_name, exc,
             exc_info=True,
         )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # REMAINING HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
