@@ -1,6 +1,12 @@
 """
-Brand-aware scheduling engine — UNIFIED v3.6
+Brand-aware scheduling engine — UNIFIED v3.7
 Replaces PostScheduler with a multi-tenant BrandSchedulerManager.
+
+v3.7 UPGRADES:
+  - Dashboard events now use stored event_loop (fixes systematic event loss
+    from scheduler threads — audit finding #7)
+  - set_event_loop() on BrandSchedulerManager propagates to all schedulers
+  - _emit_dashboard_event accepts optional loop parameter
 
 v3.6 UPGRADES:
   - ATOMIC scheduled-post claim via conditional UPDATE (fixes race condition
@@ -9,18 +15,12 @@ v3.6 UPGRADES:
   - recover_and_retry() fallback in _recover_all_stale_jobs()
   - EventBus integration (workflow events for MetaEngine/Director)
   - Proper Director event callback usage
-  - Centralized dashboard event emission
   - Manager-level stale job recovery (not per-brand)
   - Health check & statistics
-  - Configurable sync interval
-
-v3.4 — BRAND STATUS ENUM FIX:
-  Brand status is stored as an enum (BrandStatus.ACTIVE). The scheduler
-  now correctly extracts the .value attribute from enum types.
-
-v3.3 — RETRY FIX + DIRECTOR INTELLIGENCE
+  - _stop_event + _sleep() for instant shutdown
 """
 
+import asyncio
 import time
 import uuid
 import logging
@@ -55,15 +55,23 @@ _failed_emits_lock = threading.Lock()
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _emit_dashboard_event(
-    event_name: str, payload: dict
+    event_name: str,
+    payload: dict,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> None:
-    """Best-effort dashboard event emission."""
+    """Best-effort dashboard event emission.
+
+    v3.7: Accepts an optional event_loop parameter. When provided from
+    a non-async thread (like the scheduler), uses it directly instead
+    of calling get_running_loop() which raises RuntimeError.
+    """
     global _failed_emits
     try:
-        import asyncio
         from core.socket_server import emit_to_dashboard
 
-        loop = asyncio.get_running_loop()
+        if loop is None:
+            loop = asyncio.get_running_loop()
+
         asyncio.run_coroutine_threadsafe(
             emit_to_dashboard(event_name, payload), loop
         )
@@ -148,6 +156,10 @@ class BrandScheduler:
                 self._event_bus.emit(event_name, payload)
         except Exception:
             pass
+
+    def _emit_dashboard(self, event_name: str, payload: dict) -> None:
+        """Emit a dashboard event using the stored event loop."""
+        _emit_dashboard_event(event_name, payload, loop=self._event_loop)
 
     # ═══════════════════════════════════════════════════════════════
     # LIFECYCLE
@@ -296,8 +308,6 @@ class BrandScheduler:
                 pass  # RPC not available — use fallback
 
             # ── Fallback: Atomic conditional UPDATE ──────────────────
-            # The UPDATE is conditional on status='queued'.
-            # Only the worker whose UPDATE matches a row wins the claim.
             result = (
                 supabase_service.client.table("scheduled_posts")
                 .update({
@@ -382,7 +392,8 @@ class BrandScheduler:
             from core.errors import DuplicateJobError
             if isinstance(e, DuplicateJobError):
                 logger.info(
-                    "[%s] job=%s — slot already claimed (race condition, another worker won)",
+                    "[%s] job=%s — slot already claimed "
+                    "(race condition, another worker won)",
                     self.brand.name, job_id,
                 )
                 return None, None
@@ -424,7 +435,9 @@ class BrandScheduler:
                             self.brand.name, job_id, e,
                         )
             else:
-                idempotency_key = f"{self.brand.id}-{today.isoformat()}-{hour:02d}-content"
+                idempotency_key = (
+                    f"{self.brand.id}-{today.isoformat()}-{hour:02d}-content"
+                )
 
         logger.info(
             "[%s] job=%s START | brand=%s | source=%s | agent=%s | slot=%s",
@@ -437,7 +450,8 @@ class BrandScheduler:
             "job_id": job_id, "source": source,
         })
 
-        _emit_dashboard_event("mission_status", {
+        # v3.7 — Use stored event loop for dashboard events
+        self._emit_dashboard("mission_status", {
             "goal": f"Publish {self.brand.name} Content",
             "stage": "AI Generation", "progress": 5,
             "active_agent": agent_name, "is_active": True,
@@ -452,8 +466,12 @@ class BrandScheduler:
         }
 
         try:
-            workflow_factory = self._container.resolve("ContentGenerationPipelineFactory")
-            workflow = workflow_factory(brand=self.brand, ai_profile=self.ai_profile)
+            workflow_factory = self._container.resolve(
+                "ContentGenerationPipelineFactory"
+            )
+            workflow = workflow_factory(
+                brand=self.brand, ai_profile=self.ai_profile
+            )
             self._pipeline_status = {
                 "status": "running", "current_step": "render", "progress": 60,
                 "topic": "", "platforms": [], "job_id": job_id,
@@ -461,7 +479,8 @@ class BrandScheduler:
             result = workflow.run()
             self._pipeline_status = {
                 "status": "running", "current_step": "publish", "progress": 80,
-                "topic": getattr(result, "topic", ""), "platforms": [], "job_id": job_id,
+                "topic": getattr(result, "topic", ""),
+                "platforms": [], "job_id": job_id,
             }
 
             topic, publish_ok, platforms = "", False, []
@@ -471,7 +490,9 @@ class BrandScheduler:
                 elif step.step_name == "publish":
                     publish_ok = step.ok
                     if step.ok and isinstance(step.output, dict):
-                        platforms = [k for k, v in step.output.items() if v.get("ok")]
+                        platforms = [
+                            k for k, v in step.output.items() if v.get("ok")
+                        ]
 
             if publish_ok:
                 if today is not None and hour is not None:
@@ -500,9 +521,13 @@ class BrandScheduler:
                     try:
                         from services.supabase import supabase_service
                         if supabase_service and supabase_service.client:
-                            supabase_service.client.table("scheduled_posts").update({
+                            supabase_service.client.table(
+                                "scheduled_posts"
+                            ).update({
                                 "status": "published",
-                                "completed_at": datetime.now(timezone.utc).isoformat(),
+                                "completed_at": datetime.now(
+                                    timezone.utc
+                                ).isoformat(),
                             }).eq("id", scheduled_post_id).execute()
                     except Exception as e:
                         logger.error(
@@ -522,7 +547,8 @@ class BrandScheduler:
                     "duration_ms": result.total_ms,
                 })
 
-                _emit_dashboard_event("mission_status", {
+                # v3.7 — Use stored event loop
+                self._emit_dashboard("mission_status", {
                     "goal": f"Publish {self.brand.name} Content",
                     "stage": "Complete", "progress": 100,
                     "active_agent": agent_name, "is_active": False,
@@ -558,11 +584,14 @@ class BrandScheduler:
                     "failed_steps": failed,
                 })
                 self._pipeline_status = {
-                    "status": "error", "current_step": failed[0] if failed else "unknown",
-                    "progress": 0, "topic": topic, "platforms": [], "job_id": job_id,
+                    "status": "error",
+                    "current_step": failed[0] if failed else "unknown",
+                    "progress": 0, "topic": topic,
+                    "platforms": [], "job_id": job_id,
                 }
                 logger.warning(
-                    "[%s] job=%s FAILED — steps=%s", self.brand.name, job_id, failed,
+                    "[%s] job=%s FAILED — steps=%s",
+                    self.brand.name, job_id, failed,
                 )
 
         except Exception as e:
@@ -575,7 +604,8 @@ class BrandScheduler:
                     from core.errors import is_retryable
                     self._job_service.mark_failed(
                         automation_job, error=str(e),
-                        error_code="WORKFLOW_EXCEPTION", retryable=is_retryable(e),
+                        error_code="WORKFLOW_EXCEPTION",
+                        retryable=is_retryable(e),
                     )
                 except Exception as db_exc:
                     logger.error(
@@ -591,7 +621,10 @@ class BrandScheduler:
                 "status": "error", "current_step": "workflow",
                 "progress": 0, "topic": "", "platforms": [], "job_id": job_id,
             }
-            logger.error("[%s] job=%s EXCEPTION: %s", self.brand.name, job_id, e)
+            logger.error(
+                "[%s] job=%s EXCEPTION: %s",
+                self.brand.name, job_id, e,
+            )
 
     def _trigger_news(self) -> None:
         try:
@@ -607,31 +640,57 @@ class BrandScheduler:
 
     def trigger_manual(self) -> dict:
         if not self._publish_lock.acquire(blocking=False):
-            return {"ok": False, "error": "A publish is already in progress for this brand"}
+            return {
+                "ok": False,
+                "error": "A publish is already in progress for this brand",
+            }
         try:
-            job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
-            agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
+            job_id = (
+                f"pub_{datetime.now().strftime('%Y%m%d')}_"
+                f"{uuid.uuid4().hex[:8]}"
+            )
+            agent_name = (
+                self.ai_profile.name if self.ai_profile else "Gemini"
+            )
 
             automation_job = None
             if self._job_service:
                 try:
-                    workspace_id = getattr(self.brand, "workspace_id", "")
-                    automation_job = self._job_service.create_manual_job(
-                        brand_id=self.brand.id, workspace_id=workspace_id, job_id=job_id,
+                    workspace_id = getattr(
+                        self.brand, "workspace_id", ""
+                    )
+                    automation_job = (
+                        self._job_service.create_manual_job(
+                            brand_id=self.brand.id,
+                            workspace_id=workspace_id,
+                            job_id=job_id,
+                        )
                     )
                     if automation_job:
-                        self._job_service.transition(automation_job, JobStatus.RUNNING)
+                        self._job_service.transition(
+                            automation_job, JobStatus.RUNNING
+                        )
                 except Exception as e:
                     logger.warning(
-                        "[%s] job=%s — failed to create persistent manual job: %s",
+                        "[%s] job=%s — failed to create "
+                        "persistent manual job: %s",
                         self.brand.name, job_id, e,
                     )
 
-            logger.info("[%s] job=%s MANUAL TRIGGER | brand=%s", self.brand.name, job_id, self.brand.name)
-            self._emit("scheduler.manual_triggered", {"brand_id": self.brand.id, "job_id": job_id})
+            logger.info(
+                "[%s] job=%s MANUAL TRIGGER | brand=%s",
+                self.brand.name, job_id, self.brand.name,
+            )
+            self._emit("scheduler.manual_triggered", {
+                "brand_id": self.brand.id, "job_id": job_id,
+            })
 
-            workflow_factory = self._container.resolve("ContentGenerationPipelineFactory")
-            workflow = workflow_factory(brand=self.brand, ai_profile=self.ai_profile)
+            workflow_factory = self._container.resolve(
+                "ContentGenerationPipelineFactory"
+            )
+            workflow = workflow_factory(
+                brand=self.brand, ai_profile=self.ai_profile
+            )
             result = workflow.run()
 
             topic, publish_ok, platforms = "", False, []
@@ -641,7 +700,10 @@ class BrandScheduler:
                 elif step.step_name == "publish":
                     publish_ok = step.ok
                     if step.ok and isinstance(step.output, dict):
-                        platforms = [k for k, v in step.output.items() if v.get("ok")]
+                        platforms = [
+                            k for k, v in step.output.items()
+                            if v.get("ok")
+                        ]
 
             if publish_ok:
                 if automation_job and self._job_service:
@@ -649,49 +711,65 @@ class BrandScheduler:
                         post_id = ""
                         for step in result.steps:
                             if step.step_name == "publish" and step.ok:
-                                for p, r in (step.output or {}).items():
+                                for p, r in (
+                                    step.output or {}
+                                ).items():
                                     if r.get("ok") and r.get("post_id"):
                                         post_id = r["post_id"]
                                         break
                         self._job_service.mark_published(
                             automation_job, post_id=post_id,
-                            result={"topic": topic, "platforms": platforms},
+                            result={
+                                "topic": topic,
+                                "platforms": platforms,
+                            },
                         )
                     except Exception as e:
                         logger.error(
-                            "[%s] job=%s — failed to mark manual job published: %s",
+                            "[%s] job=%s — failed to mark "
+                            "manual job published: %s",
                             self.brand.name, job_id, e,
                         )
 
                 logger.info(
-                    "[%s] job=%s MANUAL OK — topic='%s' | platforms=%s | %dms",
-                    self.brand.name, job_id, topic, platforms, round(result.total_ms),
+                    "[%s] job=%s MANUAL OK — topic='%s' | "
+                    "platforms=%s | %dms",
+                    self.brand.name, job_id, topic, platforms,
+                    round(result.total_ms),
                 )
                 return {
-                    "ok": True, "brand": self.brand.name, "topic": topic,
-                    "platforms": platforms, "duration_ms": round(result.total_ms),
+                    "ok": True, "brand": self.brand.name,
+                    "topic": topic, "platforms": platforms,
+                    "duration_ms": round(result.total_ms),
                     "job_id": job_id,
                 }
 
             if automation_job and self._job_service:
                 try:
                     self._job_service.mark_failed(
-                        automation_job, error="Publish step failed",
-                        error_code="PUBLISH_FAILED", retryable=True,
+                        automation_job,
+                        error="Publish step failed",
+                        error_code="PUBLISH_FAILED",
+                        retryable=True,
                     )
                 except Exception as e:
                     logger.error(
-                        "[%s] job=%s — failed to mark manual job failed: %s",
+                        "[%s] job=%s — failed to mark "
+                        "manual job failed: %s",
                         self.brand.name, job_id, e,
                     )
 
             return {
                 "ok": False, "error": "Publish step failed",
-                "brand": self.brand.name, "duration_ms": round(result.total_ms),
+                "brand": self.brand.name,
+                "duration_ms": round(result.total_ms),
                 "job_id": job_id,
             }
         except Exception as e:
-            return {"ok": False, "error": str(e), "brand": self.brand.name}
+            return {
+                "ok": False, "error": str(e),
+                "brand": self.brand.name,
+            }
         finally:
             self._publish_lock.release()
 
@@ -701,20 +779,29 @@ class BrandScheduler:
 
     def get_status(self) -> dict:
         today = date.today()
-        posts_today = sum(1 for d, h, k in self._fired_slots if d == today and k == "content")
+        posts_today = sum(
+            1 for d, h, k in self._fired_slots
+            if d == today and k == "content"
+        )
         job_stats = {}
         if self._job_service:
             try:
-                job_stats = self._job_service.get_today_stats(brand_id=self.brand.id)
+                job_stats = self._job_service.get_today_stats(
+                    brand_id=self.brand.id
+                )
                 posts_today = job_stats.get("published", posts_today)
             except Exception:
                 pass
         return {
-            "brand_id": self.brand.id, "brand_name": self.brand.name,
-            "running": self._running, "posts_today": posts_today,
+            "brand_id": self.brand.id,
+            "brand_name": self.brand.name,
+            "running": self._running,
+            "posts_today": posts_today,
             "max_posts_per_day": self.max_posts_per_day,
-            "content_hours": self.content_hours, "news_hours": self.news_hours,
-            "publish_busy": self._publish_lock.locked(), "job_stats": job_stats,
+            "content_hours": self.content_hours,
+            "news_hours": self.news_hours,
+            "publish_busy": self._publish_lock.locked(),
+            "job_stats": job_stats,
             "posts_published": self._posts_published,
             "posts_failed": self._posts_failed,
             **self._pipeline_status,
@@ -722,14 +809,19 @@ class BrandScheduler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BRAND SCHEDULER MANAGER v3.6
+# BRAND SCHEDULER MANAGER v3.7
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BrandSchedulerManager:
-    """Manages all active BrandSchedulers."""
+    """Manages all active BrandSchedulers.
+
+    v3.7: set_event_loop() propagates the FastAPI event loop to all
+    schedulers so dashboard events work from non-async threads.
+    """
 
     def __init__(
-        self, brand_repository: BrandRepository,
+        self,
+        brand_repository: BrandRepository,
         ai_profile_repository: AIProfileRepository,
     ) -> None:
         self.brand_repo = brand_repository
@@ -740,8 +832,13 @@ class BrandSchedulerManager:
         self._container = None
         self._job_service = None
         self._event_bus = None
+        self._event_loop = None
         self._sync_count = 0
         self._total_posts_published = 0
+
+    # ═══════════════════════════════════════════════════════════════
+    # WIRING
+    # ═══════════════════════════════════════════════════════════════
 
     def set_container(self, container: "ServiceContainer") -> None:
         self._container = container
@@ -749,47 +846,101 @@ class BrandSchedulerManager:
             from services.job_service import JobService
             self._job_service = container.try_resolve(JobService)
         except Exception:
-            logger.debug("BrandSchedulerManager: JobService not available")
+            logger.debug(
+                "BrandSchedulerManager: JobService not available"
+            )
         try:
             from core.event_bus import EventBus
             self._event_bus = container.try_resolve(EventBus)
         except Exception:
-            logger.debug("BrandSchedulerManager: EventBus not available")
+            logger.debug(
+                "BrandSchedulerManager: EventBus not available"
+            )
+
+    def set_event_loop(
+        self, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """Pass the FastAPI event loop for dashboard events.
+
+        v3.7: Propagates to all existing AND future schedulers.
+        Without this, dashboard events from scheduler threads are
+        systematically dropped.
+        """
+        self._event_loop = loop
+        for scheduler in self._schedulers.values():
+            scheduler._event_loop = loop
+        logger.info(
+            "BrandSchedulerManager: event loop wired "
+            "for dashboard events"
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # LIFECYCLE
+    # ═══════════════════════════════════════════════════════════════
 
     def start(self) -> None:
         if self._running:
             return
         if not self._container:
-            logger.error("BrandSchedulerManager: container not set.")
+            logger.error(
+                "BrandSchedulerManager: container not set."
+            )
             return
         self._running = True
         self._recover_all_stale_jobs()
         self._sync_brands()
         self._manager_thread = threading.Thread(
-            target=self._sync_loop, daemon=True, name="scheduler-manager",
+            target=self._sync_loop,
+            daemon=True,
+            name="scheduler-manager",
         )
         self._manager_thread.start()
-        logger.info("BrandSchedulerManager v3.6: started.")
+        logger.info("BrandSchedulerManager v3.7: started.")
 
     def stop(self) -> None:
         self._running = False
         for s in self._schedulers.values():
             s.stop()
-        if self._manager_thread and self._manager_thread.is_alive():
+        if (
+            self._manager_thread
+            and self._manager_thread.is_alive()
+        ):
             self._manager_thread.join(timeout=5)
 
     def _recover_all_stale_jobs(self) -> None:
         if not self._job_service:
             return
         try:
-            if hasattr(self._job_service, 'recover_and_retry'):
-                stale_count = self._job_service.recover_and_retry(stale_minutes=15)
+            if hasattr(
+                self._job_service, "recover_and_retry"
+            ):
+                stale_count = (
+                    self._job_service.recover_and_retry(
+                        stale_minutes=15
+                    )
+                )
             else:
-                stale_count = self._job_service.recover_stale_jobs(stale_minutes=15)
+                stale_count = (
+                    self._job_service.recover_stale_jobs(
+                        stale_minutes=15
+                    )
+                )
             if stale_count > 0:
-                logger.warning("BrandSchedulerManager: recovered %d stale jobs", stale_count)
+                logger.warning(
+                    "BrandSchedulerManager: recovered %d "
+                    "stale jobs",
+                    stale_count,
+                )
         except Exception as e:
-            logger.error("BrandSchedulerManager: stale job recovery failed: %s", e)
+            logger.error(
+                "BrandSchedulerManager: stale job recovery "
+                "failed: %s",
+                e,
+            )
+
+    # ═══════════════════════════════════════════════════════════════
+    # SYNC
+    # ═══════════════════════════════════════════════════════════════
 
     def _sync_brands(self) -> None:
         brands = self.brand_repo.find_all()
@@ -797,32 +948,65 @@ class BrandSchedulerManager:
         for brand in brands:
             brand_status_raw = getattr(brand, "status", "")
             if hasattr(brand_status_raw, "value"):
-                brand_status = str(brand_status_raw.value).lower()
+                brand_status = str(
+                    brand_status_raw.value
+                ).lower()
             else:
-                brand_status = str(brand_status_raw or "").lower()
+                brand_status = str(
+                    brand_status_raw or ""
+                ).lower()
             if brand_status != "active":
                 continue
+
             active_ids.add(brand.id)
             if brand.id not in self._schedulers:
-                ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
+                ai_profile = (
+                    self.ai_repo.find_by_id(
+                        brand.ai_profile_id
+                    )
+                    if brand.ai_profile_id
+                    else None
+                )
                 if not ai_profile:
-                    logger.warning("Brand '%s' has no AI Profile — skipping.", brand.name)
+                    logger.warning(
+                        "Brand '%s' has no AI Profile — skipping.",
+                        brand.name,
+                    )
                     continue
+
                 scheduler = BrandScheduler(
-                    brand, ai_profile, self._container,
-                    job_service=self._job_service, event_bus=self._event_bus,
+                    brand,
+                    ai_profile,
+                    self._container,
+                    job_service=self._job_service,
+                    event_bus=self._event_bus,
+                    event_loop=self._event_loop,
                 )
                 self._schedulers[brand.id] = scheduler
                 scheduler.start()
 
+        # v3.7 — notify Director via proper callback
         try:
             from services.director import director
-            if director and hasattr(director, "event_cb") and director.event_cb:
-                director.event_cb("brand_scheduler_sync", {
-                    "total_brands": len(brands), "active_brands": len(active_ids),
-                    "schedulers_running": len(self._schedulers),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+
+            if (
+                director
+                and hasattr(director, "event_cb")
+                and director.event_cb
+            ):
+                director.event_cb(
+                    "brand_scheduler_sync",
+                    {
+                        "total_brands": len(brands),
+                        "active_brands": len(active_ids),
+                        "schedulers_running": len(
+                            self._schedulers
+                        ),
+                        "timestamp": datetime.now(
+                            timezone.utc
+                        ).isoformat(),
+                    },
+                )
         except Exception:
             pass
 
@@ -830,6 +1014,7 @@ class BrandSchedulerManager:
             if bid not in active_ids:
                 self._schedulers[bid].stop()
                 del self._schedulers[bid]
+
         self._sync_count += 1
 
     def _sync_loop(self) -> None:
@@ -843,7 +1028,13 @@ class BrandSchedulerManager:
             try:
                 self._sync_brands()
             except Exception as e:
-                logger.error("BrandSchedulerManager sync error: %s", e)
+                logger.error(
+                    "BrandSchedulerManager sync error: %s", e
+                )
+
+    # ═══════════════════════════════════════════════════════════════
+    # TRIGGERS
+    # ═══════════════════════════════════════════════════════════════
 
     def trigger_for_brand(self, brand_id: str) -> dict:
         scheduler = self._schedulers.get(brand_id)
@@ -851,26 +1042,62 @@ class BrandSchedulerManager:
             self._sync_brands()
             scheduler = self._schedulers.get(brand_id)
         if not scheduler:
-            return {"ok": False, "error": f"No active scheduler for brand '{brand_id}'"}
+            return {
+                "ok": False,
+                "error": (
+                    f"No active scheduler for "
+                    f"brand '{brand_id}'"
+                ),
+            }
         return scheduler.trigger_manual()
 
     def trigger_all(self) -> dict:
-        results = {bid: s.trigger_manual() for bid, s in self._schedulers.items()}
-        return {"ok": True, "results": results, "brands_triggered": len(results)}
+        results = {
+            bid: s.trigger_manual()
+            for bid, s in self._schedulers.items()
+        }
+        return {
+            "ok": True,
+            "results": results,
+            "brands_triggered": len(results),
+        }
+
+    # ═══════════════════════════════════════════════════════════════
+    # STATUS
+    # ═══════════════════════════════════════════════════════════════
 
     def get_all_status(self) -> list[dict]:
-        return [s.get_status() for s in self._schedulers.values()]
+        return [
+            s.get_status()
+            for s in self._schedulers.values()
+        ]
 
     def get_status_for_brand(self, brand_id: str) -> dict:
         s = self._schedulers.get(brand_id)
-        return s.get_status() if s else {"error": f"No scheduler for brand '{brand_id}'"}
+        return (
+            s.get_status()
+            if s
+            else {
+                "error": (
+                    f"No scheduler for brand '{brand_id}'"
+                )
+            }
+        )
 
     def get_stats(self) -> dict:
-        total_published = sum(s._posts_published for s in self._schedulers.values())
-        total_failed = sum(s._posts_failed for s in self._schedulers.values())
+        total_published = sum(
+            s._posts_published
+            for s in self._schedulers.values()
+        )
+        total_failed = sum(
+            s._posts_failed
+            for s in self._schedulers.values()
+        )
         return {
-            "brands_active": len(self._schedulers), "sync_count": self._sync_count,
-            "total_posts_published": total_published, "total_posts_failed": total_failed,
+            "brands_active": len(self._schedulers),
+            "sync_count": self._sync_count,
+            "total_posts_published": total_published,
+            "total_posts_failed": total_failed,
         }
 
     def health_check(self) -> dict:
@@ -878,6 +1105,10 @@ class BrandSchedulerManager:
         status = "healthy"
         if stats["brands_active"] == 0:
             status = "idle"
-        elif stats["total_posts_failed"] > stats["total_posts_published"] * 0.3 and stats["total_posts_published"] > 5:
+        elif (
+            stats["total_posts_failed"]
+            > stats["total_posts_published"] * 0.3
+            and stats["total_posts_published"] > 5
+        ):
             status = "degraded"
         return {"status": status, "stats": stats}
