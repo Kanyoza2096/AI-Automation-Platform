@@ -70,6 +70,7 @@ CRITICAL RULES:
 - In ALL code examples, NEVER use hardcoded credentials.
 - The post should be a natural paragraph, not labeled sections.
 """
+
 TEMPLATES = {
     "deep_dive": """
 You are writing a comparison-style tech post. Compare two approaches to this topic.
@@ -197,7 +198,6 @@ RULES:
 class GeminiServiceError(Exception):
     pass
 
-
 class GeminiRateLimited(Exception):
     pass
 
@@ -218,6 +218,43 @@ class GeminiService:
             default_headers={"Content-Type": "application/json"},
         )
         self._last_rate_limit_time: float = 0.0
+
+    # ─── COMPATIBILITY METHODS FOR CODE_INTEL ──────────────────────────
+
+    def generate(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """
+        Generic generate method for compatibility with code_intel and other modules.
+        """
+        try:
+            return self._call(prompt, temperature=temperature, max_tokens=max_tokens)
+        except GeminiRateLimited:
+            logger.warning("Gemini rate limited in generate()")
+            return None
+        except Exception as e:
+            logger.error(f"Gemini generate() failed: {e}")
+            return None
+
+    def generate_content(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """generate_content alias for compatibility."""
+        return self.generate(prompt, temperature, max_tokens)
+
+    def generate_text(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """generate_text alias for compatibility."""
+        return self.generate(prompt, temperature, max_tokens)
+
+    def complete(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """complete alias for compatibility."""
+        return self.generate(prompt, temperature, max_tokens)
+
+    def chat(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """chat alias for compatibility."""
+        return self.generate(prompt, temperature, max_tokens)
+
+    def ask(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048) -> Optional[str]:
+        """ask alias for compatibility."""
+        return self.generate(prompt, temperature, max_tokens)
+
+    # ─── END COMPATIBILITY METHODS ─────────────────────────────────────
 
     def _safety_settings(self):
         return [{"category": cat, "threshold": self._safety} for cat in [
