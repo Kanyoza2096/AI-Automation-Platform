@@ -137,52 +137,33 @@ class BootStep:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class ServiceHealthRegistry:
-    def __init__(self):
-        self._providers: dict[str, HealthProvider] = {}
-        self._lock = threading.RLock()
-        self._startup_complete = threading.Event()
+class _JobServiceHealthProvider:
+    def __init__(self, job_service):
+        self._js = job_service
+        self.service_name = "job_service"
 
-    def register(self, provider: HealthProvider) -> None:
-        with self._lock:
-            if provider.service_name in self._providers:
-                logger.warning(
-                    "Health provider '%s' registered twice — overwriting.",
-                    provider.service_name,
-                )
-            self._providers[provider.service_name] = provider
-
-    def unregister(self, service_name: str) -> None:
-        with self._lock:
-            self._providers.pop(service_name, None)
-
-    def get_all(self) -> list[HealthProvider]:
-        with self._lock:
-            return list(self._providers.values())
-
-    def get(self, service_name: str) -> HealthProvider | None:
-        with self._lock:
-            return self._providers.get(service_name)
-
-    def check_all(
-        self, timeout_per_service: float = 5.0
-    ) -> dict[str, HealthReport]:
-        results: dict[str, HealthReport] = {}
-        providers = self.get_all()
-        for provider in providers:
-            try:
-                start = time.monotonic()
-                report = provider.check_health()
-                report.latency_ms = (
-                    time.monotonic() - start
-                ) * 1000
-                results[provider.service_name] = report
-            except Exception as exc:
-                results[provider.service_name] = HealthReport(
-                    status=HealthStatus.UNHEALTHY,
-                    service_name=provider.service_name,
-                    error_message=str(exc),
-                )
+    def check_health(self) -> HealthReport:
+        try:
+            # v4.0 — Use health_check(), not get_stats()
+            # health_check() delegates to JobStatsService properly
+            result = self._js.health_check()
+            status_str = result.get("status", "healthy") if isinstance(result, dict) else "healthy"
+            
+            return HealthReport(
+                status=(
+                    HealthStatus.HEALTHY
+                    if status_str in ("healthy", "degraded")
+                    else HealthStatus.DEGRADED
+                ),
+                service_name=self.service_name,
+                metadata=result if isinstance(result, dict) else {},
+            )
+        except Exception as exc:
+            return HealthReport(
+                status=HealthStatus.UNHEALTHY,
+                service_name=self.service_name,
+                error_message=str(exc)[:200],
+            )
         if self._startup_complete.is_set():
             for name in self._providers:
                 if name not in results:
