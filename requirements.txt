@@ -19,28 +19,27 @@ pydantic-settings==2.7.0
 cryptography>=42.0.0
 
 # Persistence
-supabase==2.15.2
+supabase>=2.7.0
+gotrue>=2.4.0
 
 # Environment
 python-dotenv==1.1.0
 
 # Image card rendering (Pillow — no browser required)
 Pillow>=10.4.0
-# pycairo is optional (Cairo typography); omitted here because it requires
-# the system pkg-config + libcairo headers. Install manually if needed.
+pycairo>=1.26.0
 
 # Testing
 pytest==8.3.4
 pytest-mock==3.14.0
 google-genai
 
-#Pdf merger 
+# Pdf merger 
 PyPDF2
-PyMuPDF 
+PyMuPDF
 python-multipart==0.0.9
 
-#Gdrive backup 
+# Gdrive backup 
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-
