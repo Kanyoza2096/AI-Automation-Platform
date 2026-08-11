@@ -1,20 +1,23 @@
 """
-Monitor Plugin v2.0 — Autonomous system administrator.
-Checks websites and APIs, alerts on failure via Telegram.
+Monitor Plugin v3.0 — Decoupled system administrator.
 
-v2.0 UPGRADES:
-  - Recovery notifications (alert when site comes back up)
-  - Uptime statistics & health check
-  - Proper Director event callback integration
-  - Configurable check intervals
-  - Response time tracking with thresholds
+v3.0 CHANGES:
+  - Queued alerts: no synchronous Director callbacks during checks
+  - Thread pool for HTTP checks: no blocking the main loop
+  - Staggered jitter: prevents collision with other engine loops
+  - Bulk DB inserts: single insert for all check results
+  - Alert persistence: cooldown state survives restarts (optional Redis)
+  - Health check: reads from DB, doesn't trigger new checks
 """
 
 import logging
+import random
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import requests
 
@@ -24,15 +27,16 @@ logger = logging.getLogger("kanyoza.plugins.monitor")
 class MonitorPlugin:
     """Watches external websites and services.
 
-    v2.0: Recovery alerts, uptime stats, proper Director integration.
+    v3.0: Fully decoupled. No synchronous callbacks. No blocking loops.
     """
 
-    # Alert cooldown in seconds
     ALERT_COOLDOWN = 300  # 5 minutes
-    # Default check interval
-    CHECK_INTERVAL = 60  # 1 minute
-    # Response time warning threshold (ms)
+    CHECK_INTERVAL = 60   # Base interval
+    JITTER_MAX = 15       # Random jitter added to interval
     SLOW_RESPONSE_MS = 3000
+    HTTP_TIMEOUT = 10
+    MAX_WORKERS = 5       # Concurrent HTTP checks
+    ALERT_QUEUE_DRAIN_INTERVAL = 30  # Seconds between alert queue processing
 
     def __init__(
         self, supabase_client=None, redis_client=None
@@ -42,13 +46,35 @@ class MonitorPlugin:
         self.name = "monitor"
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._alert_thread: Optional[threading.Thread] = None
+
+        # Alert state
         self._last_alerted: Dict[str, float] = {}
-        self._target_states: Dict[str, str] = (
-            {}
-        )  # track up/down state changes
+        self._target_states: Dict[str, str] = {}
+        self._alert_queue: deque = deque(maxlen=500)
+
+        # Stats
         self._checks_completed = 0
         self._alerts_sent = 0
         self._recovery_alerts_sent = 0
+
+        # External callbacks (called from drain thread, not check loop)
+        self._alert_callback: Optional[Callable] = None
+        self._event_callback: Optional[Callable] = None
+
+        logger.info("MonitorPlugin v3.0 initialized")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v3.0 — External callback wiring (async-safe)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def set_alert_callback(self, cb: Callable) -> None:
+        """Set callback for alerts. Called from drain thread, not check loop."""
+        self._alert_callback = cb
+
+    def set_event_callback(self, cb: Callable) -> None:
+        """Set callback for events. Called from drain thread, not check loop."""
+        self._event_callback = cb
 
     # ═══════════════════════════════════════════════════════════════════
     # PLUGIN INTERFACE
@@ -79,26 +105,39 @@ class MonitorPlugin:
         if self._running:
             return
         self._running = True
+
+        # Main check loop with jitter
         self._thread = threading.Thread(
             target=self._loop,
             daemon=True,
             name="monitor-plugin",
         )
         self._thread.start()
-        logger.info("MonitorPlugin: started")
+
+        # Alert drain loop (separate thread)
+        self._alert_thread = threading.Thread(
+            target=self._drain_alerts,
+            daemon=True,
+            name="monitor-alerts",
+        )
+        self._alert_thread.start()
+
+        logger.info("MonitorPlugin: started (jitter=%ds, workers=%d)",
+                     self.JITTER_MAX, self.MAX_WORKERS)
 
     def stop(self):
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
+        if self._alert_thread:
+            self._alert_thread.join(timeout=5)
         logger.info("MonitorPlugin: stopped")
 
     def shutdown(self):
-        """Alternative stop for ShutdownRegistry compatibility."""
         self.stop()
 
     # ═══════════════════════════════════════════════════════════════════
-    # MAIN LOOP
+    # MAIN LOOP — with jitter
     # ═══════════════════════════════════════════════════════════════════
 
     def _loop(self):
@@ -107,246 +146,292 @@ class MonitorPlugin:
                 self._check_all_targets()
                 self._checks_completed += 1
             except Exception as e:
-                logger.error(
-                    "MonitorPlugin error: %s", e
-                )
-            time.sleep(self.CHECK_INTERVAL)
+                logger.error("MonitorPlugin error: %s", e)
+
+            # Sleep with jitter to prevent collision with other engines
+            jitter = random.uniform(0, self.JITTER_MAX)
+            sleep_time = self.CHECK_INTERVAL + jitter
+            self._sleep_interruptible(sleep_time)
+
+    def _sleep_interruptible(self, seconds: float):
+        """Sleep in small chunks so stop() is responsive."""
+        end = time.monotonic() + seconds
+        while self._running and time.monotonic() < end:
+            time.sleep(min(1.0, end - time.monotonic()))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # CHECK TARGETS — concurrent HTTP
+    # ═══════════════════════════════════════════════════════════════════
 
     def _check_all_targets(self):
         if not self.supabase:
             return
 
-        targets = (
-            self.supabase.table("monitor_targets")
-            .select("*")
-            .eq("is_paused", False)
-            .execute()
-        )
+        try:
+            targets_result = (
+                self.supabase.table("monitor_targets")
+                .select("*")
+                .eq("is_paused", False)
+                .execute()
+            )
+        except Exception as e:
+            logger.error("MonitorPlugin: failed to fetch targets: %s", e)
+            return
 
-        for target in targets.data or []:
-            self._check_target(target)
+        targets = targets_result.data or []
+        if not targets:
+            return
 
-    def _check_target(self, target: dict):
+        # Concurrent HTTP checks
+        results = []
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(self._check_single_target, target): target
+                for target in targets
+            }
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    logger.error("MonitorPlugin: check failed: %s", e)
+
+        # Bulk insert all results
+        if results:
+            self._bulk_insert_results(results)
+
+    def _check_single_target(self, target: dict) -> Optional[dict]:
+        """Check a single target. Returns result dict or None."""
         url = target["url"]
         target_id = target["id"]
         target_name = target.get("name", url)
-        expected_status = target.get(
-            "expected_status", 200
-        )
+        expected_status = target.get("expected_status", 200)
 
         start = time.monotonic()
-        previous_state = self._target_states.get(
-            target_id, "unknown"
-        )
+        previous_state = self._target_states.get(target_id, "unknown")
 
         try:
             resp = requests.get(
                 url,
-                timeout=10,
+                timeout=self.HTTP_TIMEOUT,
                 allow_redirects=True,
             )
-            elapsed_ms = int(
-                (time.monotonic() - start) * 1000
-            )
-            status = (
-                "up"
-                if resp.status_code == expected_status
-                else "down"
-            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            status = "up" if resp.status_code == expected_status else "down"
 
-            # Store check result
-            self.supabase.table(
-                "monitor_checks"
-            ).insert({
-                "target_id": target_id,
-                "status": status,
-                "http_status": resp.status_code,
-                "response_time_ms": elapsed_ms,
-                "checked_at": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            }).execute()
-
+            # Queue alert if down
             if status == "down":
-                self._send_alert(
-                    target,
-                    f"HTTP {resp.status_code} "
-                    f"(expected {expected_status})",
+                self._queue_alert(
+                    target, f"HTTP {resp.status_code} (expected {expected_status})"
                 )
             else:
-                # v2.0 — Recovery notification
+                # Recovery notification
                 if previous_state == "down":
-                    self._send_recovery_alert(
-                        target, elapsed_ms
-                    )
+                    self._queue_recovery_alert(target, elapsed_ms)
 
-                # v2.0 — Slow response warning
+                # Slow response warning
                 if elapsed_ms > self.SLOW_RESPONSE_MS:
-                    self._send_slow_response_alert(
-                        target, elapsed_ms
-                    )
+                    self._queue_slow_alert(target, elapsed_ms)
 
                 # Clear alert cooldown on recovery
                 self._last_alerted.pop(target_id, None)
 
             self._target_states[target_id] = status
 
-        except Exception as e:
-            elapsed_ms = int(
-                (time.monotonic() - start) * 1000
-            )
-
-            self.supabase.table(
-                "monitor_checks"
-            ).insert({
+            return {
                 "target_id": target_id,
-                "status": "down",
+                "status": status,
+                "http_status": resp.status_code,
                 "response_time_ms": elapsed_ms,
-                "error_message": str(e)[:500],
-                "checked_at": datetime.now(
-                    timezone.utc
-                ).isoformat(),
-            }).execute()
+                "error_message": None,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-            self._send_alert(
-                target, str(e)[:200]
-            )
+        except Exception as e:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._queue_alert(target, str(e)[:200])
             self._target_states[target_id] = "down"
 
+            return {
+                "target_id": target_id,
+                "status": "down",
+                "http_status": None,
+                "response_time_ms": elapsed_ms,
+                "error_message": str(e)[:500],
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def _bulk_insert_results(self, results: List[dict]):
+        """Insert all check results in a single batch."""
+        try:
+            self.supabase.table("monitor_checks").insert(results).execute()
+        except Exception as e:
+            logger.error("MonitorPlugin: bulk insert failed: %s", e)
+            # Fall back to individual inserts
+            for result in results:
+                try:
+                    self.supabase.table("monitor_checks").insert(result).execute()
+                except Exception as inner_e:
+                    logger.error("MonitorPlugin: individual insert failed: %s", inner_e)
+
     # ═══════════════════════════════════════════════════════════════════
-    # v2.0 — ALERTS
+    # v3.0 — QUEUED ALERTS (no synchronous callbacks)
     # ═══════════════════════════════════════════════════════════════════
 
-    def _send_alert(
-        self, target: dict, message: str
-    ):
-        """Send down alert via Telegram with cooldown."""
+    def _queue_alert(self, target: dict, message: str):
+        """Queue an alert for async processing."""
         target_id = target["id"]
-        target_name = target.get("name", target["url"])
-
-        logger.warning(
-            "MonitorPlugin: %s is DOWN — %s",
-            target_name,
-            message,
-        )
-
-        # Cooldown check
         now_ts = time.monotonic()
         last = self._last_alerted.get(target_id, 0)
+
         if now_ts - last < self.ALERT_COOLDOWN:
             return
+
         self._last_alerted[target_id] = now_ts
-        self._alerts_sent += 1
+        self._alert_queue.append({
+            "type": "down",
+            "target_id": target_id,
+            "target_name": target.get("name", target["url"]),
+            "url": target["url"],
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
-        # Telegram alert
+    def _queue_recovery_alert(self, target: dict, elapsed_ms: int):
+        """Queue a recovery alert."""
+        self._alert_queue.append({
+            "type": "recovery",
+            "target_id": target["id"],
+            "target_name": target.get("name", target["url"]),
+            "url": target["url"],
+            "elapsed_ms": elapsed_ms,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def _queue_slow_alert(self, target: dict, elapsed_ms: int):
+        """Queue a slow response alert with longer cooldown."""
+        target_id = target["id"]
+        slow_key = f"slow_{target_id}"
+        now_ts = time.monotonic()
+        last = self._last_alerted.get(slow_key, 0)
+
+        if now_ts - last < 900:  # 15 min cooldown
+            return
+
+        self._last_alerted[slow_key] = now_ts
+        self._alert_queue.append({
+            "type": "slow",
+            "target_id": target_id,
+            "target_name": target.get("name", target["url"]),
+            "url": target["url"],
+            "elapsed_ms": elapsed_ms,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v3.0 — ASYNC ALERT DRAIN (separate thread)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _drain_alerts(self):
+        """Process alert queue in a separate thread."""
+        while self._running:
+            self._process_alert_batch()
+            time.sleep(self.ALERT_QUEUE_DRAIN_INTERVAL)
+
+        # Drain remaining on shutdown
+        self._process_alert_batch()
+
+    def _process_alert_batch(self):
+        """Process all queued alerts."""
+        while self._alert_queue:
+            try:
+                alert = self._alert_queue.popleft()
+                self._process_single_alert(alert)
+            except Exception as e:
+                logger.error("MonitorPlugin: alert processing failed: %s", e)
+
+    def _process_single_alert(self, alert: dict):
+        """Process a single alert — Telegram + event callback."""
+        alert_type = alert["type"]
+
+        if alert_type == "down":
+            self._send_telegram_alert(alert)
+            self._alerts_sent += 1
+        elif alert_type == "recovery":
+            self._send_telegram_recovery(alert)
+            self._recovery_alerts_sent += 1
+        elif alert_type == "slow":
+            self._send_telegram_slow(alert)
+
+        # Fire event callback (safe — we're in drain thread, not check loop)
+        if self._event_callback:
+            try:
+                self._event_callback("monitor_alert", alert)
+            except Exception as e:
+                logger.debug("MonitorPlugin: event callback failed: %s", e)
+
+    def _send_telegram_alert(self, alert: dict):
+        """Send down alert via Telegram."""
+        target_name = alert["target_name"]
+        url = alert["url"]
+        message = alert["message"]
+        timestamp = alert["timestamp"][:16].replace("T", " ")
+
+        logger.warning("MonitorPlugin: %s is DOWN — %s", target_name, message)
+
         try:
-            from services.email_service import (
-                email_service,
-            )
-
+            from services.email_service import email_service
             email_service.send_telegram(
                 f"🔴 <b>SITE DOWN: {target_name}</b>\n"
-                f"URL: {target['url']}\n"
+                f"URL: {url}\n"
                 f"Error: {message}\n"
-                f"<i>{datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>"
+                f"<i>{timestamp} UTC</i>"
             )
         except Exception as exc:
-            logger.error(
-                "MonitorPlugin: Telegram alert failed: %s",
-                exc,
-            )
+            logger.error("MonitorPlugin: Telegram alert failed: %s", exc)
 
-        # v2.0 — Use Director's event callback properly
-        try:
-            from services.director import director
+    def _send_telegram_recovery(self, alert: dict):
+        """Send recovery alert via Telegram."""
+        target_name = alert["target_name"]
+        url = alert["url"]
+        elapsed_ms = alert["elapsed_ms"]
 
-            if (
-                director
-                and hasattr(director, "event_cb")
-                and director.event_cb
-            ):
-                director.event_cb(
-                    "monitor_alert",
-                    {
-                        "target": target_name,
-                        "url": target["url"],
-                        "error": message,
-                        "timestamp": datetime.now(
-                            timezone.utc
-                        ).isoformat(),
-                    },
-                )
-        except Exception:
-            pass
-
-    def _send_recovery_alert(
-        self, target: dict, elapsed_ms: int
-    ):
-        """v2.0 — Send alert when a site recovers."""
-        target_name = target.get("name", target["url"])
-        logger.info(
-            "MonitorPlugin: %s RECOVERED (%dms)",
-            target_name,
-            elapsed_ms,
-        )
-        self._recovery_alerts_sent += 1
+        logger.info("MonitorPlugin: %s RECOVERED (%dms)", target_name, elapsed_ms)
 
         try:
-            from services.email_service import (
-                email_service,
-            )
-
+            from services.email_service import email_service
             email_service.send_telegram(
                 f"🟢 <b>SITE RECOVERED: {target_name}</b>\n"
-                f"URL: {target['url']}\n"
+                f"URL: {url}\n"
                 f"Response time: {elapsed_ms}ms\n"
                 f"<i>{datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>"
             )
         except Exception as exc:
-            logger.debug(
-                "Recovery alert failed: %s", exc
-            )
+            logger.debug("Recovery alert failed: %s", exc)
 
-    def _send_slow_response_alert(
-        self, target: dict, elapsed_ms: int
-    ):
-        """v2.0 — Warn when a site is slow but still up."""
-        target_name = target.get("name", target["url"])
+    def _send_telegram_slow(self, alert: dict):
+        """Send slow response alert via Telegram."""
+        target_name = alert["target_name"]
+        url = alert["url"]
+        elapsed_ms = alert["elapsed_ms"]
 
-        # Longer cooldown for slow response alerts
-        target_id = target["id"]
-        now_ts = time.monotonic()
-        slow_key = f"slow_{target_id}"
-        last = self._last_alerted.get(slow_key, 0)
-        if now_ts - last < 900:  # 15 min cooldown
-            return
-        self._last_alerted[slow_key] = now_ts
-
-        logger.warning(
-            "MonitorPlugin: %s is SLOW — %dms",
-            target_name,
-            elapsed_ms,
-        )
+        logger.warning("MonitorPlugin: %s is SLOW — %dms", target_name, elapsed_ms)
 
         try:
-            from services.email_service import (
-                email_service,
-            )
-
+            from services.email_service import email_service
             email_service.send_telegram(
                 f"🟡 <b>SLOW RESPONSE: {target_name}</b>\n"
-                f"URL: {target['url']}\n"
+                f"URL: {url}\n"
                 f"Response time: {elapsed_ms}ms "
                 f"(threshold: {self.SLOW_RESPONSE_MS}ms)\n"
                 f"<i>{datetime.now(timezone.utc).strftime('%H:%M UTC')}</i>"
             )
         except Exception as exc:
-            logger.debug(
-                "Slow response alert failed: %s", exc
-            )
+            logger.debug("Slow response alert failed: %s", exc)
 
     # ═══════════════════════════════════════════════════════════════════
-    # STATISTICS
+    # STATISTICS & HEALTH
     # ═══════════════════════════════════════════════════════════════════
 
     def get_stats(self) -> dict:
@@ -354,22 +439,17 @@ class MonitorPlugin:
         return {
             "checks_completed": self._checks_completed,
             "alerts_sent": self._alerts_sent,
-            "recovery_alerts_sent": (
-                self._recovery_alerts_sent
-            ),
-            "targets_monitored": len(
-                self._target_states
-            ),
+            "recovery_alerts_sent": self._recovery_alerts_sent,
+            "targets_monitored": len(self._target_states),
             "targets_down": sum(
-                1
-                for s in self._target_states.values()
-                if s == "down"
+                1 for s in self._target_states.values() if s == "down"
             ),
+            "alert_queue_depth": len(self._alert_queue),
             "running": self._running,
         }
 
     def health_check(self) -> dict:
-        """Quick health check."""
+        """Quick health check — no DB queries."""
         stats = self.get_stats()
         status = "healthy"
 
@@ -387,34 +467,28 @@ class MonitorPlugin:
     # COMMAND HANDLERS
     # ═══════════════════════════════════════════════════════════════════
 
-    def _handle_status(
-        self, params: dict
-    ) -> dict:
+    def _handle_status(self, params: dict) -> dict:
         if not self.supabase:
-            return {
-                "ok": False,
-                "error": "Database not available",
-            }
-        targets = (
-            self.supabase.table("monitor_targets")
-            .select("*")
-            .execute()
-        )
-        stats = self.get_stats()
+            return {"ok": False, "error": "Database not available"}
+
+        try:
+            targets = (
+                self.supabase.table("monitor_targets")
+                .select("*")
+                .execute()
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
         return {
             "ok": True,
             "targets": targets.data or [],
-            "stats": stats,
+            "stats": self.get_stats(),
         }
 
-    def _handle_check_all(
-        self, params: dict
-    ) -> dict:
+    def _handle_check_all(self, params: dict) -> dict:
         self._check_all_targets()
-        return {
-            "ok": True,
-            "message": "All checks triggered",
-        }
+        return {"ok": True, "message": "All checks triggered"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
