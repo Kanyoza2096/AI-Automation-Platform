@@ -306,8 +306,51 @@ def init_job_stats_service(
     return job_stats_service
 
 
-def get_job_stats_service() -> JobStatsService:
+def get_job_stats_service(
+    supabase_client=None,
+    event_bus=None,
+) -> JobStatsService:
+    """
+    Get or create the JobStatsService singleton.
+    
+    Accepts optional explicit dependencies for testing/lifecycle wiring.
+    Falls back to auto-resolution if not provided.
+    """
     global job_stats_service
-    if job_stats_service is None:
-        job_stats_service = JobStatsService()
+    
+    if job_stats_service is not None:
+        # Already initialized — update clients if provided
+        if supabase_client:
+            job_stats_service.set_client(supabase_client)
+        return job_stats_service
+    
+    # Auto-resolve if not provided
+    if supabase_client is None:
+        try:
+            from services.supabase import supabase_service
+            supabase_client = (
+                supabase_service.service_client 
+                or supabase_service.client
+            )
+        except Exception:
+            pass
+    
+    if event_bus is None:
+        try:
+            from core.event_bus import get_event_bus
+            event_bus = get_event_bus()
+        except Exception:
+            pass
+    
+    job_stats_service = JobStatsService(
+        supabase_client=supabase_client,
+        event_bus=event_bus,
+    )
+    
+    logger.info(
+        "JobStatsService initialized (client=%s, event_bus=%s)",
+        "yes" if supabase_client else "no",
+        "yes" if event_bus else "no",
+    )
+    
     return job_stats_service
