@@ -1404,27 +1404,22 @@ def _recover_stale_jobs(
         )
 
 
-def _boot_brand_schedulers(
-    container: ServiceContainer,
-) -> None:
-    from scheduler.brand_scheduler import (
-        BrandSchedulerManager,
-    )
+def _boot_brand_schedulers(container: ServiceContainer) -> None:
+    from scheduler.brand_scheduler import BrandSchedulerManager
 
-    manager = container.resolve(
-        BrandSchedulerManager
-    )
+    manager = container.resolve(BrandSchedulerManager)
     manager.set_container(container)
+
+    # v14.0 — Pass the FastAPI event loop so dashboard events work
+    try:
+        loop = asyncio.get_running_loop()
+        manager.set_event_loop(loop)
+        logger.info("BrandSchedulerManager: event loop wired for dashboard events")
+    except RuntimeError:
+        logger.warning("BrandSchedulerManager: no running event loop — dashboard events disabled")
+
     manager.start()
-
-    shutdown_registry.register(
-        "BrandSchedulerManager",
-        manager.stop,
-        timeout_seconds=15.0,
-    )
-    logger.info("BrandSchedulerManager started.")
-
-
+    
 def _boot_guardian_scheduler(
     container: ServiceContainer,
 ) -> None:
