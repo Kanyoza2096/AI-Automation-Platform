@@ -1,6 +1,11 @@
 """
 Persistent Job Service — Architecture §7-8.
 
+v4.1 — FIXED:
+  - reset_to_pending() now correctly writes QUEUED (not PENDING)
+  - All docstrings/log messages updated to match actual state flow
+  - Zero references to non-existent JobStatus.PENDING
+
 v4.0 — MAJOR REFACTOR:
   - Removed ALL stats computation (moved to JobStatsService)
   - Removed ALL recursion guards (no longer needed)
@@ -38,6 +43,7 @@ logger = logging.getLogger("kanyoza.services.job_service")
 class JobService:
     """Persistent CRUD service for automation jobs.
 
+    v4.1: RETRY_PENDING → QUEUED (fixed PENDING bug).
     v4.0: Stats removed. Use JobStatsService for all metrics.
     """
 
@@ -67,7 +73,9 @@ class JobService:
         if not self._event_bus:
             return
         try:
-            if hasattr(self._event_bus, "publish"):
+            if hasattr(self._event_bus, "publish_event"):
+                self._event_bus.publish_event(event_name, payload)
+            elif hasattr(self._event_bus, "publish"):
                 self._event_bus.publish(event_name, payload)
             elif hasattr(self._event_bus, "emit"):
                 self._event_bus.emit(event_name, payload)
@@ -307,7 +315,11 @@ class JobService:
             )
 
     def reset_to_pending(self, job_id: str) -> Optional[AutomationJob]:
-        """Reset a RETRY_PENDING job to PENDING for retry."""
+        """Reset a RETRY_PENDING job to QUEUED for retry.
+
+        v4.1: Fixed — previously wrote JobStatus.PENDING which doesn't exist.
+        Now correctly writes JobStatus.QUEUED.
+        """
         client = self._require_client()
         try:
             result = (
@@ -330,7 +342,7 @@ class JobService:
                 return None
 
             update_data = {
-                "status": JobStatus.PENDING.value,
+                "status": JobStatus.QUEUED.value,
                 "attempt_count": job.attempt_count + 1,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -343,7 +355,7 @@ class JobService:
             if update_result.data:
                 updated = AutomationJob(**update_result.data[0])
                 logger.info(
-                    "JobService: reset RETRY_PENDING → PENDING for job %s (attempt %d)",
+                    "JobService: reset RETRY_PENDING → QUEUED for job %s (attempt %d)",
                     job_id, updated.attempt_count,
                 )
                 self._emit("job.retry_scheduled", {
@@ -519,7 +531,7 @@ class JobService:
         return recovered
 
     def recover_and_retry(self, stale_minutes: int = 15) -> int:
-        """Recover stale jobs AND reset them to PENDING for retry."""
+        """Recover stale jobs AND reset them to QUEUED for retry."""
         stale_jobs = self.detect_stale_jobs(stale_minutes)
         retried = 0
         for job in stale_jobs:
