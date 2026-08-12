@@ -918,31 +918,33 @@ class MetaEngine:
         if h.anomaly_flags:
             score -= min(20, len(h.anomaly_flags) * 5)
         return round(clamp(score), 2)
+def _calc_risk_score(self, h: EngineHealth, depth: int = 0) -> float:
+    risk = 0.0
+    if h.status == EngineStatus.OFFLINE:
+        risk += 80
+    elif h.status == EngineStatus.DEGRADED:
+        risk += 40
+    elif h.status == EngineStatus.STALE:
+        risk += 30
+    total = h.error_count_1h + h.success_count_1h
+    if total:
+        risk += (h.error_count_1h / total) * 40
+    if h.p95_latency_ms > 2000:
+        risk += 10
+    if h.p95_latency_ms > 5000:
+        risk += 10
+    risk += min(30, len(h.anomaly_flags) * 7)
 
-    def _calc_risk_score(self, h: EngineHealth) -> float:
-        risk = 0.0
-        if h.status == EngineStatus.OFFLINE:
-            risk += 80
-        elif h.status == EngineStatus.DEGRADED:
-            risk += 40
-        elif h.status == EngineStatus.STALE:
-            risk += 30
-        total = h.error_count_1h + h.success_count_1h
-        if total:
-            risk += (h.error_count_1h / total) * 40
-        if h.p95_latency_ms > 2000:
-            risk += 10
-        if h.p95_latency_ms > 5000:
-            risk += 10
-        risk += min(30, len(h.anomaly_flags) * 7)
+    # Only check dependencies ONE level deep to prevent infinite recursion
+    if depth < 1:
         for dep in h.dependencies:
             dh = self.check_engine_health(dep, record_history=False)
             if dh.status == EngineStatus.OFFLINE:
                 risk += 20
             elif dh.status == EngineStatus.DEGRADED:
                 risk += 10
-        return round(clamp(risk), 2)
 
+    return round(clamp(risk), 2)
     # ═══════════════════════════════════════════════════════════════════
     # ANOMALY DETECTION
     # ═══════════════════════════════════════════════════════════════════
