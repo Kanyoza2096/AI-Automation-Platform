@@ -668,7 +668,6 @@ def _boot_plugin_registry(
     )
     logger.info("PluginRegistry v2.0 ready.")
 
-
 def _boot_job_service(
     container: ServiceContainer,
 ) -> None:
@@ -701,6 +700,11 @@ def _boot_job_service(
     container.register_instance(
         JobService, job_service
     )
+    
+    # v4.0 — Initialize JobStatsService with the same client
+    from services.job_stats_service import init_job_stats_service
+    init_job_stats_service(supabase_client=client, event_bus=event_bus)
+    
     health_registry.register(
         _JobServiceHealthProvider(job_service)
     )
