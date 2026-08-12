@@ -1,8 +1,13 @@
 """
-KANYOZA EVENT BUS v3.0 — "THE NERVOUS SYSTEM"
+KANYOZA EVENT BUS v3.1 — "THE NERVOUS SYSTEM"
 
 Thread-safe, persistent, replayable event bus with async dispatch,
 dead-letter queue, event sourcing, throttling, and distributed tracing.
+
+v3.1 UPGRADES:
+  - Normalized publish() API — accepts both DomainEvent and
+    string+dict signatures. No more silently dropped events
+    from services calling the wrong method.
 
 v3.0 UPGRADES:
   - Event persistence (survives restarts via Supabase)
@@ -94,19 +99,14 @@ class ThrottlePolicy(Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# EVENT BUS v3.0
+# EVENT BUS v3.1
 # ═══════════════════════════════════════════════════════════════════════════
 
 class EventBus:
     """Thread-safe, persistent, replayable event bus with async dispatch.
 
-    v3.0 features:
-    - Async dispatch via thread pool (non-blocking publish)
-    - Event persistence to Supabase (survives restarts)
-    - Dead letter queue for failed event analysis
-    - Event replay from any sequence number
-    - Throttling to prevent event storms
-    - Correlation IDs for distributed tracing
+    v3.1: Normalized publish() — accepts DomainEvent OR string+dict.
+    v3.0: Async dispatch, persistence, replay, dead letters, throttling.
     """
 
     # Throttle configuration
@@ -166,7 +166,7 @@ class EventBus:
         self._async_futures: List[Future] = []
 
         logger.info(
-            "EventBus v3.0 initialized — "
+            "EventBus v3.1 initialized — "
             "async=%d workers, persist=%s",
             async_workers,
             persist_events,
@@ -182,25 +182,15 @@ class EventBus:
         handler: Subscriber,
     ) -> None:
         with self._lock:
-            self._subscribers[event_type].append(
-                handler
-            )
+            self._subscribers[event_type].append(handler)
         logger.debug(
             "EventBus: subscribed %s → %s",
-            event_type.value
-            if hasattr(event_type, "value")
-            else event_type,
+            event_type.value if hasattr(event_type, "value") else event_type,
             handler.__qualname__,
         )
 
-    def subscribe_all(
-        self, handler: Subscriber
-    ) -> None:
-        """Receive every event regardless of type.
-
-        Perfect for the Meta Engine and Director to observe
-        everything happening in the platform.
-        """
+    def subscribe_all(self, handler: Subscriber) -> None:
+        """Receive every event regardless of type."""
         with self._lock:
             self._wildcard.append(handler)
         logger.info(
@@ -215,29 +205,56 @@ class EventBus:
     ) -> None:
         with self._lock:
             self._subscribers[event_type] = [
-                h
-                for h in self._subscribers[event_type]
-                if h is not handler
+                h for h in self._subscribers[event_type] if h is not handler
             ]
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — PUBLISHING
+    # v3.1 — PUBLISHING (Normalized)
     # ═══════════════════════════════════════════════════════════════════
 
     def enable_async(self, enabled: bool = True) -> None:
-        """Enable non-blocking async dispatch.
-
-        When enabled, subscribers run in a thread pool.
-        The publisher returns immediately.
-        """
+        """Enable non-blocking async dispatch."""
         self._async_mode = enabled
         logger.info(
             "EventBus: async mode %s",
             "enabled" if enabled else "disabled",
         )
 
-    def publish(self, event: DomainEvent) -> None:
-        """Publish a DomainEvent to all matching subscribers."""
+    def publish(self, event=None, payload=None, source="unknown", **kwargs) -> None:
+        """Publish an event.
+
+        v3.1 — Normalized API. Accepts:
+          1. publish(domain_event)                      → DomainEvent
+          2. publish("event_name", {"key": "value"})   → string + dict
+          3. publish(event_name, payload, source="...") → explicit
+
+        This prevents the API mismatch that silently dropped events
+        when services called publish("name", payload) with the old
+        signature expecting only DomainEvent.
+        """
+        # Normalize the call signature
+        if isinstance(event, DomainEvent):
+            domain_event = event
+        elif isinstance(event, str):
+            domain_event = DomainEvent(
+                event_type=event,
+                payload=payload if isinstance(payload, dict) else {"data": payload},
+                source=source or kwargs.get("source", "unknown"),
+            )
+        elif event is None and payload is not None:
+            # publish(payload=domain_event) pattern
+            if isinstance(payload, DomainEvent):
+                domain_event = payload
+            else:
+                logger.error("EventBus.publish() called with invalid payload type")
+                return
+        else:
+            logger.error(
+                "EventBus.publish() called with invalid signature: type=%s",
+                type(event).__name__ if event else "None",
+            )
+            return
+
         # v3.0 — throttling check
         if not self._check_throttle():
             return
@@ -245,34 +262,26 @@ class EventBus:
         # v3.0 — attach metadata
         metadata = EventMetadata(
             sequence_number=self._next_sequence(),
-            source_engine=getattr(
-                event, "source", "unknown"
-            ),
+            source_engine=getattr(domain_event, "source", source or "unknown"),
         )
-        event.metadata = metadata
+        domain_event.metadata = metadata
 
         # v3.0 — persist to event store
-        self._store_event(event, metadata)
+        self._store_event(domain_event, metadata)
 
         # Resolve subscribers
-        event_type = event.event_type
+        event_type = domain_event.event_type
         with self._lock:
-            handlers = list(
-                self._subscribers.get(event_type, [])
-            )
+            handlers = list(self._subscribers.get(event_type, []))
             wildcards = list(self._wildcard)
 
         self._event_count += 1
 
         # v3.0 — dispatch
         if self._async_mode:
-            self._dispatch_async(
-                event, handlers, wildcards
-            )
+            self._dispatch_async(domain_event, handlers, wildcards)
         else:
-            self._dispatch_sync(
-                event, handlers, wildcards
-            )
+            self._dispatch_sync(domain_event, handlers, wildcards)
 
     def publish_event(
         self,
@@ -282,48 +291,28 @@ class EventBus:
         parent_event_id: Optional[str] = None,
         source: str = "unknown",
     ) -> DomainEvent:
-        """Convenience method — publish a string-named event.
-
-        v3.0 adds correlation_id for distributed tracing across engines.
-
-        Usage:
-            bus.publish_event(
-                "post_published",
-                {"post_id": "123"},
-                correlation_id="corr_abc",
-                source="content_engine",
-            )
-        """
+        """Convenience method — publish a string-named event."""
         if payload is None:
             payload = {}
 
-        # Resolve EventType
         try:
             event_type = EventType(event_name)
         except (ValueError, TypeError):
             event_type = event_name
 
-        # Build event
         if isinstance(payload, DomainEvent):
             event = payload
         else:
             event = DomainEvent(
                 event_type=event_type,
-                payload=(
-                    payload
-                    if isinstance(payload, dict)
-                    else {"data": payload}
-                ),
+                payload=payload if isinstance(payload, dict) else {"data": payload},
                 source=source,
             )
 
-        # Attach correlation
         if correlation_id:
             event.correlation_id = correlation_id
             with self._lock:
-                self._active_correlations[
-                    correlation_id
-                ].append(event.event_id)
+                self._active_correlations[correlation_id].append(event.event_id)
 
         if parent_event_id:
             event.parent_event_id = parent_event_id
@@ -358,12 +347,9 @@ class EventBus:
             )
             self._async_futures.append(future)
 
-        # Clean up completed futures periodically
         if len(self._async_futures) > 100:
             self._async_futures = [
-                f
-                for f in self._async_futures
-                if not f.done()
+                f for f in self._async_futures if not f.done()
             ]
 
     def _invoke_handler(
@@ -378,12 +364,8 @@ class EventBus:
             self._error_count += 1
             logger.error(
                 "EventBus: handler %s raised %s for %s",
-                handler.__qualname__,
-                exc,
-                event,
-                exc_info=True,
+                handler.__qualname__, exc, event, exc_info=True,
             )
-            # v3.0 — capture to dead letter queue
             self._capture_dead_letter(
                 event, handler.__qualname__, exc
             )
@@ -412,9 +394,7 @@ class EventBus:
         entry = EventStoreEntry(
             event_id=metadata.event_id,
             event_type=event_type,
-            payload=event.payload
-            if isinstance(event.payload, dict)
-            else {"data": str(event.payload)},
+            payload=event.payload if isinstance(event.payload, dict) else {"data": str(event.payload)},
             correlation_id=metadata.correlation_id,
             sequence_number=metadata.sequence_number,
             published_at=metadata.published_at,
@@ -423,36 +403,25 @@ class EventBus:
 
         self._event_store.append(entry)
 
-        # Persist to Supabase if enabled
         if self._persist_events and self._supabase:
             self._persist_event(entry)
 
-    def _persist_event(
-        self, entry: EventStoreEntry
-    ) -> None:
+    def _persist_event(self, entry: EventStoreEntry) -> None:
         """Persist event to Supabase for durability."""
         try:
-            self._supabase.table(
-                "event_store"
-            ).insert({
+            self._supabase.table("event_store").insert({
                 "event_id": entry.event_id,
                 "event_type": entry.event_type,
                 "payload": entry.payload,
                 "correlation_id": entry.correlation_id,
                 "sequence_number": entry.sequence_number,
-                "published_at": (
-                    entry.published_at.isoformat()
-                ),
+                "published_at": entry.published_at.isoformat(),
                 "source_engine": entry.source_engine,
             }).execute()
         except Exception as exc:
-            logger.debug(
-                "Event persistence failed: %s", exc
-            )
+            logger.debug("Event persistence failed: %s", exc)
 
-    def enable_persistence(
-        self, supabase_client=None
-    ) -> None:
+    def enable_persistence(self, supabase_client=None) -> None:
         """Enable event persistence to Supabase."""
         self._persist_events = True
         if supabase_client:
@@ -469,37 +438,13 @@ class EventBus:
         event_types: Optional[List[str]] = None,
         limit: int = 100,
     ) -> List[EventStoreEntry]:
-        """Replay events from the event store.
-
-        New engines can catch up on what they missed.
-        The Director can replay events for analysis.
-
-        Args:
-            from_sequence: Replay from this sequence number
-            event_types: Optional filter by event type
-            limit: Maximum events to replay
-
-        Returns:
-            List of EventStoreEntry in order
-        """
+        """Replay events from the event store."""
         events = list(self._event_store)
+        events = [e for e in events if e.sequence_number >= from_sequence]
 
-        # Filter by sequence
-        events = [
-            e
-            for e in events
-            if e.sequence_number >= from_sequence
-        ]
-
-        # Filter by type
         if event_types:
-            events = [
-                e
-                for e in events
-                if e.event_type in event_types
-            ]
+            events = [e for e in events if e.event_type in event_types]
 
-        # Return most recent up to limit
         return events[-limit:]
 
     def replay_and_publish(
@@ -508,21 +453,15 @@ class EventBus:
         event_types: Optional[List[str]] = None,
         limit: int = 100,
     ) -> int:
-        """Replay events by re-publishing them to subscribers.
-
-        Returns the number of events replayed.
-        """
-        events = self.replay_events(
-            from_sequence, event_types, limit
-        )
+        """Replay events by re-publishing them to subscribers."""
+        events = self.replay_events(from_sequence, event_types, limit)
         count = 0
 
         for entry in events:
             event = DomainEvent(
                 event_type=(
                     EventType(entry.event_type)
-                    if entry.event_type
-                    in EventType.__members__
+                    if entry.event_type in EventType.__members__
                     else entry.event_type
                 ),
                 payload=entry.payload,
@@ -538,22 +477,14 @@ class EventBus:
             )
 
             with self._lock:
-                handlers = list(
-                    self._subscribers.get(
-                        event.event_type, []
-                    )
-                )
+                handlers = list(self._subscribers.get(event.event_type, []))
                 wildcards = list(self._wildcard)
 
             for handler in handlers + wildcards:
                 self._invoke_handler(handler, event)
             count += 1
 
-        logger.info(
-            "EventBus: replayed %d events from seq %d",
-            count,
-            from_sequence,
-        )
+        logger.info("EventBus: replayed %d events from seq %d", count, from_sequence)
         return count
 
     # ═══════════════════════════════════════════════════════════════════
@@ -573,71 +504,42 @@ class EventBus:
             else str(event.event_type)
         )
 
-        # Check if this event already has a dead letter
         existing = next(
-            (
-                dl
-                for dl in self._dead_letters
-                if dl.event_id
-                == getattr(
-                    event.metadata, "event_id", None
-                )
-            ),
+            (dl for dl in self._dead_letters
+             if dl.event_id == getattr(event.metadata, "event_id", None)),
             None,
         )
 
         if existing:
             existing.attempt_count += 1
-            existing.last_failure = datetime.now(
-                timezone.utc
-            )
+            existing.last_failure = datetime.now(timezone.utc)
         else:
             self._dead_letters.append(
                 DeadLetter(
-                    event_id=getattr(
-                        event.metadata,
-                        "event_id",
-                        "unknown",
-                    ),
+                    event_id=getattr(event.metadata, "event_id", "unknown"),
                     event_type=event_type,
-                    payload=event.payload
-                    if isinstance(event.payload, dict)
-                    else {},
+                    payload=event.payload if isinstance(event.payload, dict) else {},
                     error=str(error),
                     handler_name=handler_name,
                 )
             )
 
-    def get_dead_letters(
-        self, limit: int = 50
-    ) -> List[DeadLetter]:
+    def get_dead_letters(self, limit: int = 50) -> List[DeadLetter]:
         """Get recent dead letters for analysis."""
         return list(self._dead_letters)[-limit:]
 
-    def retry_dead_letter(
-        self, event_id: str
-    ) -> bool:
+    def retry_dead_letter(self, event_id: str) -> bool:
         """Retry a dead letter event by re-publishing it."""
         dead = next(
-            (
-                dl
-                for dl in self._dead_letters
-                if dl.event_id == event_id
-            ),
+            (dl for dl in self._dead_letters if dl.event_id == event_id),
             None,
         )
         if not dead:
             return False
 
-        self.publish_event(
-            dead.event_type,
-            dead.payload,
-            source="dead_letter_retry",
-        )
+        self.publish_event(dead.event_type, dead.payload, source="dead_letter_retry")
         self._dead_letters.remove(dead)
-        logger.info(
-            "EventBus: retried dead letter %s", event_id
-        )
+        logger.info("EventBus: retried dead letter %s", event_id)
         return True
 
     # ═══════════════════════════════════════════════════════════════════
@@ -648,59 +550,31 @@ class EventBus:
         """Check if publishing should be throttled."""
         now = time.monotonic()
 
-        # Remove events outside the window
-        while (
-            self._recent_events
-            and self._recent_events[0]
-            < now - self.THROTTLE_WINDOW_SECONDS
-        ):
+        while self._recent_events and self._recent_events[0] < now - self.THROTTLE_WINDOW_SECONDS:
             self._recent_events.popleft()
 
-        # Check if we're over the limit
-        if (
-            len(self._recent_events)
-            >= self.MAX_EVENTS_PER_SECOND
-        ):
+        if len(self._recent_events) >= self.MAX_EVENTS_PER_SECOND:
             self._throttled_count += 1
-            if (
-                self._throttle_policy
-                == ThrottlePolicy.DROP
-            ):
+            if self._throttle_policy == ThrottlePolicy.DROP:
                 return False
-            elif (
-                self._throttle_policy
-                == ThrottlePolicy.DEFER
-            ):
-                # Will be processed later by process_deferred()
+            elif self._throttle_policy == ThrottlePolicy.DEFER:
                 return False
-            elif (
-                self._throttle_policy
-                == ThrottlePolicy.BLOCK
-            ):
-                # Wait until capacity is available
+            elif self._throttle_policy == ThrottlePolicy.BLOCK:
                 time.sleep(0.01)
                 return self._check_throttle()
 
         self._recent_events.append(now)
         return True
 
-    def set_throttle_policy(
-        self, policy: ThrottlePolicy
-    ) -> None:
+    def set_throttle_policy(self, policy: ThrottlePolicy) -> None:
         """Set the throttle policy for event floods."""
         self._throttle_policy = policy
-        logger.info(
-            "EventBus: throttle policy set to %s",
-            policy.value,
-        )
+        logger.info("EventBus: throttle policy set to %s", policy.value)
 
     def process_deferred(self, limit: int = 100) -> int:
         """Process deferred events from the throttle queue."""
         processed = 0
-        while (
-            self._deferred_events
-            and processed < limit
-        ):
+        while self._deferred_events and processed < limit:
             event = self._deferred_events.popleft()
             self.publish(event)
             processed += 1
@@ -710,98 +584,57 @@ class EventBus:
     # v3.0 — CORRELATION TRACKING
     # ═══════════════════════════════════════════════════════════════════
 
-    def start_correlation(
-        self, correlation_id: Optional[str] = None
-    ) -> str:
-        """Start a new correlation context for tracing.
-
-        Returns the correlation_id to pass to subsequent events.
-        """
+    def start_correlation(self, correlation_id: Optional[str] = None) -> str:
+        """Start a new correlation context for tracing."""
         cid = correlation_id or f"corr_{uuid.uuid4().hex[:10]}"
         with self._lock:
             self._active_correlations[cid] = []
-        logger.debug(
-            "EventBus: correlation %s started", cid
-        )
+        logger.debug("EventBus: correlation %s started", cid)
         return cid
 
-    def get_correlation_chain(
-        self, correlation_id: str
-    ) -> List[str]:
+    def get_correlation_chain(self, correlation_id: str) -> List[str]:
         """Get all event IDs in a correlation chain."""
         with self._lock:
-            return list(
-                self._active_correlations.get(
-                    correlation_id, []
-                )
-            )
+            return list(self._active_correlations.get(correlation_id, []))
 
     # ═══════════════════════════════════════════════════════════════════
     # v3.0 — DIAGNOSTICS
     # ═══════════════════════════════════════════════════════════════════
 
-    def subscriber_count(
-        self, event_type: EventType
-    ) -> int:
+    def subscriber_count(self, event_type: EventType) -> int:
         with self._lock:
-            return len(
-                self._subscribers.get(event_type, [])
-            )
+            return len(self._subscribers.get(event_type, []))
 
     def get_stats(self) -> dict:
         """Return comprehensive event bus statistics."""
         with self._lock:
             total_subscribers = sum(
-                len(handlers)
-                for handlers in self._subscribers.values()
+                len(handlers) for handlers in self._subscribers.values()
             ) + len(self._wildcard)
 
         return {
             "event_count": self._event_count,
             "error_count": self._error_count,
-            "error_rate": (
-                round(
-                    self._error_count
-                    / max(self._event_count, 1)
-                    * 100,
-                    2,
-                )
-            ),
+            "error_rate": round(self._error_count / max(self._event_count, 1) * 100, 2),
             "subscriber_count": total_subscribers,
-            "event_types_tracked": len(
-                self._subscribers
-            ),
-            "wildcard_subscribers": len(
-                self._wildcard
-            ),
+            "event_types_tracked": len(self._subscribers),
+            "wildcard_subscribers": len(self._wildcard),
             "async_mode": self._async_mode,
             "persist_events": self._persist_events,
             "dead_letters": len(self._dead_letters),
             "event_store_size": len(self._event_store),
             "sequence_number": self._sequence_number,
             "throttled_count": self._throttled_count,
-            "throttle_policy": (
-                self._throttle_policy.value
-            ),
-            "active_correlations": len(
-                self._active_correlations
-            ),
-            "events_per_second": round(
-                len(self._recent_events)
-                / self.THROTTLE_WINDOW_SECONDS,
-                1,
-            ),
+            "throttle_policy": self._throttle_policy.value,
+            "active_correlations": len(self._active_correlations),
+            "events_per_second": round(len(self._recent_events) / self.THROTTLE_WINDOW_SECONDS, 1),
         }
 
     def get_event_types(self) -> List[str]:
         """Get all tracked event types."""
         with self._lock:
             return sorted(
-                str(
-                    et.value
-                    if hasattr(et, "value")
-                    else et
-                )
+                str(et.value if hasattr(et, "value") else et)
                 for et in self._subscribers.keys()
             )
 
@@ -819,10 +652,7 @@ class EventBus:
         if stats["event_count"] == 0:
             status = "idle"
 
-        return {
-            "status": status,
-            "stats": stats,
-        }
+        return {"status": status, "stats": stats}
 
     # ═══════════════════════════════════════════════════════════════════
     # v3.0 — CLEANUP
@@ -834,9 +664,7 @@ class EventBus:
             "EventBus: shutting down (%d pending futures)",
             len(self._async_futures),
         )
-        self._executor.shutdown(
-            wait=True, timeout=timeout
-        )
+        self._executor.shutdown(wait=True, timeout=timeout)
         logger.info("EventBus: shutdown complete")
 
     def clear(self) -> None:
