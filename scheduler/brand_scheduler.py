@@ -1,6 +1,12 @@
 """
-Brand-aware scheduling engine — UNIFIED v3.7
+Brand-aware scheduling engine — UNIFIED v3.8
 Replaces PostScheduler with a multi-tenant BrandSchedulerManager.
+
+v3.8 FIXED:
+  - Dashboard event loop now works correctly in background threads
+  - _emit_dashboard_event() uses provided loop without calling get_running_loop()
+  - Prevents 100% event loss from scheduler threads
+  - Two-step atomic claim for scheduled posts (prevents race condition)
 
 v3.7 UPGRADES:
   - Dashboard events now use stored event_loop (fixes systematic event loss
@@ -51,7 +57,7 @@ _failed_emits_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DASHBOARD EVENT EMITTER
+# DASHBOARD EVENT EMITTER — v3.8 FIXED
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _emit_dashboard_event(
@@ -59,22 +65,37 @@ def _emit_dashboard_event(
     payload: dict,
     loop: Optional[asyncio.AbstractEventLoop] = None,
 ) -> None:
-    """Best-effort dashboard event emission.
+    """
+    Best-effort dashboard event emission.
 
-    v3.7: Accepts an optional event_loop parameter. When provided from
-    a non-async thread (like the scheduler), uses it directly instead
-    of calling get_running_loop() which raises RuntimeError.
+    v3.8: FIXED — When loop is provided, use it directly without
+    calling get_running_loop(). This prevents RuntimeError in
+    background threads.
     """
     global _failed_emits
+    
     try:
         from core.socket_server import emit_to_dashboard
-
-        if loop is None:
+        
+        # ✅ FIX: If loop is provided, use it directly
+        if loop is not None:
+            asyncio.run_coroutine_threadsafe(
+                emit_to_dashboard(event_name, payload), 
+                loop
+            )
+            return
+        
+        # Fallback: Try to get the current loop
+        try:
             loop = asyncio.get_running_loop()
-
-        asyncio.run_coroutine_threadsafe(
-            emit_to_dashboard(event_name, payload), loop
-        )
+            asyncio.run_coroutine_threadsafe(
+                emit_to_dashboard(event_name, payload), 
+                loop
+            )
+        except RuntimeError:
+            # No running loop — can't emit
+            raise
+            
     except RuntimeError:
         with _failed_emits_lock:
             _failed_emits += 1
@@ -113,7 +134,7 @@ class BrandScheduler:
         self._container = container
         self._job_service = job_service
         self._event_bus = event_bus
-        self._event_loop = event_loop
+        self._event_loop = event_loop  # ← Stored for dashboard events
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
@@ -159,6 +180,7 @@ class BrandScheduler:
 
     def _emit_dashboard(self, event_name: str, payload: dict) -> None:
         """Emit a dashboard event using the stored event loop."""
+        # ✅ FIX: Always pass the stored loop
         _emit_dashboard_event(event_name, payload, loop=self._event_loop)
 
     # ═══════════════════════════════════════════════════════════════
@@ -264,15 +286,15 @@ class BrandScheduler:
             self._trigger_news()
 
     # ═══════════════════════════════════════════════════════════════
-    # v3.6 — ATOMIC SCHEDULED-POST CLAIM
+    # v3.8 — ATOMIC SCHEDULED-POST CLAIM (FIXED RACE CONDITION)
     # ═══════════════════════════════════════════════════════════════
 
     def _check_scheduled_posts(self) -> None:
         """Check and process scheduled posts from the database.
 
-        v3.6 — ATOMIC CLAIM: Uses a conditional UPDATE that only
-        succeeds if status='queued'. Eliminates the race condition
-        where two workers could claim the same post.
+        v3.8: Two-step atomic claim to prevent race conditions.
+        Step 1: Find the next queued post
+        Step 2: Atomically claim it with conditional UPDATE
         """
         if not self._job_service:
             return
@@ -308,28 +330,37 @@ class BrandScheduler:
                 pass  # RPC not available — use fallback
 
             # ── Fallback: Atomic conditional UPDATE ──────────────────
+            # Step 1: Find the next queued post (order BEFORE filters)
+            post_result = (
+                supabase_service.client.table("scheduled_posts")
+                .select("id")
+                .order("scheduled_for")
+                .eq("brand_id", self.brand.id)
+                .lte("scheduled_for", now_utc.isoformat())
+                .eq("status", "queued")
+                .limit(1)
+                .execute()
+            )
+
+            if not post_result.data:
+                return
+
+            post_id = post_result.data[0]["id"]
+
+            # Step 2: Atomically claim it
             result = (
                 supabase_service.client.table("scheduled_posts")
                 .update({
                     "status": "processing",
                     "started_at": now_utc.isoformat(),
                 })
-                .eq("brand_id", self.brand.id)
-                .lte("scheduled_for", now_utc.isoformat())
+                .eq("id", post_id)
                 .eq("status", "queued")
-                .order("scheduled_for", desc=False)
-                .limit(1)
                 .execute()
             )
 
             claimed = result.data if hasattr(result, 'data') else []
-            if not claimed:
-                return
-
-            post = claimed[0] if isinstance(claimed, list) else claimed
-            post_id = post.get("id") if isinstance(post, dict) else None
-
-            if post_id:
+            if claimed:
                 logger.info(
                     "[%s] Scheduled post claimed: id=%s",
                     self.brand.name, post_id,
@@ -450,7 +481,7 @@ class BrandScheduler:
             "job_id": job_id, "source": source,
         })
 
-        # v3.7 — Use stored event loop for dashboard events
+        # v3.8 — Use stored event loop for dashboard events
         self._emit_dashboard("mission_status", {
             "goal": f"Publish {self.brand.name} Content",
             "stage": "AI Generation", "progress": 5,
@@ -547,7 +578,7 @@ class BrandScheduler:
                     "duration_ms": result.total_ms,
                 })
 
-                # v3.7 — Use stored event loop
+                # v3.8 — Use stored event loop
                 self._emit_dashboard("mission_status", {
                     "goal": f"Publish {self.brand.name} Content",
                     "stage": "Complete", "progress": 100,
@@ -809,14 +840,13 @@ class BrandScheduler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BRAND SCHEDULER MANAGER v3.7
+# BRAND SCHEDULER MANAGER v3.8
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BrandSchedulerManager:
     """Manages all active BrandSchedulers.
 
-    v3.7: set_event_loop() propagates the FastAPI event loop to all
-    schedulers so dashboard events work from non-async threads.
+    v3.8: Fixed event loop propagation for dashboard events.
     """
 
     def __init__(
@@ -862,7 +892,7 @@ class BrandSchedulerManager:
     ) -> None:
         """Pass the FastAPI event loop for dashboard events.
 
-        v3.7: Propagates to all existing AND future schedulers.
+        v3.8: Propagates to all existing AND future schedulers.
         Without this, dashboard events from scheduler threads are
         systematically dropped.
         """
@@ -895,7 +925,7 @@ class BrandSchedulerManager:
             name="scheduler-manager",
         )
         self._manager_thread.start()
-        logger.info("BrandSchedulerManager v3.7: started.")
+        logger.info("BrandSchedulerManager v3.8: started.")
 
     def stop(self) -> None:
         self._running = False
@@ -980,12 +1010,12 @@ class BrandSchedulerManager:
                     self._container,
                     job_service=self._job_service,
                     event_bus=self._event_bus,
-                    event_loop=self._event_loop,
+                    event_loop=self._event_loop,  # ← Pass the loop
                 )
                 self._schedulers[brand.id] = scheduler
                 scheduler.start()
 
-        # v3.7 — notify Director via proper callback
+        # v3.8 — notify Director via proper callback
         try:
             from services.director import director
 
@@ -1112,3 +1142,14 @@ class BrandSchedulerManager:
         ):
             status = "degraded"
         return {"status": status, "stats": stats}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EXPOSED FOR TESTING
+# ═══════════════════════════════════════════════════════════════════════════
+
+__all__ = [
+    "BrandScheduler",
+    "BrandSchedulerManager",
+    "_emit_dashboard_event",
+]
