@@ -10,6 +10,16 @@ from typing import Optional
 router = APIRouter(prefix="/api/v1/growthbridge", tags=["growthbridge"])
 
 # ═══════════════════════════════════════════════════════════════════════
+# Health Check — no database, instant response
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/health")
+async def health():
+    """Lightweight health check for monitoring. No Supabase call."""
+    return {"status": "ok"}
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Shared Supabase client — created once, reused across all requests
 # ═══════════════════════════════════════════════════════════════════════
 
