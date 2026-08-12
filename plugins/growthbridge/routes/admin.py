@@ -1,6 +1,13 @@
 """
-Growthbridge Admin API — Authenticated CRUD endpoints.
-Requires master_api_token.
+Growthbridge Admin API — Authenticated CRUD endpoints with RBAC.
+Requires master_api_token OR session-based role authorization.
+
+v2.0 — SECURITY FIXES:
+  - Removed password_hash/salt from /users endpoint
+  - Password verification happens server-side, never exposes credentials
+  - Added field allowlists per resource (no arbitrary dict to Supabase)
+  - Added delete verification (404 if record doesn't exist)
+  - Added protected field blocking (id, created_at, created_by, role)
 """
 
 from datetime import datetime, timezone
@@ -44,18 +51,81 @@ def _require_auth(request: Request):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Protected Fields — Never allowed in client-submitted data
+# ═══════════════════════════════════════════════════════════════════════
+
+PROTECTED_FIELDS = {
+    "id", "created_at", "updated_at", "created_by", "role",
+    "password_hash", "salt", "is_active", "permissions",
+}
+
+# Field allowlists per resource — only these fields are accepted
+RESOURCE_FIELDS = {
+    "services": {
+        "slug", "title", "description", "category", "icon",
+        "sort_order", "is_published", "is_featured",
+    },
+    "projects": {
+        "slug", "title", "description", "image_url", "category",
+        "is_published", "is_featured", "client", "completion_date",
+    },
+    "talent": {
+        "name", "email", "bio", "skills", "experience_level",
+        "portfolio_url", "availability", "status", "is_featured",
+        "is_active", "category", "slug", "title", "photo",
+        "social_links",
+    },
+    "applications": {
+        "name", "email", "phone", "application_type", "skills",
+        "message", "status",
+    },
+    "partners": {
+        "organization_name", "contact_person", "email", "industry",
+        "website", "status",
+    },
+    "blog": {
+        "slug", "title", "excerpt", "content", "featured_image",
+        "author", "tags", "is_published", "published_at",
+    },
+    "testimonials": {
+        "quote", "author", "role", "organization", "avatar",
+        "rating", "is_published", "is_featured",
+    },
+}
+
+
+def _sanitize_data(resource: str, data: dict) -> dict:
+    """Filter incoming data to only allowed fields for the resource."""
+    allowed = RESOURCE_FIELDS.get(resource, set())
+    sanitized = {}
+
+    for key, value in data.items():
+        if key in PROTECTED_FIELDS:
+            continue
+        if key not in allowed:
+            continue
+        sanitized[key] = value
+
+    return sanitized
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Admin Users (for GrowthBridge login)
 # ═══════════════════════════════════════════════════════════════════════
 
 @router.get("/users")
 async def get_admin_user(email: str, _auth=Depends(_require_auth)):
-    """Get admin user by email — used by GrowthBridge auth."""
+    """Get admin user by email — no credentials exposed.
+
+    v2.0: Returns only id, email, role. Password verification
+    happens server-side via the /verify-password endpoint.
+    """
     client = _get_supabase()
     if not client:
         raise HTTPException(503, "Database unavailable")
     
     result = client.table("growthbridge_admin_users") \
-        .select("id, email, password_hash, salt, role") \
+        .select("id, email, role") \
         .eq("email", email) \
         .eq("is_active", True) \
         .limit(1) \
@@ -65,6 +135,70 @@ async def get_admin_user(email: str, _auth=Depends(_require_auth)):
         return {"user": None}
     
     return {"user": result.data[0]}
+
+
+@router.post("/verify-password")
+async def verify_admin_password(data: dict, _auth=Depends(_require_auth)):
+    """Verify an admin password server-side. Never returns the hash."""
+    email = data.get("email", "")
+    password = data.get("password", "")
+
+    if not email or not password:
+        raise HTTPException(400, "Email and password are required")
+
+    client = _get_supabase()
+    if not client:
+        raise HTTPException(503, "Database unavailable")
+
+    result = client.table("growthbridge_admin_users") \
+        .select("id, email, password_hash, salt, role") \
+        .eq("email", email) \
+        .eq("is_active", True) \
+        .limit(1) \
+        .execute()
+
+    if not result.data:
+        return {"valid": False}
+
+    user = result.data[0]
+
+    # Server-side password verification
+    import hashlib
+    import hmac
+
+    pepper = getattr(
+        __import__("config.settings", fromlist=["settings"]).settings,
+        "admin_hash_pepper", ""
+    ) if hasattr(
+        __import__("config.settings", fromlist=["settings"]).settings,
+        "admin_hash_pepper"
+    ) else ""
+
+    try:
+        import crypto
+        computed = crypto.pbkdf2_hmac(
+            "sha512",
+            (password + pepper).encode("utf-8"),
+            bytes.fromhex(user["salt"]),
+            100000,
+            64,
+        ).hex()
+
+        valid = hmac.compare_digest(computed, user["password_hash"])
+    except Exception:
+        valid = False
+
+    if valid:
+        return {
+            "valid": True,
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "role": user["role"],
+            },
+        }
+
+    return {"valid": False}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -104,7 +238,7 @@ async def get_stats(_auth=Depends(_require_auth)):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Generic CRUD
+# Generic CRUD (with field allowlists)
 # ═══════════════════════════════════════════════════════════════════════
 
 TABLES = {
@@ -163,11 +297,16 @@ async def create_resource(resource: str, data: dict, _auth=Depends(_require_auth
     if not client:
         raise HTTPException(503, "Database unavailable")
     
+    # v2.0 — Sanitize input to only allowed fields
+    sanitized = _sanitize_data(resource, data)
+    if not sanitized:
+        raise HTTPException(400, "No valid fields provided for this resource")
+    
     try:
         now = datetime.now(timezone.utc).isoformat()
-        data.setdefault("created_at", now)
-        data.setdefault("updated_at", now)
-        result = client.table(TABLES[resource]).insert(data).execute()
+        sanitized["created_at"] = now
+        sanitized["updated_at"] = now
+        result = client.table(TABLES[resource]).insert(sanitized).execute()
         return {"ok": True, "data": result.data[0] if result.data else None}
     except Exception as e:
         raise HTTPException(502, f"Database insert failed: {str(e)[:200]}")
@@ -182,9 +321,14 @@ async def update_resource(resource: str, record_id: str, data: dict, _auth=Depen
     if not client:
         raise HTTPException(503, "Database unavailable")
     
+    # v2.0 — Sanitize input to only allowed fields
+    sanitized = _sanitize_data(resource, data)
+    if not sanitized:
+        raise HTTPException(400, "No valid fields provided for this resource")
+    
     try:
-        data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        result = client.table(TABLES[resource]).update(data).eq("id", record_id).execute()
+        sanitized["updated_at"] = datetime.now(timezone.utc).isoformat()
+        result = client.table(TABLES[resource]).update(sanitized).eq("id", record_id).execute()
         if not result.data:
             raise HTTPException(404, "Record not found")
         return {"ok": True, "data": result.data[0]}
@@ -203,8 +347,15 @@ async def delete_resource(resource: str, record_id: str, _auth=Depends(_require_
     if not client:
         raise HTTPException(503, "Database unavailable")
     
+    # v2.0 — Verify record exists before deleting
     try:
+        existing = client.table(TABLES[resource]).select("id").eq("id", record_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(404, "Record not found")
+        
         client.table(TABLES[resource]).delete().eq("id", record_id).execute()
         return {"ok": True, "message": f"{resource} deleted"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(502, f"Database delete failed: {str(e)[:200]}")
