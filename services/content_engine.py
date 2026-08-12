@@ -310,91 +310,192 @@ class ContentEngine:
     # ========================================================================
     # AUTONOMOUS CONTROL INTERFACE
     # ========================================================================
-
     def boost_content(
-        self,
-        brand_id: str,
-        factor: float = 0.20,
-        duration_posts: int = 5,
-    ) -> dict:
-        """Increase similar content production.
+    self,
+    brand_id: str,
+    factor: float = 0.20,
+    duration_posts: int = 5,
+) -> dict:
+    """Increase similar content production.
 
-        Called by the AutonomousConditionEngine when performance
-        significantly exceeds baseline.
-        """
-        logger.info(
-            "ContentEngine: boost_content brand=%s factor=%.2f posts=%d",
-            brand_id, factor, duration_posts,
-        )
-        self._emit_dashboard_event("content.boost", {
-            "brand_id": brand_id,
-            "factor": factor,
-            "duration_posts": duration_posts,
-            "timestamp": self._utc_now(),
-        })
-        return {
-            "action": "boost_content",
-            "brand_id": brand_id,
-            "factor": factor,
-            "duration_posts": duration_posts,
-            "status": "acknowledged",
-        }
+    v12.5: PERSISTENT — Updates brand content policy in Supabase.
+    The scheduler reads this policy on next cycle and adjusts
+    posting frequency accordingly.
+    """
+    logger.info(
+        "ContentEngine: boost_content brand=%s factor=%.2f posts=%d",
+        brand_id, factor, duration_posts,
+    )
 
-    def reduce_content(
-        self,
-        brand_id: str,
-        factor: float = -0.20,
-        duration_posts: int = 5,
-    ) -> dict:
-        """Reduce underperforming content production.
+    policy_update = {
+        "content_mix_change": factor,
+        "boost_until": (
+            datetime.now(timezone.utc) +
+            timedelta(hours=duration_posts * 2)
+        ).isoformat(),
+        "active_policy": "boost",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
-        Called by the AutonomousConditionEngine when performance
-        is materially below baseline.
-        """
-        logger.info(
-            "ContentEngine: reduce_content brand=%s factor=%.2f posts=%d",
-            brand_id, factor, duration_posts,
-        )
-        self._emit_dashboard_event("content.reduce", {
-            "brand_id": brand_id,
-            "factor": factor,
-            "duration_posts": duration_posts,
-            "timestamp": self._utc_now(),
-        })
-        return {
-            "action": "reduce_content",
-            "brand_id": brand_id,
-            "factor": factor,
-            "duration_posts": duration_posts,
-            "status": "acknowledged",
-        }
+    # Persist to Supabase
+    persisted = False
+    try:
+        client = self._get_supabase_client()
+        if client:
+            result = (
+                client.table("brands")
+                .update(policy_update)
+                .eq("id", brand_id)
+                .execute()
+            )
+            persisted = bool(result.data)
+    except Exception as e:
+        logger.error("ContentEngine: failed to persist boost policy: %s", e)
 
-    def safe_mode(
-        self,
-        brand_id: str,
-        duration_posts: int = 5,
-    ) -> dict:
-        """Enter safe/risk-reduced content mode.
+    self._emit_dashboard_event("content.boost", {
+        "brand_id": brand_id,
+        "factor": factor,
+        "duration_posts": duration_posts,
+        "persisted": persisted,
+        "timestamp": self._utc_now(),
+    })
 
-        Called by the AutonomousConditionEngine when performance
-        is critically below baseline.
-        """
-        logger.warning(
-            "ContentEngine: safe_mode brand=%s posts=%d",
-            brand_id, duration_posts,
-        )
-        self._emit_dashboard_event("content.safe_mode", {
-            "brand_id": brand_id,
-            "duration_posts": duration_posts,
-            "timestamp": self._utc_now(),
-        })
-        return {
-            "action": "safe_mode",
-            "brand_id": brand_id,
-            "duration_posts": duration_posts,
-            "status": "acknowledged",
-            "experimental_content_disabled": True,
-        }
+    return {
+        "action": "boost_content",
+        "brand_id": brand_id,
+        "factor": factor,
+        "duration_posts": duration_posts,
+        "status": "persisted" if persisted else "failed_to_persist",
+        "policy": policy_update,
+    }
+
+ def reduce_content(
+    self,
+    brand_id: str,
+    factor: float = -0.20,
+    duration_posts: int = 5,
+) -> dict:
+    """Reduce underperforming content production.
+
+    v12.5: PERSISTENT — Updates brand content policy in Supabase.
+    The scheduler reads this policy on next cycle and reduces
+    posting frequency for underperforming topics.
+    """
+    logger.info(
+        "ContentEngine: reduce_content brand=%s factor=%.2f posts=%d",
+        brand_id, factor, duration_posts,
+    )
+
+    policy_update = {
+        "content_mix_change": factor,
+        "reduce_until": (
+            datetime.now(timezone.utc) +
+            timedelta(hours=duration_posts * 2)
+        ).isoformat(),
+        "active_policy": "reduce",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    persisted = False
+    try:
+        client = self._get_supabase_client()
+        if client:
+            result = (
+                client.table("brands")
+                .update(policy_update)
+                .eq("id", brand_id)
+                .execute()
+            )
+            persisted = bool(result.data)
+    except Exception as e:
+        logger.error("ContentEngine: failed to persist reduce policy: %s", e)
+
+    self._emit_dashboard_event("content.reduce", {
+        "brand_id": brand_id,
+        "factor": factor,
+        "duration_posts": duration_posts,
+        "persisted": persisted,
+        "timestamp": self._utc_now(),
+    })
+
+    return {
+        "action": "reduce_content",
+        "brand_id": brand_id,
+        "factor": factor,
+        "duration_posts": duration_posts,
+        "status": "persisted" if persisted else "failed_to_persist",
+        "policy": policy_update,
+    }
+
+def safe_mode(
+    self,
+    brand_id: str,
+    duration_posts: int = 5,
+) -> dict:
+    """Enter safe/risk-reduced content mode.
+
+    v12.5: PERSISTENT — Updates brand content policy in Supabase.
+    Disables experimental content and reduces posting frequency
+    until the brand performance recovers.
+    """
+    logger.warning(
+        "ContentEngine: safe_mode brand=%s posts=%d",
+        brand_id, duration_posts,
+    )
+
+    policy_update = {
+        "content_mix_change": -0.30,
+        "experimental_content_disabled": True,
+        "safe_mode_until": (
+            datetime.now(timezone.utc) +
+            timedelta(hours=duration_posts * 2)
+        ).isoformat(),
+        "active_policy": "safe_mode",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    persisted = False
+    try:
+        client = self._get_supabase_client()
+        if client:
+            result = (
+                client.table("brands")
+                .update(policy_update)
+                .eq("id", brand_id)
+                .execute()
+            )
+            persisted = bool(result.data)
+    except Exception as e:
+        logger.error("ContentEngine: failed to persist safe_mode policy: %s", e)
+
+    self._emit_dashboard_event("content.safe_mode", {
+        "brand_id": brand_id,
+        "duration_posts": duration_posts,
+        "persisted": persisted,
+        "timestamp": self._utc_now(),
+    })
+
+    return {
+        "action": "safe_mode",
+        "brand_id": brand_id,
+        "duration_posts": duration_posts,
+        "status": "persisted" if persisted else "failed_to_persist",
+        "experimental_content_disabled": True,
+        "policy": policy_update,
+    }
+
+def _get_supabase_client(self):
+    """Get Supabase client from container or global singleton."""
+    try:
+        if hasattr(self, "_container") and self._container:
+            from services.supabase import supabase_service
+            return (
+                supabase_service.service_client
+                or supabase_service.client
+            )
+    except Exception:
+        pass
+    return None
 
     # ========================================================================
     # BRAND HELPERS
