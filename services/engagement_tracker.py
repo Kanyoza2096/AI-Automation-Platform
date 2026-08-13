@@ -641,15 +641,22 @@ class EngagementTracker:
 
             for brand in brands_response.data:
                 brand_id = brand.get("id")
-
-                posts_response = (
-                    self.supabase.table("posts")
-                    .select("created_at")
-                    .eq("brand_id", brand_id)
-                    .order("created_at", desc=True)
-                    .limit(1)
-                    .execute()
-                )
+                
+                # ─── FIX: Use text comparison, not UUID casting ──────
+                # If brand_id is a string like "brand-81757300e954"
+                # Use the ID as-is (text comparison)
+                try:
+                    posts_response = (
+                        self.supabase.table("posts")
+                        .select("created_at")
+                        .eq("brand_id", brand_id)
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch posts for brand {brand_id}: {e}")
+                    continue
 
                 days_since = 0
                 if (
@@ -662,17 +669,20 @@ class EngagementTracker:
                         )
                     )
                     if last_post:
-                        last_date = (
-                            datetime.fromisoformat(
-                                last_post.replace(
-                                    "Z", "+00:00"
+                        try:
+                            last_date = (
+                                datetime.fromisoformat(
+                                    last_post.replace(
+                                        "Z", "+00:00"
+                                    )
                                 )
                             )
-                        )
-                        days_since = (
-                            datetime.now(timezone.utc)
-                            - last_date
-                        ).days
+                            days_since = (
+                                datetime.now(timezone.utc)
+                                - last_date
+                            ).days
+                        except Exception:
+                            pass
 
                 # Build observation for Condition Engine
                 from services.condition_engine import (
