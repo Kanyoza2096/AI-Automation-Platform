@@ -8,6 +8,8 @@ v2.0 — SECURITY FIXES:
   - Added field allowlists per resource (no arbitrary dict to Supabase)
   - Added delete verification (404 if record doesn't exist)
   - Added protected field blocking (id, created_at, created_by, role)
+  - FIXED: Uses 'users' table instead of 'growthbridge_admin_users'
+  - FIXED: Uses 'status' column instead of 'is_active'
 """
 
 from datetime import datetime, timezone
@@ -124,10 +126,10 @@ async def get_admin_user(email: str, _auth=Depends(_require_auth)):
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("growthbridge_admin_users") \
+    result = client.table("users") \
         .select("id, email, role") \
         .eq("email", email) \
-        .eq("is_active", True) \
+        .eq("status", "active") \
         .limit(1) \
         .execute()
     
@@ -150,10 +152,10 @@ async def verify_admin_password(data: dict, _auth=Depends(_require_auth)):
     if not client:
         raise HTTPException(503, "Database unavailable")
 
-    result = client.table("growthbridge_admin_users") \
+    result = client.table("users") \
         .select("id, email, password_hash, salt, role") \
         .eq("email", email) \
-        .eq("is_active", True) \
+        .eq("status", "active") \
         .limit(1) \
         .execute()
 
