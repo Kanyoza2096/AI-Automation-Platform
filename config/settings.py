@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     # API ACCESS
     # ═══════════════════════════════════════════════════════════════════
     master_api_token: str = Field(default="")
+    admin_hash_pepper: str = Field(
+        default="",
+        description="Pepper for admin password hashing. Used by GrowthBridge admin auth."
+    )
 
     # ═══════════════════════════════════════════════════════════════════
     # CORS
