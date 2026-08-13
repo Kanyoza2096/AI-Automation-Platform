@@ -2,14 +2,14 @@
 Growthbridge Admin API — Authenticated CRUD endpoints with RBAC.
 Requires master_api_token OR session-based role authorization.
 
-v2.0 — SECURITY FIXES:
+v2.1 — SECURITY FIXES:
+  - Uses 'growthbridge_admin_users' table (correct table with password_hash/salt)
+  - Uses 'is_active' boolean column (correct column for admin users)
   - Removed password_hash/salt from /users endpoint
   - Password verification happens server-side, never exposes credentials
   - Added field allowlists per resource (no arbitrary dict to Supabase)
   - Added delete verification (404 if record doesn't exist)
   - Added protected field blocking (id, created_at, created_by, role)
-  - FIXED: Uses 'users' table instead of 'growthbridge_admin_users'
-  - FIXED: Uses 'status' column instead of 'is_active'
 """
 
 from datetime import datetime, timezone
@@ -119,17 +119,18 @@ def _sanitize_data(resource: str, data: dict) -> dict:
 async def get_admin_user(email: str, _auth=Depends(_require_auth)):
     """Get admin user by email — no credentials exposed.
 
-    v2.0: Returns only id, email, role. Password verification
+    v2.1: Returns only id, email, role. Password verification
     happens server-side via the /verify-password endpoint.
+    Uses growthbridge_admin_users table with is_active boolean.
     """
     client = _get_supabase()
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    result = client.table("users") \
+    result = client.table("growthbridge_admin_users") \
         .select("id, email, role") \
         .eq("email", email) \
-        .eq("status", "active") \
+        .eq("is_active", True) \
         .limit(1) \
         .execute()
     
@@ -152,10 +153,10 @@ async def verify_admin_password(data: dict, _auth=Depends(_require_auth)):
     if not client:
         raise HTTPException(503, "Database unavailable")
 
-    result = client.table("users") \
+    result = client.table("growthbridge_admin_users") \
         .select("id, email, password_hash, salt, role") \
         .eq("email", email) \
-        .eq("status", "active") \
+        .eq("is_active", True) \
         .limit(1) \
         .execute()
 
@@ -177,7 +178,7 @@ async def verify_admin_password(data: dict, _auth=Depends(_require_auth)):
     ) else ""
 
     try:
-        import crypto
+        import hashlib as crypto
         computed = crypto.pbkdf2_hmac(
             "sha512",
             (password + pepper).encode("utf-8"),
@@ -194,7 +195,7 @@ async def verify_admin_password(data: dict, _auth=Depends(_require_auth)):
         return {
             "valid": True,
             "user": {
-                "id": user["id"],
+                "id": str(user["id"]),
                 "email": user["email"],
                 "role": user["role"],
             },
@@ -299,7 +300,7 @@ async def create_resource(resource: str, data: dict, _auth=Depends(_require_auth
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    # v2.0 — Sanitize input to only allowed fields
+    # v2.1 — Sanitize input to only allowed fields
     sanitized = _sanitize_data(resource, data)
     if not sanitized:
         raise HTTPException(400, "No valid fields provided for this resource")
@@ -323,7 +324,7 @@ async def update_resource(resource: str, record_id: str, data: dict, _auth=Depen
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    # v2.0 — Sanitize input to only allowed fields
+    # v2.1 — Sanitize input to only allowed fields
     sanitized = _sanitize_data(resource, data)
     if not sanitized:
         raise HTTPException(400, "No valid fields provided for this resource")
@@ -349,7 +350,7 @@ async def delete_resource(resource: str, record_id: str, _auth=Depends(_require_
     if not client:
         raise HTTPException(503, "Database unavailable")
     
-    # v2.0 — Verify record exists before deleting
+    # v2.1 — Verify record exists before deleting
     try:
         existing = client.table(TABLES[resource]).select("id").eq("id", record_id).limit(1).execute()
         if not existing.data:
