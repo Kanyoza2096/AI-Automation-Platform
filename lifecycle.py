@@ -586,10 +586,10 @@ def _build_boot_sequence(
         action=lambda: _boot_brand_schedulers(container),
         rollback=lambda: _stop_brand_schedulers(container),
     ))
-    steps.append(BootStep(
-        name="GuardianScheduler",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_guardian_scheduler(container),
+    #steps.append(BootStep(
+        #name="GuardianScheduler",
+        #phase=BootPhase.BUSINESS,
+        #action=lambda: _boot_guardian_scheduler(container),
     ))
     steps.append(BootStep(
         name="SocketBridge",
@@ -615,11 +615,11 @@ def _build_boot_sequence(
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _register_api_call_counter(app),
     ))
-    steps.append(BootStep(
-        name="MonitorPlugin",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_monitor_plugin(container),
-        timeout_seconds=10.0,  # v14.1.1 FIX
+    #steps.append(BootStep(
+        #name="MonitorPlugin",
+        #phase=BootPhase.OBSERVABILITY,
+        #action=lambda: _boot_monitor_plugin(container),
+        #timeout_seconds=10.0,  # v14.1.1 FIX
     ))
     steps.append(BootStep(
         name="BackupPlugin",
@@ -770,7 +770,14 @@ def _boot_job_service(container: ServiceContainer) -> None:
     container.register_instance(JobService, job_service)
     
     from services.job_stats_service import init_job_stats_service
-    init_job_stats_service(supabase_client=client, event_bus=event_bus)
+    # v4.0 — Thread-safe client factory
+    def client_factory():
+        return get_service_client_from_settings()
+
+    init_job_stats_service(
+        supabase_client=client_factory,
+        event_bus=event_bus,
+    )
     
     health_registry.register(_JobServiceHealthProvider(job_service))
     _log(logging.INFO, "JobService v3.4 ready.")
