@@ -2847,8 +2847,16 @@ class Director:
 # FASTAPI APP
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════
+# FASTAPI APP
+# ═══════════════════════════════════════════════════════════════════════════
+
 def create_app(director: Director):
-    """Create FastAPI app with full authentication."""
+    """Create FastAPI app with full authentication.
+
+    v4.0.1 FIX: All routes defined WITHOUT /director prefix.
+    The mount in main.py adds the /director prefix automatically.
+    """
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
     from pydantic import BaseModel, Field
@@ -2860,28 +2868,18 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials],
         request: Optional[Request] = None,
     ) -> bool:
-        """Authenticate API requests.
-
-        v4.0.1 FIX: request can be None when FastAPI doesn't inject it
-        properly. Fail-safe: return False if request is None.
-        """
+        """Authenticate API requests."""
         if request is None:
             return False
 
         master_token = os.getenv("MASTER_API_TOKEN", "")
         if not master_token:
-            log.warning(
-                "MASTER_API_TOKEN not set — "
-                "Director API is UNAUTHENTICATED"
-            )
+            log.warning("MASTER_API_TOKEN not set — Director API is UNAUTHENTICATED")
             return False
 
-        # Try Bearer token
         token = ""
         if credentials:
             token = credentials.credentials
-
-        # Try X-API-Key header
         if not token:
             token = request.headers.get("X-API-Key", "")
 
@@ -2910,6 +2908,10 @@ def create_app(director: Director):
         actor: str = Field(default="admin", min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_\-\.\s]+$")
         reason: str = Field(default="", max_length=500)
 
+    # ═══════════════════════════════════════════════════════════════
+    # HEALTH (no auth required)
+    # ═══════════════════════════════════════════════════════════════
+
     @app.get("/health")
     async def health_check():
         return {
@@ -2918,139 +2920,52 @@ def create_app(director: Director):
             "uptime_hours": round((now() - director.started).total_seconds() / 3600, 2) if director.running else 0,
         }
 
+    # ═══════════════════════════════════════════════════════════════
+    # STATUS & BRIEFING (auth required)
+    # ═══════════════════════════════════════════════════════════════
+
     @app.get("/status")
-    async def get_status(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
+    async def get_status(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
         await _require_auth(credentials, request)
         return director.status()
 
     @app.get("/briefing")
-    async def get_briefing(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
+    async def get_briefing(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
         await _require_auth(credentials, request)
         return director.briefings[-1] if director.briefings else director.briefing()
 
+    # ═══════════════════════════════════════════════════════════════
+    # TASKS & APPROVALS
+    # ═══════════════════════════════════════════════════════════════
+
     @app.get("/tasks")
-    async def get_tasks(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
+    async def get_tasks(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
         await _require_auth(credentials, request)
         return [safe(asdict(t)) for t in director.tasks.values()]
 
     @app.get("/approvals")
-    async def get_approvals(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
+    async def get_approvals(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
         await _require_auth(credentials, request)
         return [safe(asdict(t)) for t in director.tasks.values() if t.status == Status.APPROVAL]
-
-    @app.get("/decisions")
-    async def get_decisions(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return [safe(asdict(d)) for d in list(director.decisions)[-100:]]
-
-    @app.get("/engines")
-    async def get_engines(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        with director._observations_lock:
-            observations = dict(director.observations)
-        return {
-            "engines": {
-                name: {
-                    "sector": obs.sector.value,
-                    "status": obs.status.value,
-                    "issues": len(obs.issues),
-                }
-                for name, obs in observations.items()
-            }
-        }
-
-    @app.get("/diagnostics/topology")
-    async def get_topology(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return director.get_topology()
-
-    @app.get("/diagnostics/root-cause")
-    async def get_root_cause(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        result = director.get_root_cause()
-        return {"status": "root_cause_found" if result else "no_root_cause", "data": result}
-
-    @app.get("/diagnostics/cascading-predictions")
-    async def get_predictions(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"predictions": director.get_cascading_predictions()}
-
-    @app.get("/diagnostics/impact")
-    async def get_impact(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return director.get_impact_assessment()
-
-    @app.get("/diagnostics/recovery-plans")
-    async def get_recovery_plans(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"recovery_plans": director.get_recovery_plans()}
-
-    @app.get("/alerts/history")
-    async def get_alert_history(limit: int = 50, credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"alerts": list(director._alert_history)[-limit:]}
-
-    @app.get("/daily-briefing")
-    async def get_daily_briefing(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        director._send_daily_briefing()
-        return {"ok": True, "message": "Daily briefing sent via Telegram"}
-
-    @app.get("/outlook")
-    async def get_outlook(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        outlook = director.generate_strategic_outlook()
-        return safe(asdict(outlook)) if outlook else {"error": "Insufficient data"}
-
-    @app.get("/allocation")
-    async def get_allocation(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return [safe(asdict(a)) for a in director.allocate_attention()]
-
-    @app.get("/summary")
-    async def get_summary(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"summary": director.generate_executive_summary()}
-
-    @app.get("/initiatives")
-    async def get_initiatives(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"initiatives": director.generate_initiatives()}
-
-    @app.get("/correlations")
-    async def get_correlations(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return {"correlations": director.correlate_observations()}
-
-    @app.post("/observe")
-    async def run_observe(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        director.observe_all()
-        return director.status()
-
-    @app.post("/plan")
-    async def run_plan(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        return director.build_plan()
-
-    @app.post("/start")
-    async def run_start(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        director.start()
-        return director.status()
-
-    @app.post("/stop")
-    async def run_stop(credentials: Optional[HTTPAuthorizationCredentials] = None, request: Request = None):
-        await _require_auth(credentials, request)
-        director.stop()
-        return director.status()
 
     @app.post("/tasks/{task_id}/approve")
     async def approve_task(
         task_id: str,
         body: ApprovalBody,
         credentials: Optional[HTTPAuthorizationCredentials] = None,
-        request: Request = None,
+        request: Optional[Request] = None,
     ):
         await _require_auth(credentials, request)
         try:
@@ -3065,7 +2980,7 @@ def create_app(director: Director):
         task_id: str,
         body: RejectBody,
         credentials: Optional[HTTPAuthorizationCredentials] = None,
-        request: Request = None,
+        request: Optional[Request] = None,
     ):
         await _require_auth(credentials, request)
         try:
@@ -3073,160 +2988,247 @@ def create_app(director: Director):
         except KeyError:
             raise HTTPException(404, "Task not found")
 
-  # ═══════════════════════════════════════════════════════════════
-# ENGINE MONITORING
-# ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════
+    # ENGINES (NO /director prefix — mount adds it)
+    # ═══════════════════════════════════════════════════════════════
 
-@app.get("/director/engines")
-async def get_engines(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    with director._observations_lock:
-        observations = dict(director.observations)
-    return {
-        "engines": {
-            name: {
-                "name": name,
-                "status": obs.status.value,
-                "sector": obs.sector.value,
-                "issues": len(obs.issues),
-                "message": obs.message,
-                "metrics": obs.metrics if obs.metrics else {},
-            }
-            for name, obs in observations.items()
-        },
-        "total": len(observations),
-    }
-
-# ═══════════════════════════════════════════════════════════════
-# DIAGNOSTICS (root cause, impact, cascading, recovery)
-# ═══════════════════════════════════════════════════════════════
-
-@app.get("/director/diagnostics")
-async def get_diagnostics(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return {
-        "root_cause": director.get_root_cause(),
-        "impact": director.get_impact_assessment(),
-        "cascading_predictions": director.get_cascading_predictions(),
-        "recovery_plans": director.get_recovery_plans(),
-        "recent_analyses": director.get_recent_analyses(limit=5),
-    }
-
-@app.get("/director/diagnostics/root-cause")
-async def get_root_cause(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    result = director.get_root_cause()
-    return {"status": "found" if result else "none", "data": result}
-
-@app.get("/director/diagnostics/cascading")
-async def get_cascading(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return {"predictions": director.get_cascading_predictions()}
-
-@app.get("/director/diagnostics/impact")
-async def get_impact(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return director.get_impact_assessment()
-
-@app.get("/director/diagnostics/recovery-plans")
-async def get_recovery_plans(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return {"recovery_plans": director.get_recovery_plans()}
-
-# ═══════════════════════════════════════════════════════════════
-# DECISION HISTORY
-# ═══════════════════════════════════════════════════════════════
-
-@app.get("/director/decisions")
-async def get_decisions(
-    limit: int = 50,
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return [
-        safe(asdict(d))
-        for d in list(director.decisions)[-limit:]
-    ]
-
-# ═══════════════════════════════════════════════════════════════
-# ALERT HISTORY
-# ═══════════════════════════════════════════════════════════════
-
-@app.get("/director/alerts")
-async def get_alerts(
-    limit: int = 50,
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return {
-        "alerts": list(director._alert_history)[-limit:]
-    }
-
-# ═══════════════════════════════════════════════════════════════
-# CAPABILITY CONFIG
-# ═══════════════════════════════════════════════════════════════
-
-@app.get("/director/capabilities")
-async def get_capabilities(
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    return {
-        "capabilities": {
-            name: {
-                "name": cap.name,
-                "sector": cap.sector.value,
-                "description": cap.description,
-                "enabled": cap.enabled,
-                "risk": cap.risk.value,
-                "authority": cap.authority.value,
-            }
-            for name, cap in director.capabilities.items()
+    @app.get("/engines")
+    async def get_engines(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        with director._observations_lock:
+            observations = dict(director.observations)
+        return {
+            "engines": {
+                name: {
+                    "name": name,
+                    "status": obs.status.value,
+                    "sector": obs.sector.value,
+                    "issues": len(obs.issues),
+                    "message": obs.message,
+                    "metrics": obs.metrics if obs.metrics else {},
+                }
+                for name, obs in observations.items()
+            },
+            "total": len(observations),
         }
-    }
 
-@app.post("/director/capabilities/{cap_name}/toggle")
-async def toggle_capability(
-    cap_name: str,
-    credentials: Optional[HTTPAuthorizationCredentials] = None,
-    request: Optional[Request] = None,
-):
-    await _require_auth(credentials, request)
-    cap = director.capabilities.get(cap_name)
-    if not cap:
-        raise HTTPException(404, f"Unknown capability: {cap_name}")
-    cap.enabled = not cap.enabled
-    logger.info(
-        "Capability '%s' %s by user",
-        cap_name,
-        "enabled" if cap.enabled else "disabled",
-    )
-    return {"capability": cap_name, "enabled": cap.enabled}
-      
+    # ═══════════════════════════════════════════════════════════════
+    # DIAGNOSTICS (NO /director prefix)
+    # ═══════════════════════════════════════════════════════════════
 
-    return app
+    @app.get("/diagnostics")
+    async def get_diagnostics(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {
+            "root_cause": director.get_root_cause(),
+            "impact": director.get_impact_assessment(),
+            "cascading_predictions": director.get_cascading_predictions(),
+            "recovery_plans": director.get_recovery_plans(),
+            "recent_analyses": director.get_recent_analyses(limit=5),
+        }
 
+    @app.get("/diagnostics/root-cause")
+    async def get_root_cause(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        result = director.get_root_cause()
+        return {"status": "found" if result else "none", "data": result}
+
+    @app.get("/diagnostics/cascading")
+    async def get_cascading(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"predictions": director.get_cascading_predictions()}
+
+    @app.get("/diagnostics/impact")
+    async def get_impact(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return director.get_impact_assessment()
+
+    @app.get("/diagnostics/recovery-plans")
+    async def get_recovery_plans(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"recovery_plans": director.get_recovery_plans()}
+
+    # ═══════════════════════════════════════════════════════════════
+    # DECISIONS & ALERTS (NO /director prefix)
+    # ═══════════════════════════════════════════════════════════════
+
+    @app.get("/decisions")
+    async def get_decisions(
+        limit: int = 50,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return [safe(asdict(d)) for d in list(director.decisions)[-limit:]]
+
+    @app.get("/alerts")
+    async def get_alerts(
+        limit: int = 50,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"alerts": list(director._alert_history)[-limit:]}
+
+    # ═══════════════════════════════════════════════════════════════
+    # CAPABILITIES (NO /director prefix)
+    # ═══════════════════════════════════════════════════════════════
+
+    @app.get("/capabilities")
+    async def get_capabilities(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {
+            "capabilities": {
+                name: {
+                    "name": cap.name,
+                    "sector": cap.sector.value,
+                    "description": cap.description,
+                    "enabled": cap.enabled,
+                    "risk": cap.risk.value,
+                    "authority": cap.authority.value,
+                }
+                for name, cap in director.capabilities.items()
+            }
+        }
+
+    @app.post("/capabilities/{cap_name}/toggle")
+    async def toggle_capability(
+        cap_name: str,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        cap = director.capabilities.get(cap_name)
+        if not cap:
+            raise HTTPException(404, f"Unknown capability: {cap_name}")
+        cap.enabled = not cap.enabled
+        log.info(
+            "Capability '%s' %s by user",
+            cap_name,
+            "enabled" if cap.enabled else "disabled",
+        )
+        return {"capability": cap_name, "enabled": cap.enabled}
+
+    # ═══════════════════════════════════════════════════════════════
+    # CONTROL ACTIONS
+    # ═══════════════════════════════════════════════════════════════
+
+    @app.post("/observe")
+    async def run_observe(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        director.observe_all()
+        return director.status()
+
+    @app.post("/plan")
+    async def run_plan(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return director.build_plan()
+
+    @app.post("/start")
+    async def run_start(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        director.start()
+        return director.status()
+
+    @app.post("/stop")
+    async def run_stop(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        director.stop()
+        return director.status()
+
+    @app.get("/daily-briefing")
+    async def get_daily_briefing(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        director._send_daily_briefing()
+        return {"ok": True, "message": "Daily briefing sent via Telegram"}
+
+    @app.get("/outlook")
+    async def get_outlook(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        outlook = director.generate_strategic_outlook()
+        return safe(asdict(outlook)) if outlook else {"error": "Insufficient data"}
+
+    @app.get("/allocation")
+    async def get_allocation(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return [safe(asdict(a)) for a in director.allocate_attention()]
+
+    @app.get("/summary")
+    async def get_summary(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"summary": director.generate_executive_summary()}
+
+    @app.get("/initiatives")
+    async def get_initiatives(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"initiatives": director.generate_initiatives()}
+
+    @app.get("/correlations")
+    async def get_correlations(
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"correlations": director.correlate_observations()}
+
+    @app.get("/alerts/history")
+    async def get_alert_history(
+        limit: int = 50,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+        request: Optional[Request] = None,
+    ):
+        await _require_auth(credentials, request)
+        return {"alerts": list(director._alert_history)[-limit:]}
+
+    return app        
 
 # ═══════════════════════════════════════════════════════════════════════════
 # INITIALIZER
