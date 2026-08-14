@@ -342,39 +342,56 @@ def percentile(values: Iterable[float], p: float) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK TIMEOUT WRAPPER
+# HEALTH CHECK TIMEOUT (FIXED — no executor to break)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class HealthCheckTimeout:
-    """Wraps health checks with timeout protection."""
+    """Simple timeout using daemon threads — no executor to break.
+
+    The original used ThreadPoolExecutor which, once shut down,
+    cannot be reused. This version uses daemon threads that are
+    always available.
+    """
 
     def __init__(self, timeout_seconds: float = 5.0):
         self.timeout_seconds = timeout_seconds
-        self._executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="health-check"
-        )
+        # NO executor — nothing to shut down
 
     def check_with_timeout(
         self, check_fn: Callable, *args, **kwargs
     ) -> Tuple[bool, Optional[Any]]:
-        """Execute health check with timeout."""
-        future = self._executor.submit(check_fn, *args, **kwargs)
-        try:
-            result = future.result(timeout=self.timeout_seconds)
-            return True, result
-        except FuturesTimeout:
-            logger.warning(
-                "Health check timed out after %.1fs",
-                self.timeout_seconds,
-            )
+        """Execute check with timeout using a daemon thread."""
+        result_holder: Dict[str, Any] = {}
+        completed = threading.Event()
+
+        def _runner():
+            try:
+                result_holder["result"] = check_fn(*args, **kwargs)
+                result_holder["success"] = True
+            except Exception as exc:
+                result_holder["error"] = exc
+                result_holder["success"] = False
+            finally:
+                completed.set()
+
+        thread = threading.Thread(
+            target=_runner,
+            daemon=True,
+            name=f"health-check-{id(check_fn)}",
+        )
+        thread.start()
+
+        if completed.wait(timeout=self.timeout_seconds):
+            if result_holder.get("success", False):
+                return True, result_holder.get("result")
+            return False, result_holder.get("error")
+        else:
+            # Timeout — daemon thread will die when process ends
             return False, None
-        except Exception as exc:
-            logger.debug("Health check failed: %s", exc)
-            return False, exc
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False)
-
+        """No-op — nothing to shut down."""
+        pass
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SELF-MONITORING
