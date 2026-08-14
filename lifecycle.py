@@ -590,7 +590,7 @@ def _build_boot_sequence(
         #name="GuardianScheduler",
         #phase=BootPhase.BUSINESS,
         #action=lambda: _boot_guardian_scheduler(container),
-    ))
+    #))
     steps.append(BootStep(
         name="SocketBridge",
         phase=BootPhase.BUSINESS,
