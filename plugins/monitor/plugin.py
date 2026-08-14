@@ -8,6 +8,7 @@ v3.0 CHANGES:
   - Bulk DB inserts: single insert for all check results
   - Alert persistence: cooldown state survives restarts (optional Redis)
   - Health check: reads from DB, doesn't trigger new checks
+  - FIXED: Retry logic for bulk inserts (Resource temporarily unavailable)
 """
 
 import logging
@@ -197,9 +198,9 @@ class MonitorPlugin:
                 except Exception as e:
                     logger.error("MonitorPlugin: check failed: %s", e)
 
-        # Bulk insert all results
+        # Bulk insert all results with retry
         if results:
-            self._bulk_insert_results(results)
+            self._bulk_insert_results_with_retry(results)
 
     def _check_single_target(self, target: dict) -> Optional[dict]:
         """Check a single target. Returns result dict or None."""
@@ -262,18 +263,47 @@ class MonitorPlugin:
                 "checked_at": datetime.now(timezone.utc).isoformat(),
             }
 
-    def _bulk_insert_results(self, results: List[dict]):
-        """Insert all check results in a single batch."""
-        try:
-            self.supabase.table("monitor_checks").insert(results).execute()
-        except Exception as e:
-            logger.error("MonitorPlugin: bulk insert failed: %s", e)
-            # Fall back to individual inserts
-            for result in results:
-                try:
-                    self.supabase.table("monitor_checks").insert(result).execute()
-                except Exception as inner_e:
-                    logger.error("MonitorPlugin: individual insert failed: %s", inner_e)
+    # ═══════════════════════════════════════════════════════════════════
+    # v3.0 — BULK INSERT WITH RETRY
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _bulk_insert_results_with_retry(self, results: List[dict], max_retries: int = 3):
+        """Insert all check results with exponential backoff retry."""
+        for attempt in range(max_retries):
+            try:
+                self.supabase.table("monitor_checks").insert(results).execute()
+                return  # Success — exit
+            except Exception as e:
+                # Check if it's a connection/availability error
+                error_msg = str(e).lower()
+                is_retryable = (
+                    "resource temporarily unavailable" in error_msg
+                    or "connection" in error_msg
+                    or "timeout" in error_msg
+                    or "pool" in error_msg
+                )
+
+                if not is_retryable or attempt == max_retries - 1:
+                    logger.error("MonitorPlugin: bulk insert failed: %s", e)
+                    # Fall back to individual inserts
+                    self._bulk_insert_results_individual(results)
+                    return
+
+                # Exponential backoff
+                wait_time = (2 ** attempt) + random.uniform(0, 1)
+                logger.warning(
+                    "MonitorPlugin: bulk insert retry %d/%d in %.2fs: %s",
+                    attempt + 1, max_retries, wait_time, e
+                )
+                time.sleep(wait_time)
+
+    def _bulk_insert_results_individual(self, results: List[dict]):
+        """Fallback: insert results one by one."""
+        for result in results:
+            try:
+                self.supabase.table("monitor_checks").insert(result).execute()
+            except Exception as inner_e:
+                logger.error("MonitorPlugin: individual insert failed: %s", inner_e)
 
     # ═══════════════════════════════════════════════════════════════════
     # v3.0 — QUEUED ALERTS (no synchronous callbacks)
