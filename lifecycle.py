@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import partial, wraps
 from typing import Any, Callable, Protocol, runtime_checkable
+from services.engine_health_handlers import register_all_health_handlers
 
 from plugins.base import PluginRegistry
 from service_container import ServiceContainer
@@ -984,28 +985,36 @@ def _boot_content_engine(
         "ContentEngine v14.1: container wired",
     )
 
+# In lifecycle.py
 
-def _boot_meta_engine(
-    container: ServiceContainer,
-) -> None:
-    """Start MetaEngine v3.0 for autonomous supervision."""
-    from services.meta_engine import (
-        init_meta_engine,
-    )
+def _boot_meta_engine(container: ServiceContainer) -> None:
+    """Start MetaEngine for autonomous supervision."""
+    from services.meta_engine import init_meta_engine
+    from services.engine_health_handlers import register_all_health_handlers
     from core.event_bus import EventBus
 
     event_bus = container.resolve(EventBus)
     meta = init_meta_engine(
         event_bus=event_bus, container=container
     )
+
+    # Register health handlers BEFORE MetaEngine starts monitoring
+    result = register_all_health_handlers(meta)
+    _log(
+        logging.INFO,
+        "MetaEngine: %d health handlers registered",
+        len(result["registered"]),
+    )
+
     shutdown_registry.register(
         "MetaEngine",
         meta.stop,
         timeout_seconds=10.0,
     )
+
     _log(
         logging.INFO,
-        "MetaEngine v3.0: supervising %d engines",
+        "MetaEngine: supervising %d engines",
         len(meta._engines),
     )
 
