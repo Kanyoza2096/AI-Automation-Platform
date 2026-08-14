@@ -1204,7 +1204,7 @@ class CascadingFailurePredictor:
                 obs = observations.get(service)
                 if obs is None:
                     continue
-                if obs.status == Health.HEALTHY:
+                if obs.status == Health.NOMINAL:
                     predictions.append({
                         "service": service,
                         "current_status": "healthy",
@@ -2857,50 +2857,52 @@ def create_app(director: Director):
     security = HTTPBearer(auto_error=False)
 
     def _authenticate(
-    credentials: Optional[HTTPAuthorizationCredentials],
-    request: Optional[Request] = None,
+        credentials: Optional[HTTPAuthorizationCredentials],
+        request: Optional[Request] = None,
     ) -> bool:
-       """Authenticate API requests.
+        """Authenticate API requests.
 
-       v4.0.1 FIX: request can be None when FastAPI doesn't inject it
-       properly. Fail-safe: return False if request is None.
-       """
-       if request is None:
-           return False
+        v4.0.1 FIX: request can be None when FastAPI doesn't inject it
+        properly. Fail-safe: return False if request is None.
+        """
+        if request is None:
+            return False
 
-       master_token = os.getenv("MASTER_API_TOKEN", "")
-       if not master_token:
-           log.warning(
-               "MASTER_API_TOKEN not set — "
-               "Director API is UNAUTHENTICATED"
-           )
-           return False
+        master_token = os.getenv("MASTER_API_TOKEN", "")
+        if not master_token:
+            log.warning(
+                "MASTER_API_TOKEN not set — "
+                "Director API is UNAUTHENTICATED"
+            )
+            return False
 
-       # Try Bearer token
-       token = ""
-       if credentials:
-        token = credentials.credentials
+        # Try Bearer token
+        token = ""
+        if credentials:
+            token = credentials.credentials
 
-       # Try X-API-Key header
-       if not token:
-          token = request.headers.get("X-API-Key", "")
+        # Try X-API-Key header
+        if not token:
+            token = request.headers.get("X-API-Key", "")
 
-    if not token or not isinstance(token, str):
-        return False
-    if not isinstance(master_token, str):
-        return False
+        if not token or not isinstance(token, str):
+            return False
+        if not isinstance(master_token, str):
+            return False
 
-    return hmac.compare_digest(token, master_token)
+        return hmac.compare_digest(token, master_token)
+
     async def _require_auth(
         credentials: Optional[HTTPAuthorizationCredentials] = None,
         request: Optional[Request] = None,
     ) -> None:
-       """Require authentication. Fails closed if request is None."""
-       if not _authenticate(credentials, request):
-           raise HTTPException(
-           status_code=401,
-           detail="Authentication required",
-           )
+        """Require authentication. Fails closed if request is None."""
+        if not _authenticate(credentials, request):
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required",
+            )
+
     class ApprovalBody(BaseModel):
         actor: str = Field(default="admin", min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_\-\.\s]+$")
 
