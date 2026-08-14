@@ -1006,21 +1006,17 @@ class MetaEngineV5:
         )
         return success and result
 
-    def _ping_engine_inner(
-        self, engine: Any, engine_name: str = ""
-    ) -> bool:
-        """Inner ping logic (runs with timeout)."""
-        if engine_name and engine_name in self._health_handlers:
-            try:
-                result = self._health_handlers[engine_name](engine)
-                if isinstance(result, dict):
-                    return str(result.get("status", "")).lower() in {
-                        "healthy", "ok", "nominal", "ready", "degraded",
-                    }
-                return bool(result)
-            except Exception:
-                return False
-
+   def _ping_engine_inner(self, engine: Any, engine_name: str = "") -> bool:
+    # ... existing checks ...
+    
+    # v5.0 — NO FAKE HEALTH
+    # FIX: Log at DEBUG level to prevent spam
+    # This message repeats every cycle for engines without health interfaces
+    logger.debug(
+        "Engine '%s' has no health interface — OFFLINE",
+        engine_name or "unknown",
+    )
+    return False
         if hasattr(engine, "health_check"):
             try:
                 result = engine.health_check()
