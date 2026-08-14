@@ -204,7 +204,6 @@ class ContentDeduplicator:
         with self._lock:
             key = f"{brand_id}:{topic.lower().strip()}"
             self._recent_content[key] = datetime.now(timezone.utc)
-            # Cleanup old entries
             cutoff = datetime.now(timezone.utc) - timedelta(hours=self.window_hours * 2)
             self._recent_content = {
                 k: v for k, v in self._recent_content.items()
@@ -325,11 +324,10 @@ class ResearchStep(Step):
         research_facts: List[str] = []
         sources_used: List[str] = []
 
-        # Attempt 1: TrendIntelligence plugin with URL-encoded topic
+        # Attempt 1: TrendIntelligence plugin
         try:
             from plugins.trend_intelligence.plugin import trend_plugin
             if trend_plugin and trend_plugin.supabase:
-                # v12.6 FIX: URL-encode topic to prevent 400 errors
                 encoded_topic = quote(topic, safe='')
                 
                 timeout_exec = TimeoutExecutor(
@@ -359,7 +357,6 @@ class ResearchStep(Step):
                         "timeout" if not success else "empty result",
                     )
         except Exception as exc:
-            # v12.6 FIX: Log instead of silent pass
             logger.warning(
                 "[Stage 2] TrendIntelligence research failed: %s",
                 str(exc)[:200],
@@ -482,8 +479,7 @@ class PromptBuilderStep(Step):
         knowledge_context = context.get("knowledge_context", "")
         research_notes = context.get("research_notes", "")
 
-        # v12.6 FIX: Merge research into knowledge context
-        # PromptBuilder.build_post_prompt() does NOT accept research_notes
+        # Merge research into knowledge context
         combined_context = knowledge_context or ""
         if research_notes and "No external research" not in research_notes:
             combined_context = (
@@ -492,8 +488,6 @@ class PromptBuilderStep(Step):
                 else f"Research:\n{research_notes}"
             )
 
-        # v12.6 FIX: Only pass supported parameters
-        # Removed: ai_profile, research_notes (not in build_post_prompt signature)
         prompt = self._pb.build_post_prompt(
             brand=self._brand,
             topic=topic,
@@ -535,7 +529,6 @@ class LLMStep(Step):
         topic = context.get("topic", "")
         assembled_prompt = context.get("assembled_prompt") or None
 
-        # v12.6: Retry with backoff
         last_error = None
         for attempt in range(self._config.llm_max_retries + 1):
             timeout_exec = TimeoutExecutor(
@@ -596,89 +589,88 @@ class ValidatorStep(Step):
         self._validator = validator or ContentValidator()
         self._config = config or PipelineConfig()
 
-    
     def run(self, context: dict[str, Any]) -> Any:
-    caption = context.get("caption", "")
-    topic = context.get("topic", "")
+        caption = context.get("caption", "")
+        topic = context.get("topic", "")
 
-    content = {
-        "title": context.get("content_result", {}).get("title", topic),
-        "caption": caption,
-        "content_type": context.get("content_type", "social_post"),
-        "hashtags": context.get("content_result", {}).get("hashtags", []),
-        "media_required": True,
-    }
+        content = {
+            "title": context.get("content_result", {}).get("title", topic),
+            "caption": caption,
+            "content_type": context.get("content_type", "social_post"),
+            "hashtags": context.get("content_result", {}).get("hashtags", []),
+            "media_required": True,
+        }
 
-    brand = context.get("brand")
-    platform = context.get("platform", "facebook")
+        brand = context.get("brand")
+        platform = context.get("platform", "facebook")
 
-    validation_result = self._validator.validate(
-        content=content,
-        brand=brand,
-        platform=platform,
-        require_media=True,
-    )
-
-    context["validation_result"] = validation_result
-
-    # v12.6.1 FIX: Use getattr with fallbacks for all ValidationResult attributes
-    # The ValidationResult class may use errors/warnings/messages instead of error_messages/warning_messages
-    if validation_result.is_rejected:
-        errors = (
-            getattr(validation_result, "error_messages", None)
-            or getattr(validation_result, "errors", None)
-            or getattr(validation_result, "messages", None)
-            or []
-        )
-        if isinstance(errors, str):
-            errors = [errors]
-
-        warnings = (
-            getattr(validation_result, "warning_messages", None)
-            or getattr(validation_result, "warnings", None)
-            or []
-        )
-        if isinstance(warnings, str):
-            warnings = [warnings]
-
-        logger.error(
-            "[Stage 6] Validation REJECTED: %s", "; ".join(errors)
-        )
-        raise AIValidationError(
-            message=f"Content validation failed: {'; '.join(errors)}",
-            context={
-                "errors": errors,
-                "warnings": warnings,
-                "topic": topic,
-            },
+        validation_result = self._validator.validate(
+            content=content,
+            brand=brand,
+            platform=platform,
+            require_media=True,
         )
 
-    if (
-        validation_result.status
-        == validation_result.status.APPROVED_WITH_WARNINGS
-    ):
-        warnings = (
-            getattr(validation_result, "warning_messages", None)
-            or getattr(validation_result, "warnings", None)
-            or []
-        )
-        if isinstance(warnings, str):
-            warnings = [warnings]
+        context["validation_result"] = validation_result
 
-        warnings_count = (
-            getattr(validation_result, "warnings_count", None)
-            or len(warnings)
-        )
+        if validation_result.is_rejected:
+            errors = (
+                getattr(validation_result, "error_messages", None)
+                or getattr(validation_result, "errors", None)
+                or getattr(validation_result, "messages", None)
+                or []
+            )
+            if isinstance(errors, str):
+                errors = [errors]
 
-        logger.warning(
-            "[Stage 6] Validation passed with %d warnings: %s",
-            warnings_count,
-            "; ".join(warnings),
-        )
-    else:
-        logger.info("[Stage 6] Validation passed.")
+            warnings = (
+                getattr(validation_result, "warning_messages", None)
+                or getattr(validation_result, "warnings", None)
+                or []
+            )
+            if isinstance(warnings, str):
+                warnings = [warnings]
 
-    return validation_result.to_dict()
+            logger.error(
+                "[Stage 6] Validation REJECTED: %s", "; ".join(errors)
+            )
+            raise AIValidationError(
+                message=f"Content validation failed: {'; '.join(errors)}",
+                context={
+                    "errors": errors,
+                    "warnings": warnings,
+                    "topic": topic,
+                },
+            )
+
+        if (
+            validation_result.status
+            == validation_result.status.APPROVED_WITH_WARNINGS
+        ):
+            warnings = (
+                getattr(validation_result, "warning_messages", None)
+                or getattr(validation_result, "warnings", None)
+                or []
+            )
+            if isinstance(warnings, str):
+                warnings = [warnings]
+
+            warnings_count = (
+                getattr(validation_result, "warnings_count", None)
+                or len(warnings)
+            )
+
+            logger.warning(
+                "[Stage 6] Validation passed with %d warnings: %s",
+                warnings_count,
+                "; ".join(warnings),
+            )
+        else:
+            logger.info("[Stage 6] Validation passed.")
+
+        return validation_result.to_dict()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. REVIEWER STEP
 # ═══════════════════════════════════════════════════════════════════════════
@@ -700,14 +692,12 @@ class ReviewerStep(Step):
         issues: List[str] = []
         warnings: List[str] = []
 
-        # 1. Length check
         if len(caption.strip()) < self._config.reviewer_min_caption_length:
             issues.append(
                 f"Caption too short ({len(caption.strip())} chars, "
                 f"minimum {self._config.reviewer_min_caption_length})"
             )
 
-        # 2. Hashtag check
         if not hashtags:
             warnings.append("No hashtags provided")
         elif len(hashtags) > self._config.reviewer_max_hashtags:
@@ -716,7 +706,6 @@ class ReviewerStep(Step):
                 f"maximum {self._config.reviewer_max_hashtags})"
             )
 
-        # 3. Call-to-action check
         has_cta = any(
             kw in caption.lower()
             for kw in self._config.reviewer_cta_keywords
@@ -724,7 +713,6 @@ class ReviewerStep(Step):
         if not has_cta:
             warnings.append("No call-to-action detected")
 
-        # 4. Toxicity check
         lower_caption = caption.lower()
         toxic_found = [
             word for word in self._config.reviewer_toxic_words
@@ -735,13 +723,11 @@ class ReviewerStep(Step):
                 f"Potentially inappropriate language: {', '.join(toxic_found)}"
             )
 
-        # 5. Brand voice check
         if brand:
             brand_tone = getattr(brand, "tone", None)
             if brand_tone:
                 context["brand_tone"] = brand_tone
 
-        # Quality score
         quality_score = max(0, 100 - (20 * len(issues)) - (5 * len(warnings)))
 
         review_result = {
@@ -757,7 +743,6 @@ class ReviewerStep(Step):
 
         context["review_result"] = review_result
 
-        # v12.6 FIX: Actually BLOCK low-quality content
         if quality_score < self._config.reviewer_fail_threshold_score:
             logger.error(
                 "[Stage 7] Review FAILED — score=%d, issues=%s",
@@ -861,7 +846,6 @@ class PublisherStep(Step):
     def run(self, context: dict[str, Any]) -> Any:
         from plugins.base import PluginRegistry
         
-        # Check circuit breaker
         if self._circuit_breaker.is_open:
             raise RuntimeError(
                 "Publisher circuit breaker OPEN — too many recent failures"
@@ -890,7 +874,6 @@ class PublisherStep(Step):
             "[Stage 9] Publisher: %d plugins available", len(all_plugins)
         )
         
-        # v12.6: Retry with exponential backoff
         results = {}
         for attempt in range(self._config.publisher_max_retries + 1):
             timeout_exec = TimeoutExecutor(
@@ -911,7 +894,6 @@ class PublisherStep(Step):
                     if not v.get("ok")
                 }
                 if not failed:
-                    # All succeeded
                     self._circuit_breaker.record_success()
                     break
                 
@@ -944,7 +926,6 @@ class PublisherStep(Step):
             }
             raise RuntimeError(f"All plugins failed to publish: {errors}")
         
-        # Partial success — log but continue
         succeeded = sum(1 for r in results.values() if r.get("ok"))
         failed = sum(1 for r in results.values() if not r.get("ok"))
         logger.info(
@@ -1072,11 +1053,9 @@ class ContentGenerationPipeline(Workflow):
         )
 
     def execute(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute pipeline with timing and deduplication."""
         context = context or {}
         context["brand"] = getattr(self, "_brand", None)
         
-        # v12.6: Deduplication check
         topic = context.get("topic", "")
         brand_id = getattr(context.get("brand"), "id", "unknown")
         
@@ -1095,14 +1074,11 @@ class ContentGenerationPipeline(Workflow):
                 "topic": topic,
             }
         
-        # Execute with per-stage timing
         result = super().execute(context)
         
-        # Record deduplication
         if topic and not result.get("skipped"):
             self._deduplicator.record(topic, brand_id)
         
-        # Add timing metrics to result
         result["stage_timings_ms"] = self._timer.get_all()
         result["pipeline_completed_at"] = datetime.now(timezone.utc).isoformat()
         
