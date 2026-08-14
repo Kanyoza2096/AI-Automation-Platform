@@ -29,7 +29,7 @@ import re
 import time
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List, Set, Tuple
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -596,59 +596,89 @@ class ValidatorStep(Step):
         self._validator = validator or ContentValidator()
         self._config = config or PipelineConfig()
 
+    
     def run(self, context: dict[str, Any]) -> Any:
-        caption = context.get("caption", "")
-        topic = context.get("topic", "")
+    caption = context.get("caption", "")
+    topic = context.get("topic", "")
 
-        content = {
-            "title": context.get("content_result", {}).get("title", topic),
-            "caption": caption,
-            "content_type": context.get("content_type", "social_post"),
-            "hashtags": context.get("content_result", {}).get("hashtags", []),
-            "media_required": True,
-        }
+    content = {
+        "title": context.get("content_result", {}).get("title", topic),
+        "caption": caption,
+        "content_type": context.get("content_type", "social_post"),
+        "hashtags": context.get("content_result", {}).get("hashtags", []),
+        "media_required": True,
+    }
 
-        brand = context.get("brand")
-        platform = context.get("platform", "facebook")
+    brand = context.get("brand")
+    platform = context.get("platform", "facebook")
 
-        validation_result = self._validator.validate(
-            content=content,
-            brand=brand,
-            platform=platform,
-            require_media=True,
+    validation_result = self._validator.validate(
+        content=content,
+        brand=brand,
+        platform=platform,
+        require_media=True,
+    )
+
+    context["validation_result"] = validation_result
+
+    # v12.6.1 FIX: Use getattr with fallbacks for all ValidationResult attributes
+    # The ValidationResult class may use errors/warnings/messages instead of error_messages/warning_messages
+    if validation_result.is_rejected:
+        errors = (
+            getattr(validation_result, "error_messages", None)
+            or getattr(validation_result, "errors", None)
+            or getattr(validation_result, "messages", None)
+            or []
+        )
+        if isinstance(errors, str):
+            errors = [errors]
+
+        warnings = (
+            getattr(validation_result, "warning_messages", None)
+            or getattr(validation_result, "warnings", None)
+            or []
+        )
+        if isinstance(warnings, str):
+            warnings = [warnings]
+
+        logger.error(
+            "[Stage 6] Validation REJECTED: %s", "; ".join(errors)
+        )
+        raise AIValidationError(
+            message=f"Content validation failed: {'; '.join(errors)}",
+            context={
+                "errors": errors,
+                "warnings": warnings,
+                "topic": topic,
+            },
         )
 
-        context["validation_result"] = validation_result
+    if (
+        validation_result.status
+        == validation_result.status.APPROVED_WITH_WARNINGS
+    ):
+        warnings = (
+            getattr(validation_result, "warning_messages", None)
+            or getattr(validation_result, "warnings", None)
+            or []
+        )
+        if isinstance(warnings, str):
+            warnings = [warnings]
 
-        if validation_result.is_rejected:
-            errors = validation_result.error_messages
-            logger.error(
-                "[Stage 6] Validation REJECTED: %s", "; ".join(errors)
-            )
-            raise AIValidationError(
-                message=f"Content validation failed: {'; '.join(errors)}",
-                context={
-                    "errors": errors,
-                    "warnings": validation_result.warning_messages,
-                    "topic": topic,
-                },
-            )
+        warnings_count = (
+            getattr(validation_result, "warnings_count", None)
+            or len(warnings)
+        )
 
-        if (
-            validation_result.status
-            == validation_result.status.APPROVED_WITH_WARNINGS
-        ):
-            logger.warning(
-                "[Stage 6] Validation passed with %d warnings: %s",
-                validation_result.warnings_count,
-                "; ".join(validation_result.warning_messages),
-            )
-        else:
-            logger.info("[Stage 6] Validation passed.")
+        logger.warning(
+            "[Stage 6] Validation passed with %d warnings: %s",
+            warnings_count,
+            "; ".join(warnings),
+        )
+    else:
+        logger.info("[Stage 6] Validation passed.")
 
-        return validation_result.to_dict()
-
-
+    return validation_result.to_dict()
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. REVIEWER STEP
 # ═══════════════════════════════════════════════════════════════════════════
