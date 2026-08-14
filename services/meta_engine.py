@@ -996,6 +996,8 @@ class MetaEngineV5:
     # ═══════════════════════════════════════════════════════════════════
     # HEALTH CHECK (with timeout)
     # ═══════════════════════════════════════════════════════════════════
+class HealthManager:
+    # ... other methods ...
 
     def _ping_engine(
         self, engine: Any, engine_name: str = ""
@@ -1007,16 +1009,35 @@ class MetaEngineV5:
         return success and result
 
     def _ping_engine_inner(self, engine: Any, engine_name: str = "") -> bool:
-    # ... existing checks ...
+        """Ping a single engine and return True if healthy."""
+        try:
+            # Try to call health_check if available
+            if hasattr(engine, "health_check") and callable(engine.health_check):
+                result = engine.health_check()
+                return result.get("status") == "healthy"
+            
+            # Try status if available
+            if hasattr(engine, "get_status") and callable(engine.get_status):
+                result = engine.get_status()
+                return result.get("running", False)
+            
+            # v5.0 — NO FAKE HEALTH
+            # FIX: Log at DEBUG level to prevent spam
+            # This message repeats every cycle for engines without health interfaces
+            logger.debug(
+                "Engine '%s' has no health interface — OFFLINE",
+                engine_name or "unknown",
+            )
+            return False
+            
+        except Exception as e:
+            logger.error(
+                "Engine '%s' health check failed: %s",
+                engine_name or "unknown",
+                e,
+            )
+            return False    
     
-    # v5.0 — NO FAKE HEALTH
-    # FIX: Log at DEBUG level to prevent spam
-    # This message repeats every cycle for engines without health interfaces
-    logger.debug(
-        "Engine '%s' has no health interface — OFFLINE",
-        engine_name or "unknown",
-    )
-    return False
         if hasattr(engine, "health_check"):
             try:
                 result = engine.health_check()
