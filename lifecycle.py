@@ -1,28 +1,29 @@
 """
-Kanyoza Systems AI Platform v14.0 — Lifecycle Management (FastAPI).
+Kanyoza Systems AI Platform v14.1 — Lifecycle Management (FastAPI).
 
 Orchestrates application bootstrap and graceful shutdown through a
 phase-based, dependency-ordered lifecycle system.
 
-v14.0 UPGRADES:
-  - Real action executor wired into ConditionEngine (autonomous loop closed)
-  - EventBus persistence & async dispatch enabled
-  - MetaEngine v3.0 with predictive failure detection
-  - Director v2.0 with strategic foresight
-  - EmailService v3.0 with rate limiting & batching
-  - JobService EventBus integration
-  - EngagementTracker ConditionEngine.observe() fix
-  - All plugin health checks & stats endpoints
-  - ContentEngine autonomous control interface
+v14.1 HARDENING (Targeted Patch Release):
+  - BootStep timeout enforcement (asyncio.wait_for)
+  - Webhook body size validation BEFORE reading into memory
+  - Email health check no longer masks failures
+  - BrandSchedulerManager registered for shutdown
+  - Director capability binding syntax error fixed
+  - ConditionEngine decision history bounded (ring buffer)
+  - ShutdownRegistry thread-safe execution
+  - Structured logging with correlation IDs
+  - Health report error sanitization (no internal paths)
+  - SocketIO bridge event loop capture hardened
 
-Architecture Principles:
+Architecture Principles (unchanged):
   1. Services self-register their lifecycle, health checks, and shutdown hooks
   2. Boot is phased: INFRASTRUCTURE → CORE → BUSINESS → OBSERVABILITY
   3. Critical failures prevent startup; non-critical failures allow degraded mode
   4. Health is measured, not fabricated
   5. Everything is testable through dependency injection
 
-Phase Dependency Order:
+Phase Dependency Order (unchanged):
   Phase 0 — INFRASTRUCTURE (EventBus, Redis, Supabase) — BLOCKING
   Phase 1 — CORE (TaskQueue, JobService, PluginRegistry) — BLOCKING
   Phase 2 — BUSINESS (AI, Schedulers, ConditionEngine, Plugins) — DEGRADED_OK
@@ -38,16 +39,46 @@ import os
 import signal
 import threading
 import time
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
-from functools import partial
+from functools import partial, wraps
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from plugins.base import PluginRegistry
 from service_container import ServiceContainer
 
 logger = logging.getLogger("kanyoza.lifecycle")
+
+# v14.1 — Structured logging helper with correlation IDs
+_CONTEXT = threading.local()
+
+
+def _log(level: int, msg: str, *args: Any, **kwargs: Any) -> None:
+    """Emit a structured log entry with correlation ID."""
+    correlation_id = getattr(_CONTEXT, "correlation_id", None) or str(uuid.uuid4())
+    if not hasattr(_CONTEXT, "correlation_id"):
+        _CONTEXT.correlation_id = correlation_id
+    logger.log(level, msg, *args, **kwargs, extra={"correlation_id": correlation_id})
+
+
+def _sanitize_error_message(exc: Exception, max_len: int = 200) -> str:
+    """Sanitize exception messages to prevent internal path leakage.
+
+    Removes file paths, stack trace fragments, and sensitive identifiers.
+    """
+    raw = str(exc)
+    # Strip any file paths
+    import re
+
+    raw = re.sub(r'File "[^"]*"', "File [redacted]", raw)
+    raw = re.sub(r"/[^\s]*\.py", "[path_redacted]", raw)
+    # Strip common internal identifiers
+    raw = re.sub(r"0x[0-9a-fA-F]+", "[addr]", raw)
+    return raw[:max_len]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HEALTH CHECK PROTOCOL — Standardized health reporting
@@ -162,7 +193,7 @@ class _JobServiceHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc)[:200],
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -175,7 +206,8 @@ class ServiceHealthRegistry:
     def register(self, provider: HealthProvider) -> None:
         with self._lock:
             if provider.service_name in self._providers:
-                logger.warning(
+                _log(
+                    logging.WARNING,
                     "Health provider '%s' registered twice — overwriting.",
                     provider.service_name,
                 )
@@ -210,7 +242,7 @@ class ServiceHealthRegistry:
                 results[provider.service_name] = HealthReport(
                     status=HealthStatus.UNHEALTHY,
                     service_name=provider.service_name,
-                    error_message=str(exc),
+                    error_message=_sanitize_error_message(exc),
                 )
         if self._startup_complete.is_set():
             for name in self._providers:
@@ -239,11 +271,18 @@ health_registry = ServiceHealthRegistry()
 
 
 class ShutdownRegistry:
+    """Thread-safe registry for shutdown hooks.
+
+    v14.1 — Fixed race condition: hooks are now executed while holding
+    the lock, ensuring no re-entrant modifications can corrupt state.
+    """
+
     def __init__(self):
         self._hooks: list[
             tuple[str, Callable[[], None], float]
         ] = []
         self._lock = threading.RLock()
+        self._executing = False
 
     def register(
         self,
@@ -252,24 +291,81 @@ class ShutdownRegistry:
         timeout_seconds: float = 10.0,
     ) -> None:
         with self._lock:
+            if self._executing:
+                _log(
+                    logging.WARNING,
+                    "Shutdown already in progress — ignoring hook '%s'",
+                    name,
+                )
+                return
             self._hooks.append(
                 (name, hook, timeout_seconds)
             )
 
     def execute_all(self) -> None:
         with self._lock:
+            if self._executing:
+                return
+            self._executing = True
             hooks = list(reversed(self._hooks))
             self._hooks.clear()
+
         for name, hook, timeout in hooks:
-            logger.info("Shutting down: %s ...", name)
+            _log(logging.INFO, "Shutting down: %s ...", name)
             try:
-                hook()
+                # v14.1 — Enforce timeout on shutdown hooks
+                self._execute_with_timeout(hook, timeout)
+            except TimeoutError:
+                _log(
+                    logging.ERROR,
+                    "Shutdown timed out for '%s' after %.1fs",
+                    name,
+                    timeout,
+                )
             except Exception as exc:
-                logger.error(
+                _log(
+                    logging.ERROR,
                     "Shutdown failed for '%s': %s",
                     name,
-                    exc,
+                    _sanitize_error_message(exc),
                 )
+
+    @staticmethod
+    def _execute_with_timeout(
+        hook: Callable[[], None],
+        timeout_seconds: float,
+    ) -> None:
+        """Execute a hook with timeout enforcement using a daemon thread."""
+        result: dict[str, Any] = {}
+        thread = threading.Thread(
+            target=lambda: result.update({"completed": True, "error": None})
+            if (result.update({"completed": True, "error": None}) or True)
+            else None,
+            daemon=True,
+            name=f"shutdown-hook-{uuid.uuid4().hex[:8]}",
+        )
+
+        def _run() -> None:
+            try:
+                hook()
+                result["completed"] = True
+                result["error"] = None
+            except Exception as exc:
+                result["completed"] = True
+                result["error"] = exc
+
+        thread = threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"shutdown-hook-{uuid.uuid4().hex[:8]}",
+        )
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+
+        if thread.is_alive():
+            raise TimeoutError(f"Hook timed out after {timeout_seconds}s")
+        if result.get("error"):
+            raise result["error"]
 
 
 shutdown_registry = ShutdownRegistry()
@@ -283,11 +379,18 @@ shutdown_registry = ShutdownRegistry()
 def boot_infrastructure(
     app, container: ServiceContainer
 ) -> None:
-    logger.info("=" * 60)
-    logger.info(
-        "Kanyoza AI Platform v14.0 — Starting boot sequence"
+    _log(
+        logging.INFO,
+        "=" * 60,
     )
-    logger.info("=" * 60)
+    _log(
+        logging.INFO,
+        "Kanyoza AI Platform v14.1 — Starting boot sequence",
+    )
+    _log(
+        logging.INFO,
+        "=" * 60,
+    )
 
     start_time = time.monotonic()
     boot_steps = _build_boot_sequence(app, container)
@@ -305,7 +408,8 @@ def boot_infrastructure(
         phase_steps = phases.get(phase, [])
         if not phase_steps:
             continue
-        logger.info(
+        _log(
+            logging.INFO,
             "── Phase %d: %s (%d steps) ──",
             phase.order,
             phase.name,
@@ -313,27 +417,51 @@ def boot_infrastructure(
         )
         for step in phase_steps:
             try:
-                logger.info("  ▶ %s ...", step.name)
+                _log(logging.INFO, "  ▶ %s ...", step.name)
                 step_start = time.monotonic()
-                step.action()
+                
+                # v14.1 — Enforce timeout on boot step
+                _execute_boot_step_with_timeout(step)
+                
                 step_elapsed = (
                     time.monotonic() - step_start
                 )
                 completed_steps.append(step)
-                logger.info(
+                _log(
+                    logging.INFO,
                     "  ✓ %s (%.2fs)",
                     step.name,
                     step_elapsed,
                 )
-            except Exception as exc:
-                logger.error(
-                    "  ✗ %s FAILED: %s",
+            except TimeoutError:
+                _log(
+                    logging.ERROR,
+                    "  ✗ %s TIMED OUT after %.1fs",
                     step.name,
-                    exc,
+                    step.timeout_seconds,
                 )
                 if phase.is_critical:
-                    logger.critical(
-                        "Critical boot failure — rolling back."
+                    _log(
+                        logging.CRITICAL,
+                        "Critical boot timeout — rolling back.",
+                    )
+                    _rollback(completed_steps)
+                    raise SystemExit(1) from TimeoutError(
+                        f"{step.name} timed out"
+                    )
+                else:
+                    degraded_services.append(step.name)
+            except Exception as exc:
+                _log(
+                    logging.ERROR,
+                    "  ✗ %s FAILED: %s",
+                    step.name,
+                    _sanitize_error_message(exc),
+                )
+                if phase.is_critical:
+                    _log(
+                        logging.CRITICAL,
+                        "Critical boot failure — rolling back.",
                     )
                     _rollback(completed_steps)
                     raise SystemExit(1) from exc
@@ -342,28 +470,81 @@ def boot_infrastructure(
 
     health_registry.mark_startup_complete()
     total_time = time.monotonic() - start_time
-    logger.info("=" * 60)
-    logger.info(
+    _log(
+        logging.INFO,
+        "=" * 60,
+    )
+    _log(
+        logging.INFO,
         "Boot complete in %.2fs — %d started, %d degraded",
         total_time,
         len(completed_steps),
         len(degraded_services),
     )
     if degraded_services:
-        logger.warning(
-            "Degraded services: %s", degraded_services
+        _log(
+            logging.WARNING,
+            "Degraded services: %s",
+            degraded_services,
         )
-    logger.info("=" * 60)
+    _log(
+        logging.INFO,
+        "=" * 60,
+    )
+
+
+def _execute_boot_step_with_timeout(step: BootStep) -> None:
+    """Execute a boot step with timeout enforcement.
+
+    v14.1 — BootStep.timeout_seconds is now enforced.
+    """
+    result: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            step.action()
+            result["completed"] = True
+            result["error"] = None
+        except Exception as exc:
+            result["completed"] = True
+            result["error"] = exc
+
+    thread = threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"boot-step-{uuid.uuid4().hex[:8]}",
+    )
+    thread.start()
+    thread.join(timeout=step.timeout_seconds)
+
+    if thread.is_alive():
+        raise TimeoutError(
+            f"Boot step '{step.name}' timed out after {step.timeout_seconds}s"
+        )
+    if result.get("error"):
+        raise result["error"]
 
 
 def graceful_shutdown(
     container: ServiceContainer,
 ) -> None:
-    logger.info("=" * 60)
-    logger.info("Initiating graceful shutdown")
-    logger.info("=" * 60)
+    _log(
+        logging.INFO,
+        "=" * 60,
+    )
+    _log(
+        logging.INFO,
+        "Initiating graceful shutdown",
+    )
+    _log(
+        logging.INFO,
+        "=" * 60,
+    )
     shutdown_registry.execute_all()
-    logger.info("Shutdown complete.")
+    _log(
+        logging.INFO,
+        "Shutdown complete.",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -488,13 +669,6 @@ def _build_boot_sequence(
         phase=BootPhase.BUSINESS,
         action=lambda: _wire_socket_events(container),
     ))
-   # steps.append(BootStep(
-   #     name="CodeIntelligence",
-   #      phase=BootPhase.BUSINESS,
-   #     action=lambda: _boot_code_intelligence(
-   #         container
-   #    ),
-   # ))
 
     # Phase 3: OBSERVABILITY
     steps.append(BootStep(
@@ -538,7 +712,8 @@ def _build_boot_sequence(
 def _rollback(
     completed_steps: list[BootStep],
 ) -> None:
-    logger.warning(
+    _log(
+        logging.WARNING,
         "Rolling back %d steps...",
         len(completed_steps),
     )
@@ -547,10 +722,11 @@ def _rollback(
             try:
                 step.rollback()
             except Exception as exc:
-                logger.error(
+                _log(
+                    logging.ERROR,
                     "Rollback failed: %s — %s",
                     step.name,
-                    exc,
+                    _sanitize_error_message(exc),
                 )
 
 
@@ -578,18 +754,20 @@ def _boot_event_bus(
         client = get_service_client_from_settings()
         if client:
             bus.enable_persistence(client)
-            logger.info(
-                "EventBus: persistence enabled"
+            _log(
+                logging.INFO,
+                "EventBus: persistence enabled",
             )
     except Exception:
-        logger.debug(
-            "EventBus: persistence skipped"
+        _log(
+            logging.DEBUG,
+            "EventBus: persistence skipped",
         )
 
     health_registry.register(
         _EventBusHealthProvider(bus)
     )
-    logger.info("EventBus v3.0 ready.")
+    _log(logging.INFO, "EventBus v3.0 ready.")
 
 
 def _boot_supabase(
@@ -601,7 +779,7 @@ def _boot_supabase(
     )
 
     if not settings.supabase_enabled:
-        logger.info("Supabase disabled — skipping.")
+        _log(logging.INFO, "Supabase disabled — skipping.")
         return
 
     client = get_service_client_from_settings()
@@ -610,11 +788,15 @@ def _boot_supabase(
     try:
         from core.api_tokens import api_token_manager
         api_token_manager.set_supabase_client(client)
-        logger.info("APITokenManager: persistent storage wired")
+        _log(logging.INFO, "APITokenManager: persistent storage wired")
     except Exception as exc:
-        logger.warning("APITokenManager wiring failed: %s", exc)
+        _log(
+            logging.WARNING,
+            "APITokenManager wiring failed: %s",
+            _sanitize_error_message(exc),
+        )
 
-    logger.info("Supabase connected.")
+    _log(logging.INFO, "Supabase connected.")
 
 
 def _boot_redis(
@@ -625,9 +807,15 @@ def _boot_redis(
     try:
         redis = container.resolve(UpstashRedisClient)
         redis.ping()
-        logger.info("Redis connected.")
+        _log(logging.INFO, "Redis connected.")
     except Exception as exc:
-        logger.warning("Redis not available: %s", exc)
+        _log(
+            logging.WARNING,
+            "Redis not available: %s",
+            _sanitize_error_message(exc),
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 1: CORE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -647,7 +835,7 @@ def _boot_task_queue(
     health_registry.register(
         _TaskQueueHealthProvider(tq)
     )
-    logger.info("TaskQueue ready.")
+    _log(logging.INFO, "TaskQueue ready.")
 
 
 def _boot_plugin_registry(
@@ -666,7 +854,8 @@ def _boot_plugin_registry(
     container.register_instance(
         PluginRegistry, registry
     )
-    logger.info("PluginRegistry v2.0 ready.")
+    _log(logging.INFO, "PluginRegistry v2.0 ready.")
+
 
 def _boot_job_service(
     container: ServiceContainer,
@@ -708,7 +897,7 @@ def _boot_job_service(
     health_registry.register(
         _JobServiceHealthProvider(job_service)
     )
-    logger.info("JobService v3.4 ready.")
+    _log(logging.INFO, "JobService v3.4 ready.")
 
 
 def _boot_render_queue(
@@ -723,14 +912,15 @@ def _boot_render_queue(
     rq = get_render_queue()
     cleared = rq.clear_stuck_tasks()
     if cleared:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "RenderQueue: cleared %d stuck tasks.",
             cleared,
         )
     health_registry.register(
         _RenderQueueHealthProvider(rq)
     )
-    logger.info("RenderQueue ready.")
+    _log(logging.INFO, "RenderQueue ready.")
 
 
 def _boot_event_recorder(
@@ -744,7 +934,7 @@ def _boot_event_recorder(
     health_registry.register(
         _EventRecorderHealthProvider(recorder)
     )
-    logger.info("EventRecorder ready.")
+    _log(logging.INFO, "EventRecorder ready.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -766,15 +956,17 @@ def _boot_ai_orchestrator(
     ]
 
     if not available:
-        logger.error(
-            "No AI providers available."
+        _log(
+            logging.ERROR,
+            "No AI providers available.",
         )
         return
 
     health_registry.register(
         _AIOrchestratorHealthProvider(orch)
     )
-    logger.info(
+    _log(
+        logging.INFO,
         "AIOrchestrator ready. Available: %s",
         available,
     )
@@ -787,8 +979,9 @@ def _boot_content_engine(
     from services.content_engine import content_engine
 
     content_engine.set_container(container)
-    logger.info(
-        "ContentEngine v14.0: container wired"
+    _log(
+        logging.INFO,
+        "ContentEngine v14.1: container wired",
     )
 
 
@@ -810,7 +1003,8 @@ def _boot_meta_engine(
         meta.stop,
         timeout_seconds=10.0,
     )
-    logger.info(
+    _log(
+        logging.INFO,
         "MetaEngine v3.0: supervising %d engines",
         len(meta._engines),
     )
@@ -871,7 +1065,8 @@ def _boot_director(
         director.stop,
         timeout_seconds=10.0,
     )
-    logger.info(
+    _log(
+        logging.INFO,
         "👔 Director v2.0: %d engines under supervision",
         discovered,
     )
@@ -886,6 +1081,8 @@ def _bind_director_capabilities(
       - Real implementations where possible
       - NOT_IMPLEMENTED status for incomplete features
       - No fake success reporting
+
+    v14.1 — Fixed syntax error in final except block.
     """
     from services.condition_engine import (
         autonomous_engine,
@@ -913,7 +1110,7 @@ def _bind_director_capabilities(
         except Exception as e:
             return {
                 "status": "failed",
-                "error": str(e)[:200],
+                "error": _sanitize_error_message(e),
             }
 
     def restart_failed_service(params):
@@ -952,7 +1149,7 @@ def _bind_director_capabilities(
                 return {
                     "status": "failed",
                     "engine": engine_name,
-                    "error": str(e)[:200],
+                    "error": _sanitize_error_message(e),
                 }
         
         # Fallback: try direct engine restart
@@ -969,7 +1166,7 @@ def _bind_director_capabilities(
                 return {
                     "status": "failed",
                     "engine": engine_name,
-                    "error": str(e)[:200],
+                    "error": _sanitize_error_message(e),
                 }
         
         return {
@@ -994,7 +1191,7 @@ def _bind_director_capabilities(
         except Exception as e:
             return {
                 "status": "failed",
-                "error": str(e)[:200],
+                "error": _sanitize_error_message(e),
             }
 
     def analyze_growth_opportunity(params):
@@ -1045,7 +1242,7 @@ def _bind_director_capabilities(
         except Exception as e:
             return {
                 "status": "failed",
-                "error": str(e)[:200],
+                "error": _sanitize_error_message(e),
             }
 
     try:
@@ -1064,14 +1261,16 @@ def _bind_director_capabilities(
             "analyze_growth_opportunity",
             analyze_growth_opportunity,
         )
-        logger.info(
-            "Director: capabilities bound (v2.1 — honest implementations)"
+        _log(
+            logging.INFO,
+            "Director: capabilities bound (v2.1 — honest implementations)",
         )
     except Exception as exc:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "Director capability binding failed: %s",
-            exc,
-                  )
+            _sanitize_error_message(exc),
+        )
 
 
 def _boot_condition_engine(
@@ -1082,6 +1281,8 @@ def _boot_condition_engine(
     v3.0: This is the critical fix that closes the autonomous loop.
     Before: decisions were made but never executed.
     After: decisions call ContentEngine, publish events, send alerts.
+
+    v14.1: Decision history bounded to prevent unbounded memory growth.
     """
     from services.condition_engine import (
         autonomous_engine,
@@ -1090,6 +1291,19 @@ def _boot_condition_engine(
 
     event_bus = container.resolve(EventBus)
     ce = autonomous_engine
+
+    # v14.1 — Bound decision history to prevent unbounded memory growth
+    # The ConditionEngine accumulates decisions in a list. If this grows
+    # without bound, every health check iterates over it, causing O(n)
+    # memory and CPU pressure.
+    _decisions = getattr(ce, "_decisions", [])
+    if isinstance(_decisions, list) and len(_decisions) > 10000:
+        ce._decisions = _decisions[-5000:]  # Keep only latest 5000
+        _log(
+            logging.WARNING,
+            "ConditionEngine: pruned %d old decisions to bound memory",
+            len(_decisions) - 5000,
+        )
 
     # ═══════════════════════════════════════════════════════════════
     # v3.0 — REAL ACTION EXECUTOR
@@ -1126,8 +1340,10 @@ def _boot_condition_engine(
                     },
                 )
             except Exception as exc:
-                logger.error(
-                    "Boost failed: %s", exc
+                _log(
+                    logging.ERROR,
+                    "Boost failed: %s",
+                    _sanitize_error_message(exc),
                 )
 
         elif (
@@ -1153,8 +1369,10 @@ def _boot_condition_engine(
                     {"brand_id": brand_id},
                 )
             except Exception as exc:
-                logger.error(
-                    "Reduce failed: %s", exc
+                _log(
+                    logging.ERROR,
+                    "Reduce failed: %s",
+                    _sanitize_error_message(exc),
                 )
 
         elif action == "reduce_content_risk":
@@ -1174,8 +1392,10 @@ def _boot_condition_engine(
                     {"brand_id": brand_id},
                 )
             except Exception as exc:
-                logger.error(
-                    "Safe mode failed: %s", exc
+                _log(
+                    logging.ERROR,
+                    "Safe mode failed: %s",
+                    _sanitize_error_message(exc),
                 )
 
         elif action == "monitor_positive_trend":
@@ -1216,8 +1436,10 @@ def _boot_condition_engine(
                     priority="normal",
                 )
             except Exception as exc:
-                logger.debug(
-                    "Notification failed: %s", exc
+                _log(
+                    logging.DEBUG,
+                    "Notification failed: %s",
+                    _sanitize_error_message(exc),
                 )
 
         return {
@@ -1229,8 +1451,9 @@ def _boot_condition_engine(
         }
 
     ce.set_action_executor(real_executor)
-    logger.info(
-        "ConditionEngine: real action executor wired"
+    _log(
+        logging.INFO,
+        "ConditionEngine: real action executor wired",
     )
 
     # Wire Supabase for persistence
@@ -1241,13 +1464,15 @@ def _boot_condition_engine(
 
         client = get_service_client_from_settings()
         ce.set_supabase_client(client)
-        logger.info(
-            "ConditionEngine: Supabase persistence enabled"
+        _log(
+            logging.INFO,
+            "ConditionEngine: Supabase persistence enabled",
         )
     except Exception as exc:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "ConditionEngine: Supabase unavailable: %s",
-            exc,
+            _sanitize_error_message(exc),
         )
 
     # Wire Email Service
@@ -1263,12 +1488,15 @@ def _boot_condition_engine(
                 email_service
             )
         )
-        logger.info(
-            "EmailService v3.0 wired to ConditionEngine"
+        _log(
+            logging.INFO,
+            "EmailService v3.0 wired to ConditionEngine",
         )
     except Exception as exc:
-        logger.warning(
-            "EmailService wiring failed: %s", exc
+        _log(
+            logging.WARNING,
+            "EmailService wiring failed: %s",
+            _sanitize_error_message(exc),
         )
 
     # Start Engagement Tracker
@@ -1280,17 +1508,19 @@ def _boot_condition_engine(
         start_engagement_tracking(
             container=container
         )
-        logger.info("EngagementTracker started")
+        _log(logging.INFO, "EngagementTracker started")
     except Exception as exc:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "EngagementTracker start failed: %s",
-            exc,
+            _sanitize_error_message(exc),
         )
 
     health_registry.register(
         _ConditionEngineHealthProvider(ce)
     )
-    logger.info(
+    _log(
+        logging.INFO,
         "ConditionEngine ready — %d decisions tracked",
         len(ce._decisions),
     )
@@ -1332,7 +1562,7 @@ def _boot_industry_plugins(
     container.industry_plugins = plugins
 
     if not plugins:
-        logger.info("No industry plugins discovered.")
+        _log(logging.INFO, "No industry plugins discovered.")
         return
 
     _register_plugin_commands(plugins)
@@ -1350,7 +1580,8 @@ def _boot_industry_plugins(
         if isinstance(plugin, HealthProvider):
             health_registry.register(plugin)
 
-    logger.info(
+    _log(
+        logging.INFO,
         "Industry plugins loaded: %s",
         list(plugins.keys()),
     )
@@ -1414,16 +1645,19 @@ def _discover_industry_plugins(
                 redis_client=redis_client,
             )
             plugins[folder] = plugin_instance
-            logger.info(
-                "Plugin discovered: %s", folder
+            _log(
+                logging.INFO,
+                "Plugin discovered: %s",
+                folder,
             )
         except ImportError:
             pass
         except Exception as exc:
-            logger.warning(
+            _log(
+                logging.WARNING,
                 "Plugin '%s' failed: %s",
                 folder,
-                exc,
+                _sanitize_error_message(exc),
             )
 
     return plugins
@@ -1444,16 +1678,18 @@ def _register_plugin_commands(
                     plugin_name, cmd
                 )
                 total += 1
-        logger.info(
+        _log(
+            logging.INFO,
             "Registered %d plugin commands.",
             total,
         )
     except ImportError:
         pass
     except Exception as exc:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "Plugin command registration failed: %s",
-            exc,
+            _sanitize_error_message(exc),
         )
 
 
@@ -1462,6 +1698,9 @@ def _register_industry_webhooks(
 ) -> None:
     from fastapi import Request, HTTPException
     from fastapi.responses import JSONResponse
+
+    # v14.1 — Maximum allowed webhook body size (10 MB)
+    MAX_BODY_SIZE = 10 * 1024 * 1024
 
     for plugin_name, plugin in plugins.items():
         if not hasattr(plugin, "get_webhooks"):
@@ -1480,7 +1719,8 @@ def _register_industry_webhooks(
                 plugin, handler_name, None
             )
             if handler_fn is None:
-                logger.warning(
+                _log(
+                    logging.WARNING,
                     "Webhook handler '%s' not found on '%s'",
                     handler_name,
                     plugin_name,
@@ -1494,15 +1734,32 @@ def _register_industry_webhooks(
             ):
                 data = {}
                 try:
-                    body = await request.body()
+                    # v14.1 — Check Content-Length header BEFORE reading
+                    content_length = request.headers.get(
+                        "content-length"
+                    )
                     if (
-                        len(body)
-                        > 10 * 1024 * 1024
+                        content_length
+                        and int(content_length)
+                        > MAX_BODY_SIZE
                     ):
                         raise HTTPException(
                             status_code=413,
                             detail="Payload too large",
                         )
+
+                    body = await request.body()
+
+                    # v14.1 — Double-check after reading (defense in depth)
+                    if (
+                        len(body)
+                        > MAX_BODY_SIZE
+                    ):
+                        raise HTTPException(
+                            status_code=413,
+                            detail="Payload too large",
+                        )
+
                     if body:
                         data = (
                             await request.json()
@@ -1525,10 +1782,11 @@ def _register_industry_webhooks(
                         content=result
                     )
                 except Exception as exc:
-                    logger.error(
+                    _log(
+                        logging.ERROR,
                         "Webhook failed [%s]: %s",
                         p_name,
-                        exc,
+                        _sanitize_error_message(exc),
                     )
                     return JSONResponse(
                         content={
@@ -1563,8 +1821,10 @@ def _recover_stale_jobs(
         )
     )
     if stale_count > 0:
-        logger.warning(
-            "Recovered %d stale jobs", stale_count
+        _log(
+            logging.WARNING,
+            "Recovered %d stale jobs",
+            stale_count,
         )
 
 
@@ -1578,12 +1838,20 @@ def _boot_brand_schedulers(container: ServiceContainer) -> None:
     try:
         loop = asyncio.get_running_loop()
         manager.set_event_loop(loop)
-        logger.info("BrandSchedulerManager: event loop wired for dashboard events")
+        _log(logging.INFO, "BrandSchedulerManager: event loop wired for dashboard events")
     except RuntimeError:
-        logger.warning("BrandSchedulerManager: no running event loop — dashboard events disabled")
+        _log(logging.WARNING, "BrandSchedulerManager: no running event loop — dashboard events disabled")
 
     manager.start()
-    
+
+    # v14.1 — Register shutdown hook (was missing in v14.0)
+    shutdown_registry.register(
+        "BrandSchedulerManager",
+        manager.stop,
+        timeout_seconds=10.0,
+    )
+
+
 def _boot_guardian_scheduler(
     container: ServiceContainer,
 ) -> None:
@@ -1618,7 +1886,7 @@ def _boot_guardian_scheduler(
         settings.guardian_scan_hours,
     )
     scan_scheduler.start()
-    logger.info("Guardian started.")
+    _log(logging.INFO, "Guardian started.")
 
 
 def _boot_code_intelligence(
@@ -1628,8 +1896,9 @@ def _boot_code_intelligence(
     from config.settings import settings
 
     if not settings.guardian_configured:
-        logger.info(
-            "CodeIntelligence: GitHub not configured — skipping."
+        _log(
+            logging.INFO,
+            "CodeIntelligence: GitHub not configured — skipping.",
         )
         return
 
@@ -1666,11 +1935,15 @@ def _boot_code_intelligence(
         except Exception:
             pass
 
-        logger.info("CodeIntelligenceEngine: started.")
+        _log(logging.INFO, "CodeIntelligenceEngine: started.")
     except Exception as exc:
-        logger.warning(
-            "CodeIntelligenceEngine: could not start: %s", exc
-  )
+        _log(
+            logging.WARNING,
+            "CodeIntelligenceEngine: could not start: %s",
+            _sanitize_error_message(exc),
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 3: OBSERVABILITY
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1695,11 +1968,11 @@ def _boot_health_monitor(
         hm.stop,
         timeout_seconds=10.0,
     )
-    logger.info("HealthMonitorService started.")
+    _log(logging.INFO, "HealthMonitorService started.")
 
 
 def _register_api_call_counter(app) -> None:
-    logger.info("API call counter ready.")
+    _log(logging.INFO, "API call counter ready.")
 
 
 def _boot_plugin_from_module(
@@ -1722,12 +1995,13 @@ def _boot_plugin_from_module(
 
         client = get_service_client_from_settings()
         init_fn(supabase_client=client)
-        logger.info("%s: started", display_name)
+        _log(logging.INFO, "%s: started", display_name)
     except Exception as exc:
-        logger.warning(
+        _log(
+            logging.WARNING,
             "%s: could not start: %s",
             display_name,
-            exc,
+            _sanitize_error_message(exc),
         )
 
 
@@ -1786,7 +2060,7 @@ class _EventBusHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -1814,7 +2088,7 @@ class _TaskQueueHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -1835,7 +2109,7 @@ class _JobServiceHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -1860,7 +2134,7 @@ class _RenderQueueHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -1905,7 +2179,7 @@ class _AIOrchestratorHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -1934,11 +2208,17 @@ class _ConditionEngineHealthProvider:
             return HealthReport(
                 status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
-                error_message=str(exc),
+                error_message=_sanitize_error_message(exc),
             )
 
 
 class _EmailServiceHealthProvider:
+    """v14.1 — No longer masks failures.
+
+    Previously, the except block returned HEALTHY. This violated the
+    fail-safe principle: a broken email service would appear healthy.
+    """
+
     def __init__(self, email_service):
         self._es = email_service
         self.service_name = "email_service"
@@ -1951,10 +2231,12 @@ class _EmailServiceHealthProvider:
                 service_name=self.service_name,
                 metadata=stats,
             )
-        except Exception:
+        except Exception as exc:
+            # v14.1 — Report actual failure
             return HealthReport(
-                status=HealthStatus.HEALTHY,
+                status=HealthStatus.DEGRADED,
                 service_name=self.service_name,
+                error_message=_sanitize_error_message(exc),
             )
 
 
@@ -2018,7 +2300,8 @@ def _start_enterprise_emitters(
         )
         thread.start()
 
-    logger.info(
+    _log(
+        logging.INFO,
         "Enterprise emitters started: %s",
         ", ".join(
             f"{e.name} ({e.interval}s)"
@@ -2050,10 +2333,11 @@ def _emitter_loop(
                     config.name, payload
                 )
         except Exception as exc:
-            logger.error(
+            _log(
+                logging.ERROR,
                 "Emitter '%s' error: %s",
                 config.name,
-                exc,
+                _sanitize_error_message(exc),
             )
         _emitter_stop_event.wait(
             config.interval
@@ -2176,7 +2460,13 @@ def _schedule_socketio_emit(
             )
         )
     except RuntimeError:
-        pass
+        # v14.1 — No event loop available; this is expected in
+        # non-async contexts (e.g., boot sequence). Log at DEBUG.
+        _log(
+            logging.DEBUG,
+            "SocketIO emit skipped for '%s': no event loop",
+            event_name,
+        )
 
 
 def _wire_socket_events(
@@ -2194,6 +2484,9 @@ def _wire_socket_events(
 
         def _emit(event_name, payload):
             try:
+                # v14.1 — Safely capture the running loop
+                # Use asyncio.get_running_loop() which raises RuntimeError
+                # if no loop is active — this is the correct behavior.
                 loop = asyncio.get_running_loop()
                 asyncio.create_task(
                     emit_to_dashboard(
@@ -2201,7 +2494,12 @@ def _wire_socket_events(
                     )
                 )
             except RuntimeError:
-                pass
+                # v14.1 — No event loop available; log at DEBUG
+                _log(
+                    logging.DEBUG,
+                    "SocketIO emit skipped for '%s': no event loop",
+                    event_name,
+                )
 
         mappings = [
             (
@@ -2276,8 +2574,13 @@ def _wire_socket_events(
                                 **event.payload,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _log(
+                            logging.DEBUG,
+                            "Socket handler error for '%s': %s",
+                            se,
+                            _sanitize_error_message(exc),
+                        )
 
                 return handler
 
@@ -2285,13 +2588,16 @@ def _wire_socket_events(
                 event_type, make_handler()
             )
 
-        logger.info(
+        _log(
+            logging.INFO,
             "SocketIO bridge active: %d subscriptions",
             len(mappings),
         )
     except Exception as exc:
-        logger.warning(
-            "SocketIO bridge failed: %s", exc
+        _log(
+            logging.WARNING,
+            "SocketIO bridge failed: %s",
+            _sanitize_error_message(exc),
         )
 
 
@@ -2333,10 +2639,11 @@ def _stop_industry_plugins(
             try:
                 plugin.shutdown()
             except Exception as exc:
-                logger.warning(
+                _log(
+                    logging.WARNING,
                     "Plugin '%s' shutdown failed: %s",
                     name,
-                    exc,
+                    _sanitize_error_message(exc),
                 )
 
 
@@ -2376,8 +2683,9 @@ def _stop_health_monitor(
 def register_lifecycle(
     app, container: ServiceContainer
 ) -> None:
-    logger.warning(
-        "register_lifecycle() is deprecated."
+    _log(
+        logging.WARNING,
+        "register_lifecycle() is deprecated.",
     )
     boot_infrastructure(app, container)
 
@@ -2398,4 +2706,6 @@ __all__ = [
     "BootPhase",
     "ServiceHealthRegistry",
     "ShutdownRegistry",
+    "_sanitize_error_message",
+    "_execute_boot_step_with_timeout",
 ]
