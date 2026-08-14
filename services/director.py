@@ -2895,6 +2895,10 @@ def create_app(director: Director):
         request: Optional[Request] = None,
     ) -> None:
         """Require authentication. Fails closed if request is None."""
+        # v4.0.2: Allow disabling auth via environment variable
+        if os.getenv("DISABLE_DIRECTOR_AUTH", "false").lower() == "true":
+        return  # Skip auth check
+    
         if not _authenticate(credentials, request):
             raise HTTPException(
                 status_code=401,
