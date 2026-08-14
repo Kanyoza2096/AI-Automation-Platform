@@ -1006,7 +1006,7 @@ class MetaEngineV5:
         )
         return success and result
 
-   def _ping_engine_inner(self, engine: Any, engine_name: str = "") -> bool:
+    def _ping_engine_inner(self, engine: Any, engine_name: str = "") -> bool:
     # ... existing checks ...
     
     # v5.0 — NO FAKE HEALTH
