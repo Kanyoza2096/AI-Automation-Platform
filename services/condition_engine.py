@@ -140,6 +140,7 @@ class EngineConfig:
     boost_exit_threshold: float = 1.10
     reduce_enter_threshold: float = 0.70
     reduce_exit_threshold: float = 0.95
+    critical_performance_ratio: float = 0.45  # ← ADD THIS
     strong_positive_velocity: float = 0.15
     strong_negative_velocity: float = -0.15
     anomaly_z_score: float = 3.0
