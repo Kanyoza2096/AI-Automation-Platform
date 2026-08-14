@@ -620,7 +620,7 @@ def _build_boot_sequence(
         #phase=BootPhase.OBSERVABILITY,
         #action=lambda: _boot_monitor_plugin(container),
         #timeout_seconds=10.0,  # v14.1.1 FIX
-    ))
+    #))
     steps.append(BootStep(
         name="BackupPlugin",
         phase=BootPhase.OBSERVABILITY,
