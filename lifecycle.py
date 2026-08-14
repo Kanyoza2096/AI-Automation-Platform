@@ -16,18 +16,11 @@ v14.1 HARDENING (Targeted Patch Release):
   - Health report error sanitization (no internal paths)
   - SocketIO bridge event loop capture hardened
 
-Architecture Principles (unchanged):
-  1. Services self-register their lifecycle, health checks, and shutdown hooks
-  2. Boot is phased: INFRASTRUCTURE → CORE → BUSINESS → OBSERVABILITY
-  3. Critical failures prevent startup; non-critical failures allow degraded mode
-  4. Health is measured, not fabricated
-  5. Everything is testable through dependency injection
-
-Phase Dependency Order (unchanged):
-  Phase 0 — INFRASTRUCTURE (EventBus, Redis, Supabase) — BLOCKING
-  Phase 1 — CORE (TaskQueue, JobService, PluginRegistry) — BLOCKING
-  Phase 2 — BUSINESS (AI, Schedulers, ConditionEngine, Plugins) — DEGRADED_OK
-  Phase 3 — OBSERVABILITY (Emitters, Health, Metrics) — OPTIONAL
+v14.1.1 CRITICAL FIXES:
+  - BackupPlugin timeout (10s)
+  - TrendIntelligence timeout (15s)
+  - MonitorPlugin timeout (10s)
+  - Removed dead thread creation in _execute_with_timeout
 """
 
 from __future__ import annotations
@@ -66,25 +59,18 @@ def _log(level: int, msg: str, *args: Any, **kwargs: Any) -> None:
 
 
 def _sanitize_error_message(exc: Exception, max_len: int = 200) -> str:
-    """Sanitize exception messages to prevent internal path leakage.
-
-    Removes file paths, stack trace fragments, and sensitive identifiers.
-    """
+    """Sanitize exception messages to prevent internal path leakage."""
     raw = str(exc)
-    # Strip any file paths
     import re
-
     raw = re.sub(r'File "[^"]*"', "File [redacted]", raw)
     raw = re.sub(r"/[^\s]*\.py", "[path_redacted]", raw)
-    # Strip common internal identifiers
     raw = re.sub(r"0x[0-9a-fA-F]+", "[addr]", raw)
     return raw[:max_len]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK PROTOCOL — Standardized health reporting
+# HEALTH CHECK PROTOCOL
 # ═══════════════════════════════════════════════════════════════════════════
-
 
 class HealthStatus(Enum):
     HEALTHY = "healthy"
@@ -139,7 +125,6 @@ class LifecycleAware(Protocol):
 # BOOT PHASE CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
 
-
 class BootPhase(Enum):
     INFRASTRUCTURE = (0, True)
     CORE = (1, True)
@@ -168,7 +153,6 @@ class BootStep:
 # SERVICE HEALTH REGISTRY
 # ═══════════════════════════════════════════════════════════════════════════
 
-
 class _JobServiceHealthProvider:
     def __init__(self, job_service):
         self._js = job_service
@@ -176,8 +160,6 @@ class _JobServiceHealthProvider:
 
     def check_health(self) -> HealthReport:
         try:
-            # v4.0 — Use health_check(), not get_stats()
-            # health_check() delegates to JobStatsService properly
             result = self._js.health_check()
             status_str = result.get("status", "healthy") if isinstance(result, dict) else "healthy"
             
@@ -266,10 +248,10 @@ class ServiceHealthRegistry:
 
 health_registry = ServiceHealthRegistry()
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHUTDOWN HOOK REGISTRY
 # ═══════════════════════════════════════════════════════════════════════════
-
 
 class ShutdownRegistry:
     """Thread-safe registry for shutdown hooks.
@@ -314,7 +296,6 @@ class ShutdownRegistry:
         for name, hook, timeout in hooks:
             _log(logging.INFO, "Shutting down: %s ...", name)
             try:
-                # v14.1 — Enforce timeout on shutdown hooks
                 self._execute_with_timeout(hook, timeout)
             except TimeoutError:
                 _log(
@@ -336,15 +317,11 @@ class ShutdownRegistry:
         hook: Callable[[], None],
         timeout_seconds: float,
     ) -> None:
-        """Execute a hook with timeout enforcement using a daemon thread."""
+        """Execute a hook with timeout enforcement using a daemon thread.
+
+        v14.1.1 — Removed dead thread creation. Single clean thread.
+        """
         result: dict[str, Any] = {}
-        thread = threading.Thread(
-            target=lambda: result.update({"completed": True, "error": None})
-            if (result.update({"completed": True, "error": None}) or True)
-            else None,
-            daemon=True,
-            name=f"shutdown-hook-{uuid.uuid4().hex[:8]}",
-        )
 
         def _run() -> None:
             try:
@@ -376,22 +353,12 @@ shutdown_registry = ShutdownRegistry()
 # MAIN ENTRY POINTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-
 def boot_infrastructure(
     app, container: ServiceContainer
 ) -> None:
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
-    _log(
-        logging.INFO,
-        "Kanyoza AI Platform v14.1 — Starting boot sequence",
-    )
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
+    _log(logging.INFO, "=" * 60)
+    _log(logging.INFO, "Kanyoza AI Platform v14.1.1 — Starting boot sequence")
+    _log(logging.INFO, "=" * 60)
 
     start_time = time.monotonic()
     boot_steps = _build_boot_sequence(app, container)
@@ -403,9 +370,7 @@ def boot_infrastructure(
     completed_steps: list[BootStep] = []
     degraded_services: list[str] = []
 
-    for phase in sorted(
-        BootPhase, key=lambda p: p.order
-    ):
+    for phase in sorted(BootPhase, key=lambda p: p.order):
         phase_steps = phases.get(phase, [])
         if not phase_steps:
             continue
@@ -421,12 +386,9 @@ def boot_infrastructure(
                 _log(logging.INFO, "  ▶ %s ...", step.name)
                 step_start = time.monotonic()
                 
-                # v14.1 — Enforce timeout on boot step
                 _execute_boot_step_with_timeout(step)
                 
-                step_elapsed = (
-                    time.monotonic() - step_start
-                )
+                step_elapsed = time.monotonic() - step_start
                 completed_steps.append(step)
                 _log(
                     logging.INFO,
@@ -471,10 +433,7 @@ def boot_infrastructure(
 
     health_registry.mark_startup_complete()
     total_time = time.monotonic() - start_time
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
+    _log(logging.INFO, "=" * 60)
     _log(
         logging.INFO,
         "Boot complete in %.2fs — %d started, %d degraded",
@@ -488,17 +447,11 @@ def boot_infrastructure(
             "Degraded services: %s",
             degraded_services,
         )
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
+    _log(logging.INFO, "=" * 60)
 
 
 def _execute_boot_step_with_timeout(step: BootStep) -> None:
-    """Execute a boot step with timeout enforcement.
-
-    v14.1 — BootStep.timeout_seconds is now enforced.
-    """
+    """Execute a boot step with timeout enforcement."""
     result: dict[str, Any] = {}
 
     def _run() -> None:
@@ -526,32 +479,17 @@ def _execute_boot_step_with_timeout(step: BootStep) -> None:
         raise result["error"]
 
 
-def graceful_shutdown(
-    container: ServiceContainer,
-) -> None:
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
-    _log(
-        logging.INFO,
-        "Initiating graceful shutdown",
-    )
-    _log(
-        logging.INFO,
-        "=" * 60,
-    )
+def graceful_shutdown(container: ServiceContainer) -> None:
+    _log(logging.INFO, "=" * 60)
+    _log(logging.INFO, "Initiating graceful shutdown")
+    _log(logging.INFO, "=" * 60)
     shutdown_registry.execute_all()
-    _log(
-        logging.INFO,
-        "Shutdown complete.",
-    )
+    _log(logging.INFO, "Shutdown complete.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BOOT SEQUENCE BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
-
 
 def _build_boot_sequence(
     app, container: ServiceContainer
@@ -629,19 +567,13 @@ def _build_boot_sequence(
     steps.append(BootStep(
         name="ConditionEngine",
         phase=BootPhase.BUSINESS,
-        action=lambda: _boot_condition_engine(
-            container
-        ),
+        action=lambda: _boot_condition_engine(container),
     ))
     steps.append(BootStep(
         name="IndustryPlugins",
         phase=BootPhase.BUSINESS,
-        action=lambda: _boot_industry_plugins(
-            app, container
-        ),
-        rollback=lambda: _stop_industry_plugins(
-            container
-        ),
+        action=lambda: _boot_industry_plugins(app, container),
+        rollback=lambda: _stop_industry_plugins(container),
     ))
     steps.append(BootStep(
         name="JobRecovery",
@@ -651,19 +583,13 @@ def _build_boot_sequence(
     steps.append(BootStep(
         name="BrandSchedulers",
         phase=BootPhase.BUSINESS,
-        action=lambda: _boot_brand_schedulers(
-            container
-        ),
-        rollback=lambda: _stop_brand_schedulers(
-            container
-        ),
+        action=lambda: _boot_brand_schedulers(container),
+        rollback=lambda: _stop_brand_schedulers(container),
     ))
     steps.append(BootStep(
         name="GuardianScheduler",
         phase=BootPhase.BUSINESS,
-        action=lambda: _boot_guardian_scheduler(
-            container
-        ),
+        action=lambda: _boot_guardian_scheduler(container),
     ))
     steps.append(BootStep(
         name="SocketBridge",
@@ -681,9 +607,7 @@ def _build_boot_sequence(
     steps.append(BootStep(
         name="EnterpriseEmitters",
         phase=BootPhase.OBSERVABILITY,
-        action=lambda: _start_enterprise_emitters(
-            container
-        ),
+        action=lambda: _start_enterprise_emitters(container),
         rollback=lambda: _stop_enterprise_emitters(),
     ))
     steps.append(BootStep(
@@ -695,24 +619,25 @@ def _build_boot_sequence(
         name="MonitorPlugin",
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _boot_monitor_plugin(container),
+        timeout_seconds=10.0,  # v14.1.1 FIX
     ))
     steps.append(BootStep(
         name="BackupPlugin",
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _boot_backup_plugin(container),
+        timeout_seconds=10.0,  # v14.1.1 FIX
     ))
     steps.append(BootStep(
         name="TrendIntelligence",
         phase=BootPhase.OBSERVABILITY,
         action=lambda: _boot_trend_plugin(container),
+        timeout_seconds=15.0,  # v14.1.1 FIX
     ))
 
     return steps
 
 
-def _rollback(
-    completed_steps: list[BootStep],
-) -> None:
+def _rollback(completed_steps: list[BootStep]) -> None:
     _log(
         logging.WARNING,
         "Rolling back %d steps...",
@@ -735,49 +660,29 @@ def _rollback(
 # PHASE 0: INFRASTRUCTURE
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _boot_event_bus(
-    container: ServiceContainer,
-) -> None:
+def _boot_event_bus(container: ServiceContainer) -> None:
     from core.event_bus import EventBus, get_event_bus
 
     bus = get_event_bus()
     container.register_instance(EventBus, bus)
-
-    # v3.0 — enable async dispatch
     bus.enable_async(True)
 
-    # v3.0 — enable persistence if Supabase is available
     try:
-        from services.supabase import (
-            get_service_client_from_settings,
-        )
+        from services.supabase import get_service_client_from_settings
         client = get_service_client_from_settings()
         if client:
             bus.enable_persistence(client)
-            _log(
-                logging.INFO,
-                "EventBus: persistence enabled",
-            )
+            _log(logging.INFO, "EventBus: persistence enabled")
     except Exception:
-        _log(
-            logging.DEBUG,
-            "EventBus: persistence skipped",
-        )
+        _log(logging.DEBUG, "EventBus: persistence skipped")
 
-    health_registry.register(
-        _EventBusHealthProvider(bus)
-    )
+    health_registry.register(_EventBusHealthProvider(bus))
     _log(logging.INFO, "EventBus v3.0 ready.")
 
 
-def _boot_supabase(
-    container: ServiceContainer,
-) -> None:
+def _boot_supabase(container: ServiceContainer) -> None:
     from config.settings import settings
-    from services.supabase import (
-        get_service_client_from_settings,
-    )
+    from services.supabase import get_service_client_from_settings
 
     if not settings.supabase_enabled:
         _log(logging.INFO, "Supabase disabled — skipping.")
@@ -785,7 +690,6 @@ def _boot_supabase(
 
     client = get_service_client_from_settings()
 
-    # v2.0 — Wire API Token Manager to persistent storage
     try:
         from core.api_tokens import api_token_manager
         api_token_manager.set_supabase_client(client)
@@ -800,9 +704,7 @@ def _boot_supabase(
     _log(logging.INFO, "Supabase connected.")
 
 
-def _boot_redis(
-    container: ServiceContainer,
-) -> None:
+def _boot_redis(container: ServiceContainer) -> None:
     from core.redis_client import UpstashRedisClient
 
     try:
@@ -821,10 +723,7 @@ def _boot_redis(
 # PHASE 1: CORE
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _boot_task_queue(
-    container: ServiceContainer,
-) -> None:
+def _boot_task_queue(container: ServiceContainer) -> None:
     from workers.task_queue import TaskQueue
 
     tq = container.resolve(TaskQueue)
@@ -833,34 +732,21 @@ def _boot_task_queue(
         lambda: tq.stop(timeout=10),
         timeout_seconds=15.0,
     )
-    health_registry.register(
-        _TaskQueueHealthProvider(tq)
-    )
+    health_registry.register(_TaskQueueHealthProvider(tq))
     _log(logging.INFO, "TaskQueue ready.")
 
 
-def _boot_plugin_registry(
-    container: ServiceContainer,
-) -> None:
-    from plugins.base import (
-        PluginRegistry,
-        get_plugin_registry,
-    )
+def _boot_plugin_registry(container: ServiceContainer) -> None:
+    from plugins.base import PluginRegistry, get_plugin_registry
     from core.event_bus import EventBus
 
     event_bus = container.try_resolve(EventBus)
-    registry = get_plugin_registry(
-        event_bus=event_bus
-    )
-    container.register_instance(
-        PluginRegistry, registry
-    )
+    registry = get_plugin_registry(event_bus=event_bus)
+    container.register_instance(PluginRegistry, registry)
     _log(logging.INFO, "PluginRegistry v2.0 ready.")
 
 
-def _boot_job_service(
-    container: ServiceContainer,
-) -> None:
+def _boot_job_service(container: ServiceContainer) -> None:
     from services.job_service import JobService
     from services.supabase import (
         get_service_client_from_settings,
@@ -872,42 +758,26 @@ def _boot_job_service(
     client = None
     if settings.supabase_admin_enabled:
         client = get_service_client_from_settings()
-    if (
-        client is None
-        and settings.supabase_enabled
-    ):
+    if client is None and settings.supabase_enabled:
         client = get_anon_client_from_settings()
 
-    job_service = JobService(
-        supabase_client=client
-    )
+    job_service = JobService(supabase_client=client)
 
-    # v3.4 — wire EventBus
     event_bus = container.try_resolve(EventBus)
     if event_bus:
         job_service.set_event_bus(event_bus)
 
-    container.register_instance(
-        JobService, job_service
-    )
+    container.register_instance(JobService, job_service)
     
-    # v4.0 — Initialize JobStatsService with the same client
     from services.job_stats_service import init_job_stats_service
     init_job_stats_service(supabase_client=client, event_bus=event_bus)
     
-    health_registry.register(
-        _JobServiceHealthProvider(job_service)
-    )
+    health_registry.register(_JobServiceHealthProvider(job_service))
     _log(logging.INFO, "JobService v3.4 ready.")
 
 
-def _boot_render_queue(
-    container: ServiceContainer,
-) -> None:
-    from core.render_queue import (
-        wire_render_queue_container,
-        get_render_queue,
-    )
+def _boot_render_queue(container: ServiceContainer) -> None:
+    from core.render_queue import wire_render_queue_container, get_render_queue
 
     wire_render_queue_container(container)
     rq = get_render_queue()
@@ -918,23 +788,15 @@ def _boot_render_queue(
             "RenderQueue: cleared %d stuck tasks.",
             cleared,
         )
-    health_registry.register(
-        _RenderQueueHealthProvider(rq)
-    )
+    health_registry.register(_RenderQueueHealthProvider(rq))
     _log(logging.INFO, "RenderQueue ready.")
 
 
-def _boot_event_recorder(
-    container: ServiceContainer,
-) -> None:
-    from domain.analytics.event_recorder import (
-        EventRecorder,
-    )
+def _boot_event_recorder(container: ServiceContainer) -> None:
+    from domain.analytics.event_recorder import EventRecorder
 
     recorder = container.resolve(EventRecorder)
-    health_registry.register(
-        _EventRecorderHealthProvider(recorder)
-    )
+    health_registry.register(_EventRecorderHealthProvider(recorder))
     _log(logging.INFO, "EventRecorder ready.")
 
 
@@ -942,10 +804,7 @@ def _boot_event_recorder(
 # PHASE 2: BUSINESS
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _boot_ai_orchestrator(
-    container: ServiceContainer,
-) -> None:
+def _boot_ai_orchestrator(container: ServiceContainer) -> None:
     from ai.orchestrator import AIOrchestrator
 
     orch = container.resolve(AIOrchestrator)
@@ -957,15 +816,10 @@ def _boot_ai_orchestrator(
     ]
 
     if not available:
-        _log(
-            logging.ERROR,
-            "No AI providers available.",
-        )
+        _log(logging.ERROR, "No AI providers available.")
         return
 
-    health_registry.register(
-        _AIOrchestratorHealthProvider(orch)
-    )
+    health_registry.register(_AIOrchestratorHealthProvider(orch))
     _log(
         logging.INFO,
         "AIOrchestrator ready. Available: %s",
@@ -973,32 +827,21 @@ def _boot_ai_orchestrator(
     )
 
 
-def _boot_content_engine(
-    container: ServiceContainer,
-) -> None:
-    """Wire the ContentEngine with DI container."""
+def _boot_content_engine(container: ServiceContainer) -> None:
     from services.content_engine import content_engine
 
     content_engine.set_container(container)
-    _log(
-        logging.INFO,
-        "ContentEngine v14.1: container wired",
-    )
+    _log(logging.INFO, "ContentEngine v14.1: container wired")
 
-# In lifecycle.py
 
 def _boot_meta_engine(container: ServiceContainer) -> None:
-    """Start MetaEngine for autonomous supervision."""
     from services.meta_engine import init_meta_engine
     from services.engine_health_handlers import register_all_health_handlers
     from core.event_bus import EventBus
 
     event_bus = container.resolve(EventBus)
-    meta = init_meta_engine(
-        event_bus=event_bus, container=container
-    )
+    meta = init_meta_engine(event_bus=event_bus, container=container)
 
-    # Register health handlers BEFORE MetaEngine starts monitoring
     result = register_all_health_handlers(meta)
     _log(
         logging.INFO,
@@ -1019,24 +862,14 @@ def _boot_meta_engine(container: ServiceContainer) -> None:
     )
 
 
-def _boot_director(
-    container: ServiceContainer,
-) -> None:
-    """Start Director v2.0 for autonomous CEO capabilities."""
-    from services.director import (
-        init_director,
-        auto_discover_engines,
-    )
-    from services.supabase import (
-        get_service_client_from_settings,
-    )
+def _boot_director(container: ServiceContainer) -> None:
+    from services.director import init_director, auto_discover_engines
+    from services.supabase import get_service_client_from_settings
     from core.event_bus import EventBus
 
     supabase_client = None
     try:
-        supabase_client = (
-            get_service_client_from_settings()
-        )
+        supabase_client = get_service_client_from_settings()
     except Exception:
         pass
 
@@ -1044,29 +877,19 @@ def _boot_director(
         supabase_client=supabase_client,
         auto_start=False,
     )
-    discovered = auto_discover_engines(
-        director, container
-    )
+    discovered = auto_discover_engines(director, container)
 
-    # v2.0 — wire Director to EventBus
     event_bus = container.try_resolve(EventBus)
     if event_bus:
 
-        def director_event_handler(
-            event_name, payload
-        ):
+        def director_event_handler(event_name, payload):
             event_bus.publish_event(
                 f"director.{event_name}", payload
             )
 
-        director.set_event_callback(
-            director_event_handler
-        )
+        director.set_event_callback(director_event_handler)
 
-    # v2.0 — bind real capabilities
-    _bind_director_capabilities(
-        director, container
-    )
+    _bind_director_capabilities(director, container)
 
     director.start()
     shutdown_registry.register(
@@ -1081,28 +904,12 @@ def _boot_director(
     )
 
 
-def _bind_director_capabilities(
-    director, container
-) -> None:
-    """Bind real handlers to Director capabilities.
-
-    v2.1 — HONEST CAPABILITIES:
-      - Real implementations where possible
-      - NOT_IMPLEMENTED status for incomplete features
-      - No fake success reporting
-
-    v14.1 — Fixed syntax error in final except block.
-    """
-    from services.condition_engine import (
-        autonomous_engine,
-    )
-    from services.content_engine import (
-        content_engine,
-    )
+def _bind_director_capabilities(director, container) -> None:
+    from services.condition_engine import autonomous_engine
+    from services.content_engine import content_engine
     from services.meta_engine import meta_engine
 
     def run_health_scan(params):
-        """Run a real platform health scan using MetaEngine."""
         try:
             snapshot = meta_engine.take_snapshot()
             return {
@@ -1123,7 +930,6 @@ def _bind_director_capabilities(
             }
 
     def restart_failed_service(params):
-        """Actually restart a failed service using MetaEngine recovery."""
         engine_name = params.get("service_name", "")
         
         if not engine_name:
@@ -1132,7 +938,6 @@ def _bind_director_capabilities(
                 "error": "service_name is required",
             }
         
-        # Try MetaEngine recovery handlers
         if engine_name in meta_engine._recovery_handlers:
             try:
                 from services.meta_engine import Diagnosis, AlertLevel
@@ -1161,7 +966,6 @@ def _bind_director_capabilities(
                     "error": _sanitize_error_message(e),
                 }
         
-        # Fallback: try direct engine restart
         engine = meta_engine._engines.get(engine_name)
         if engine and hasattr(engine, "restart"):
             try:
@@ -1185,7 +989,6 @@ def _bind_director_capabilities(
         }
 
     def calculate_brand_health(params):
-        """Calculate real brand health using ConditionEngine."""
         brand_id = params.get("brand_id", "")
         
         if not brand_id:
@@ -1204,14 +1007,11 @@ def _bind_director_capabilities(
             }
 
     def analyze_growth_opportunity(params):
-        """Analyze growth opportunities using real analytics data."""
         try:
-            # Get real stats from MetaEngine
             snapshot = meta_engine.take_snapshot()
             
             opportunities = []
             
-            # Identify engines with issues that could be improved
             for name, health in snapshot.engines.items():
                 if health.status.value in ("degraded", "stale", "offline"):
                     opportunities.append({
@@ -1221,7 +1021,6 @@ def _bind_director_capabilities(
                         "potential_impact": "high" if health.status.value == "offline" else "medium",
                     })
             
-            # Check active jobs
             try:
                 from services.job_stats_service import get_job_stats_service
                 stats_service = get_job_stats_service()
@@ -1255,21 +1054,10 @@ def _bind_director_capabilities(
             }
 
     try:
-        director.bind_capability(
-            "run_health_scan", run_health_scan
-        )
-        director.bind_capability(
-            "restart_failed_service",
-            restart_failed_service,
-        )
-        director.bind_capability(
-            "calculate_brand_health",
-            calculate_brand_health,
-        )
-        director.bind_capability(
-            "analyze_growth_opportunity",
-            analyze_growth_opportunity,
-        )
+        director.bind_capability("run_health_scan", run_health_scan)
+        director.bind_capability("restart_failed_service", restart_failed_service)
+        director.bind_capability("calculate_brand_health", calculate_brand_health)
+        director.bind_capability("analyze_growth_opportunity", analyze_growth_opportunity)
         _log(
             logging.INFO,
             "Director: capabilities bound (v2.1 — honest implementations)",
@@ -1282,41 +1070,21 @@ def _bind_director_capabilities(
         )
 
 
-def _boot_condition_engine(
-    container: ServiceContainer,
-) -> None:
-    """Initialize ConditionEngine and wire the real action executor.
-
-    v3.0: This is the critical fix that closes the autonomous loop.
-    Before: decisions were made but never executed.
-    After: decisions call ContentEngine, publish events, send alerts.
-
-    v14.1: Decision history bounded to prevent unbounded memory growth.
-    """
-    from services.condition_engine import (
-        autonomous_engine,
-    )
+def _boot_condition_engine(container: ServiceContainer) -> None:
+    from services.condition_engine import autonomous_engine
     from core.event_bus import EventBus
 
     event_bus = container.resolve(EventBus)
     ce = autonomous_engine
 
-    # v14.1 — Bound decision history to prevent unbounded memory growth
-    # The ConditionEngine accumulates decisions in a list. If this grows
-    # without bound, every health check iterates over it, causing O(n)
-    # memory and CPU pressure.
     _decisions = getattr(ce, "_decisions", [])
     if isinstance(_decisions, list) and len(_decisions) > 10000:
-        ce._decisions = _decisions[-5000:]  # Keep only latest 5000
+        ce._decisions = _decisions[-5000:]
         _log(
             logging.WARNING,
             "ConditionEngine: pruned %d old decisions to bound memory",
             len(_decisions) - 5000,
         )
-
-    # ═══════════════════════════════════════════════════════════════
-    # v3.0 — REAL ACTION EXECUTOR
-    # ═══════════════════════════════════════════════════════════════
 
     def real_executor(plan) -> dict:
         action = plan.action
@@ -1325,27 +1093,17 @@ def _boot_condition_engine(
 
         if action == "increase_similar_content":
             try:
-                from services.content_engine import (
-                    content_engine,
-                )
-
+                from services.content_engine import content_engine
                 content_engine.boost_content(
                     brand_id=brand_id,
-                    factor=params.get(
-                        "content_mix_change", 0.20
-                    ),
-                    duration_posts=params.get(
-                        "duration_posts", 5
-                    ),
+                    factor=params.get("content_mix_change", 0.20),
+                    duration_posts=params.get("duration_posts", 5),
                 )
                 event_bus.publish_event(
                     "condition.boost",
                     {
                         "brand_id": brand_id,
-                        "factor": params.get(
-                            "content_mix_change",
-                            0.20,
-                        ),
+                        "factor": params.get("content_mix_change", 0.20),
                     },
                 )
             except Exception as exc:
@@ -1355,23 +1113,13 @@ def _boot_condition_engine(
                     _sanitize_error_message(exc),
                 )
 
-        elif (
-            action
-            == "reduce_underperforming_content"
-        ):
+        elif action == "reduce_underperforming_content":
             try:
-                from services.content_engine import (
-                    content_engine,
-                )
-
+                from services.content_engine import content_engine
                 content_engine.reduce_content(
                     brand_id=brand_id,
-                    factor=params.get(
-                        "content_mix_change", -0.20
-                    ),
-                    duration_posts=params.get(
-                        "duration_posts", 5
-                    ),
+                    factor=params.get("content_mix_change", -0.20),
+                    duration_posts=params.get("duration_posts", 5),
                 )
                 event_bus.publish_event(
                     "condition.reduce",
@@ -1386,15 +1134,10 @@ def _boot_condition_engine(
 
         elif action == "reduce_content_risk":
             try:
-                from services.content_engine import (
-                    content_engine,
-                )
-
+                from services.content_engine import content_engine
                 content_engine.safe_mode(
                     brand_id=brand_id,
-                    duration_posts=params.get(
-                        "duration_posts", 5
-                    ),
+                    duration_posts=params.get("duration_posts", 5),
                 )
                 event_bus.publish_event(
                     "condition.safe_mode",
@@ -1425,17 +1168,13 @@ def _boot_condition_engine(
                 },
             )
 
-        # Notify for significant actions
         if action in (
             "increase_similar_content",
             "reduce_underperforming_content",
             "reduce_content_risk",
         ):
             try:
-                from services.email_service import (
-                    email_service,
-                )
-
+                from services.email_service import email_service
                 email_service.send_telegram(
                     f"🤖 <b>Autonomous Decision</b>\n"
                     f"Brand: {brand_id}\n"
@@ -1454,29 +1193,17 @@ def _boot_condition_engine(
         return {
             "success": True,
             "action": action,
-            "executed_at": datetime.now(
-                timezone.utc
-            ).isoformat(),
+            "executed_at": datetime.now(timezone.utc).isoformat(),
         }
 
     ce.set_action_executor(real_executor)
-    _log(
-        logging.INFO,
-        "ConditionEngine: real action executor wired",
-    )
+    _log(logging.INFO, "ConditionEngine: real action executor wired")
 
-    # Wire Supabase for persistence
     try:
-        from services.supabase import (
-            get_service_client_from_settings,
-        )
-
+        from services.supabase import get_service_client_from_settings
         client = get_service_client_from_settings()
         ce.set_supabase_client(client)
-        _log(
-            logging.INFO,
-            "ConditionEngine: Supabase persistence enabled",
-        )
+        _log(logging.INFO, "ConditionEngine: Supabase persistence enabled")
     except Exception as exc:
         _log(
             logging.WARNING,
@@ -1484,23 +1211,11 @@ def _boot_condition_engine(
             _sanitize_error_message(exc),
         )
 
-    # Wire Email Service
     try:
-        from services.email_service import (
-            email_service,
-            register_email_actions,
-        )
-
+        from services.email_service import email_service, register_email_actions
         register_email_actions(ce, email_service)
-        health_registry.register(
-            _EmailServiceHealthProvider(
-                email_service
-            )
-        )
-        _log(
-            logging.INFO,
-            "EmailService v3.0 wired to ConditionEngine",
-        )
+        health_registry.register(_EmailServiceHealthProvider(email_service))
+        _log(logging.INFO, "EmailService v3.0 wired to ConditionEngine")
     except Exception as exc:
         _log(
             logging.WARNING,
@@ -1508,15 +1223,9 @@ def _boot_condition_engine(
             _sanitize_error_message(exc),
         )
 
-    # Start Engagement Tracker
     try:
-        from services.engagement_tracker import (
-            start_engagement_tracking,
-        )
-
-        start_engagement_tracking(
-            container=container
-        )
+        from services.engagement_tracker import start_engagement_tracking
+        start_engagement_tracking(container=container)
         _log(logging.INFO, "EngagementTracker started")
     except Exception as exc:
         _log(
@@ -1525,9 +1234,7 @@ def _boot_condition_engine(
             _sanitize_error_message(exc),
         )
 
-    health_registry.register(
-        _ConditionEngineHealthProvider(ce)
-    )
+    health_registry.register(_ConditionEngineHealthProvider(ce))
     _log(
         logging.INFO,
         "ConditionEngine ready — %d decisions tracked",
@@ -1539,35 +1246,22 @@ def _boot_condition_engine(
 # PHASE 2: CONTINUED
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _boot_industry_plugins(
-    app, container: ServiceContainer
-) -> None:
+def _boot_industry_plugins(app, container: ServiceContainer) -> None:
     supabase_client = None
     try:
         from supabase import Client as SupabaseClient
-
-        supabase_client = container.try_resolve(
-            SupabaseClient
-        )
+        supabase_client = container.try_resolve(SupabaseClient)
     except Exception:
         pass
 
     redis_client = None
     try:
-        from core.redis_client import (
-            UpstashRedisClient,
-        )
-
-        redis_client = container.try_resolve(
-            UpstashRedisClient
-        )
+        from core.redis_client import UpstashRedisClient
+        redis_client = container.try_resolve(UpstashRedisClient)
     except Exception:
         pass
 
-    plugins = _discover_industry_plugins(
-        supabase_client, redis_client
-    )
+    plugins = _discover_industry_plugins(supabase_client, redis_client)
     container.industry_plugins = plugins
 
     if not plugins:
@@ -1610,24 +1304,14 @@ def _discover_industry_plugins(
     if not os.path.isdir(plugins_dir):
         return plugins
 
-    for folder in sorted(
-        os.listdir(plugins_dir)
-    ):
-        folder_path = os.path.join(
-            plugins_dir, folder
-        )
+    for folder in sorted(os.listdir(plugins_dir)):
+        folder_path = os.path.join(plugins_dir, folder)
         if not os.path.isdir(folder_path):
             continue
-        if folder.startswith("__") or folder in (
-            "base",
-            "specs",
-            "addons",
-        ):
+        if folder.startswith("__") or folder in ("base", "specs", "addons"):
             continue
 
-        plugin_file = os.path.join(
-            folder_path, "plugin.py"
-        )
+        plugin_file = os.path.join(folder_path, "plugin.py")
         if not os.path.isfile(plugin_file):
             continue
 
@@ -1654,11 +1338,7 @@ def _discover_industry_plugins(
                 redis_client=redis_client,
             )
             plugins[folder] = plugin_instance
-            _log(
-                logging.INFO,
-                "Plugin discovered: %s",
-                folder,
-            )
+            _log(logging.INFO, "Plugin discovered: %s", folder)
         except ImportError:
             pass
         except Exception as exc:
@@ -1672,26 +1352,16 @@ def _discover_industry_plugins(
     return plugins
 
 
-def _register_plugin_commands(
-    plugins: dict,
-) -> None:
+def _register_plugin_commands(plugins: dict) -> None:
     try:
-        from services.command_executor import (
-            CommandExecutor,
-        )
+        from services.command_executor import CommandExecutor
 
         total = 0
         for plugin_name, plugin in plugins.items():
             for cmd in plugin.get_commands():
-                CommandExecutor.register_external_command(
-                    plugin_name, cmd
-                )
+                CommandExecutor.register_external_command(plugin_name, cmd)
                 total += 1
-        _log(
-            logging.INFO,
-            "Registered %d plugin commands.",
-            total,
-        )
+        _log(logging.INFO, "Registered %d plugin commands.", total)
     except ImportError:
         pass
     except Exception as exc:
@@ -1702,13 +1372,10 @@ def _register_plugin_commands(
         )
 
 
-def _register_industry_webhooks(
-    app, plugins: dict
-) -> None:
+def _register_industry_webhooks(app, plugins: dict) -> None:
     from fastapi import Request, HTTPException
     from fastapi.responses import JSONResponse
 
-    # v14.1 — Maximum allowed webhook body size (10 MB)
     MAX_BODY_SIZE = 10 * 1024 * 1024
 
     for plugin_name, plugin in plugins.items():
@@ -1724,9 +1391,7 @@ def _register_industry_webhooks(
             if not path or not handler_name:
                 continue
 
-            handler_fn = getattr(
-                plugin, handler_name, None
-            )
+            handler_fn = getattr(plugin, handler_name, None)
             if handler_fn is None:
                 _log(
                     logging.WARNING,
@@ -1743,14 +1408,10 @@ def _register_industry_webhooks(
             ):
                 data = {}
                 try:
-                    # v14.1 — Check Content-Length header BEFORE reading
-                    content_length = request.headers.get(
-                        "content-length"
-                    )
+                    content_length = request.headers.get("content-length")
                     if (
                         content_length
-                        and int(content_length)
-                        > MAX_BODY_SIZE
+                        and int(content_length) > MAX_BODY_SIZE
                     ):
                         raise HTTPException(
                             status_code=413,
@@ -1759,37 +1420,25 @@ def _register_industry_webhooks(
 
                     body = await request.body()
 
-                    # v14.1 — Double-check after reading (defense in depth)
-                    if (
-                        len(body)
-                        > MAX_BODY_SIZE
-                    ):
+                    if len(body) > MAX_BODY_SIZE:
                         raise HTTPException(
                             status_code=413,
                             detail="Payload too large",
                         )
 
                     if body:
-                        data = (
-                            await request.json()
-                        )
+                        data = await request.json()
                 except HTTPException:
                     raise
                 except Exception:
-                    data = dict(
-                        request.query_params
-                    )
+                    data = dict(request.query_params)
 
                 try:
-                    if asyncio.iscoroutinefunction(
-                        p_fn
-                    ):
+                    if asyncio.iscoroutinefunction(p_fn):
                         result = await p_fn(data)
                     else:
                         result = p_fn(data)
-                    return JSONResponse(
-                        content=result
-                    )
+                    return JSONResponse(content=result)
                 except Exception as exc:
                     _log(
                         logging.ERROR,
@@ -1813,22 +1462,14 @@ def _register_industry_webhooks(
             )
 
 
-def _recover_stale_jobs(
-    container: ServiceContainer,
-) -> None:
+def _recover_stale_jobs(container: ServiceContainer) -> None:
     from services.job_service import JobService
 
-    job_service = container.try_resolve(
-        JobService
-    )
+    job_service = container.try_resolve(JobService)
     if job_service is None:
         return
 
-    stale_count = (
-        job_service.recover_and_retry(
-            stale_minutes=15
-        )
-    )
+    stale_count = job_service.recover_and_retry(stale_minutes=15)
     if stale_count > 0:
         _log(
             logging.WARNING,
@@ -1843,7 +1484,6 @@ def _boot_brand_schedulers(container: ServiceContainer) -> None:
     manager = container.resolve(BrandSchedulerManager)
     manager.set_container(container)
 
-    # v14.0 — Pass the FastAPI event loop so dashboard events work
     try:
         loop = asyncio.get_running_loop()
         manager.set_event_loop(loop)
@@ -1853,7 +1493,6 @@ def _boot_brand_schedulers(container: ServiceContainer) -> None:
 
     manager.start()
 
-    # v14.1 — Register shutdown hook (was missing in v14.0)
     shutdown_registry.register(
         "BrandSchedulerManager",
         manager.stop,
@@ -1861,32 +1500,19 @@ def _boot_brand_schedulers(container: ServiceContainer) -> None:
     )
 
 
-def _boot_guardian_scheduler(
-    container: ServiceContainer,
-) -> None:
+def _boot_guardian_scheduler(container: ServiceContainer) -> None:
     from config.settings import settings
 
     if not settings.guardian_configured:
         return
 
-    from services.guardian_service import (
-        GuardianService,
-    )
-    from scheduler.scan_scheduler import (
-        ScanScheduler,
-    )
+    from services.guardian_service import GuardianService
+    from scheduler.scan_scheduler import ScanScheduler
 
-    guardian = container.resolve(
-        GuardianService
-    )
+    guardian = container.resolve(GuardianService)
     try:
-        from routes.webhook import (
-            set_guardian_runner,
-        )
-
-        set_guardian_runner(
-            guardian.scan_all
-        )
+        from routes.webhook import set_guardian_runner
+        set_guardian_runner(guardian.scan_all)
     except Exception:
         pass
 
@@ -1898,80 +1524,16 @@ def _boot_guardian_scheduler(
     _log(logging.INFO, "Guardian started.")
 
 
-def _boot_code_intelligence(
-    container: ServiceContainer,
-) -> None:
-    """Start Code Intelligence engine if GitHub is configured."""
-    from config.settings import settings
-
-    if not settings.guardian_configured:
-        _log(
-            logging.INFO,
-            "CodeIntelligence: GitHub not configured — skipping.",
-        )
-        return
-
-    try:
-        from services.code_intelligence_engine import (
-            init_code_intelligence,
-        )
-        from guardian.github_client import GitHubClient
-        from core.event_bus import EventBus
-
-        github = GitHubClient(
-            settings.github_username,
-            settings.github_token,
-        )
-        event_bus = container.try_resolve(EventBus)
-
-        engine = init_code_intelligence(
-            github_client=github,
-            event_bus=event_bus,
-            container=container,
-            auto_start=True,
-        )
-
-        shutdown_registry.register(
-            "CodeIntelligence",
-            engine.stop,
-            timeout_seconds=10.0,
-        )
-
-        # Register with MetaEngine for health monitoring
-        try:
-            from services.meta_engine import meta_engine
-            meta_engine.register("code_intelligence", engine)
-        except Exception:
-            pass
-
-        _log(logging.INFO, "CodeIntelligenceEngine: started.")
-    except Exception as exc:
-        _log(
-            logging.WARNING,
-            "CodeIntelligenceEngine: could not start: %s",
-            _sanitize_error_message(exc),
-        )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 3: OBSERVABILITY
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _boot_health_monitor(container: ServiceContainer) -> None:
+    from services.health_monitor_service import HealthMonitorService
 
-def _boot_health_monitor(
-    container: ServiceContainer,
-) -> None:
-    from services.health_monitor_service import (
-        HealthMonitorService,
-    )
-
-    hm = HealthMonitorService(
-        container=container
-    )
+    hm = HealthMonitorService(container=container)
     hm.start()
-    container.register_instance(
-        HealthMonitorService, hm
-    )
+    container.register_instance(HealthMonitorService, hm)
     shutdown_registry.register(
         "HealthMonitorService",
         hm.stop,
@@ -1991,16 +1553,9 @@ def _boot_plugin_from_module(
     display_name: str,
 ) -> None:
     try:
-        module = __import__(
-            module_path,
-            fromlist=[init_function_name],
-        )
-        init_fn = getattr(
-            module, init_function_name
-        )
-        from services.supabase import (
-            get_service_client_from_settings,
-        )
+        module = __import__(module_path, fromlist=[init_function_name])
+        init_fn = getattr(module, init_function_name)
+        from services.supabase import get_service_client_from_settings
 
         client = get_service_client_from_settings()
         init_fn(supabase_client=client)
@@ -2014,9 +1569,7 @@ def _boot_plugin_from_module(
         )
 
 
-def _boot_monitor_plugin(
-    container: ServiceContainer,
-) -> None:
+def _boot_monitor_plugin(container: ServiceContainer) -> None:
     _boot_plugin_from_module(
         container,
         "plugins.monitor.plugin",
@@ -2025,9 +1578,7 @@ def _boot_monitor_plugin(
     )
 
 
-def _boot_backup_plugin(
-    container: ServiceContainer,
-) -> None:
+def _boot_backup_plugin(container: ServiceContainer) -> None:
     _boot_plugin_from_module(
         container,
         "plugins.backup.plugin",
@@ -2036,9 +1587,7 @@ def _boot_backup_plugin(
     )
 
 
-def _boot_trend_plugin(
-    container: ServiceContainer,
-) -> None:
+def _boot_trend_plugin(container: ServiceContainer) -> None:
     _boot_plugin_from_module(
         container,
         "plugins.trend_intelligence.plugin",
@@ -2050,7 +1599,6 @@ def _boot_trend_plugin(
 # ═══════════════════════════════════════════════════════════════════════════
 # HEALTH PROVIDER IMPLEMENTATIONS
 # ═══════════════════════════════════════════════════════════════════════════
-
 
 class _EventBusHealthProvider:
     def __init__(self, bus):
@@ -2080,14 +1628,8 @@ class _TaskQueueHealthProvider:
 
     def check_health(self) -> HealthReport:
         try:
-            queue_size = getattr(
-                self._tq, "queue", None
-            )
-            size = (
-                queue_size.qsize()
-                if queue_size
-                else 0
-            )
+            queue_size = getattr(self._tq, "queue", None)
+            size = queue_size.qsize() if queue_size else 0
             return HealthReport(
                 status=HealthStatus.HEALTHY,
                 service_name=self.service_name,
@@ -2129,15 +1671,11 @@ class _RenderQueueHealthProvider:
 
     def check_health(self) -> HealthReport:
         try:
-            pending = len(
-                getattr(self._rq, "_pending", [])
-            )
+            pending = len(getattr(self._rq, "_pending", []))
             return HealthReport(
                 status=HealthStatus.HEALTHY,
                 service_name=self.service_name,
-                metadata={
-                    "pending_tasks": pending
-                },
+                metadata={"pending_tasks": pending},
             )
         except Exception as exc:
             return HealthReport(
@@ -2168,9 +1706,7 @@ class _AIOrchestratorHealthProvider:
         try:
             health = self._orch.health()
             available = sum(
-                1
-                for h in health.values()
-                if h.get("available")
+                1 for h in health.values() if h.get("available")
             )
             return HealthReport(
                 status=(
@@ -2200,17 +1736,20 @@ class _ConditionEngineHealthProvider:
     def check_health(self) -> HealthReport:
         try:
             decisions = len(
-                getattr(
-                    self._engine,
-                    "_decisions",
-                    [],
-                )
+                getattr(self._engine, "_decisions", [])
             )
+            # v14.1.1 — Safely access config attributes
+            config = getattr(self._engine, "config", None)
+            critical_ratio = getattr(
+                config, "critical_performance_ratio", 0.5
+            )
+            
             return HealthReport(
                 status=HealthStatus.HEALTHY,
                 service_name=self.service_name,
                 metadata={
-                    "decisions_tracked": decisions
+                    "decisions_tracked": decisions,
+                    "critical_performance_ratio": critical_ratio,
                 },
             )
         except Exception as exc:
@@ -2222,11 +1761,7 @@ class _ConditionEngineHealthProvider:
 
 
 class _EmailServiceHealthProvider:
-    """v14.1 — No longer masks failures.
-
-    Previously, the except block returned HEALTHY. This violated the
-    fail-safe principle: a broken email service would appear healthy.
-    """
+    """v14.1 — No longer masks failures."""
 
     def __init__(self, email_service):
         self._es = email_service
@@ -2241,7 +1776,6 @@ class _EmailServiceHealthProvider:
                 metadata=stats,
             )
         except Exception as exc:
-            # v14.1 — Report actual failure
             return HealthReport(
                 status=HealthStatus.DEGRADED,
                 service_name=self.service_name,
@@ -2258,9 +1792,7 @@ _emitter_lock = threading.Lock()
 _emitter_stop_event = threading.Event()
 
 
-def _start_enterprise_emitters(
-    container: ServiceContainer,
-) -> None:
+def _start_enterprise_emitters(container: ServiceContainer) -> None:
     global _emitter_started
     with _emitter_lock:
         if _emitter_started:
@@ -2272,31 +1804,22 @@ def _start_enterprise_emitters(
         _EmitterConfig(
             name="system_resources",
             interval=30,
-            emitter_fn=partial(
-                _collect_system_resources
-            ),
+            emitter_fn=partial(_collect_system_resources),
         ),
         _EmitterConfig(
             name="service_health",
             interval=30,
-            emitter_fn=partial(
-                _collect_service_health
-            ),
+            emitter_fn=partial(_collect_service_health),
         ),
         _EmitterConfig(
             name="ai_provider_health",
             interval=60,
-            emitter_fn=partial(
-                _collect_ai_provider_health,
-                container,
-            ),
+            emitter_fn=partial(_collect_ai_provider_health, container),
         ),
         _EmitterConfig(
             name="plugin_status",
             interval=120,
-            emitter_fn=partial(
-                _collect_plugin_status, container
-            ),
+            emitter_fn=partial(_collect_plugin_status, container),
         ),
     ]
 
@@ -2313,8 +1836,7 @@ def _start_enterprise_emitters(
         logging.INFO,
         "Enterprise emitters started: %s",
         ", ".join(
-            f"{e.name} ({e.interval}s)"
-            for e in emitters
+            f"{e.name} ({e.interval}s)" for e in emitters
         ),
     )
 
@@ -2326,21 +1848,13 @@ class _EmitterConfig:
     emitter_fn: Callable[[], dict[str, Any]]
 
 
-def _emitter_loop(
-    config: _EmitterConfig,
-) -> None:
+def _emitter_loop(config: _EmitterConfig) -> None:
     while not _emitter_stop_event.is_set():
         try:
             payload = config.emitter_fn()
             if payload:
-                payload["timestamp"] = (
-                    datetime.now(
-                        timezone.utc
-                    ).isoformat()
-                )
-                _schedule_socketio_emit(
-                    config.name, payload
-                )
+                payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+                _schedule_socketio_emit(config.name, payload)
         except Exception as exc:
             _log(
                 logging.ERROR,
@@ -2348,18 +1862,13 @@ def _emitter_loop(
                 config.name,
                 _sanitize_error_message(exc),
             )
-        _emitter_stop_event.wait(
-            config.interval
-        )
+        _emitter_stop_event.wait(config.interval)
 
 
-def _collect_system_resources() -> (
-    dict[str, Any]
-):
+def _collect_system_resources() -> dict[str, Any]:
     cpu = mem = disk = 0.0
     try:
         import psutil
-
         cpu = psutil.cpu_percent(interval=1)
         mem = psutil.virtual_memory().percent
         disk = psutil.disk_usage("/").percent
@@ -2372,9 +1881,7 @@ def _collect_system_resources() -> (
     }
 
 
-def _collect_service_health() -> (
-    dict[str, Any]
-):
+def _collect_service_health() -> dict[str, Any]:
     reports = health_registry.check_all()
     services = {}
     for name, report in reports.items():
@@ -2382,17 +1889,10 @@ def _collect_service_health() -> (
     return {"services": services}
 
 
-def _collect_ai_provider_health(
-    container: ServiceContainer,
-) -> dict[str, Any]:
+def _collect_ai_provider_health(container: ServiceContainer) -> dict[str, Any]:
     try:
-        from ai.orchestrator import (
-            AIOrchestrator,
-        )
-
-        orch = container.try_resolve(
-            AIOrchestrator
-        )
+        from ai.orchestrator import AIOrchestrator
+        orch = container.try_resolve(AIOrchestrator)
         if not orch:
             return {"providers": []}
         health = orch.health()
@@ -2400,36 +1900,22 @@ def _collect_ai_provider_health(
         for name, h in health.items():
             providers.append({
                 "provider": name,
-                "available": h.get(
-                    "available", False
-                ),
-                "latency_ms": h.get(
-                    "latency_ms", 0
-                ),
+                "available": h.get("available", False),
+                "latency_ms": h.get("latency_ms", 0),
             })
         return {"providers": providers}
     except Exception:
         return {"providers": []}
 
 
-def _collect_plugin_status(
-    container: ServiceContainer,
-) -> dict[str, Any]:
-    plugins = getattr(
-        container, "industry_plugins", {}
-    )
+def _collect_plugin_status(container: ServiceContainer) -> dict[str, Any]:
+    plugins = getattr(container, "industry_plugins", {})
     data = []
     for name, plugin in plugins.items():
         try:
             data.append({
                 "name": name,
-                "commands": len(
-                    plugin.get_commands()
-                )
-                if hasattr(
-                    plugin, "get_commands"
-                )
-                else 0,
+                "commands": len(plugin.get_commands()) if hasattr(plugin, "get_commands") else 0,
                 "status": "active",
             })
         except Exception:
@@ -2450,27 +1936,15 @@ def _stop_enterprise_emitters() -> None:
 # SOCKETIO HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _schedule_socketio_emit(
-    event_name: str, payload: dict
-) -> None:
+def _schedule_socketio_emit(event_name: str, payload: dict) -> None:
     try:
-        from core.socket_server import (
-            emit_to_dashboard,
-        )
-
+        from core.socket_server import emit_to_dashboard
         loop = asyncio.get_running_loop()
-        future = (
-            asyncio.run_coroutine_threadsafe(
-                emit_to_dashboard(
-                    event_name, payload
-                ),
-                loop,
-            )
+        future = asyncio.run_coroutine_threadsafe(
+            emit_to_dashboard(event_name, payload),
+            loop,
         )
     except RuntimeError:
-        # v14.1 — No event loop available; this is expected in
-        # non-async contexts (e.g., boot sequence). Log at DEBUG.
         _log(
             logging.DEBUG,
             "SocketIO emit skipped for '%s': no event loop",
@@ -2478,32 +1952,21 @@ def _schedule_socketio_emit(
         )
 
 
-def _wire_socket_events(
-    container: ServiceContainer,
-) -> None:
+def _wire_socket_events(container: ServiceContainer) -> None:
     try:
         from core.event_bus import EventBus
         from core.events import EventType
-        from core.socket_server import (
-            emit_to_dashboard,
-            increment,
-        )
+        from core.socket_server import emit_to_dashboard, increment
 
         bus = container.resolve(EventBus)
 
         def _emit(event_name, payload):
             try:
-                # v14.1 — Safely capture the running loop
-                # Use asyncio.get_running_loop() which raises RuntimeError
-                # if no loop is active — this is the correct behavior.
                 loop = asyncio.get_running_loop()
                 asyncio.create_task(
-                    emit_to_dashboard(
-                        event_name, payload
-                    )
+                    emit_to_dashboard(event_name, payload)
                 )
             except RuntimeError:
-                # v14.1 — No event loop available; log at DEBUG
                 _log(
                     logging.DEBUG,
                     "SocketIO emit skipped for '%s': no event loop",
@@ -2511,70 +1974,25 @@ def _wire_socket_events(
                 )
 
         mappings = [
-            (
-                EventType.MESSAGE_RECEIVED,
-                "new_message",
-                True,
-            ),
-            (
-                EventType.POST_PUBLISHED,
-                "post_published",
-                True,
-            ),
-            (
-                EventType.SCAN_COMPLETED,
-                "scan_complete",
-                False,
-            ),
-            (
-                EventType.PROVIDER_FAILED,
-                "provider_failed",
-                False,
-            ),
-            (
-                EventType.POST_GENERATED,
-                "post_generated",
-                False,
-            ),
-            (
-                EventType.IMAGE_RENDERED,
-                "image_rendered",
-                False,
-            ),
-            (
-                EventType.WORKER_ERROR,
-                "worker_error",
-                False,
-            ),
+            (EventType.MESSAGE_RECEIVED, "new_message", True),
+            (EventType.POST_PUBLISHED, "post_published", True),
+            (EventType.SCAN_COMPLETED, "scan_complete", False),
+            (EventType.PROVIDER_FAILED, "provider_failed", False),
+            (EventType.POST_GENERATED, "post_generated", False),
+            (EventType.IMAGE_RENDERED, "image_rendered", False),
+            (EventType.WORKER_ERROR, "worker_error", False),
         ]
 
-        for (
-            event_type,
-            socket_event,
-            track_metric,
-        ) in mappings:
+        for event_type, socket_event, track_metric in mappings:
 
-            def make_handler(
-                se=socket_event,
-                tm=track_metric,
-            ):
+            def make_handler(se=socket_event, tm=track_metric):
                 def handler(event):
                     try:
                         if tm:
-                            if (
-                                se
-                                == "new_message"
-                            ):
-                                increment(
-                                    "messages_today"
-                                )
-                            elif (
-                                se
-                                == "post_published"
-                            ):
-                                increment(
-                                    "posts_today"
-                                )
+                            if se == "new_message":
+                                increment("messages_today")
+                            elif se == "post_published":
+                                increment("posts_today")
                         _emit(
                             se,
                             {
@@ -2593,9 +2011,7 @@ def _wire_socket_events(
 
                 return handler
 
-            bus.subscribe(
-                event_type, make_handler()
-            )
+            bus.subscribe(event_type, make_handler())
 
         _log(
             logging.INFO,
@@ -2614,10 +2030,7 @@ def _wire_socket_events(
 # SHUTDOWN HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def _stop_task_queue(
-    container: ServiceContainer,
-) -> None:
+def _stop_task_queue(container: ServiceContainer) -> None:
     from workers.task_queue import TaskQueue
 
     tq = container.try_resolve(TaskQueue)
@@ -2625,24 +2038,16 @@ def _stop_task_queue(
         tq.stop(timeout=5)
 
 
-def _stop_plugin_registry(
-    container: ServiceContainer,
-) -> None:
+def _stop_plugin_registry(container: ServiceContainer) -> None:
     from plugins.base import PluginRegistry
 
-    registry = container.try_resolve(
-        PluginRegistry
-    )
+    registry = container.try_resolve(PluginRegistry)
     if registry:
         registry.stop_all()
 
 
-def _stop_industry_plugins(
-    container: ServiceContainer,
-) -> None:
-    plugins = getattr(
-        container, "industry_plugins", {}
-    )
+def _stop_industry_plugins(container: ServiceContainer) -> None:
+    plugins = getattr(container, "industry_plugins", {})
     for name, plugin in plugins.items():
         if hasattr(plugin, "shutdown"):
             try:
@@ -2656,30 +2061,18 @@ def _stop_industry_plugins(
                 )
 
 
-def _stop_brand_schedulers(
-    container: ServiceContainer,
-) -> None:
-    from scheduler.brand_scheduler import (
-        BrandSchedulerManager,
-    )
+def _stop_brand_schedulers(container: ServiceContainer) -> None:
+    from scheduler.brand_scheduler import BrandSchedulerManager
 
-    manager = container.try_resolve(
-        BrandSchedulerManager
-    )
+    manager = container.try_resolve(BrandSchedulerManager)
     if manager:
         manager.stop()
 
 
-def _stop_health_monitor(
-    container: ServiceContainer,
-) -> None:
-    from services.health_monitor_service import (
-        HealthMonitorService,
-    )
+def _stop_health_monitor(container: ServiceContainer) -> None:
+    from services.health_monitor_service import HealthMonitorService
 
-    hm = container.try_resolve(
-        HealthMonitorService
-    )
+    hm = container.try_resolve(HealthMonitorService)
     if hm:
         hm.stop()
 
@@ -2688,14 +2081,8 @@ def _stop_health_monitor(
 # BACKWARD COMPATIBILITY
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-def register_lifecycle(
-    app, container: ServiceContainer
-) -> None:
-    _log(
-        logging.WARNING,
-        "register_lifecycle() is deprecated.",
-    )
+def register_lifecycle(app, container: ServiceContainer) -> None:
+    _log(logging.WARNING, "register_lifecycle() is deprecated.")
     boot_infrastructure(app, container)
 
 
