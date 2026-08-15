@@ -662,11 +662,11 @@ class SupabaseStore:
 class InMemoryStore:
     """Bounded in-memory store for when Supabase is unavailable."""
 
-    MAX_TASKS = 10000
-    MAX_DECISIONS = 2000
-    MAX_OBSERVATIONS = 5000
-    MAX_APPROVALS = 1000
-    MAX_LEARNINGS = 2000
+    MAX_TASKS = 500
+    MAX_DECISIONS = 200
+    MAX_OBSERVATIONS = 500
+    MAX_APPROVALS = 200
+    MAX_LEARNINGS = 500
 
     def __init__(self):
         self.tasks: Dict[str, dict] = {}
