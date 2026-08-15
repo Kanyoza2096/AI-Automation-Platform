@@ -1,5 +1,5 @@
 """
-Kanyoza Systems AI Platform v14.3 — Strongly-typed configuration.
+Kanyoza Systems AI Platform v14.4 — Strongly-typed configuration.
 
 Architecture Principles:
   1. Startup validation catches misconfiguration before it causes runtime errors
@@ -9,16 +9,14 @@ Architecture Principles:
   5. Production requires Supabase persistence (Architecture §14)
   6. Production requires valid Fernet encryption — never silently downgrade to plaintext
 
-v14.3 — SERVICE_MODE:
-  Added service_mode field for distributed deployment across multiple
-  free Render instances (zero-budget scaling).
-  
+v14.4 — SERVICE_MODE (with core):
   Valid values:
     - "full"    → All services (default)
-    - "api"     → Only API services (Director, MetaEngine, FastAPI routes)
-    - "workers" → Only BrandScheduler (background publishing)
-    - "monitor" → Only Monitor, Backup, TrendIntelligence
-    - "github"  → Only GitHub Connector
+    - "api"     → FastAPI routes, Industry Plugins, Health (frontend-facing)
+    - "core"    → Director + MetaEngine + ConditionEngine (autonomous intelligence)
+    - "workers" → BrandScheduler (background publishing)
+    - "monitor" → Monitor, Backup, TrendIntelligence
+    - "github"  → GitHub Connector
 """
 
 from __future__ import annotations
@@ -231,10 +229,10 @@ class Settings(BaseSettings):
     environment: str = Field(default="production")
     log_level: str = Field(default="INFO")
 
-    # v14.3: Service mode for distributed deployment
+    # v14.4: Service mode for distributed deployment
     service_mode: str = Field(
         default="full",
-        description="Which services to start. Valid: 'full', 'api', 'workers', 'monitor', 'github'"
+        description="Which services to start. Valid: 'full', 'api', 'core', 'workers', 'monitor', 'github'"
     )
 
     # ═══════════════════════════════════════════════════════════════════
@@ -271,20 +269,11 @@ class Settings(BaseSettings):
     @field_validator("service_mode")
     @classmethod
     def validate_service_mode(cls, v: str) -> str:
-        valid = {"full", "api", "workers", "monitor", "github"}
+        valid = {"full", "api", "core", "workers", "monitor", "github"}
         lower = v.lower()
         if lower not in valid:
             raise ValueError(f"service_mode must be one of {valid}")
         return lower
-
-@field_validator("service_mode")
-@classmethod
-def validate_service_mode(cls, v: str) -> str:
-    valid = {"full", "api", "core", "workers", "monitor", "github"}
-    lower = v.lower()
-    if lower not in valid:
-        raise ValueError(f"service_mode must be one of {valid}")
-    return lower
 
     @model_validator(mode="after")
     def validate_supabase_key_separation(self):
