@@ -645,20 +645,20 @@ class MetaEngineV5:
         self._health_handlers: Dict[str, Callable] = {}
         self._alert_callback: Optional[Callable] = None
         self._error_counts: Dict[str, Deque[datetime]] = defaultdict(
-            lambda: deque(maxlen=5000)
+            lambda: deque(maxlen=500)
         )
         self._success_counts: Dict[str, Deque[datetime]] = defaultdict(
-            lambda: deque(maxlen=5000)
+            lambda: deque(maxlen=500)
         )
         self._latency_samples: Dict[str, Deque[Tuple[datetime, float]]] = defaultdict(
-            lambda: deque(maxlen=2000)
+            lambda: deque(maxlen=200)
         )
         self._metrics: Dict[str, Dict[str, Deque[MetricEvent]]] = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=2000))
+            lambda: defaultdict(lambda: deque(maxlen=200))
         )
         self._circuits: Dict[str, CircuitState] = {}
         self._recovery_timestamps: Dict[str, Deque[datetime]] = defaultdict(
-            lambda: deque(maxlen=100)
+            lambda: deque(maxlen=50)
         )
         self._running = False
         self._thread: Optional[threading.Thread] = None
