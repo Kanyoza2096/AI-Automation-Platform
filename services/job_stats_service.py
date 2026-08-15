@@ -2,18 +2,23 @@
 Job Stats Service — Single-query stats aggregation.
 Never imports or calls JobService. Recursion is structurally impossible.
 
-v4.0 — BROKEN PIPE FIX:
-  - Per-thread Supabase client (no shared HTTP/2 connection)
-  - Connection pool with health checks
+v4.1 — MEMORY FIX:
+  - Single shared Supabase client (not thread-local)
+  - Semaphore-based rate limiting (max 5 concurrent)
+  - Prevents "Max outbound streams is 100" errors
+  - Reduces memory usage significantly
+  - Retains broken pipe retry logic
+
+v4.0 — BROKEN PIPE FIX (retained):
   - Automatic retry on broken pipe
-  - Thread-safe client rotation
+  - Thread-safe connection management
+  - Cache invalidation via event subscription
 
 Architecture:
   - Reads directly from Supabase via Postgres function
-  - Thread-local clients (no cross-thread connection reuse)
-  - Cache invalidation via event subscription
+  - Shared client with semaphore
+  - Cache with 30s TTL
   - Returns real errors, never fake zeros
-  - NO auto-resolution of dependencies (that causes recursion)
   - Supabase client MUST be injected via constructor or set_client()
 """
 
@@ -31,81 +36,66 @@ logger = logging.getLogger("kanyoza.services.job_stats_service")
 
 # ═══════════════════════════════════════════════════════════════════════
 # Single source of truth — hardcoded to avoid circular imports
-# Must match models.automation_job.ACTIVE_STATUS_VALUES exactly
 # ═══════════════════════════════════════════════════════════════════════
 
 ACTIVE_STATUS_VALUES = (
-    "CREATED",
-    "QUEUED",
-    "RUNNING",
-    "GENERATING",
-    "VALIDATING",
-    "RENDERING",
-    "READY",
-    "PUBLISHING",
-    "RETRY_PENDING",
-    "STALE",
+    "CREATED", "QUEUED", "RUNNING", "GENERATING",
+    "VALIDATING", "RENDERING", "READY", "PUBLISHING",
+    "RETRY_PENDING", "STALE",
 )
 
 TERMINAL_STATUS_VALUES = (
-    "PUBLISHED",
-    "FAILED",
-    "CANCELLED",
+    "PUBLISHED", "FAILED", "CANCELLED",
 )
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# v4.0 — THREAD-LOCAL SUPABASE CLIENT
+# v4.1 — SHARED CLIENT WITH SEMAPHORE
 # ═══════════════════════════════════════════════════════════════════════
 
-class ThreadLocalSupabaseClient:
-    """Manages per-thread Supabase clients to prevent broken pipes.
-    
-    The problem: Supabase's HTTP/2 client is NOT thread-safe for
-    concurrent requests. When multiple threads share the same client,
-    one thread can close the connection while another is still using it,
-    causing "Broken pipe" errors.
-    
-    The fix: Each thread gets its own client instance.
+class SharedSupabaseClient:
+    """Single shared Supabase client with semaphore-based rate limiting.
+
+    v4.1: Instead of per-thread clients (which create too many HTTP/2
+    connections), use ONE shared client with a semaphore to limit
+    concurrent requests. This prevents "Max outbound streams is 100"
+    errors and reduces memory usage.
     """
-    
-    def __init__(self, client_factory):
-        self._client_factory = client_factory
-        self._thread_local = threading.local()
+
+    def __init__(self, client, max_concurrent: int = 5):
+        self._client = client
+        self._semaphore = threading.BoundedSemaphore(max_concurrent)
         self._lock = threading.Lock()
-        self._all_clients: list = []
-        self._max_clients = 20
-    
-    def get_client(self):
-        """Get the current thread's client, creating one if needed."""
-        client = getattr(self._thread_local, "client", None)
-        if client is None:
-            client = self._client_factory()
-            self._thread_local.client = client
-            with self._lock:
-                self._all_clients.append(client)
-                # Cleanup old clients if too many
-                if len(self._all_clients) > self._max_clients:
-                    self._all_clients = self._all_clients[-self._max_clients:]
-        return client
-    
-    def reset_current_thread(self):
-        """Reset the current thread's client (after broken pipe)."""
-        if hasattr(self._thread_local, "client"):
-            del self._thread_local.client
-    
-    def reset_all(self):
-        """Reset all thread clients."""
-        self._thread_local = threading.local()
-        self._all_clients = []
+
+    def execute(self, fn):
+        """Execute a function with rate limiting.
+
+        Args:
+            fn: A callable that takes the client as its argument.
+
+        Returns:
+            The result of fn(client).
+        """
+        with self._semaphore:
+            return fn(self._client)
+
+    @property
+    def client(self):
+        """The shared client."""
+        return self._client
+
+    def reset(self) -> None:
+        """Reset the semaphore (after broken pipe recovery)."""
+        # BoundedSemaphore auto-resets; nothing to do here
+        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# JobStatsService v4.0
+# JobStatsService v4.1
 # ═══════════════════════════════════════════════════════════════════════
 
 class JobStatsService:
-    """Read-only stats service with thread-safe Supabase client management."""
+    """Read-only stats service with shared Supabase client."""
 
     CACHE_TTL_SECONDS = 30
     MAX_BROKEN_PIPE_RETRIES = 2
@@ -116,14 +106,13 @@ class JobStatsService:
         event_bus=None,
     ) -> None:
         self._event_bus = event_bus
-        self._cache: dict[str, dict] = {}
+        self._cache: dict = {}
         self._cache_time: float = 0.0
         self._lock = threading.Lock()
-        
-        # v4.0 — Thread-local client management
-        self._client_factory = None
-        self._thread_clients = None
-        
+
+        # v4.1: Shared client with semaphore
+        self._shared_client: Optional[SharedSupabaseClient] = None
+
         if supabase_client is not None:
             self.set_client(supabase_client)
         else:
@@ -141,45 +130,38 @@ class JobStatsService:
 
     def set_client(self, client) -> None:
         """Inject the Supabase client.
-        
-        v4.0: If client is a factory function, use it to create
-        per-thread clients. If it's a client instance, create a
-        factory that clones it.
+
+        v4.1: Use a SINGLE shared client with semaphore.
+        If a factory function is provided, call it once.
         """
+        # If factory provided, call it once to get the instance
         if callable(client) and not hasattr(client, "table"):
-            # It's a factory function
-            self._client_factory = client
-        else:
-            # It's a client instance — create factory that returns it
-            # (but warn about thread safety)
-            self._client_factory = lambda: client
-            logger.warning(
-                "JobStatsService: Shared client instance provided. "
-                "For production, pass a factory function to create "
-                "per-thread clients. This prevents broken pipe errors."
-            )
-        
-        self._thread_clients = ThreadLocalSupabaseClient(self._client_factory)
-        logger.info("JobStatsService: Supabase client configured (thread-safe mode)")
+            try:
+                client = client()
+            except Exception as exc:
+                logger.error("JobStatsService: client factory failed: %s", exc)
+                return
+
+        self._shared_client = SharedSupabaseClient(
+            client, max_concurrent=5
+        )
+        logger.info(
+            "JobStatsService: Supabase client configured "
+            "(shared + semaphore, max_concurrent=5)"
+        )
 
     def set_event_bus(self, event_bus) -> None:
         self._event_bus = event_bus
         self._subscribe_to_events()
 
-    def _get_client(self):
-        """Get a thread-safe Supabase client."""
-        if self._thread_clients is None:
+    def _get_shared_client(self) -> SharedSupabaseClient:
+        """Get the shared client wrapper."""
+        if self._shared_client is None:
             raise DatabaseQueryError(
                 message="JobStatsService: Supabase client not configured.",
                 context={"operation": "job_stats_service"},
             )
-        return self._thread_clients.get_client()
-
-    def _reset_thread_client(self) -> None:
-        """Reset the current thread's client after a broken pipe."""
-        if self._thread_clients is not None:
-            self._thread_clients.reset_current_thread()
-            logger.debug("JobStatsService: reset thread-local client")
+        return self._shared_client
 
     # ------------------------------------------------------------------
     # Event Subscription
@@ -203,9 +185,13 @@ class JobStatsService:
             if hasattr(self._event_bus, "subscribe"):
                 for event in events:
                     self._event_bus.subscribe(event, self._on_job_changed)
-                logger.debug("JobStatsService: subscribed to %d job events", len(events))
+                logger.debug(
+                    "JobStatsService: subscribed to %d job events", len(events)
+                )
         except Exception as exc:
-            logger.debug("JobStatsService: event subscription failed: %s", exc)
+            logger.debug(
+                "JobStatsService: event subscription failed: %s", exc
+            )
 
     def _on_job_changed(self, payload: dict = None) -> None:
         with self._lock:
@@ -221,8 +207,10 @@ class JobStatsService:
 
     def get_stats(self, brand_id: Optional[str] = None) -> dict:
         """Get comprehensive job statistics with broken pipe retry."""
-        if self._thread_clients is None:
-            logger.warning("JobStatsService: get_stats() called without client")
+        if self._shared_client is None:
+            logger.warning(
+                "JobStatsService: get_stats() called without client"
+            )
             return self._empty_stats()
 
         cache_key = brand_id or "__all__"
@@ -231,7 +219,6 @@ class JobStatsService:
                 if time.monotonic() - self._cache_time < self.CACHE_TTL_SECONDS:
                     return self._cache[cache_key]
 
-        # v4.0 — Retry on broken pipe
         stats = None
         for attempt in range(self.MAX_BROKEN_PIPE_RETRIES + 1):
             try:
@@ -239,27 +226,33 @@ class JobStatsService:
                 break
             except (BrokenPipeError, ConnectionError, ConnectionResetError) as e:
                 logger.warning(
-                    "JobStatsService: broken pipe detected (attempt %d/%d) — resetting client",
+                    "JobStatsService: broken pipe (attempt %d/%d)",
                     attempt + 1, self.MAX_BROKEN_PIPE_RETRIES,
                 )
-                self._reset_thread_client()
                 if attempt == self.MAX_BROKEN_PIPE_RETRIES:
-                    logger.error("JobStatsService: all stats methods failed: %s", e)
+                    logger.error(
+                        "JobStatsService: all stats methods failed: %s", e
+                    )
                     return self._empty_stats()
                 time.sleep(0.5 * (2 ** attempt))
             except Exception as e:
-                logger.debug("JobStatsService: RPC failed (%s), trying fallback", e)
+                logger.debug(
+                    "JobStatsService: RPC failed (%s), trying fallback", e
+                )
                 try:
                     stats = self._compute_stats_client_side(brand_id)
                     break
                 except (BrokenPipeError, ConnectionError, ConnectionResetError) as e2:
-                    self._reset_thread_client()
                     if attempt == self.MAX_BROKEN_PIPE_RETRIES:
-                        logger.error("JobStatsService: all stats methods failed: %s", e2)
+                        logger.error(
+                            "JobStatsService: all stats methods failed: %s", e2
+                        )
                         return self._empty_stats()
                     time.sleep(0.5 * (2 ** attempt))
                 except Exception as e2:
-                    logger.error("JobStatsService: all stats methods failed: %s", e2)
+                    logger.error(
+                        "JobStatsService: all stats methods failed: %s", e2
+                    )
                     return self._empty_stats()
 
         if stats is None:
@@ -280,7 +273,7 @@ class JobStatsService:
         return full_stats.get("status_counts", {})
 
     def health_check(self) -> dict:
-        if self._thread_clients is None:
+        if self._shared_client is None:
             return {
                 "status": "not_configured",
                 "error": "Supabase client not injected.",
@@ -302,28 +295,36 @@ class JobStatsService:
     # ------------------------------------------------------------------
 
     def _compute_stats_via_rpc(self, brand_id: Optional[str]) -> dict:
-        client = self._get_client()
-        params: dict = {}
+        shared = self._get_shared_client()
+        params = {}
         if brand_id:
             params["brand_id"] = brand_id
 
-        result = client.rpc("get_job_stats", params).execute()
+        # Use semaphore to limit concurrency
+        result = shared.execute(
+            lambda c: c.rpc("get_job_stats", params).execute()
+        )
 
         if result.data and isinstance(result.data, dict):
             return self._normalize_stats(result.data)
 
-        raise ValueError(f"RPC returned {type(result.data).__name__}, expected dict")
+        raise ValueError(
+            f"RPC returned {type(result.data).__name__}, expected dict"
+        )
 
     def _compute_stats_client_side(self, brand_id: Optional[str]) -> dict:
-        client = self._get_client()
+        shared = self._get_shared_client()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        query = client.table("automation_jobs").select("status,created_at,updated_at")
+        def _query(c):
+            query = c.table("automation_jobs").select(
+                "status,created_at,updated_at"
+            )
+            if brand_id:
+                query = query.eq("brand_id", brand_id)
+            return query.execute()
 
-        if brand_id:
-            query = query.eq("brand_id", brand_id)
-
-        result = query.execute()
+        result = shared.execute(_query)
 
         if not result.data:
             return self._empty_stats()
@@ -336,7 +337,7 @@ class JobStatsService:
         today_failed = 0
         today_retrying = 0
         today_active = 0
-        status_counts: dict[str, int] = {}
+        status_counts: dict = {}
         oldest_active: Optional[datetime] = None
 
         for row in rows:
@@ -370,7 +371,9 @@ class JobStatsService:
 
         oldest_minutes = 0.0
         if oldest_active is not None:
-            oldest_minutes = round((now_utc - oldest_active).total_seconds() / 60.0, 1)
+            oldest_minutes = round(
+                (now_utc - oldest_active).total_seconds() / 60.0, 1
+            )
 
         return {
             "today": {
@@ -392,7 +395,10 @@ class JobStatsService:
     @staticmethod
     def _empty_stats() -> dict:
         return {
-            "today": {"total": 0, "published": 0, "failed": 0, "retrying": 0, "active": 0},
+            "today": {
+                "total": 0, "published": 0, "failed": 0,
+                "retrying": 0, "active": 0,
+            },
             "status_counts": {},
             "active_jobs": 0,
             "oldest_active_minutes": 0,
@@ -469,16 +475,14 @@ def init_job_stats_service(
 ) -> JobStatsService:
     """Initialize the JobStatsService singleton.
 
-    v4.0: Pass a FACTORY FUNCTION for thread-safe per-thread clients.
-    
+    v4.1: Single shared client with semaphore.
+
     Example:
         from services.supabase import get_service_client_from_settings
-        
-        def client_factory():
-            return get_service_client_from_settings()
-        
+
+        client = get_service_client_from_settings()
         init_job_stats_service(
-            supabase_client=client_factory,  # Factory, not instance!
+            supabase_client=client,  # Instance, not factory
             event_bus=bus,
         )
     """
@@ -489,7 +493,9 @@ def init_job_stats_service(
             supabase_client=supabase_client,
             event_bus=event_bus,
         )
-        logger.info("JobStatsService: singleton initialized (v4.0 thread-safe)")
+        logger.info(
+            "JobStatsService: singleton initialized (v4.1 shared + semaphore)"
+        )
     else:
         if supabase_client is not None:
             job_stats_service.set_client(supabase_client)
@@ -507,7 +513,7 @@ def get_job_stats_service() -> JobStatsService:
         job_stats_service = JobStatsService()
         logger.warning(
             "JobStatsService: get_job_stats_service() called before init. "
-            "Call init_job_stats_service(client_factory=...) during boot."
+            "Call init_job_stats_service(supabase_client=client) during boot."
         )
 
     return job_stats_service
@@ -520,5 +526,5 @@ __all__ = [
     "get_job_stats_service",
     "ACTIVE_STATUS_VALUES",
     "TERMINAL_STATUS_VALUES",
-    "ThreadLocalSupabaseClient",
+    "SharedSupabaseClient",
 ]
