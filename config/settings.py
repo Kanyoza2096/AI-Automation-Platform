@@ -277,6 +277,15 @@ class Settings(BaseSettings):
             raise ValueError(f"service_mode must be one of {valid}")
         return lower
 
+@field_validator("service_mode")
+@classmethod
+def validate_service_mode(cls, v: str) -> str:
+    valid = {"full", "api", "core", "workers", "monitor", "github"}
+    lower = v.lower()
+    if lower not in valid:
+        raise ValueError(f"service_mode must be one of {valid}")
+    return lower
+
     @model_validator(mode="after")
     def validate_supabase_key_separation(self):
         if self.supabase_anon_key and self.supabase_service_role_key:
