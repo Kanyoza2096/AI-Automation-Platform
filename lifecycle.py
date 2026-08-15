@@ -501,10 +501,11 @@ def _build_boot_sequence(
 
     SERVICE_MODE values:
       - "full"    → All services (default, same as before)
-      - "api"     → Only API services (Director, MetaEngine, FastAPI routes)
-      - "workers" → Only BrandScheduler (background publishing)
-      - "monitor" → Only Monitor, Backup, TrendIntelligence (background)
-      - "github"  → Only GitHub Connector (background)
+      - "api"     → FastAPI routes + Industry Plugins + Health (frontend-facing)
+      - "core"    → Director + MetaEngine + ConditionEngine (autonomous intelligence)
+      - "workers" → BrandScheduler only (background publishing)
+      - "monitor" → Monitor, Backup, TrendIntelligence (background)
+      - "github"  → GitHub Connector (background)
     """
     from config.settings import settings
 
@@ -514,7 +515,7 @@ def _build_boot_sequence(
     _log(logging.INFO, "Boot sequence mode: %s", mode)
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 0: INFRASTRUCTURE (ALWAYS NEEDED)
+    # Phase 0: INFRASTRUCTURE (ALWAYS — every mode needs this)
     # ═══════════════════════════════════════════════════════════════
     steps.append(BootStep(
         name="EventBus",
@@ -533,9 +534,9 @@ def _build_boot_sequence(
     ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 1: CORE (ONLY IN "full" OR "api" MODES)
+    # Phase 1: CORE SERVICES (full, api, core modes)
     # ═══════════════════════════════════════════════════════════════
-    if mode in ("full", "api"):
+    if mode in ("full", "api", "core"):
         steps.append(BootStep(
             name="TaskQueue",
             phase=BootPhase.CORE,
@@ -566,11 +567,9 @@ def _build_boot_sequence(
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 2: BUSINESS (DEPENDS ON MODE)
+    # Phase 2: INTELLIGENCE (full, api, core modes)
     # ═══════════════════════════════════════════════════════════════
-
-    # Main intelligence services — only in "full" or "api"
-    if mode in ("full", "api"):
+    if mode in ("full", "api", "core"):
         steps.append(BootStep(
             name="AIOrchestrator",
             phase=BootPhase.BUSINESS,
@@ -597,7 +596,9 @@ def _build_boot_sequence(
             action=lambda: _boot_condition_engine(container),
         ))
 
-    # Industry plugins — only in "full" or "api"
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 2: INDUSTRY PLUGINS + SOCKET (api mode only)
+    # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "api"):
         steps.append(BootStep(
             name="IndustryPlugins",
@@ -610,8 +611,15 @@ def _build_boot_sequence(
             phase=BootPhase.BUSINESS,
             action=lambda: _recover_stale_jobs(container),
         ))
+        steps.append(BootStep(
+            name="SocketBridge",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _wire_socket_events(container),
+        ))
 
-    # BrandScheduler — only in "full" or "workers"
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 2: SCHEDULER (workers mode only)
+    # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "workers"):
         steps.append(BootStep(
             name="BrandSchedulers",
@@ -620,19 +628,9 @@ def _build_boot_sequence(
             rollback=lambda: _stop_brand_schedulers(container),
         ))
 
-    # SocketBridge — only in "full" or "api"
-    if mode in ("full", "api"):
-        steps.append(BootStep(
-            name="SocketBridge",
-            phase=BootPhase.BUSINESS,
-            action=lambda: _wire_socket_events(container),
-        ))
-
     # ═══════════════════════════════════════════════════════════════
-    # Phase 3: OBSERVABILITY (DEPENDS ON MODE)
+    # Phase 3: HEALTH + EMITTERS (api mode only)
     # ═══════════════════════════════════════════════════════════════
-
-    # Health monitoring — only in "full" or "api"
     if mode in ("full", "api"):
         steps.append(BootStep(
             name="HealthMonitor",
@@ -652,7 +650,9 @@ def _build_boot_sequence(
             action=lambda: _register_api_call_counter(app),
         ))
 
-    # Monitor + Backup + Trends — only in "full" or "monitor"
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 3: MONITOR (monitor mode only)
+    # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "monitor"):
         steps.append(BootStep(
             name="MonitorPlugin",
@@ -673,7 +673,9 @@ def _build_boot_sequence(
             timeout_seconds=15.0,
         ))
 
-    # GitHub Connector — only in "full" or "github"
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 3: GITHUB (github mode only)
+    # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "github"):
         steps.append(BootStep(
             name="GitHubConnector",
@@ -683,7 +685,6 @@ def _build_boot_sequence(
         ))
 
     return steps
-
 
 def _boot_github_connector(container: ServiceContainer) -> None:
     """Start GitHub Connector Plugin."""
