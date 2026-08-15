@@ -490,13 +490,32 @@ def graceful_shutdown(container: ServiceContainer) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 # BOOT SEQUENCE BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# BOOT SEQUENCE BUILDER (v14.3 — Distributed Service Mode)
+# ═══════════════════════════════════════════════════════════════════════════
 
 def _build_boot_sequence(
     app, container: ServiceContainer
 ) -> list[BootStep]:
-    steps: list[BootStep] = []
+    """Build boot sequence based on SERVICE_MODE.
 
-    # Phase 0: INFRASTRUCTURE
+    SERVICE_MODE values:
+      - "full"    → All services (default, same as before)
+      - "api"     → Only API services (Director, MetaEngine, FastAPI routes)
+      - "workers" → Only BrandScheduler (background publishing)
+      - "monitor" → Only Monitor, Backup, TrendIntelligence (background)
+      - "github"  → Only GitHub Connector (background)
+    """
+    from config.settings import settings
+
+    steps: list[BootStep] = []
+    mode = getattr(settings, "service_mode", "full")
+
+    _log(logging.INFO, "Boot sequence mode: %s", mode)
+
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 0: INFRASTRUCTURE (ALWAYS NEEDED)
+    # ═══════════════════════════════════════════════════════════════
     steps.append(BootStep(
         name="EventBus",
         phase=BootPhase.INFRASTRUCTURE,
@@ -513,128 +532,174 @@ def _build_boot_sequence(
         action=lambda: _boot_redis(container),
     ))
 
-    # Phase 1: CORE
-    steps.append(BootStep(
-        name="TaskQueue",
-        phase=BootPhase.CORE,
-        action=lambda: _boot_task_queue(container),
-        rollback=lambda: _stop_task_queue(container),
-        timeout_seconds=15.0,
-    ))
-    steps.append(BootStep(
-        name="PluginRegistry",
-        phase=BootPhase.CORE,
-        action=lambda: _boot_plugin_registry(container),
-        rollback=lambda: _stop_plugin_registry(container),
-    ))
-    steps.append(BootStep(
-        name="JobService",
-        phase=BootPhase.CORE,
-        action=lambda: _boot_job_service(container),
-    ))
-    steps.append(BootStep(
-        name="RenderQueue",
-        phase=BootPhase.CORE,
-        action=lambda: _boot_render_queue(container),
-    ))
-    steps.append(BootStep(
-        name="EventRecorder",
-        phase=BootPhase.CORE,
-        action=lambda: _boot_event_recorder(container),
-    ))
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 1: CORE (ONLY IN "full" OR "api" MODES)
+    # ═══════════════════════════════════════════════════════════════
+    if mode in ("full", "api"):
+        steps.append(BootStep(
+            name="TaskQueue",
+            phase=BootPhase.CORE,
+            action=lambda: _boot_task_queue(container),
+            rollback=lambda: _stop_task_queue(container),
+            timeout_seconds=15.0,
+        ))
+        steps.append(BootStep(
+            name="PluginRegistry",
+            phase=BootPhase.CORE,
+            action=lambda: _boot_plugin_registry(container),
+            rollback=lambda: _stop_plugin_registry(container),
+        ))
+        steps.append(BootStep(
+            name="JobService",
+            phase=BootPhase.CORE,
+            action=lambda: _boot_job_service(container),
+        ))
+        steps.append(BootStep(
+            name="RenderQueue",
+            phase=BootPhase.CORE,
+            action=lambda: _boot_render_queue(container),
+        ))
+        steps.append(BootStep(
+            name="EventRecorder",
+            phase=BootPhase.CORE,
+            action=lambda: _boot_event_recorder(container),
+        ))
 
-    # Phase 2: BUSINESS
-    steps.append(BootStep(
-        name="AIOrchestrator",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_ai_orchestrator(container),
-    ))
-    steps.append(BootStep(
-        name="ContentEngine",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_content_engine(container),
-    ))
-    steps.append(BootStep(
-        name="MetaEngine",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_meta_engine(container),
-    ))
-    steps.append(BootStep(
-        name="Director",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_director(container),
-    ))
-    steps.append(BootStep(
-        name="ConditionEngine",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_condition_engine(container),
-    ))
-    steps.append(BootStep(
-        name="IndustryPlugins",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_industry_plugins(app, container),
-        rollback=lambda: _stop_industry_plugins(container),
-    ))
-    steps.append(BootStep(
-        name="JobRecovery",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _recover_stale_jobs(container),
-    ))
-    steps.append(BootStep(
-        name="BrandSchedulers",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _boot_brand_schedulers(container),
-        rollback=lambda: _stop_brand_schedulers(container),
-    ))
-    #steps.append(BootStep(
-        #name="GuardianScheduler",
-        #phase=BootPhase.BUSINESS,
-        #action=lambda: _boot_guardian_scheduler(container),
-    #))
-    steps.append(BootStep(
-        name="SocketBridge",
-        phase=BootPhase.BUSINESS,
-        action=lambda: _wire_socket_events(container),
-    ))
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 2: BUSINESS (DEPENDS ON MODE)
+    # ═══════════════════════════════════════════════════════════════
 
-    # Phase 3: OBSERVABILITY
-    steps.append(BootStep(
-        name="HealthMonitor",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_health_monitor(container),
-        rollback=lambda: _stop_health_monitor(container),
-    ))
-    steps.append(BootStep(
-        name="EnterpriseEmitters",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _start_enterprise_emitters(container),
-        rollback=lambda: _stop_enterprise_emitters(),
-    ))
-    steps.append(BootStep(
-        name="APICallCounter",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _register_api_call_counter(app),
-    ))
-    #steps.append(BootStep(
-        #name="MonitorPlugin",
-        #phase=BootPhase.OBSERVABILITY,
-        #action=lambda: _boot_monitor_plugin(container),
-        #timeout_seconds=10.0,  # v14.1.1 FIX
-    #))
-    steps.append(BootStep(
-        name="BackupPlugin",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_backup_plugin(container),
-        timeout_seconds=10.0,  # v14.1.1 FIX
-    ))
-    steps.append(BootStep(
-        name="TrendIntelligence",
-        phase=BootPhase.OBSERVABILITY,
-        action=lambda: _boot_trend_plugin(container),
-        timeout_seconds=15.0,  # v14.1.1 FIX
-    ))
+    # Main intelligence services — only in "full" or "api"
+    if mode in ("full", "api"):
+        steps.append(BootStep(
+            name="AIOrchestrator",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_ai_orchestrator(container),
+        ))
+        steps.append(BootStep(
+            name="ContentEngine",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_content_engine(container),
+        ))
+        steps.append(BootStep(
+            name="MetaEngine",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_meta_engine(container),
+        ))
+        steps.append(BootStep(
+            name="Director",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_director(container),
+        ))
+        steps.append(BootStep(
+            name="ConditionEngine",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_condition_engine(container),
+        ))
+
+    # Industry plugins — only in "full" or "api"
+    if mode in ("full", "api"):
+        steps.append(BootStep(
+            name="IndustryPlugins",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_industry_plugins(app, container),
+            rollback=lambda: _stop_industry_plugins(container),
+        ))
+        steps.append(BootStep(
+            name="JobRecovery",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _recover_stale_jobs(container),
+        ))
+
+    # BrandScheduler — only in "full" or "workers"
+    if mode in ("full", "workers"):
+        steps.append(BootStep(
+            name="BrandSchedulers",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _boot_brand_schedulers(container),
+            rollback=lambda: _stop_brand_schedulers(container),
+        ))
+
+    # SocketBridge — only in "full" or "api"
+    if mode in ("full", "api"):
+        steps.append(BootStep(
+            name="SocketBridge",
+            phase=BootPhase.BUSINESS,
+            action=lambda: _wire_socket_events(container),
+        ))
+
+    # ═══════════════════════════════════════════════════════════════
+    # Phase 3: OBSERVABILITY (DEPENDS ON MODE)
+    # ═══════════════════════════════════════════════════════════════
+
+    # Health monitoring — only in "full" or "api"
+    if mode in ("full", "api"):
+        steps.append(BootStep(
+            name="HealthMonitor",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _boot_health_monitor(container),
+            rollback=lambda: _stop_health_monitor(container),
+        ))
+        steps.append(BootStep(
+            name="EnterpriseEmitters",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _start_enterprise_emitters(container),
+            rollback=lambda: _stop_enterprise_emitters(),
+        ))
+        steps.append(BootStep(
+            name="APICallCounter",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _register_api_call_counter(app),
+        ))
+
+    # Monitor + Backup + Trends — only in "full" or "monitor"
+    if mode in ("full", "monitor"):
+        steps.append(BootStep(
+            name="MonitorPlugin",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _boot_monitor_plugin(container),
+            timeout_seconds=10.0,
+        ))
+        steps.append(BootStep(
+            name="BackupPlugin",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _boot_backup_plugin(container),
+            timeout_seconds=10.0,
+        ))
+        steps.append(BootStep(
+            name="TrendIntelligence",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _boot_trend_plugin(container),
+            timeout_seconds=15.0,
+        ))
+
+    # GitHub Connector — only in "full" or "github"
+    if mode in ("full", "github"):
+        steps.append(BootStep(
+            name="GitHubConnector",
+            phase=BootPhase.OBSERVABILITY,
+            action=lambda: _boot_github_connector(container),
+            timeout_seconds=10.0,
+        ))
 
     return steps
+
+
+def _boot_github_connector(container: ServiceContainer) -> None:
+    """Start GitHub Connector Plugin."""
+    try:
+        from plugins.github_connector.plugin import init_github_connector_plugin
+        from services.supabase import get_service_client_from_settings
+
+        client = get_service_client_from_settings()
+        init_github_connector_plugin(supabase_client=client)
+        _log(logging.INFO, "GitHubConnector: started")
+    except Exception as exc:
+        _log(
+            logging.WARNING,
+            "GitHubConnector: could not start: %s",
+            _sanitize_error_message(exc),
+        )
 
 
 def _rollback(completed_steps: list[BootStep]) -> None:
@@ -653,7 +718,7 @@ def _rollback(completed_steps: list[BootStep]) -> None:
                     "Rollback failed: %s — %s",
                     step.name,
                     _sanitize_error_message(exc),
-                )
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1602,6 +1667,52 @@ def _boot_trend_plugin(container: ServiceContainer) -> None:
         "TrendIntelligence",
     )
 
+def _boot_github_connector(
+    container: ServiceContainer,
+) -> None:
+    """Start GitHub Connector Plugin.
+
+    v14.3: Used when SERVICE_MODE=github or SERVICE_MODE=full.
+    Runs the GitHub AI-powered code intelligence plugin.
+    """
+    try:
+        from plugins.github_connector.plugin import (
+            init_github_connector_plugin,
+        )
+        from services.supabase import (
+            get_service_client_from_settings,
+        )
+
+        client = get_service_client_from_settings()
+        plugin = init_github_connector_plugin(
+            supabase_client=client
+        )
+        
+        # Register with health registry
+        health_registry.register(
+            _GitHubConnectorHealthProvider(plugin)
+        )
+        
+        # Register shutdown
+        shutdown_registry.register(
+            "GitHubConnector",
+            plugin.shutdown,
+            timeout_seconds=10.0,
+        )
+        
+        _log(logging.INFO, "GitHubConnector: started")
+    except ImportError:
+        _log(
+            logging.DEBUG,
+            "GitHubConnector: plugin not available — skipping.",
+        )
+    except Exception as exc:
+        _log(
+            logging.WARNING,
+            "GitHubConnector: could not start: %s",
+            _sanitize_error_message(exc),
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HEALTH PROVIDER IMPLEMENTATIONS
@@ -1785,6 +1896,40 @@ class _EmailServiceHealthProvider:
         except Exception as exc:
             return HealthReport(
                 status=HealthStatus.DEGRADED,
+                service_name=self.service_name,
+                error_message=_sanitize_error_message(exc),
+            )
+
+class _GitHubConnectorHealthProvider:
+    """Health check for GitHub Connector Plugin."""
+
+    def __init__(self, plugin):
+        self._plugin = plugin
+        self.service_name = "github_connector"
+
+    def check_health(self) -> HealthReport:
+        try:
+            if hasattr(self._plugin, "health_check"):
+                result = self._plugin.health_check()
+                if isinstance(result, dict):
+                    status = result.get("status", "healthy")
+                    if status in ("healthy", "stopped"):
+                        return HealthReport(
+                            status=(
+                                HealthStatus.HEALTHY
+                                if status == "healthy"
+                                else HealthStatus.DEGRADED
+                            ),
+                            service_name=self.service_name,
+                            metadata=result,
+                        )
+            return HealthReport(
+                status=HealthStatus.HEALTHY,
+                service_name=self.service_name,
+            )
+        except Exception as exc:
+            return HealthReport(
+                status=HealthStatus.UNHEALTHY,
                 service_name=self.service_name,
                 error_message=_sanitize_error_message(exc),
             )
