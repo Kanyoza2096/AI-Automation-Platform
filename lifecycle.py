@@ -494,9 +494,23 @@ def graceful_shutdown(container: ServiceContainer) -> None:
 # BOOT SEQUENCE BUILDER (v14.3 — Distributed Service Mode)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _build_boot_sequence(
-    app, container: ServiceContainer
-) -> list[BootStep]:
+def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
+    from config.settings import settings
+    import os
+    
+    steps: list[BootStep] = []
+    mode = getattr(settings, "service_mode", "full")
+    
+    # v14.4 NUCLEAR CHECK: Also read directly from env
+    env_mode = os.getenv("SERVICE_MODE", "").strip().lower()
+    if env_mode:
+        mode = env_mode
+        _log(logging.INFO, "SERVICE_MODE from env: %s", mode)
+    else:
+        _log(logging.WARNING, "SERVICE_MODE not set in env — using settings: %s", mode)
+    
+    _log(logging.INFO, "Boot sequence mode: %s", mode)
+    # ... rest of function ...
     """Build boot sequence based on SERVICE_MODE.
 
     SERVICE_MODE values:
