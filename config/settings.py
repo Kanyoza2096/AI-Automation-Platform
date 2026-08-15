@@ -1,5 +1,5 @@
 """
-Kanyoza Systems AI Platform v13.0 — Strongly-typed configuration.
+Kanyoza Systems AI Platform v14.3 — Strongly-typed configuration.
 
 Architecture Principles:
   1. Startup validation catches misconfiguration before it causes runtime errors
@@ -9,14 +9,16 @@ Architecture Principles:
   5. Production requires Supabase persistence (Architecture §14)
   6. Production requires valid Fernet encryption — never silently downgrade to plaintext
 
-Architecture §41 — Configuration Validation:
-  Startup validates mandatory config. Missing required vars cause
-  explicit failures with clear messages and remediation steps.
-
-Architecture §70 — Supabase Client Separation:
-  ANON key → Frontend reads (respects RLS)
-  SERVICE_ROLE key → Backend writes (bypasses RLS)
-  These MUST NOT be used interchangeably.
+v14.3 — SERVICE_MODE:
+  Added service_mode field for distributed deployment across multiple
+  free Render instances (zero-budget scaling).
+  
+  Valid values:
+    - "full"    → All services (default)
+    - "api"     → Only API services (Director, MetaEngine, FastAPI routes)
+    - "workers" → Only BrandScheduler (background publishing)
+    - "monitor" → Only Monitor, Backup, TrendIntelligence
+    - "github"  → Only GitHub Connector
 """
 
 from __future__ import annotations
@@ -192,6 +194,7 @@ class Settings(BaseSettings):
     guardian_scan_hours: int = Field(default=24, ge=1)
     guardian_exclude_repos: List[str] = Field(default_factory=list)
     guardian_auto_fix: bool = Field(default=False)
+    github_access_token: str = Field(default="", description="GitHub personal access token for GitHub Connector Plugin")
 
     # ═══════════════════════════════════════════════════════════════════
     # API ACCESS
@@ -228,6 +231,12 @@ class Settings(BaseSettings):
     environment: str = Field(default="production")
     log_level: str = Field(default="INFO")
 
+    # v14.3: Service mode for distributed deployment
+    service_mode: str = Field(
+        default="full",
+        description="Which services to start. Valid: 'full', 'api', 'workers', 'monitor', 'github'"
+    )
+
     # ═══════════════════════════════════════════════════════════════════
     # VALIDATORS
     # ═══════════════════════════════════════════════════════════════════
@@ -258,6 +267,15 @@ class Settings(BaseSettings):
         if upper not in valid:
             raise ValueError(f"log_level must be one of {valid}")
         return upper
+
+    @field_validator("service_mode")
+    @classmethod
+    def validate_service_mode(cls, v: str) -> str:
+        valid = {"full", "api", "workers", "monitor", "github"}
+        lower = v.lower()
+        if lower not in valid:
+            raise ValueError(f"service_mode must be one of {valid}")
+        return lower
 
     @model_validator(mode="after")
     def validate_supabase_key_separation(self):
@@ -341,17 +359,10 @@ class Settings(BaseSettings):
         return [env_names[f] for f in self.WARN_VARS if not getattr(self, f)]
 
     def validate_required(self) -> None:
-        """Validate mandatory configuration at startup.
-
-        Architecture §41: Missing required vars → startup fails with clear message.
-        Architecture §14: Production requires Supabase with service_role key.
-        Architecture §70: Backend writes require service_role key (not anon key).
-        ENCRYPTION_KEY must be a valid Fernet key in production — no silent plaintext fallback.
-        """
+        """Validate mandatory configuration at startup."""
         env = Environment.from_string(self.environment)
         errors: List[str] = []
 
-        # ── Required vars ──────────────────────────────────────────────
         missing = self.missing_required()
         if missing:
             if env.is_production:
@@ -361,7 +372,6 @@ class Settings(BaseSettings):
             else:
                 logger.warning("Missing environment variables: %s — running in DEGRADED mode.", ", ".join(missing))
 
-        # ── Production: Supabase ───────────────────────────────────────
         if env.is_production:
             if not self.supabase_url:
                 errors.append("SUPABASE_URL is required in production. Set SUPABASE_URL=https://yourproject.supabase.co")
@@ -374,7 +384,6 @@ class Settings(BaseSettings):
             if not self.supabase_anon_key:
                 errors.append("SUPABASE_ANON_KEY is required in production. The frontend console needs this key for read-only access.")
 
-        # ── Production: Encryption ─────────────────────────────────────
         if env.is_production:
             if not self.encryption_key:
                 errors.append(
@@ -402,13 +411,9 @@ class Settings(BaseSettings):
                 "\n\nSet these environment variables and restart."
             )
 
-        # ── Warnings ───────────────────────────────────────────────────
         warn_missing = self.missing_warn()
         if warn_missing and not env.is_production:
             logger.warning("Missing optional environment variables: %s — some features disabled.", ", ".join(warn_missing))
-
-        if self.ai_request_timeout_seconds > 300:
-            logger.warning("AI timeout > 5 minutes — consider reducing")
 
         if self.supabase_anon_key and not self.supabase_service_role_key:
             logger.warning(
@@ -430,6 +435,7 @@ class Settings(BaseSettings):
             "redis_configured": self.redis_configured,
             "environment": self.environment,
             "log_level": self.log_level,
+            "service_mode": self.service_mode,
             "rate_limit_per_user": self.rate_limit_per_user,
             "content_posting_hours_utc": self.content_posting_hours_utc,
             "news_posting_hours_utc": self.news_posting_hours_utc,
