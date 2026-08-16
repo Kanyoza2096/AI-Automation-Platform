@@ -2,11 +2,14 @@
 Worker entry point for non-API Render services.
 Includes a minimal HTTP health server so Render detects the port.
 
-SERVICE_MODE values:
-  - "workers" → BrandScheduler only
-  - "monitor" → Monitor + Backup + Trends
-  - "github"  → GitHub Connector only
-  - "core"    → Director + MetaEngine + ConditionEngine (autonomous intelligence)
+v14.5 — SERVICE_MODE-aware worker:
+  - "workers"    → BrandScheduler only
+  - "monitor"    → Monitor + Backup + Trends
+  - "github"     → GitHub Connector only
+  - "director"   → Director only
+  - "meta"       → MetaEngine only
+  - "condition"  → ConditionEngine only
+  - "core"       → Director + MetaEngine + ConditionEngine
 """
 
 import logging
@@ -43,11 +46,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        pass  # Suppress logs
+        pass
 
 
 def start_health_server():
-    """Start a minimal HTTP server for Render port detection."""
     try:
         server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
         logger.info(f"Health server listening on port {PORT}")
@@ -56,68 +58,15 @@ def start_health_server():
         logger.error(f"Health server failed: {e}")
 
 
-def run_scheduler_mode():
-    """BrandScheduler only."""
-    from dependency_registry import build_container
-    container = build_container()
-
-    from scheduler.brand_scheduler import BrandSchedulerManager
-    manager = container.resolve(BrandSchedulerManager)
-    manager.set_container(container)
-    manager.start()
-    logger.info("Worker (scheduler mode): started")
-
-    while True:
-        time.sleep(60)
-
-
-def run_monitor_mode():
-    """Monitor + Backup + Trends."""
-    from services.supabase import get_service_client_from_settings
-    client = get_service_client_from_settings()
-
-    from plugins.monitor.plugin import init_monitor_plugin
-    init_monitor_plugin(supabase_client=client)
-
-    from plugins.backup.plugin import init_backup_plugin
-    init_backup_plugin(supabase_client=client)
-
-    from plugins.trend_intelligence.plugin import init_trend_plugin
-    init_trend_plugin(supabase_client=client)
-
-    logger.info("Worker (monitor mode): all started")
-
-    while True:
-        time.sleep(60)
-
-
-def run_github_mode():
-    """GitHub Connector only."""
-    from services.supabase import get_service_client_from_settings
-    client = get_service_client_from_settings()
-
-    from plugins.github_connector.plugin import init_github_connector_plugin
-    init_github_connector_plugin(supabase_client=client)
-    logger.info("Worker (github mode): started")
-
-    while True:
-        time.sleep(60)
-
-
-def run_core_mode():
-    """Director + MetaEngine + ConditionEngine — autonomous intelligence.
-
-    v14.4: This is the "brain" of the system. It runs the Director,
-    MetaEngine, and ConditionEngine WITHOUT the FastAPI server.
-    All state is persisted to Supabase.
-    """
+def run_worker():
+    """Run services based on SERVICE_MODE."""
     from dependency_registry import build_container
     from services.supabase import get_service_client_from_settings
 
     container = build_container()
     supabase_client = get_service_client_from_settings()
 
-    # ── Phase 0: Infrastructure ────────────────────────────────────
+    # ── Phase 0: Infrastructure (always needed) ───────────────────
     from lifecycle import _boot_event_bus
     _boot_event_bus(container)
 
@@ -127,34 +76,69 @@ def run_core_mode():
     from lifecycle import _boot_redis
     _boot_redis(container)
 
-    # ── Phase 1: Core Services ─────────────────────────────────────
-    from lifecycle import _boot_job_service
-    _boot_job_service(container)
+    # ── Conditional: AIOrchestrator + ContentEngine (needed by engines) ──
+    if SERVICE_MODE in ("core", "director", "meta", "condition"):
+        from lifecycle import _boot_ai_orchestrator
+        _boot_ai_orchestrator(container)
 
-    from lifecycle import _boot_render_queue
-    _boot_render_queue(container)
+        from lifecycle import _boot_content_engine
+        _boot_content_engine(container)
 
-    # ── Phase 2: Intelligence ──────────────────────────────────────
-    from lifecycle import _boot_ai_orchestrator
-    _boot_ai_orchestrator(container)
+    # ── Individual services ───────────────────────────────────────
+    if SERVICE_MODE == "director":
+        from lifecycle import _boot_director
+        _boot_director(container)
+        logger.info("Worker: Director only started")
 
-    from lifecycle import _boot_content_engine
-    _boot_content_engine(container)
+    elif SERVICE_MODE == "meta":
+        from lifecycle import _boot_meta_engine
+        _boot_meta_engine(container)
+        logger.info("Worker: MetaEngine only started")
 
-    from lifecycle import _boot_meta_engine
-    _boot_meta_engine(container)
+    elif SERVICE_MODE == "condition":
+        from lifecycle import _boot_condition_engine
+        _boot_condition_engine(container)
+        logger.info("Worker: ConditionEngine only started")
 
-    from lifecycle import _boot_director
-    _boot_director(container)
+    elif SERVICE_MODE == "core":
+        from lifecycle import _boot_meta_engine
+        _boot_meta_engine(container)
 
-    from lifecycle import _boot_condition_engine
-    _boot_condition_engine(container)
+        from lifecycle import _boot_director
+        _boot_director(container)
 
-    logger.info(
-        "Worker (core mode): Director + MetaEngine + ConditionEngine "
-        "all started — autonomous intelligence running"
-    )
+        from lifecycle import _boot_condition_engine
+        _boot_condition_engine(container)
+        logger.info("Worker: Director + MetaEngine + ConditionEngine started")
 
+    elif SERVICE_MODE == "workers":
+        from scheduler.brand_scheduler import BrandSchedulerManager
+        manager = container.resolve(BrandSchedulerManager)
+        manager.set_container(container)
+        manager.start()
+        logger.info("Worker: BrandSchedulerManager started")
+
+    elif SERVICE_MODE == "monitor":
+        from plugins.monitor.plugin import init_monitor_plugin
+        init_monitor_plugin(supabase_client=supabase_client)
+
+        from plugins.backup.plugin import init_backup_plugin
+        init_backup_plugin(supabase_client=supabase_client)
+
+        from plugins.trend_intelligence.plugin import init_trend_plugin
+        init_trend_plugin(supabase_client=supabase_client)
+        logger.info("Worker: Monitor plugins started")
+
+    elif SERVICE_MODE == "github":
+        from plugins.github_connector.plugin import init_github_connector_plugin
+        init_github_connector_plugin(supabase_client=supabase_client)
+        logger.info("Worker: GitHub Connector started")
+
+    else:
+        logger.error(f"Unknown SERVICE_MODE: {SERVICE_MODE}")
+        raise SystemExit(1)
+
+    # Keep alive
     while True:
         time.sleep(60)
 
@@ -162,7 +146,6 @@ def run_core_mode():
 def main():
     logger.info(f"Worker starting in mode: {SERVICE_MODE}")
 
-    # Start health server in background thread
     health_thread = threading.Thread(
         target=start_health_server,
         daemon=True,
@@ -170,18 +153,7 @@ def main():
     )
     health_thread.start()
 
-    # Start the actual worker
-    if SERVICE_MODE == "workers":
-        run_scheduler_mode()
-    elif SERVICE_MODE == "monitor":
-        run_monitor_mode()
-    elif SERVICE_MODE == "github":
-        run_github_mode()
-    elif SERVICE_MODE == "core":
-        run_core_mode()
-    else:
-        logger.error(f"Unknown SERVICE_MODE: {SERVICE_MODE}")
-        raise SystemExit(1)
+    run_worker()
 
 
 if __name__ == "__main__":
