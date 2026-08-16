@@ -133,14 +133,7 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 # ═══════════════════════════════════════════════════════════════════════════
 # DIRECTOR PROXY (v14.6)
 # ═══════════════════════════════════════════════════════════════════════════
-
 def _mount_director_proxy(app: FastAPI) -> None:
-    """Proxy /director/* requests to the Director instance.
-
-    v14.6: The dashboard calls Director endpoints from the API instance.
-    This proxy forwards those requests to the Director service.
-    """
-
     @app.api_route(
         "/director/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -148,17 +141,22 @@ def _mount_director_proxy(app: FastAPI) -> None:
     async def proxy_director(request: Request, path: str):
         target_url = f"{DIRECTOR_SERVICE_URL}/{path}"
 
-        # Forward headers (strip host and content-length)
+        # Forward headers (strip host and problematic headers)
         headers = {
             k: v for k, v in request.headers.items()
-            if k.lower() not in ("host", "content-length")
+            if k.lower() not in ("host", "content-length", "content-type", "connection")
         }
 
         # Forward query params
         params = dict(request.query_params)
 
-        # Forward body
+        # Forward body — only if present
         body = await request.body()
+        content = body if body else None
+
+        # If there's a body, set content-type
+        if content:
+            headers["content-type"] = request.headers.get("content-type", "application/json")
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -167,7 +165,7 @@ def _mount_director_proxy(app: FastAPI) -> None:
                     url=target_url,
                     headers=headers,
                     params=params,
-                    content=body if body else None,
+                    content=content,
                 )
 
             return Response(
