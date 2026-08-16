@@ -1,28 +1,59 @@
 """
-KANYOZA META ENGINE v5.0.1 — "THE OVERSEER"
-==========================================
-COMPLETE SELF-CONTAINED VERSION
+KANYOZA META ENGINE v6.0.0
+===========================
 
-Autonomous supervisory layer watching ALL engines with intelligence.
+RESOURCE-SAFE INTELLIGENT SUPERVISOR
 
-v5.0.1 MEMORY OPTIMIZATIONS:
-  - Reduced all history buffers (10x reduction)
-  - Bounded all unbounded lists (diagnoses, anomalies, incidents)
-  - Periodic incident cleanup
-  - Per-thread Supabase clients (broken pipe fix)
-  - All v5.0 capabilities retained
+Design goals
+------------
+1. Protect the application without becoming a resource liability.
+2. Keep all state strictly bounded.
+3. Never perform nested monitoring cycles.
+4. Never create an unbounded number of threads.
+5. Cache health observations instead of repeatedly probing engines.
+6. Keep API/status reads cheap and read-only.
+7. Persist snapshots periodically rather than on every cycle.
+8. Adapt monitoring frequency according to system pressure.
+9. Detect dependency cascades without recursively re-scanning engines.
+10. Perform conservative automatic recovery.
+11. Learn recurring failure patterns without unbounded memory.
+12. Fail open: Meta Engine failure must NOT bring down the application.
 
-v5.0 CAPABILITIES (retained):
-  - Health check timeout
-  - Self-monitoring
-  - Incident resolution
-  - State persistence
-  - Resource monitoring
-  - Global alert rate limiting
+Compatible philosophy
+---------------------
+- FastAPI / Flask applications
+- Supabase optional
+- Render Free / small containers
+- Existing engine registries
+- Existing health_check(), get_status(), get_stats(), restart(), reset()
+  interfaces
+
+Optional dependency
+-------------------
+psutil is recommended but NOT required.
+
+If psutil is unavailable:
+- Linux /proc is used for RSS memory when available.
+- CPU metrics gracefully become unavailable.
+
+Important
+---------
+This module deliberately avoids "kill a Python thread after timeout".
+Python cannot safely kill an arbitrary running thread.
+
+Instead:
+- health probes execute through ONE bounded worker.
+- recovery executes through ONE bounded worker.
+- hung work therefore cannot multiply indefinitely.
+- a stuck worker is replaced only after it naturally terminates;
+  the supervisor itself remains alive.
+
+The application should NEVER make Meta Engine a mandatory dependency.
 """
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import logging
@@ -33,22 +64,45 @@ import threading
 import time
 import traceback
 import uuid
+
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeout,
+)
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from statistics import mean, median, pstdev
 from typing import (
-    Any, Callable, Deque, Dict, Iterable, List, Optional, Set, Tuple,
+    Any,
+    Callable,
+    Deque,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
 )
 
 logger = logging.getLogger("kanyoza.meta_engine")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# OPTIONAL PSUTIL
+# ============================================================================
+
+try:
+    import psutil  # type: ignore
+except Exception:
+    psutil = None
+
+
+# ============================================================================
 # ENUMS
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 class EngineStatus(str, Enum):
     NOMINAL = "nominal"
@@ -74,6 +128,7 @@ class IncidentStatus(str, Enum):
 
 class RecoveryStatus(str, Enum):
     NOT_ATTEMPTED = "not_attempted"
+    RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
     VERIFIED = "verified"
@@ -88,6 +143,9 @@ class AnomalyType(str, Enum):
     DEPENDENCY_FAILURE = "dependency_failure"
     CASCADING_FAILURE = "cascading_failure"
     RESOURCE_PRESSURE = "resource_pressure"
+    MEMORY_PRESSURE = "memory_pressure"
+    CPU_PRESSURE = "cpu_pressure"
+    RECOVERY_LOOP = "recovery_loop"
 
 
 class EscalationTier(str, Enum):
@@ -100,9 +158,16 @@ class EscalationTier(str, Enum):
     ON_CALL = "on_call"
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+class ResourceMode(str, Enum):
+    NORMAL = "normal"
+    CAUTIOUS = "cautious"
+    PRESSURED = "pressured"
+    EMERGENCY = "emergency"
+
+
+# ============================================================================
 # DATACLASSES
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 @dataclass
 class EngineHealth:
@@ -110,44 +175,69 @@ class EngineHealth:
     status: EngineStatus = EngineStatus.UNKNOWN
     health_score: float = 0.0
     risk_score: float = 0.0
+
     last_active: Optional[datetime] = None
+
+    error_count_5m: int = 0
     error_count_1h: int = 0
-    error_count_24h: int = 0
+    success_count_5m: int = 0
     success_count_1h: int = 0
-    success_count_24h: int = 0
-    throughput_1h: float = 0.0
+
     throughput_5m: float = 0.0
+    throughput_1h: float = 0.0
+
     avg_latency_ms: float = 0.0
     median_latency_ms: float = 0.0
     p95_latency_ms: float = 0.0
+
     queue_depth: int = 0
+
     memory_mb: float = 0.0
     cpu_percent: float = 0.0
     disk_percent: float = 0.0
+
     dependencies: List[str] = field(default_factory=list)
     dependents: List[str] = field(default_factory=list)
+
     restart_count: int = 0
     last_restart: Optional[datetime] = None
+
     version: str = ""
     anomaly_flags: List[str] = field(default_factory=list)
-    checked_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
+class SystemResources:
+    rss_mb: float = 0.0
+    memory_percent: float = 0.0
+    cpu_percent: float = 0.0
+    available_memory_mb: float = 0.0
+    disk_percent: float = 0.0
+
+    mode: ResourceMode = ResourceMode.NORMAL
+
+    checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
 class SystemSnapshot:
-    timestamp: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
     engines: Dict[str, EngineHealth] = field(default_factory=dict)
+
     overall_status: EngineStatus = EngineStatus.UNKNOWN
     health_score: float = 0.0
     risk_score: float = 0.0
+
     active_alerts: int = 0
     critical_alerts: int = 0
     active_incidents: int = 0
+
     uptime_seconds: float = 0.0
+
+    resources: SystemResources = field(default_factory=SystemResources)
 
 
 @dataclass
@@ -156,47 +246,24 @@ class Diagnosis:
     engine: str
     symptom: str
     root_cause: str
+
     severity: AlertLevel
+
     affected_engines: List[str] = field(default_factory=list)
     dependency_chain: List[str] = field(default_factory=list)
+
     recommended_action: str = ""
     auto_fixable: bool = False
+
     confidence: float = 0.0
     risk_score: float = 0.0
+
     escalation: EscalationTier = EscalationTier.DASHBOARD
+
     matched_pattern: Optional[str] = None
-    detected_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     resolved_at: Optional[datetime] = None
-
-
-@dataclass
-class DependencyGraph:
-    edges: Dict[str, List[str]] = field(default_factory=dict)
-    reverse: Dict[str, List[str]] = field(default_factory=dict)
-
-    def add(self, engine: str, depends_on: Iterable[str]) -> None:
-        deps = list(dict.fromkeys(depends_on))
-        self.edges[engine] = deps
-        for d in deps:
-            if d not in self.reverse:
-                self.reverse[d] = []
-            if engine not in self.reverse[d]:
-                self.reverse[d].append(engine)
-
-    def get_dependencies(self, e: str) -> List[str]:
-        return list(self.edges.get(e, []))
-
-    def get_dependents(self, e: str) -> List[str]:
-        return list(self.reverse.get(e, []))
-
-    def nodes(self) -> Set[str]:
-        result = set(self.edges.keys())
-        for deps in self.edges.values():
-            result.update(deps)
-        result.update(self.reverse.keys())
-        return result
 
 
 @dataclass
@@ -214,14 +281,16 @@ class Anomaly:
     engine: str
     anomaly_type: AnomalyType
     description: str
+
     severity: AlertLevel
+
     observed_value: float = 0.0
     expected_value: float = 0.0
     deviation: float = 0.0
     confidence: float = 0.0
-    detected_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
     resolved: bool = False
     linked_diagnosis: Optional[str] = None
 
@@ -231,11 +300,16 @@ class RecoveryAttempt:
     id: str
     engine: str
     reason: str
+
     started_at: datetime
+
     finished_at: Optional[datetime] = None
+
     status: RecoveryStatus = RecoveryStatus.NOT_ATTEMPTED
+
     action: str = ""
     error: Optional[str] = None
+
     verification_passed: bool = False
 
 
@@ -243,44 +317,56 @@ class RecoveryAttempt:
 class Incident:
     id: str
     title: str
+
     severity: AlertLevel
     status: IncidentStatus
+
     primary_engine: str
+
     affected_engines: List[str] = field(default_factory=list)
     diagnoses: List[str] = field(default_factory=list)
     anomalies: List[str] = field(default_factory=list)
+
     root_cause: str = ""
+
     confidence: float = 0.0
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
-    updated_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
     resolved_at: Optional[datetime] = None
+
     recovery_attempts: List[str] = field(default_factory=list)
 
 
 @dataclass
 class CircuitState:
     engine: str
+
     failures: int = 0
+
     state: str = "closed"
+
     opened_at: Optional[datetime] = None
     half_open_at: Optional[datetime] = None
+
     cooldown_seconds: int = 60
 
 
 @dataclass
 class Prediction:
     engine: str
+
     predicted_failure: str
+
     confidence: float
+
     estimated_time_to_failure_minutes: float
+
     contributing_factors: List[str] = field(default_factory=list)
-    detected_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
     calibrated_confidence: float = 0.0
 
 
@@ -288,1256 +374,3993 @@ class Prediction:
 class FailurePattern:
     id: str
     signature: str
+
     conditions: Dict[str, Any] = field(default_factory=dict)
+
     root_cause: str = ""
     fix_applied: str = ""
+
     success_rate: float = 0.5
     occurrences: int = 0
-    last_seen: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+
+    last_seen: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+@dataclass
+class CachedHealth:
+    health: EngineHealth
+    expires_at: float
+
+
+# ============================================================================
 # UTILITIES
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def iso(v: Optional[datetime]) -> Optional[str]:
-    return v.isoformat() if v else None
+def iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
 
 
-def clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
-    return max(lo, min(hi, v))
-
-
-def safe_float(v: Any, d: float = 0.0) -> float:
+def clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
     try:
-        return float(v)
-    except (ValueError, TypeError):
-        return d
+        return max(low, min(high, float(value)))
+    except Exception:
+        return low
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def percentile(values: Iterable[float], p: float) -> float:
     data = sorted(float(v) for v in values)
+
     if not data:
         return 0.0
+
     if len(data) == 1:
         return data[0]
+
     p = clamp(p, 0.0, 100.0)
-    idx = (len(data) - 1) * (p / 100.0)
-    lo, hi = int(math.floor(idx)), int(math.ceil(idx))
-    return data[lo] if lo == hi else data[lo] + (data[hi] - data[lo]) * (idx - lo)
+
+    index = (len(data) - 1) * p / 100.0
+
+    low = int(math.floor(index))
+    high = int(math.ceil(index))
+
+    if low == high:
+        return data[low]
+
+    return data[low] + (data[high] - data[low]) * (index - low)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK TIMEOUT
-# ═══════════════════════════════════════════════════════════════════════════
+def short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
-class HealthCheckTimeout:
-    """Simple timeout using daemon threads — no executor to break."""
 
-    def __init__(self, timeout_seconds: float = 5.0):
+# ============================================================================
+# RESOURCE MONITOR
+# ============================================================================
+
+class ResourceMonitor:
+    """
+    Lightweight process resource observer.
+
+    Never allocates large structures.
+    Never starts background workers.
+    """
+
+    def __init__(
+        self,
+        cautious_memory_percent: float = 70.0,
+        pressured_memory_percent: float = 82.0,
+        emergency_memory_percent: float = 92.0,
+        cautious_rss_mb: float = 250.0,
+        pressured_rss_mb: float = 350.0,
+        emergency_rss_mb: float = 450.0,
+    ):
+        self.cautious_memory_percent = cautious_memory_percent
+        self.pressured_memory_percent = pressured_memory_percent
+        self.emergency_memory_percent = emergency_memory_percent
+
+        self.cautious_rss_mb = cautious_rss_mb
+        self.pressured_rss_mb = pressured_rss_mb
+        self.emergency_rss_mb = emergency_rss_mb
+
+        self._process = psutil.Process(os.getpid()) if psutil else None
+
+    def _linux_rss_mb(self) -> float:
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        kb = float(line.split()[1])
+                        return kb / 1024.0
+        except Exception:
+            return 0.0
+
+        return 0.0
+
+    def sample(self) -> SystemResources:
+        rss_mb = 0.0
+        memory_percent = 0.0
+        cpu_percent = 0.0
+        available_memory_mb = 0.0
+        disk_percent = 0.0
+
+        try:
+            if self._process is not None:
+                rss_mb = self._process.memory_info().rss / 1024 / 1024
+                cpu_percent = self._process.cpu_percent(interval=None)
+
+                vm = psutil.virtual_memory()
+                memory_percent = float(vm.percent)
+                available_memory_mb = vm.available / 1024 / 1024
+
+                disk = psutil.disk_usage("/")
+                disk_percent = float(disk.percent)
+            else:
+                rss_mb = self._linux_rss_mb()
+
+        except Exception:
+            pass
+
+        if (
+            memory_percent >= self.emergency_memory_percent
+            or rss_mb >= self.emergency_rss_mb
+        ):
+            mode = ResourceMode.EMERGENCY
+
+        elif (
+            memory_percent >= self.pressured_memory_percent
+            or rss_mb >= self.pressured_rss_mb
+        ):
+            mode = ResourceMode.PRESSURED
+
+        elif (
+            memory_percent >= self.cautious_memory_percent
+            or rss_mb >= self.cautious_rss_mb
+        ):
+            mode = ResourceMode.CAUTIOUS
+
+        else:
+            mode = ResourceMode.NORMAL
+
+        return SystemResources(
+            rss_mb=round(rss_mb, 2),
+            memory_percent=round(memory_percent, 2),
+            cpu_percent=round(cpu_percent, 2),
+            available_memory_mb=round(available_memory_mb, 2),
+            disk_percent=round(disk_percent, 2),
+            mode=mode,
+        )
+
+
+# ============================================================================
+# DEPENDENCY GRAPH
+# ============================================================================
+
+class DependencyGraph:
+    def __init__(self):
+        self.edges: Dict[str, List[str]] = {}
+        self.reverse: Dict[str, List[str]] = {}
+
+    def add(self, engine: str, depends_on: Iterable[str]) -> None:
+        dependencies = list(dict.fromkeys(depends_on))
+
+        self.edges[engine] = dependencies
+
+        for dependency in dependencies:
+            self.reverse.setdefault(dependency, [])
+
+            if engine not in self.reverse[dependency]:
+                self.reverse[dependency].append(engine)
+
+    def get_dependencies(self, engine: str) -> List[str]:
+        return list(self.edges.get(engine, []))
+
+    def get_dependents(self, engine: str) -> List[str]:
+        return list(self.reverse.get(engine, []))
+
+    def nodes(self) -> Set[str]:
+        result = set(self.edges)
+
+        for dependencies in self.edges.values():
+            result.update(dependencies)
+
+        result.update(self.reverse)
+
+        return result
+
+
+# ============================================================================
+# BOUNDED PROBE EXECUTOR
+# ============================================================================
+
+class BoundedProbeExecutor:
+    """
+    Fixed concurrency health probe executor.
+
+    The critical property is max_workers=1.
+
+    A broken health check can therefore consume at most ONE worker rather
+    than creating unlimited daemon threads.
+
+    The supervisor itself never waits indefinitely.
+    """
+
+    def __init__(self, timeout_seconds: float = 3.0):
         self.timeout_seconds = timeout_seconds
 
-    def check_with_timeout(
-        self, check_fn: Callable, *args, **kwargs
-    ) -> Tuple[bool, Optional[Any]]:
-        result_holder: Dict[str, Any] = {}
-        completed = threading.Event()
-
-        def _runner():
-            try:
-                result_holder["result"] = check_fn(*args, **kwargs)
-                result_holder["success"] = True
-            except Exception as exc:
-                result_holder["error"] = exc
-                result_holder["success"] = False
-            finally:
-                completed.set()
-
-        thread = threading.Thread(
-            target=_runner, daemon=True,
-            name=f"health-check-{id(check_fn)}",
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="meta-health",
         )
-        thread.start()
 
-        if completed.wait(timeout=self.timeout_seconds):
-            if result_holder.get("success", False):
-                return True, result_holder.get("result")
-            return False, result_holder.get("error")
-        return False, TimeoutError(f"Timeout after {self.timeout_seconds}s")
+        self._lock = threading.RLock()
+        self._busy = False
+
+    def run(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Tuple[bool, Any]:
+        with self._lock:
+            if self._busy:
+                return False, TimeoutError("Health probe worker busy")
+
+            self._busy = True
+
+        try:
+            future = self._executor.submit(fn, *args, **kwargs)
+
+            try:
+                result = future.result(timeout=self.timeout_seconds)
+                return True, result
+
+            except FutureTimeout:
+                logger.warning(
+                    "Meta Engine health probe exceeded %.1fs",
+                    self.timeout_seconds,
+                )
+                return False, TimeoutError(
+                    f"Health probe timeout after {self.timeout_seconds}s"
+                )
+
+            except Exception as exc:
+                return False, exc
+
+        finally:
+            with self._lock:
+                self._busy = False
 
     def shutdown(self) -> None:
-        pass
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._executor.shutdown(wait=False)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SELF-MONITORING
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# BOUNDED RECOVERY EXECUTOR
+# ============================================================================
 
-class SelfMonitor:
-    def __init__(self, cycle_timeout_seconds: float = 300.0):
-        self.cycle_timeout_seconds = cycle_timeout_seconds
-        self._last_cycle_completed: Optional[datetime] = None
+class BoundedRecoveryExecutor:
+    """
+    One-worker recovery executor.
+
+    Recovery is isolated from the monitoring thread but can never multiply
+    into an unlimited number of recovery workers.
+    """
+
+    def __init__(self):
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="meta-recovery",
+        )
+
         self._lock = threading.RLock()
+        self._busy = False
 
-    def record_cycle_completed(self) -> None:
+    def submit(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> Optional[Future]:
         with self._lock:
-            self._last_cycle_completed = utcnow()
+            if self._busy:
+                return None
 
-    def check_self_health(self) -> Dict[str, Any]:
+            self._busy = True
+
+        future = self._executor.submit(fn, *args, **kwargs)
+
+        def _done(_: Future) -> None:
+            with self._lock:
+                self._busy = False
+
+        future.add_done_callback(_done)
+
+        return future
+
+    def busy(self) -> bool:
         with self._lock:
-            if self._last_cycle_completed is None:
-                return {"status": "starting", "health_score": 0.0, "message": "No cycle completed yet"}
-            elapsed = (utcnow() - self._last_cycle_completed).total_seconds()
-            if elapsed > self.cycle_timeout_seconds:
-                return {"status": "critical", "health_score": 0.0, "message": f"Last cycle {elapsed:.0f}s ago"}
-            if elapsed > self.cycle_timeout_seconds * 0.5:
-                return {"status": "degraded", "health_score": 50.0, "message": f"Last cycle {elapsed:.0f}s ago"}
-            return {"status": "healthy", "health_score": 100.0, "message": "Monitoring cycles running normally"}
+            return self._busy
+
+    def shutdown(self) -> None:
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            self._executor.shutdown(wait=False)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# GLOBAL ALERT RATE LIMITER
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# ALERT RATE LIMITER
+# ============================================================================
 
 class GlobalAlertRateLimiter:
-    def __init__(self, max_alerts_per_minute: int = 5, max_alerts_per_hour: int = 30):
+    def __init__(
+        self,
+        max_alerts_per_minute: int = 3,
+        max_alerts_per_hour: int = 15,
+    ):
         self.max_alerts_per_minute = max_alerts_per_minute
         self.max_alerts_per_hour = max_alerts_per_hour
-        self._minute_alerts: List[float] = []
-        self._hour_alerts: List[float] = []
+
+        self._minute: Deque[float] = deque(maxlen=max_alerts_per_minute * 2)
+        self._hour: Deque[float] = deque(maxlen=max_alerts_per_hour * 2)
+
         self._lock = threading.RLock()
 
     def can_send(self) -> bool:
         with self._lock:
             now = time.monotonic()
-            self._minute_alerts = [t for t in self._minute_alerts if now - t < 60]
-            self._hour_alerts = [t for t in self._hour_alerts if now - t < 3600]
-            return len(self._minute_alerts) < self.max_alerts_per_minute and len(self._hour_alerts) < self.max_alerts_per_hour
+
+            while self._minute and now - self._minute[0] >= 60:
+                self._minute.popleft()
+
+            while self._hour and now - self._hour[0] >= 3600:
+                self._hour.popleft()
+
+            return (
+                len(self._minute) < self.max_alerts_per_minute
+                and len(self._hour) < self.max_alerts_per_hour
+            )
 
     def record_send(self) -> None:
         with self._lock:
             now = time.monotonic()
-            self._minute_alerts.append(now)
-            self._hour_alerts.append(now)
+
+            self._minute.append(now)
+            self._hour.append(now)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# INCIDENT RESOLUTION MANAGER
-# ═══════════════════════════════════════════════════════════════════════════
-
-class IncidentResolutionManager:
-    def __init__(self, meta_engine: "MetaEngineV5"):
-        self.meta_engine = meta_engine
-
-    def check_and_resolve(self) -> int:
-        resolved_count = 0
-        for incident_id, incident in list(self.meta_engine._incidents.items()):
-            if incident.status == IncidentStatus.RESOLVED:
-                continue
-            health = self.meta_engine.check_engine_health(incident.primary_engine, record_history=False)
-            if health.status == EngineStatus.NOMINAL:
-                all_healthy = all(
-                    self.meta_engine.check_engine_health(e, record_history=False).status == EngineStatus.NOMINAL
-                    for e in incident.affected_engines
-                )
-                if all_healthy:
-                    incident.status = IncidentStatus.RESOLVED
-                    incident.resolved_at = utcnow()
-                    incident.updated_at = utcnow()
-                    resolved_count += 1
-                    self.meta_engine.learn_from_incident(incident)
-        return resolved_count
-
-    def escalate_if_unresolved(self) -> int:
-        escalated = 0
-        now = utcnow()
-        for incident in self.meta_engine._incidents.values():
-            if incident.status in (IncidentStatus.RESOLVED, IncidentStatus.ESCALATED):
-                continue
-            if (now - incident.created_at).total_seconds() > 1800:
-                incident.status = IncidentStatus.ESCALATED
-                incident.updated_at = now
-                escalated += 1
-        return escalated
-
-
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # STATE PERSISTENCE
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
 class StatePersistence:
-    def __init__(self, supabase_client: Any = None, file_path: str = "/tmp/meta_engine_state.json"):
+    """
+    Persistence is deliberately throttled.
+
+    A monitoring cycle does NOT automatically write to Supabase.
+    """
+
+    def __init__(
+        self,
+        supabase_client: Any = None,
+        file_path: str = "/tmp/kanyoza_meta_engine_state.json",
+        minimum_save_interval_seconds: int = 300,
+    ):
         self.supabase = supabase_client
         self.file_path = file_path
+        self.minimum_save_interval_seconds = minimum_save_interval_seconds
+
+        self._last_save_monotonic = 0.0
         self._lock = threading.RLock()
 
-    def save_snapshot(self, snapshot: SystemSnapshot) -> None:
+    def _serialize(self, snapshot: SystemSnapshot) -> Dict[str, Any]:
+        return {
+            "timestamp": iso(snapshot.timestamp),
+            "overall_status": snapshot.overall_status.value,
+            "health_score": snapshot.health_score,
+            "risk_score": snapshot.risk_score,
+            "engine_count": len(snapshot.engines),
+            "resources": {
+                "rss_mb": snapshot.resources.rss_mb,
+                "memory_percent": snapshot.resources.memory_percent,
+                "cpu_percent": snapshot.resources.cpu_percent,
+                "mode": snapshot.resources.mode.value,
+            },
+            "engines": {
+                name: {
+                    "status": health.status.value,
+                    "health_score": health.health_score,
+                    "risk_score": health.risk_score,
+                    "error_count_1h": health.error_count_1h,
+                }
+                for name, health in snapshot.engines.items()
+            },
+        }
+
+    def save_snapshot(
+        self,
+        snapshot: SystemSnapshot,
+        force: bool = False,
+    ) -> bool:
         with self._lock:
-            data = {
-                "timestamp": iso(snapshot.timestamp),
-                "overall_status": snapshot.overall_status.value,
-                "health_score": snapshot.health_score,
-                "risk_score": snapshot.risk_score,
-                "engine_count": len(snapshot.engines),
-                "engines": {
-                    name: {"status": h.status.value, "health_score": h.health_score, "risk_score": h.risk_score, "error_count_1h": h.error_count_1h}
-                    for name, h in snapshot.engines.items()
-                },
-            }
+            now = time.monotonic()
+
+            if (
+                not force
+                and now - self._last_save_monotonic
+                < self.minimum_save_interval_seconds
+            ):
+                return False
+
+            data = self._serialize(snapshot)
+
+            saved = False
+
             if self.supabase:
                 try:
-                    self.supabase.table("meta_engine_snapshots").upsert({
-                        "timestamp": iso(snapshot.timestamp),
-                        "payload": json.dumps(data),
-                    }).execute()
+                    self.supabase.table(
+                        "meta_engine_snapshots"
+                    ).upsert(
+                        {
+                            "timestamp": iso(snapshot.timestamp),
+                            "payload": json.dumps(data, separators=(",", ":")),
+                        }
+                    ).execute()
+
+                    saved = True
+
                 except Exception as exc:
-                    logger.warning("Supabase save failed: %s", exc)
+                    logger.warning(
+                        "Meta Engine Supabase persistence failed: %s",
+                        exc,
+                    )
+
             try:
-                with open(self.file_path, "w") as f:
-                    json.dump(data, f, indent=2)
+                temporary = self.file_path + ".tmp"
+
+                with open(temporary, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, separators=(",", ":"))
+
+                os.replace(temporary, self.file_path)
+
+                saved = True
+
             except Exception:
                 pass
+
+            if saved:
+                self._last_save_monotonic = now
+
+            return saved
 
     def load_recent_snapshot(self) -> Optional[Dict[str, Any]]:
         with self._lock:
             try:
-                with open(self.file_path, "r") as f:
-                    return json.load(f)
+                with open(self.file_path, "r", encoding="utf-8") as fh:
+                    return json.load(fh)
             except Exception:
                 pass
+
             if self.supabase:
                 try:
-                    result = self.supabase.table("meta_engine_snapshots").select("*").order("timestamp", desc=True).limit(1).execute()
+                    result = (
+                        self.supabase
+                        .table("meta_engine_snapshots")
+                        .select("*")
+                        .order("timestamp", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+
                     if result.data:
-                        return json.loads(result.data[0].get("payload", "{}"))
+                        return json.loads(
+                            result.data[0].get("payload", "{}")
+                        )
+
                 except Exception:
                     pass
+
             return None
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# META ENGINE v5.0.1 — MEMORY OPTIMIZED
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
+# INCIDENT MANAGER
+# ============================================================================
 
-class MetaEngineV5:
-    """Complete autonomous supervisory engine — memory optimized."""
+class IncidentManager:
+    def __init__(self, engine: "MetaEngineV6"):
+        self.engine = engine
 
-    VERSION = "5.0.1"
+    def resolve_healthy_incidents(
+        self,
+        snapshot: SystemSnapshot,
+    ) -> int:
+        resolved = 0
+
+        for incident in list(self.engine._incidents.values()):
+            if incident.status == IncidentStatus.RESOLVED:
+                continue
+
+            health = snapshot.engines.get(incident.primary_engine)
+
+            if not health:
+                continue
+
+            if health.status != EngineStatus.NOMINAL:
+                continue
+
+            affected_healthy = True
+
+            for affected in incident.affected_engines:
+                affected_health = snapshot.engines.get(affected)
+
+                if affected_health and affected_health.status not in (
+                    EngineStatus.NOMINAL,
+                    EngineStatus.UNKNOWN,
+                ):
+                    affected_healthy = False
+                    break
+
+            if affected_healthy:
+                now = utcnow()
+
+                incident.status = IncidentStatus.RESOLVED
+                incident.resolved_at = now
+                incident.updated_at = now
+
+                resolved += 1
+
+                self.engine.learn_from_incident(incident)
+
+        return resolved
+
+    def escalate_old_incidents(self) -> int:
+        escalated = 0
+        now = utcnow()
+
+        for incident in list(self.engine._incidents.values()):
+            if incident.status in (
+                IncidentStatus.RESOLVED,
+                IncidentStatus.ESCALATED,
+            ):
+                continue
+
+            age = (now - incident.created_at).total_seconds()
+
+            if age >= self.engine.INCIDENT_ESCALATION_SECONDS:
+                incident.status = IncidentStatus.ESCALATED
+                incident.updated_at = now
+                escalated += 1
+
+        return escalated
+
+
+# ============================================================================
+# META ENGINE V6
+# ============================================================================
+
+class MetaEngineV6:
+    """
+    Intelligent, bounded, resource-aware supervisory engine.
+
+    Core rule:
+
+        supervision_cost < application_cost
+
+    The engine deliberately sacrifices some monitoring frequency before
+    allowing monitoring itself to become a resource problem.
+    """
+
+    VERSION = "6.0.0"
+
+    # ------------------------------------------------------------------------
+    # HEALTH
+    # ------------------------------------------------------------------------
 
     ERROR_DEGRADED_THRESHOLD = 0.10
     ERROR_CRITICAL_THRESHOLD = 0.50
+
     STALE_AFTER_SECONDS = 3600
+
     LATENCY_Z_THRESHOLD = 3.0
     ERROR_SPIKE_MULTIPLIER = 3.0
+
     MIN_SAMPLES_FOR_ANOMALY = 5
+
+    # ------------------------------------------------------------------------
+    # RECOVERY
+    # ------------------------------------------------------------------------
+
     RECOVERY_COOLDOWN_SECONDS = 300
     MAX_RECOVERY_ATTEMPTS_PER_HOUR = 3
+
+    RECOVERY_MIN_CONFIDENCE = 0.75
+    RECOVERY_MAX_RISK_SCORE = 30.0
+
+    # ------------------------------------------------------------------------
+    # INCIDENTS
+    # ------------------------------------------------------------------------
+
     INCIDENT_DEDUP_SECONDS = 300
+    INCIDENT_ESCALATION_SECONDS = 1800
+    RESOLVED_INCIDENT_RETENTION_SECONDS = 3600
+
+    # ------------------------------------------------------------------------
+    # PREDICTION
+    # ------------------------------------------------------------------------
+
     PREDICTION_MIN_SAMPLES = 10
     PREDICTION_DECLINE_SLOPE = -0.5
     PREDICTION_CRITICAL_SCORE = 20.0
     PREDICTION_MAX_CYCLES = 20
-    HEALTH_CHECK_TIMEOUT_SECONDS = 5.0
-    DB_CIRCUIT_FAILURE_THRESHOLD = 3
-    DB_CIRCUIT_COOLDOWN_SECONDS = 300
 
-    # v5.0.1 — Memory optimization constants
-    MAX_HEALTH_HISTORY = 50        # Was 500
-    MAX_SNAPSHOTS = 20              # Was 500
-    MAX_ERROR_COUNTS = 100          # Was 500
-    MAX_SUCCESS_COUNTS = 100        # Was 500
-    MAX_LATENCY_SAMPLES = 50        # Was 200
-    MAX_METRICS = 50                # Was 200
-    MAX_DIAGNOSES = 100             # Was unbounded
-    MAX_ANOMALIES = 100             # Was unbounded
-    MAX_RECOVERY_HISTORY = 50       # Was unbounded
-    MAX_FAILURE_PATTERNS = 50       # Was unbounded
-    MAX_PREDICTIONS = 50            # Was unbounded
-    MAX_INCIDENTS = 50              # Was unbounded
+    # ------------------------------------------------------------------------
+    # RESOURCE SAFETY
+    # ------------------------------------------------------------------------
 
-    def __init__(self, event_bus: Any = None, container: Any = None, supabase_client: Any = None):
+    NORMAL_INTERVAL_SECONDS = 60
+    CAUTIOUS_INTERVAL_SECONDS = 90
+    PRESSURED_INTERVAL_SECONDS = 180
+    EMERGENCY_INTERVAL_SECONDS = 300
+
+    HEALTH_CACHE_SECONDS = 45
+
+    MAX_HEALTH_HISTORY = 30
+    MAX_SNAPSHOTS = 12
+
+    MAX_ERROR_COUNTS = 80
+    MAX_SUCCESS_COUNTS = 80
+
+    MAX_LATENCY_SAMPLES = 40
+    MAX_METRICS_PER_NAME = 40
+
+    MAX_DIAGNOSES = 60
+    MAX_ANOMALIES = 60
+    MAX_RECOVERY_HISTORY = 30
+    MAX_FAILURE_PATTERNS = 30
+    MAX_PREDICTIONS = 20
+
+    MAX_INCIDENTS = 30
+
+    # ------------------------------------------------------------------------
+    # EXTERNAL SYSTEM SAFETY
+    # ------------------------------------------------------------------------
+
+    HEALTH_CHECK_TIMEOUT_SECONDS = 3.0
+
+    DB_FAILURE_THRESHOLD = 3
+    DB_COOLDOWN_SECONDS = 300
+
+    # ------------------------------------------------------------------------
+    # CONSTRUCTION
+    # ------------------------------------------------------------------------
+
+    def __init__(
+        self,
+        event_bus: Any = None,
+        container: Any = None,
+        supabase_client: Any = None,
+    ):
         self.event_bus = event_bus
         self.container = container
         self.supabase = supabase_client
 
-        # Core state — MEMORY OPTIMIZED
         self._engines: Dict[str, Any] = {}
         self._engine_versions: Dict[str, str] = {}
-        self._health_history: Dict[str, Deque[EngineHealth]] = defaultdict(
+
+        self._deps = DependencyGraph()
+
+        self._health_history: Dict[
+            str, Deque[EngineHealth]
+        ] = defaultdict(
             lambda: deque(maxlen=self.MAX_HEALTH_HISTORY)
         )
-        self._snapshots: Deque[SystemSnapshot] = deque(maxlen=self.MAX_SNAPSHOTS)
-        self._diagnoses: Deque[Diagnosis] = deque(maxlen=self.MAX_DIAGNOSES)
-        self._anomalies: Deque[Anomaly] = deque(maxlen=self.MAX_ANOMALIES)
+
+        self._snapshots: Deque[
+            SystemSnapshot
+        ] = deque(maxlen=self.MAX_SNAPSHOTS)
+
+        self._diagnoses: Deque[
+            Diagnosis
+        ] = deque(maxlen=self.MAX_DIAGNOSES)
+
+        self._anomalies: Deque[
+            Anomaly
+        ] = deque(maxlen=self.MAX_ANOMALIES)
+
+        self._recovery_history: Deque[
+            RecoveryAttempt
+        ] = deque(maxlen=self.MAX_RECOVERY_HISTORY)
+
+        self._failure_patterns: Deque[
+            FailurePattern
+        ] = deque(maxlen=self.MAX_FAILURE_PATTERNS)
+
+        self._predictions: Deque[
+            Prediction
+        ] = deque(maxlen=self.MAX_PREDICTIONS)
+
         self._incidents: Dict[str, Incident] = {}
-        self._recovery_history: Deque[RecoveryAttempt] = deque(maxlen=self.MAX_RECOVERY_HISTORY)
-        self._deps = DependencyGraph()
-        self._recovery_handlers: Dict[str, Callable] = {}
-        self._health_handlers: Dict[str, Callable] = {}
-        self._alert_callback: Optional[Callable] = None
-        self._error_counts: Dict[str, Deque[datetime]] = defaultdict(
+
+        self._error_counts: Dict[
+            str, Deque[datetime]
+        ] = defaultdict(
             lambda: deque(maxlen=self.MAX_ERROR_COUNTS)
         )
-        self._success_counts: Dict[str, Deque[datetime]] = defaultdict(
+
+        self._success_counts: Dict[
+            str, Deque[datetime]
+        ] = defaultdict(
             lambda: deque(maxlen=self.MAX_SUCCESS_COUNTS)
         )
-        self._latency_samples: Dict[str, Deque[Tuple[datetime, float]]] = defaultdict(
+
+        self._latency_samples: Dict[
+            str, Deque[Tuple[datetime, float]]
+        ] = defaultdict(
             lambda: deque(maxlen=self.MAX_LATENCY_SAMPLES)
         )
-        self._metrics: Dict[str, Dict[str, Deque[MetricEvent]]] = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=self.MAX_METRICS))
+
+        self._metrics: Dict[
+            str, Dict[str, Deque[MetricEvent]]
+        ] = defaultdict(
+            lambda: defaultdict(
+                lambda: deque(maxlen=self.MAX_METRICS_PER_NAME)
+            )
         )
-        self._circuits: Dict[str, CircuitState] = {}
-        self._recovery_timestamps: Dict[str, Deque[datetime]] = defaultdict(
-            lambda: deque(maxlen=50)
+
+        self._cached_health: Dict[
+            str, CachedHealth
+        ] = {}
+
+        self._recovery_handlers: Dict[
+            str, Callable
+        ] = {}
+
+        self._health_handlers: Dict[
+            str, Callable
+        ] = {}
+
+        self._recovery_timestamps: Dict[
+            str, Deque[datetime]
+        ] = defaultdict(
+            lambda: deque(maxlen=10)
         )
+
+        self._circuits: Dict[
+            str, CircuitState
+        ] = {}
+
+        self._adaptive_thresholds: Dict[
+            str, Dict[str, float]
+        ] = {}
+
+        self._alert_callback: Optional[
+            Callable
+        ] = None
+
+        self._last_alert: Dict[str, float] = {}
+
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+
+        self._thread: Optional[
+            threading.Thread
+        ] = None
+
         self._lock = threading.RLock()
+
         self._start_time = utcnow()
-        self._last_monitor_cycle: Optional[datetime] = None
+
+        self._last_monitor_cycle: Optional[
+            datetime
+        ] = None
+
         self._cycle_count = 0
-        self._monitor_interval_minutes = 1.0
-        self._last_telegram_alert: Dict[str, float] = {}
-        self._failure_patterns: Deque[FailurePattern] = deque(maxlen=self.MAX_FAILURE_PATTERNS)
-        self._predictions: Deque[Prediction] = deque(maxlen=self.MAX_PREDICTIONS)
-        self._adaptive_thresholds: Dict[str, Dict[str, float]] = {}
 
-        # v5.0 components
-        self.health_timeout = HealthCheckTimeout(timeout_seconds=self.HEALTH_CHECK_TIMEOUT_SECONDS)
-        self.self_monitor = SelfMonitor()
-        self.incident_manager = IncidentResolutionManager(self)
-        self.alert_limiter = GlobalAlertRateLimiter()
-        self.persistence = StatePersistence(supabase_client=supabase_client)
+        self._current_snapshot: Optional[
+            SystemSnapshot
+        ] = None
 
-        # Circuit breaker state
+        self._current_resources = SystemResources()
+
+        self._monitor_interval_seconds = (
+            self.NORMAL_INTERVAL_SECONDS
+        )
+
+        self._jitter = random.uniform(0, 10)
+
         self._db_failure_count = 0
         self._db_circuit_open = False
         self._db_circuit_reset_time = 0.0
 
-        self._jitter_seconds = random.uniform(0, 15)
-        self._build_dependency_graph()
-        logger.info("MetaEngine v%s initialized — MEMORY OPTIMIZED OVERSEER", self.VERSION)
+        self._cycle_running = False
 
-    # ═══════════════════════════════════════════════════════════════════
+        self._last_full_diagnostic = 0.0
+
+        self._resource_monitor = ResourceMonitor()
+
+        self._probe_executor = BoundedProbeExecutor(
+            timeout_seconds=self.HEALTH_CHECK_TIMEOUT_SECONDS
+        )
+
+        self._recovery_executor = BoundedRecoveryExecutor()
+
+        self._persistence = StatePersistence(
+            supabase_client=supabase_client
+        )
+
+        self._incident_manager = IncidentManager(self)
+
+        self._alert_limiter = GlobalAlertRateLimiter()
+
+        self._build_dependency_graph()
+
+        logger.info(
+            "KANYOZA META ENGINE v%s initialized — resource-safe intelligence",
+            self.VERSION,
+        )
+
+    # =========================================================================
     # DEPENDENCY GRAPH
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
 
     def _build_dependency_graph(self) -> None:
-        for engine, deps in [
-            ("content_engine", ["ai_orchestrator", "prompt_builder", "topic_selector"]),
+        dependencies = [
+            ("content_engine", [
+                "ai_orchestrator",
+                "prompt_builder",
+                "topic_selector",
+            ]),
+
             ("card_renderer", []),
-            ("condition_engine", ["event_bus", "engagement_tracker"]),
-            ("engagement_tracker", ["supabase"]),
+
+            ("condition_engine", [
+                "event_bus",
+                "engagement_tracker",
+            ]),
+
+            ("engagement_tracker", [
+                "supabase",
+            ]),
+
             ("email_service", []),
-            ("guardian", ["github"]),
-            ("ai_orchestrator", ["gemini"]),
-            ("scheduler", ["job_service", "content_engine"]),
-            ("job_service", ["supabase"]),
+
+            ("guardian", [
+                "github",
+            ]),
+
+            ("ai_orchestrator", [
+                "gemini",
+            ]),
+
+            ("scheduler", [
+                "job_service",
+                "content_engine",
+            ]),
+
+            ("job_service", [
+                "supabase",
+            ]),
+
             ("health_monitor", []),
-            ("plugin_registry", ["event_bus"]),
+
+            ("plugin_registry", [
+                "event_bus",
+            ]),
+
             ("event_bus", []),
-            ("render_queue", ["card_renderer", "supabase"]),
+
+            ("render_queue", [
+                "card_renderer",
+                "supabase",
+            ]),
+
             ("image_engine", []),
-            ("topic_selector", ["supabase"]),
+
+            ("topic_selector", [
+                "supabase",
+            ]),
+
             ("prompt_builder", []),
+
             ("meta_engine", []),
+
             ("meta_director", []),
+
             ("brand_scheduler", []),
+
             ("monitor_plugin", []),
+
             ("backup_plugin", []),
-        ]:
+        ]
+
+        for engine, deps in dependencies:
             self._deps.add(engine, deps)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # REGISTRATION (unchanged)
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
+    # ENGINE REGISTRATION
+    # =========================================================================
 
     @staticmethod
     def _resolve_engine_instance(engine: Any) -> Any:
         if engine is None:
             return None
+
         if not isinstance(engine, type) and not callable(engine):
             return engine
+
         if isinstance(engine, type):
-            for getter_name in ('get_instance', 'get', 'instance', 'get_plugin_registry', 'get_event_bus'):
+            for getter_name in (
+                "get_instance",
+                "get",
+                "instance",
+                "get_plugin_registry",
+                "get_event_bus",
+            ):
                 getter = getattr(engine, getter_name, None)
+
                 if callable(getter):
                     try:
                         instance = getter()
-                        if instance is not None and not isinstance(instance, type):
+
+                        if instance is not None and not isinstance(
+                            instance,
+                            type,
+                        ):
                             return instance
+
                     except Exception:
-                        pass
+                        continue
+
             try:
                 instance = engine()
-                if instance is not None and not isinstance(instance, type):
-                    return instance
-            except Exception:
-                pass
-            return engine
-        if callable(engine) and not isinstance(engine, type):
-            try:
-                instance = engine()
+
                 if instance is not None:
                     return instance
+
+            except Exception:
+                return engine
+
+        if callable(engine):
+            try:
+                instance = engine()
+
+                if instance is not None:
+                    return instance
+
             except Exception:
                 pass
+
         return engine
 
-    def register(self, name: str, engine: Any, version: str = "") -> None:
+    def register(
+        self,
+        name: str,
+        engine: Any,
+        version: str = "",
+    ) -> None:
         if not name:
-            raise ValueError("Engine name cannot be empty")
+            raise ValueError(
+                "Engine name cannot be empty"
+            )
+
         resolved = self._resolve_engine_instance(engine)
+
         with self._lock:
             self._engines[name] = resolved
-            self._engine_versions[name] = version or getattr(resolved, "__version__", "") or ""
-            if name not in self._circuits:
-                self._circuits[name] = CircuitState(engine=name)
+
+            self._engine_versions[name] = (
+                version
+                or getattr(
+                    resolved,
+                    "__version__",
+                    "",
+                )
+                or ""
+            )
+
+            self._circuits.setdefault(
+                name,
+                CircuitState(engine=name),
+            )
 
     def register_all_engines(self) -> None:
+        registered = 0
+
         try:
             from services.director import ENGINE_REGISTRY
-            for module_path, attr_name, display_name, sector in ENGINE_REGISTRY:
-                try:
-                    module = __import__(module_path, fromlist=[attr_name])
-                    engine = getattr(module, attr_name, None)
-                    if engine is not None:
-                        self.register(display_name, engine)
-                except ImportError:
-                    pass
-                except Exception as exc:
-                    logger.debug("MetaEngine: %s: %s", display_name, exc)
-        except ImportError:
-            logger.warning("Director registry unavailable")
-            self._manual_register()
-        if self.container:
-            for name, plugin in getattr(self.container, "industry_plugins", {}).items():
-                try:
-                    self.register(name, plugin)
-                except Exception as exc:
-                    logger.debug("Plugin %s: %s", name, exc)
-        logger.info("MetaEngine: %d engines registered", len(self._engines))
 
-    def _manual_register(self) -> None:
-        manual_registry = [
-            ("content_engine", "services.content_engine", "content_engine"),
-            ("condition_engine", "services.condition_engine", "autonomous_engine"),
-            ("guardian", "services.guardian_service", "guardian_service"),
-            ("email_service", "services.email_service", "email_service"),
-            ("engagement_tracker", "services.engagement_tracker", "engagement_tracker"),
-            ("ai_orchestrator", "ai.orchestrator", "AIOrchestrator"),
-            ("job_service", "services.job_stats_service", "get_job_stats_service"),
-            ("plugin_registry", "plugins.base", "PluginRegistry"),
-            ("event_bus", "core.event_bus", "get_event_bus"),
-            ("render_queue", "core.render_queue", "get_render_queue"),
-        ]
-        for name, mod, attr in manual_registry:
+            for (
+                module_path,
+                attr_name,
+                display_name,
+                sector,
+            ) in ENGINE_REGISTRY:
+
+                try:
+                    module = __import__(
+                        module_path,
+                        fromlist=[attr_name],
+                    )
+
+                    engine = getattr(
+                        module,
+                        attr_name,
+                        None,
+                    )
+
+                    if engine is not None:
+                        self.register(
+                            display_name,
+                            engine,
+                        )
+
+                        registered += 1
+
+                except Exception as exc:
+                    logger.debug(
+                        "Engine registration skipped %s: %s",
+                        display_name,
+                        exc,
+                    )
+
+        except ImportError:
+            self._manual_register()
+
+        if self.container:
             try:
-                module = __import__(mod, fromlist=[attr])
-                engine = getattr(module, attr, None)
-                if engine is not None:
-                    self.register(name, engine)
+                plugins = getattr(
+                    self.container,
+                    "industry_plugins",
+                    {},
+                )
+
+                for name, plugin in plugins.items():
+                    try:
+                        self.register(name, plugin)
+                        registered += 1
+                    except Exception:
+                        pass
+
             except Exception:
                 pass
 
-    # ═══════════════════════════════════════════════════════════════════
-    # CALLBACKS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def set_alert_callback(self, cb: Callable) -> None:
-        self._alert_callback = cb
-
-    def register_recovery_handler(self, engine_name: str, handler: Callable) -> None:
-        self._recovery_handlers[engine_name] = handler
-
-    def register_health_handler(self, engine_name: str, handler: Callable) -> None:
-        self._health_handlers[engine_name] = handler
-
-    # ═══════════════════════════════════════════════════════════════════
-    # METRICS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def record_success(self, engine_name: str) -> None:
-        self._success_counts[engine_name].append(utcnow())
-
-    def record_error(self, engine_name: str, error: str = "") -> None:
-        self._error_counts[engine_name].append(utcnow())
-
-    def record_latency(self, engine_name: str, ms: float) -> None:
-        self._latency_samples[engine_name].append((utcnow(), max(0.0, safe_float(ms))))
-
-    def record_metric(self, engine_name: str, metric_name: str, value: float, metadata: Optional[Dict[str, Any]] = None) -> None:
-        self._metrics[engine_name][metric_name].append(
-            MetricEvent(timestamp=utcnow(), kind=metric_name, engine=engine_name, value=safe_float(value), metadata=metadata or {})
+        logger.info(
+            "Meta Engine registered %d engines",
+            len(self._engines),
         )
 
-    # ═══════════════════════════════════════════════════════════════════
-    # CIRCUIT BREAKER
-    # ═══════════════════════════════════════════════════════════════════
+    def _manual_register(self) -> None:
+        registry = [
+            (
+                "content_engine",
+                "services.content_engine",
+                "content_engine",
+            ),
+            (
+                "condition_engine",
+                "services.condition_engine",
+                "autonomous_engine",
+            ),
+            (
+                "guardian",
+                "services.guardian_service",
+                "guardian_service",
+            ),
+            (
+                "email_service",
+                "services.email_service",
+                "email_service",
+            ),
+            (
+                "engagement_tracker",
+                "services.engagement_tracker",
+                "engagement_tracker",
+            ),
+            (
+                "ai_orchestrator",
+                "ai.orchestrator",
+                "AIOrchestrator",
+            ),
+            (
+                "job_service",
+                "services.job_stats_service",
+                "get_job_stats_service",
+            ),
+            (
+                "plugin_registry",
+                "plugins.base",
+                "PluginRegistry",
+            ),
+            (
+                "event_bus",
+                "core.event_bus",
+                "get_event_bus",
+            ),
+            (
+                "render_queue",
+                "core.render_queue",
+                "get_render_queue",
+            ),
+        ]
 
-    def _is_db_circuit_open(self) -> bool:
-        if not self._db_circuit_open:
+        for name, module_name, attr_name in registry:
+            try:
+                module = __import__(
+                    module_name,
+                    fromlist=[attr_name],
+                )
+
+                engine = getattr(
+                    module,
+                    attr_name,
+                    None,
+                )
+
+                if engine is not None:
+                    self.register(name, engine)
+
+            except Exception:
+                continue
+
+    # =========================================================================
+    # CALLBACKS
+    # =========================================================================
+
+    def set_alert_callback(
+        self,
+        callback: Optional[Callable],
+    ) -> None:
+        self._alert_callback = callback
+
+    def register_recovery_handler(
+        self,
+        engine_name: str,
+        handler: Callable,
+    ) -> None:
+        if callable(handler):
+            self._recovery_handlers[engine_name] = handler
+
+    def register_health_handler(
+        self,
+        engine_name: str,
+        handler: Callable,
+    ) -> None:
+        if callable(handler):
+            self._health_handlers[engine_name] = handler
+
+    # =========================================================================
+    # TELEMETRY
+    # =========================================================================
+
+    def record_success(
+        self,
+        engine_name: str,
+    ) -> None:
+        self._success_counts[engine_name].append(utcnow())
+
+    def record_error(
+        self,
+        engine_name: str,
+        error: str = "",
+    ) -> None:
+        self._error_counts[engine_name].append(utcnow())
+
+    def record_latency(
+        self,
+        engine_name: str,
+        milliseconds: float,
+    ) -> None:
+        self._latency_samples[engine_name].append(
+            (
+                utcnow(),
+                max(
+                    0.0,
+                    safe_float(milliseconds),
+                ),
+            )
+        )
+
+    def record_metric(
+        self,
+        engine_name: str,
+        metric_name: str,
+        value: float,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._metrics[engine_name][metric_name].append(
+            MetricEvent(
+                timestamp=utcnow(),
+                kind=metric_name,
+                engine=engine_name,
+                value=safe_float(value),
+                metadata=metadata or {},
+            )
+        )
+
+    # =========================================================================
+    # DATABASE CIRCUIT
+    # =========================================================================
+
+    def _db_available(self) -> bool:
+        if not self.supabase:
             return False
-        if time.monotonic() > self._db_circuit_reset_time:
+
+        if not self._db_circuit_open:
+            return True
+
+        if time.monotonic() >= self._db_circuit_reset_time:
             self._db_circuit_open = False
             self._db_failure_count = 0
-            return False
-        return True
+            return True
+
+        return False
 
     def _record_db_success(self) -> None:
         self._db_failure_count = 0
-        if self._db_circuit_open:
-            self._db_circuit_open = False
+        self._db_circuit_open = False
 
     def _record_db_failure(self) -> None:
         self._db_failure_count += 1
-        if self._db_failure_count >= self.DB_CIRCUIT_FAILURE_THRESHOLD:
-            backoff = min(600, self.DB_CIRCUIT_COOLDOWN_SECONDS * (2 ** (self._db_failure_count - self.DB_CIRCUIT_FAILURE_THRESHOLD)))
+
+        if (
+            self._db_failure_count
+            >= self.DB_FAILURE_THRESHOLD
+        ):
             self._db_circuit_open = True
-            self._db_circuit_reset_time = time.monotonic() + backoff
-            logger.critical("MetaEngine: DB circuit OPEN — %d failures, %ds cooldown", self._db_failure_count, backoff)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # HEALTH CHECK
-    # ═══════════════════════════════════════════════════════════════════
+            backoff = min(
+                900,
+                self.DB_COOLDOWN_SECONDS
+                * (
+                    2
+                    ** (
+                        self._db_failure_count
+                        - self.DB_FAILURE_THRESHOLD
+                    )
+                ),
+            )
 
-    def _ping_engine(self, engine: Any, engine_name: str = "") -> bool:
+            self._db_circuit_reset_time = (
+                time.monotonic() + backoff
+            )
+
+            logger.warning(
+                "Meta Engine DB circuit opened for %ss",
+                backoff,
+            )
+
+    # =========================================================================
+    # RESOURCE ADAPTATION
+    # =========================================================================
+
+    def _sample_resources(self) -> SystemResources:
+        resources = self._resource_monitor.sample()
+
+        self._current_resources = resources
+
+        if resources.mode == ResourceMode.NORMAL:
+            interval = self.NORMAL_INTERVAL_SECONDS
+
+        elif resources.mode == ResourceMode.CAUTIOUS:
+            interval = self.CAUTIOUS_INTERVAL_SECONDS
+
+        elif resources.mode == ResourceMode.PRESSURED:
+            interval = self.PRESSURED_INTERVAL_SECONDS
+
+        else:
+            interval = self.EMERGENCY_INTERVAL_SECONDS
+
+        self._monitor_interval_seconds = interval
+
+        return resources
+
+    def _expensive_operations_allowed(self) -> bool:
+        return self._current_resources.mode in (
+            ResourceMode.NORMAL,
+            ResourceMode.CAUTIOUS,
+        )
+
+    def _recovery_allowed_by_resources(self) -> bool:
+        return self._current_resources.mode in (
+            ResourceMode.NORMAL,
+            ResourceMode.CAUTIOUS,
+        )
+
+    # =========================================================================
+    # HEALTH PROBING
+    # =========================================================================
+
+    def _ping_engine_inner(
+        self,
+        engine: Any,
+        engine_name: str,
+    ) -> bool:
+
+        try:
+            custom_handler = self._health_handlers.get(
+                engine_name
+            )
+
+            if custom_handler:
+                result = custom_handler(engine)
+
+                if isinstance(result, dict):
+                    status = str(
+                        result.get(
+                            "status",
+                            "",
+                        )
+                    ).lower()
+
+                    return status in {
+                        "healthy",
+                        "ok",
+                        "nominal",
+                        "ready",
+                        "degraded",
+                    }
+
+                return bool(result)
+
+            if hasattr(engine, "health_check"):
+                health_check = getattr(
+                    engine,
+                    "health_check",
+                )
+
+                if callable(health_check):
+                    result = health_check()
+
+                    if isinstance(result, dict):
+                        status = str(
+                            result.get(
+                                "status",
+                                "",
+                            )
+                        ).lower()
+
+                        return status in {
+                            "healthy",
+                            "ok",
+                            "nominal",
+                            "ready",
+                            "degraded",
+                        }
+
+                    return bool(result)
+
+            if hasattr(engine, "get_status"):
+                get_status = getattr(
+                    engine,
+                    "get_status",
+                )
+
+                if callable(get_status):
+                    result = get_status()
+
+                    if isinstance(result, dict):
+                        if result.get("running") is True:
+                            return True
+
+                        status = str(
+                            result.get(
+                                "status",
+                                "",
+                            )
+                        ).lower()
+
+                        return status not in {
+                            "stopped",
+                            "offline",
+                            "failed",
+                        }
+
+                    return result is not None
+
+            if hasattr(engine, "get_stats"):
+                get_stats = getattr(
+                    engine,
+                    "get_stats",
+                )
+
+                if callable(get_stats):
+                    return get_stats() is not None
+
+            # Objects without an explicit health interface are not allowed
+            # to be repeatedly interrogated through expensive introspection.
+            return True
+
+        except Exception as exc:
+            logger.debug(
+                "Health probe failed for %s: %s",
+                engine_name,
+                exc,
+            )
+
+            return False
+
+    def _ping_engine(
+        self,
+        engine: Any,
+        engine_name: str,
+    ) -> bool:
+
+        if engine is None:
+            return False
+
         if isinstance(engine, type):
             return True
-        success, result = self.health_timeout.check_with_timeout(self._ping_engine_inner, engine, engine_name)
-        return success and result
 
-    def _ping_engine_inner(self, engine: Any, engine_name: str = "") -> bool:
-        try:
-            if hasattr(engine, "health_check") and callable(engine.health_check):
-                result = engine.health_check()
-                if isinstance(result, dict):
-                    status = str(result.get("status", "")).lower()
-                    return status in {"healthy", "ok", "nominal", "ready", "degraded"}
-                return bool(result)
-            if hasattr(engine, "get_status") and callable(engine.get_status):
-                result = engine.get_status()
-                if isinstance(result, dict):
-                    return result.get("running", False) or result.get("status") not in ("stopped", "offline")
-                return result is not None
-            if hasattr(engine, "get_stats") and callable(engine.get_stats):
-                result = engine.get_stats()
-                return result is not None
-            logger.debug("Engine '%s' has no health interface — OFFLINE", engine_name or "unknown")
-            return False
-        except Exception as e:
-            logger.error("Engine '%s' health check failed: %s", engine_name or "unknown", e)
+        success, result = self._probe_executor.run(
+            self._ping_engine_inner,
+            engine,
+            engine_name,
+        )
+
+        return success and bool(result)
+
+    # =========================================================================
+    # HEALTH CACHE
+    # =========================================================================
+
+    def _cached_health_valid(
+        self,
+        name: str,
+    ) -> bool:
+
+        cached = self._cached_health.get(name)
+
+        if cached is None:
             return False
 
-    def check_engine_health(self, name: str, record_history: bool = True) -> EngineHealth:
+        return time.monotonic() < cached.expires_at
+
+    def _cache_health(
+        self,
+        name: str,
+        health: EngineHealth,
+    ) -> None:
+
+        self._cached_health[name] = CachedHealth(
+            health=health,
+            expires_at=(
+                time.monotonic()
+                + self.HEALTH_CACHE_SECONDS
+            ),
+        )
+
+    # =========================================================================
+    # ENGINE HEALTH
+    # =========================================================================
+
+    def check_engine_health(
+        self,
+        name: str,
+        force: bool = False,
+        record_history: bool = True,
+    ) -> EngineHealth:
+
+        if (
+            not force
+            and self._cached_health_valid(name)
+        ):
+            return self._cached_health[name].health
+
         engine = self._engines.get(name)
-        health = EngineHealth(name=name, version=self._engine_versions.get(name, ""))
+
+        health = EngineHealth(
+            name=name,
+            version=self._engine_versions.get(
+                name,
+                "",
+            ),
+        )
+
+        health.dependencies = (
+            self._deps.get_dependencies(name)
+        )
+
+        health.dependents = (
+            self._deps.get_dependents(name)
+        )
 
         if engine is None:
             health.status = EngineStatus.OFFLINE
             health.health_score = 0.0
             health.risk_score = 100.0
+
+            self._cache_health(
+                name,
+                health,
+            )
+
+            if record_history:
+                self._health_history[name].append(
+                    health
+                )
+
             return health
 
-        if not self._ping_engine(engine, name):
+        if not self._ping_engine(
+            engine,
+            name,
+        ):
             health.status = EngineStatus.OFFLINE
             health.health_score = 0.0
             health.risk_score = 100.0
-            health.dependencies = self._deps.get_dependencies(name)
-            health.dependents = self._deps.get_dependents(name)
+
+            self._cache_health(
+                name,
+                health,
+            )
+
             if record_history:
-                self._health_history[name].append(health)
+                self._health_history[name].append(
+                    health
+                )
+
             return health
 
-        health.error_count_1h = sum(1 for ts in self._error_counts[name] if ts >= utcnow() - timedelta(hours=1))
-        health.error_count_24h = sum(1 for ts in self._error_counts[name] if ts >= utcnow() - timedelta(hours=24))
-        health.success_count_1h = sum(1 for ts in self._success_counts[name] if ts >= utcnow() - timedelta(hours=1))
-        health.success_count_24h = sum(1 for ts in self._success_counts[name] if ts >= utcnow() - timedelta(hours=24))
-        health.throughput_1h = health.success_count_1h / 3600.0
+        now = utcnow()
 
-        latencies = [v for ts, v in self._latency_samples[name] if ts >= utcnow() - timedelta(hours=1)]
-        if latencies:
-            health.avg_latency_ms = mean(latencies)
-            health.median_latency_ms = median(latencies)
-            health.p95_latency_ms = percentile(latencies, 95)
+        five_minutes_ago = (
+            now - timedelta(minutes=5)
+        )
 
-        health.dependencies = self._deps.get_dependencies(name)
-        health.dependents = self._deps.get_dependents(name)
+        one_hour_ago = (
+            now - timedelta(hours=1)
+        )
 
-        resources = self._metrics[name]
-        if "cpu_percent" in resources:
-            recent_cpu = list(resources["cpu_percent"])[-5:]
-            if recent_cpu:
-                health.cpu_percent = mean(e.value for e in recent_cpu)
-        if "memory_percent" in resources:
-            recent_mem = list(resources["memory_percent"])[-5:]
-            if recent_mem:
-                health.memory_mb = mean(e.value for e in recent_mem)
+        errors = self._error_counts[name]
 
-        health.anomaly_flags = [a.anomaly_type.value for a in self._anomalies if a.engine == name and not a.resolved][-10:]
+        successes = self._success_counts[name]
 
-        total = health.error_count_1h + health.success_count_1h
-        error_rate = health.error_count_1h / max(total, 1)
+        health.error_count_5m = sum(
+            ts >= five_minutes_ago
+            for ts in errors
+        )
+
+        health.error_count_1h = sum(
+            ts >= one_hour_ago
+            for ts in errors
+        )
+
+        health.success_count_5m = sum(
+            ts >= five_minutes_ago
+            for ts in successes
+        )
+
+        health.success_count_1h = sum(
+            ts >= one_hour_ago
+            for ts in successes
+        )
+
+        health.throughput_5m = (
+            health.success_count_5m / 300.0
+        )
+
+        health.throughput_1h = (
+            health.success_count_1h / 3600.0
+        )
+
+        latency_values = [
+            value
+            for timestamp, value
+            in self._latency_samples[name]
+            if timestamp >= one_hour_ago
+        ]
+
+        if latency_values:
+            health.avg_latency_ms = mean(
+                latency_values
+            )
+
+            health.median_latency_ms = median(
+                latency_values
+            )
+
+            health.p95_latency_ms = percentile(
+                latency_values,
+                95,
+            )
+
+        metrics = self._metrics[name]
+
+        cpu_events = metrics.get(
+            "cpu_percent",
+            (),
+        )
+
+        if cpu_events:
+            recent = list(cpu_events)[-5:]
+
+            if recent:
+                health.cpu_percent = mean(
+                    event.value
+                    for event in recent
+                )
+
+        memory_events = metrics.get(
+            "memory_percent",
+            (),
+        )
+
+        if memory_events:
+            recent = list(memory_events)[-5:]
+
+            if recent:
+                memory_percent = mean(
+                    event.value
+                    for event in recent
+                )
+
+                health.memory_mb = memory_percent
+
+        queue_events = metrics.get(
+            "queue_depth",
+            (),
+        )
+
+        if queue_events:
+            recent = list(queue_events)[-1]
+
+            health.queue_depth = int(
+                max(
+                    0,
+                    recent.value,
+                )
+            )
+
+        health.anomaly_flags = [
+            anomaly.anomaly_type.value
+            for anomaly in self._anomalies
+            if (
+                anomaly.engine == name
+                and not anomaly.resolved
+            )
+        ][-5:]
+
+        total_operations = (
+            health.error_count_1h
+            + health.success_count_1h
+        )
+
+        error_rate = (
+            health.error_count_1h
+            / max(
+                1,
+                total_operations,
+            )
+        )
 
         if error_rate >= self.ERROR_CRITICAL_THRESHOLD:
             health.status = EngineStatus.DEGRADED
+
         elif error_rate >= self.ERROR_DEGRADED_THRESHOLD:
             health.status = EngineStatus.DEGRADED
-        elif total == 0:
-            last_success = self._success_counts[name][-1] if self._success_counts[name] else None
-            if last_success and (utcnow() - last_success).total_seconds() > self.STALE_AFTER_SECONDS:
+
+        elif total_operations == 0:
+
+            last_success = (
+                successes[-1]
+                if successes
+                else None
+            )
+
+            if (
+                last_success
+                and (
+                    now - last_success
+                ).total_seconds()
+                > self.STALE_AFTER_SECONDS
+            ):
                 health.status = EngineStatus.STALE
+
             else:
                 health.status = EngineStatus.NOMINAL
+
         else:
             health.status = EngineStatus.NOMINAL
 
-        health.health_score = self._calc_health_score(health)
-        health.risk_score = self._calc_risk_score(health)
+        health.health_score = (
+            self._calculate_health_score(
+                health
+            )
+        )
+
+        health.risk_score = (
+            self._calculate_risk_score(
+                health
+            )
+        )
+
+        health.last_active = (
+            successes[-1]
+            if successes
+            else None
+        )
+
+        self._cache_health(
+            name,
+            health,
+        )
 
         if record_history:
-            self._health_history[name].append(health)
+            self._health_history[name].append(
+                health
+            )
 
         return health
 
-    def _calc_health_score(self, h: EngineHealth) -> float:
-        if h.status == EngineStatus.OFFLINE:
+    # =========================================================================
+    # HEALTH SCORING
+    # =========================================================================
+
+    def _calculate_health_score(
+        self,
+        health: EngineHealth,
+    ) -> float:
+
+        if health.status == EngineStatus.OFFLINE:
             return 0.0
+
         score = 100.0
-        if h.status == EngineStatus.STALE:
-            score -= 35
-        if h.status == EngineStatus.DEGRADED:
-            score -= 25
-        total = h.error_count_1h + h.success_count_1h
-        if total:
-            score -= (h.error_count_1h / total) * 50
-        if h.avg_latency_ms > 1000:
-            score -= min(25, (h.avg_latency_ms - 1000) / 200)
-        if h.cpu_percent > 90:
-            score -= 10
-        if h.memory_mb > 90:
-            score -= 10
-        return round(clamp(score), 2)
 
-    def _calc_risk_score(self, h: EngineHealth, depth: int = 0) -> float:
+        if health.status == EngineStatus.DEGRADED:
+            score -= 25.0
+
+        elif health.status == EngineStatus.STALE:
+            score -= 35.0
+
+        total = (
+            health.error_count_1h
+            + health.success_count_1h
+        )
+
+        if total:
+            error_rate = (
+                health.error_count_1h
+                / total
+            )
+
+            score -= error_rate * 50.0
+
+        if health.avg_latency_ms > 1000:
+            score -= min(
+                25.0,
+                (
+                    health.avg_latency_ms
+                    - 1000
+                ) / 200,
+            )
+
+        if health.cpu_percent > 90:
+            score -= 10
+
+        if health.memory_mb > 90:
+            score -= 10
+
+        if health.queue_depth > 100:
+            score -= min(
+                15,
+                health.queue_depth / 20,
+            )
+
+        return round(
+            clamp(score),
+            2,
+        )
+
+    def _calculate_risk_score(
+        self,
+        health: EngineHealth,
+    ) -> float:
+
         risk = 0.0
-        if h.status == EngineStatus.OFFLINE:
+
+        if health.status == EngineStatus.OFFLINE:
             risk += 80
-        elif h.status == EngineStatus.DEGRADED:
+
+        elif health.status == EngineStatus.DEGRADED:
             risk += 40
-        elif h.status == EngineStatus.STALE:
+
+        elif health.status == EngineStatus.STALE:
             risk += 30
-        total = h.error_count_1h + h.success_count_1h
+
+        total = (
+            health.error_count_1h
+            + health.success_count_1h
+        )
+
         if total:
-            risk += (h.error_count_1h / total) * 40
-        if h.cpu_percent > 90:
+            risk += (
+                health.error_count_1h
+                / total
+            ) * 40
+
+        if health.cpu_percent > 90:
             risk += 15
-        if h.memory_mb > 90:
+
+        if health.memory_mb > 90:
             risk += 15
-        risk += min(30, len(h.anomaly_flags) * 7)
-        if depth < 1:
-            for dep in h.dependencies:
-                dh = self.check_engine_health(dep, record_history=False)
-                if dh.status == EngineStatus.OFFLINE:
-                    risk += 20
-                elif dh.status == EngineStatus.DEGRADED:
-                    risk += 10
-        return round(clamp(risk), 2)
 
-    # ═══════════════════════════════════════════════════════════════════
-    # SNAPSHOT
-    # ═══════════════════════════════════════════════════════════════════
+        risk += min(
+            25,
+            len(health.anomaly_flags) * 5,
+        )
 
-    def take_snapshot(self) -> SystemSnapshot:
-        snap = SystemSnapshot()
-        snap.uptime_seconds = (utcnow() - self._start_time).total_seconds()
-        health_scores, risk_scores = [], []
+        # IMPORTANT:
+        # Do NOT recursively call check_engine_health().
+        # Dependencies are evaluated from the existing snapshot.
+        return round(
+            clamp(risk),
+            2,
+        )
 
-        for name in list(self._engines.keys()):
+    # =========================================================================
+    # SINGLE SYSTEM SCAN
+    # =========================================================================
+
+    def _scan_all_engines(
+        self,
+        force: bool = False,
+    ) -> SystemSnapshot:
+
+        snapshot = SystemSnapshot()
+
+        snapshot.uptime_seconds = (
+            utcnow() - self._start_time
+        ).total_seconds()
+
+        snapshot.resources = (
+            self._sample_resources()
+        )
+
+        health_scores: List[float] = []
+        risk_scores: List[float] = []
+
+        # Emergency mode means we intentionally reduce monitoring work.
+        engine_names = list(self._engines.keys())
+
+        if (
+            snapshot.resources.mode
+            == ResourceMode.EMERGENCY
+        ):
+            engine_names = engine_names[: max(
+                1,
+                min(
+                    5,
+                    len(engine_names),
+                )
+            )]
+
+        for name in engine_names:
+
             try:
-                health = self.check_engine_health(name)
-                snap.engines[name] = health
-                health_scores.append(health.health_score)
-                risk_scores.append(health.risk_score)
+                health = self.check_engine_health(
+                    name,
+                    force=force,
+                    record_history=True,
+                )
+
+                snapshot.engines[name] = health
+
+                health_scores.append(
+                    health.health_score
+                )
+
+                risk_scores.append(
+                    health.risk_score
+                )
+
                 if health.status == EngineStatus.OFFLINE:
-                    snap.critical_alerts += 1
-                elif health.status in (EngineStatus.DEGRADED, EngineStatus.STALE):
-                    snap.active_alerts += 1
+                    snapshot.critical_alerts += 1
+
+                elif health.status in (
+                    EngineStatus.DEGRADED,
+                    EngineStatus.STALE,
+                ):
+                    snapshot.active_alerts += 1
+
             except Exception as exc:
-                logger.error("Health check failed for %s: %s", name, exc)
+                logger.debug(
+                    "Engine scan failed for %s: %s",
+                    name,
+                    exc,
+                )
 
-        snap.overall_status = EngineStatus.DEGRADED if snap.critical_alerts or snap.active_alerts else EngineStatus.NOMINAL
-        snap.health_score = round(mean(health_scores), 2) if health_scores else 0.0
-        snap.risk_score = round(mean(risk_scores), 2) if risk_scores else 0.0
-        snap.active_incidents = sum(1 for i in self._incidents.values() if i.status != IncidentStatus.RESOLVED)
+        # Dependency-aware risk adjustment using CURRENT SNAPSHOT ONLY.
+        for name, health in snapshot.engines.items():
 
-        self._snapshots.append(snap)
-        self._last_monitor_cycle = snap.timestamp
-        self.persistence.save_snapshot(snap)
-        return snap
+            dependency_penalty = 0
 
-    # ═══════════════════════════════════════════════════════════════════
+            for dependency in health.dependencies:
+
+                dependency_health = (
+                    snapshot.engines.get(
+                        dependency
+                    )
+                )
+
+                if not dependency_health:
+                    continue
+
+                if (
+                    dependency_health.status
+                    == EngineStatus.OFFLINE
+                ):
+                    dependency_penalty += 20
+
+                elif (
+                    dependency_health.status
+                    == EngineStatus.DEGRADED
+                ):
+                    dependency_penalty += 10
+
+            health.risk_score = round(
+                clamp(
+                    health.risk_score
+                    + dependency_penalty
+                ),
+                2,
+            )
+
+        snapshot.health_score = (
+            round(
+                mean(health_scores),
+                2,
+            )
+            if health_scores
+            else 0.0
+        )
+
+        snapshot.risk_score = (
+            round(
+                mean(risk_scores),
+                2,
+            )
+            if risk_scores
+            else 0.0
+        )
+
+        if snapshot.critical_alerts:
+            snapshot.overall_status = (
+                EngineStatus.DEGRADED
+            )
+
+        elif snapshot.active_alerts:
+            snapshot.overall_status = (
+                EngineStatus.DEGRADED
+            )
+
+        else:
+            snapshot.overall_status = (
+                EngineStatus.NOMINAL
+            )
+
+        snapshot.active_incidents = sum(
+            incident.status
+            not in (
+                IncidentStatus.RESOLVED,
+            )
+            for incident
+            in self._incidents.values()
+        )
+
+        self._snapshots.append(snapshot)
+
+        self._current_snapshot = snapshot
+
+        self._last_monitor_cycle = (
+            snapshot.timestamp
+        )
+
+        return snapshot
+
+    # =========================================================================
     # ANOMALY DETECTION
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
 
-    def detect_anomalies(self) -> List[Anomaly]:
-        detected = []
-        for name in list(self._engines.keys()):
-            try:
-                detected.extend(self._detect_anomalies_for_engine(name))
-            except Exception as exc:
-                logger.debug("Anomaly detection failed for %s: %s", name, exc)
+    def detect_anomalies(
+        self,
+        snapshot: Optional[SystemSnapshot] = None,
+    ) -> List[Anomaly]:
 
-        deduped = []
-        for a in detected:
-            key = f"{a.engine}:{a.anomaly_type.value}"
-            if not any(
-                f"{x.engine}:{x.anomaly_type.value}" == key
-                and not x.resolved
-                and (utcnow() - x.detected_at).total_seconds() < 300
-                for x in self._anomalies
-            ):
-                deduped.append(a)
+        if snapshot is None:
+            snapshot = self._current_snapshot
 
-        self._anomalies.extend(deduped)
-        return deduped
+        if snapshot is None:
+            return []
 
-    def _detect_anomalies_for_engine(self, name: str) -> List[Anomaly]:
-        anomalies = []
-
-        lat_vals = [v for _, v in self._latency_samples[name]]
-        if len(lat_vals) >= self.MIN_SAMPLES_FOR_ANOMALY:
-            avg = mean(lat_vals)
-            std = pstdev(lat_vals)
-            recent = [v for ts, v in self._latency_samples[name] if ts >= utcnow() - timedelta(minutes=5)]
-            if recent and std > 0:
-                recent_avg = mean(recent)
-                z = (recent_avg - avg) / std
-                if z >= self.LATENCY_Z_THRESHOLD:
-                    anomalies.append(Anomaly(
-                        id=f"an_{uuid.uuid4().hex[:10]}",
-                        engine=name,
-                        anomaly_type=AnomalyType.LATENCY_SPIKE,
-                        description=f"Latency {z:.1f}σ above baseline",
-                        severity=AlertLevel.WARNING,
-                        observed_value=recent_avg,
-                        expected_value=avg,
-                        deviation=z,
-                        confidence=min(1.0, z / 6.0),
-                    ))
-
-        errors_5m = sum(1 for ts in self._error_counts[name] if ts >= utcnow() - timedelta(minutes=5))
-        errors_1h = sum(1 for ts in self._error_counts[name] if ts >= utcnow() - timedelta(hours=1))
-        baseline_5m = errors_1h / 12.0 if errors_1h else 0.0
-
-        if errors_5m >= 3 and (baseline_5m == 0 or errors_5m >= baseline_5m * self.ERROR_SPIKE_MULTIPLIER):
-            anomalies.append(Anomaly(
-                id=f"an_{uuid.uuid4().hex[:10]}",
-                engine=name,
-                anomaly_type=AnomalyType.ERROR_SPIKE,
-                description=f"{errors_5m} errors in 5min",
-                severity=AlertLevel.CRITICAL if errors_5m >= 10 else AlertLevel.WARNING,
-                observed_value=errors_5m,
-                expected_value=baseline_5m,
-                deviation=errors_5m / max(baseline_5m, 1.0),
-                confidence=0.9,
-            ))
-
-        resources = self._metrics[name]
-        if "cpu_percent" in resources:
-            recent_cpu = list(resources["cpu_percent"])[-3:]
-            if recent_cpu and all(e.value > 90 for e in recent_cpu):
-                anomalies.append(Anomaly(
-                    id=f"an_{uuid.uuid4().hex[:10]}",
-                    engine=name,
-                    anomaly_type=AnomalyType.RESOURCE_PRESSURE,
-                    description="CPU > 90% sustained",
-                    severity=AlertLevel.WARNING,
-                    observed_value=mean(e.value for e in recent_cpu),
-                    expected_value=50.0,
-                    deviation=1.0,
-                    confidence=0.8,
-                ))
-
-        return anomalies
-
-    # ═══════════════════════════════════════════════════════════════════
-    # DIAGNOSIS
-    # ═══════════════════════════════════════════════════════════════════
-
-    def diagnose(self) -> List[Diagnosis]:
-        snapshot = self.take_snapshot()
-        diagnoses = []
+        detected: List[Anomaly] = []
 
         for name, health in snapshot.engines.items():
-            if health.status == EngineStatus.OFFLINE:
-                root, chain, conf = self._find_root_cause(name, snapshot)
-                d = Diagnosis(
-                    id=f"diag_{uuid.uuid4().hex[:10]}",
-                    engine=name,
-                    symptom=f"{name} offline",
-                    root_cause=root,
-                    severity=AlertLevel.CRITICAL,
-                    affected_engines=self._deps.get_dependents(name),
-                    dependency_chain=chain,
-                    recommended_action=self._recommend_fix(name, "offline"),
-                    auto_fixable=self._can_auto_fix(name, "offline"),
-                    confidence=conf,
-                    risk_score=health.risk_score,
-                )
-                d.escalation = self._determine_escalation(d, health)
-                diagnoses.append(d)
-            elif health.status == EngineStatus.DEGRADED:
-                root, chain, conf = self._find_root_cause(name, snapshot)
-                total = health.error_count_1h + health.success_count_1h
-                d = Diagnosis(
-                    id=f"diag_{uuid.uuid4().hex[:10]}",
-                    engine=name,
-                    symptom=f"{name} degraded",
-                    root_cause=root,
-                    severity=AlertLevel.CRITICAL if (health.error_count_1h / max(total, 1)) >= self.ERROR_CRITICAL_THRESHOLD else AlertLevel.WARNING,
-                    affected_engines=self._deps.get_dependents(name),
-                    dependency_chain=chain,
-                    recommended_action=self._recommend_fix(name, "degraded"),
-                    auto_fixable=self._can_auto_fix(name, "degraded"),
-                    confidence=conf,
-                    risk_score=health.risk_score,
-                )
-                d.escalation = self._determine_escalation(d, health)
-                diagnoses.append(d)
 
-        self._diagnoses.extend(diagnoses)
+            latency_values = [
+                value
+                for _, value
+                in self._latency_samples[name]
+            ]
+
+            if (
+                len(latency_values)
+                >= self.MIN_SAMPLES_FOR_ANOMALY
+            ):
+                average = mean(
+                    latency_values
+                )
+
+                standard_deviation = pstdev(
+                    latency_values
+                )
+
+                recent_values = [
+                    value
+                    for timestamp, value
+                    in self._latency_samples[name]
+                    if (
+                        timestamp
+                        >= utcnow()
+                        - timedelta(minutes=5)
+                    )
+                ]
+
+                if (
+                    recent_values
+                    and standard_deviation > 0
+                ):
+                    recent_average = mean(
+                        recent_values
+                    )
+
+                    z_score = (
+                        recent_average
+                        - average
+                    ) / standard_deviation
+
+                    if (
+                        z_score
+                        >= self.LATENCY_Z_THRESHOLD
+                    ):
+                        detected.append(
+                            Anomaly(
+                                id=(
+                                    "an_"
+                                    + uuid.uuid4().hex[:10]
+                                ),
+                                engine=name,
+                                anomaly_type=(
+                                    AnomalyType.LATENCY_SPIKE
+                                ),
+                                description=(
+                                    f"Latency {z_score:.1f}σ "
+                                    "above baseline"
+                                ),
+                                severity=(
+                                    AlertLevel.WARNING
+                                ),
+                                observed_value=(
+                                    recent_average
+                                ),
+                                expected_value=average,
+                                deviation=z_score,
+                                confidence=min(
+                                    1.0,
+                                    z_score / 6.0,
+                                ),
+                            )
+                        )
+
+            errors_5m = health.error_count_5m
+            errors_1h = health.error_count_1h
+
+            baseline_5m = (
+                errors_1h / 12.0
+                if errors_1h
+                else 0.0
+            )
+
+            if (
+                errors_5m >= 3
+                and (
+                    baseline_5m == 0
+                    or errors_5m
+                    >= baseline_5m
+                    * self.ERROR_SPIKE_MULTIPLIER
+                )
+            ):
+                detected.append(
+                    Anomaly(
+                        id=(
+                            "an_"
+                            + uuid.uuid4().hex[:10]
+                        ),
+                        engine=name,
+                        anomaly_type=(
+                            AnomalyType.ERROR_SPIKE
+                        ),
+                        description=(
+                            f"{errors_5m} errors "
+                            "in five minutes"
+                        ),
+                        severity=(
+                            AlertLevel.CRITICAL
+                            if errors_5m >= 10
+                            else AlertLevel.WARNING
+                        ),
+                        observed_value=errors_5m,
+                        expected_value=baseline_5m,
+                        deviation=(
+                            errors_5m
+                            / max(
+                                baseline_5m,
+                                1.0,
+                            )
+                        ),
+                        confidence=0.90,
+                    )
+                )
+
+            # Resource anomalies.
+            if (
+                snapshot.resources.mode
+                in (
+                    ResourceMode.PRESSURED,
+                    ResourceMode.EMERGENCY,
+                )
+            ):
+                detected.append(
+                    Anomaly(
+                        id=(
+                            "an_"
+                            + uuid.uuid4().hex[:10]
+                        ),
+                        engine=name,
+                        anomaly_type=(
+                            AnomalyType.MEMORY_PRESSURE
+                        ),
+                        description=(
+                            "Application resource "
+                            "pressure detected"
+                        ),
+                        severity=(
+                            AlertLevel.CRITICAL
+                            if (
+                                snapshot.resources.mode
+                                == ResourceMode.EMERGENCY
+                            )
+                            else AlertLevel.WARNING
+                        ),
+                        observed_value=(
+                            snapshot.resources.rss_mb
+                        ),
+                        expected_value=0.0,
+                        confidence=0.95,
+                    )
+                )
+
+        # Global resource anomaly.
+        if (
+            snapshot.resources.mode
+            == ResourceMode.EMERGENCY
+        ):
+            detected.append(
+                Anomaly(
+                    id=(
+                        "an_"
+                        + uuid.uuid4().hex[:10]
+                    ),
+                    engine="system",
+                    anomaly_type=(
+                        AnomalyType.RESOURCE_PRESSURE
+                    ),
+                    description=(
+                        "Emergency resource pressure"
+                    ),
+                    severity=AlertLevel.CRITICAL,
+                    observed_value=(
+                        snapshot.resources.memory_percent
+                    ),
+                    expected_value=70.0,
+                    confidence=0.98,
+                )
+            )
+
+        # Deduplicate against recent unresolved anomalies.
+        for anomaly in detected:
+
+            duplicate = False
+
+            for existing in reversed(
+                self._anomalies
+            ):
+                if (
+                    existing.engine
+                    == anomaly.engine
+                    and existing.anomaly_type
+                    == anomaly.anomaly_type
+                    and not existing.resolved
+                    and (
+                        utcnow()
+                        - existing.detected_at
+                    ).total_seconds()
+                    < 300
+                ):
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                self._anomalies.append(
+                    anomaly
+                )
+
+        return detected
+
+    # =========================================================================
+    # DIAGNOSIS
+    # =========================================================================
+
+    def diagnose(
+        self,
+        snapshot: Optional[SystemSnapshot] = None,
+    ) -> List[Diagnosis]:
+
+        if snapshot is None:
+            snapshot = self._current_snapshot
+
+        if snapshot is None:
+            return []
+
+        diagnoses: List[Diagnosis] = []
+
+        for name, health in snapshot.engines.items():
+
+            if health.status not in (
+                EngineStatus.OFFLINE,
+                EngineStatus.DEGRADED,
+            ):
+                continue
+
+            root_cause, chain, confidence = (
+                self._find_root_cause(
+                    name,
+                    snapshot,
+                )
+            )
+
+            if health.status == EngineStatus.OFFLINE:
+                severity = AlertLevel.CRITICAL
+                problem = "offline"
+
+            else:
+                total = (
+                    health.error_count_1h
+                    + health.success_count_1h
+                )
+
+                error_rate = (
+                    health.error_count_1h
+                    / max(
+                        total,
+                        1,
+                    )
+                )
+
+                severity = (
+                    AlertLevel.CRITICAL
+                    if error_rate
+                    >= self.ERROR_CRITICAL_THRESHOLD
+                    else AlertLevel.WARNING
+                )
+
+                problem = "degraded"
+
+            diagnosis = Diagnosis(
+                id=(
+                    "diag_"
+                    + uuid.uuid4().hex[:10]
+                ),
+                engine=name,
+                symptom=(
+                    f"{name} {health.status.value}"
+                ),
+                root_cause=root_cause,
+                severity=severity,
+                affected_engines=(
+                    self._deps.get_dependents(name)
+                ),
+                dependency_chain=chain,
+                recommended_action=(
+                    self._recommend_fix(
+                        name,
+                        problem,
+                    )
+                ),
+                auto_fixable=(
+                    self._can_auto_fix(
+                        name,
+                        problem,
+                    )
+                ),
+                confidence=confidence,
+                risk_score=health.risk_score,
+            )
+
+            diagnosis.escalation = (
+                self._determine_escalation(
+                    diagnosis
+                )
+            )
+
+            diagnoses.append(diagnosis)
+
+        self._diagnoses.extend(
+            diagnoses
+        )
+
         return diagnoses
 
-    def _find_root_cause(self, engine_name: str, snapshot: SystemSnapshot) -> Tuple[str, List[str], float]:
-        health = snapshot.engines.get(engine_name)
+    def _find_root_cause(
+        self,
+        engine_name: str,
+        snapshot: SystemSnapshot,
+    ) -> Tuple[str, List[str], float]:
+
+        health = snapshot.engines.get(
+            engine_name
+        )
+
         if not health:
-            return ("Engine not in snapshot", [], 0.0)
+            return (
+                "Engine not present in snapshot",
+                [],
+                0.0,
+            )
+
         chain = [engine_name]
-        visited = set()
+
+        visited: Set[str] = set()
+
         current = engine_name
+
         while current not in visited:
+
             visited.add(current)
-            deps = self._deps.get_dependencies(current)
-            unhealthy = [d for d in deps if snapshot.engines.get(d) and snapshot.engines[d].status in (EngineStatus.OFFLINE, EngineStatus.DEGRADED)]
+
+            dependencies = (
+                self._deps.get_dependencies(
+                    current
+                )
+            )
+
+            unhealthy = []
+
+            for dependency in dependencies:
+
+                dependency_health = (
+                    snapshot.engines.get(
+                        dependency
+                    )
+                )
+
+                if (
+                    dependency_health
+                    and dependency_health.status
+                    in (
+                        EngineStatus.OFFLINE,
+                        EngineStatus.DEGRADED,
+                    )
+                ):
+                    unhealthy.append(
+                        dependency
+                    )
+
             if not unhealthy:
                 break
-            offline = [d for d in unhealthy if snapshot.engines[d].status == EngineStatus.OFFLINE]
-            current = offline[0] if offline else unhealthy[0]
+
+            offline = [
+                dependency
+                for dependency in unhealthy
+                if (
+                    snapshot.engines[
+                        dependency
+                    ].status
+                    == EngineStatus.OFFLINE
+                )
+            ]
+
+            current = (
+                offline[0]
+                if offline
+                else unhealthy[0]
+            )
+
             chain.append(current)
+
         if len(chain) > 1:
-            return (f"Dependency chain: {' → '.join(chain)}", chain, 0.92)
+            return (
+                "Dependency failure: "
+                + " → ".join(chain),
+                chain,
+                0.92,
+            )
+
         if health.error_count_1h > 10:
-            return ("High error rate", chain, 0.70)
+            return (
+                "High error rate",
+                chain,
+                0.72,
+            )
+
         if health.avg_latency_ms > 5000:
-            return ("Severe latency", chain, 0.75)
-        if health.status == EngineStatus.STALE:
-            return ("Engine inactive", chain, 0.65)
-        return ("No definitive root cause", chain, 0.35)
+            return (
+                "Severe latency",
+                chain,
+                0.78,
+            )
 
-    def _recommend_fix(self, engine_name: str, problem: str) -> str:
-        return {
-            "offline": f"Recover {engine_name}, verify health",
-            "degraded": f"Inspect {engine_name} error rate",
-            "stale": f"Verify {engine_name} activity",
-        }.get(problem, f"Investigate {engine_name}")
+        if health.status == EngineStatus.DEGRADED:
+            return (
+                "Engine degradation",
+                chain,
+                0.60,
+            )
 
-    def _can_auto_fix(self, engine_name: str, problem: str) -> bool:
-        return engine_name in self._recovery_handlers and self._recovery_allowed(engine_name)
+        return (
+            "No definitive root cause",
+            chain,
+            0.35,
+        )
 
-    def _recovery_allowed(self, engine_name: str) -> bool:
-        now = utcnow()
-        cutoff = now - timedelta(hours=1)
-        recent = [ts for ts in self._recovery_timestamps[engine_name] if ts >= cutoff]
-        self._recovery_timestamps[engine_name] = deque(recent, maxlen=50)
-        return len(recent) < self.MAX_RECOVERY_ATTEMPTS_PER_HOUR
+    # =========================================================================
+    # RECOVERY INTELLIGENCE
+    # =========================================================================
 
-    def _determine_escalation(self, d: Diagnosis, health: EngineHealth) -> EscalationTier:
-        if d.confidence < 0.5 and d.auto_fixable:
-            return EscalationTier.LOG_ONLY
-        if d.severity == AlertLevel.WARNING and health.risk_score < 50:
+    def _recommend_fix(
+        self,
+        engine_name: str,
+        problem: str,
+    ) -> str:
+
+        recommendations = {
+            "offline": (
+                f"Recover {engine_name}, "
+                "then verify health"
+            ),
+            "degraded": (
+                f"Inspect {engine_name} "
+                "error rate and dependencies"
+            ),
+        }
+
+        return recommendations.get(
+            problem,
+            f"Investigate {engine_name}",
+        )
+
+    def _can_auto_fix(
+        self,
+        engine_name: str,
+        problem: str,
+    ) -> bool:
+
+        if (
+            self._current_resources.mode
+            in (
+                ResourceMode.PRESSURED,
+                ResourceMode.EMERGENCY,
+            )
+        ):
+            return False
+
+        if engine_name not in self._recovery_handlers:
+            return False
+
+        return self._recovery_allowed(
+            engine_name
+        )
+
+    def _recovery_allowed(
+        self,
+        engine_name: str,
+    ) -> bool:
+
+        timestamps = (
+            self._recovery_timestamps[
+                engine_name
+            ]
+        )
+
+        cutoff = (
+            utcnow()
+            - timedelta(hours=1)
+        )
+
+        while (
+            timestamps
+            and timestamps[0] < cutoff
+        ):
+            timestamps.popleft()
+
+        return (
+            len(timestamps)
+            < self.MAX_RECOVERY_ATTEMPTS_PER_HOUR
+        )
+
+    def _determine_escalation(
+        self,
+        diagnosis: Diagnosis,
+    ) -> EscalationTier:
+
+        if diagnosis.severity == AlertLevel.WARNING:
             return EscalationTier.DASHBOARD
-        if d.severity == AlertLevel.CRITICAL and d.auto_fixable and d.confidence > 0.7:
+
+        if (
+            diagnosis.severity
+            == AlertLevel.CRITICAL
+            and diagnosis.auto_fixable
+            and diagnosis.confidence
+            >= self.RECOVERY_MIN_CONFIDENCE
+        ):
             return EscalationTier.TELEGRAM
-        if d.severity == AlertLevel.CRITICAL and not d.auto_fixable:
+
+        if diagnosis.severity == AlertLevel.CRITICAL:
             return EscalationTier.EMAIL
+
         return EscalationTier.DASHBOARD
 
-    # ═══════════════════════════════════════════════════════════════════
-    # AUTO-HEAL
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
+    # CASCADING FAILURE DETECTION
+    # =========================================================================
 
-    def auto_heal(self) -> List[str]:
-        diagnoses = self.diagnose()
-        diagnoses.extend(self.detect_cascading_failures())
-        diagnoses.sort(key=lambda d: {AlertLevel.CRITICAL: 0, AlertLevel.WARNING: 1, AlertLevel.INFO: 2}[d.severity])
+    def detect_cascading_failures(
+        self,
+        snapshot: Optional[SystemSnapshot] = None,
+    ) -> List[Diagnosis]:
 
-        actions = []
-        processed = set()
-        for d in diagnoses:
-            if d.severity == AlertLevel.CRITICAL:
-                self._send_alert(d)
-                self._send_telegram_alert(d)
-                continue
-            if d.severity == AlertLevel.INFO:
-                continue
-            if not d.auto_fixable or d.risk_score >= 30 or d.engine in processed or not self._recovery_allowed(d.engine):
-                continue
-            processed.add(d.engine)
-            attempt = self._perform_recovery(d)
-            self._recovery_history.append(attempt)
-            actions.append(f"AUTO-HEAL: {d.engine} — {attempt.status.value}")
-        return actions
-
-    def _perform_recovery(self, d: Diagnosis) -> RecoveryAttempt:
-        started = utcnow()
-        attempt = RecoveryAttempt(
-            id=f"rec_{uuid.uuid4().hex[:10]}",
-            engine=d.engine,
-            reason=d.symptom,
-            started_at=started,
-            action=d.recommended_action,
-        )
-        self._recovery_timestamps[d.engine].append(started)
-        try:
-            handler = self._recovery_handlers.get(d.engine)
-            if not handler:
-                raise RuntimeError("No recovery handler")
-            handler(d)
-            attempt.status = RecoveryStatus.SUCCESS
-            attempt.finished_at = utcnow()
-            time.sleep(0.5)
-            health = self.check_engine_health(d.engine, record_history=False)
-            if health.status == EngineStatus.NOMINAL:
-                attempt.status = RecoveryStatus.VERIFIED
-                attempt.verification_passed = True
-            d.resolved_at = utcnow()
-        except Exception as exc:
-            attempt.status = RecoveryStatus.FAILED
-            attempt.finished_at = utcnow()
-            attempt.error = f"{type(exc).__name__}: {exc}"
-        return attempt
-
-    def detect_cascading_failures(self, snapshot: Optional[SystemSnapshot] = None) -> List[Diagnosis]:
         if snapshot is None:
-            snapshot = self.take_snapshot()
-        results = []
+            snapshot = self._current_snapshot
+
+        if snapshot is None:
+            return []
+
+        results: List[Diagnosis] = []
+
         for root in self._deps.nodes():
-            rh = snapshot.engines.get(root)
-            if not rh or rh.status not in (EngineStatus.OFFLINE, EngineStatus.DEGRADED):
+
+            root_health = snapshot.engines.get(
+                root
+            )
+
+            if not root_health:
                 continue
-            affected = [d for d in self._collect_dependents(root) if snapshot.engines.get(d) and snapshot.engines[d].status in (EngineStatus.OFFLINE, EngineStatus.DEGRADED)]
+
+            if root_health.status not in (
+                EngineStatus.OFFLINE,
+                EngineStatus.DEGRADED,
+            ):
+                continue
+
+            affected: List[str] = []
+
+            queue = deque(
+                self._deps.get_dependents(root)
+            )
+
+            visited: Set[str] = set()
+
+            while queue:
+
+                current = queue.popleft()
+
+                if current in visited:
+                    continue
+
+                visited.add(current)
+
+                current_health = (
+                    snapshot.engines.get(
+                        current
+                    )
+                )
+
+                if (
+                    current_health
+                    and current_health.status
+                    in (
+                        EngineStatus.OFFLINE,
+                        EngineStatus.DEGRADED,
+                    )
+                ):
+                    affected.append(
+                        current
+                    )
+
+                queue.extend(
+                    self._deps.get_dependents(
+                        current
+                    )
+                )
+
             if len(affected) >= 2:
-                results.append(Diagnosis(
-                    id=f"cascade_{uuid.uuid4().hex[:10]}",
-                    engine=root,
-                    symptom=f"{len(affected)} dependents degraded",
-                    root_cause=f"Cascading from {root}",
-                    severity=AlertLevel.CRITICAL,
-                    affected_engines=affected,
-                    dependency_chain=[root] + affected,
-                    recommended_action=f"Stabilize {root} first",
-                    auto_fixable=self._can_auto_fix(root, "degraded"),
-                    confidence=0.88,
-                ))
+
+                results.append(
+                    Diagnosis(
+                        id=(
+                            "cascade_"
+                            + uuid.uuid4().hex[:10]
+                        ),
+                        engine=root,
+                        symptom=(
+                            f"{len(affected)} "
+                            "dependent engines affected"
+                        ),
+                        root_cause=(
+                            f"Potential cascading "
+                            f"failure originating at {root}"
+                        ),
+                        severity=AlertLevel.CRITICAL,
+                        affected_engines=affected[
+                            :20
+                        ],
+                        dependency_chain=(
+                            [root]
+                            + affected[:20]
+                        ),
+                        recommended_action=(
+                            f"Stabilize {root} "
+                            "before dependent engines"
+                        ),
+                        auto_fixable=(
+                            self._can_auto_fix(
+                                root,
+                                "degraded",
+                            )
+                        ),
+                        confidence=0.88,
+                    )
+                )
+
         return results
 
-    def _collect_dependents(self, engine: str) -> List[str]:
-        result, visited, queue = [], set(), deque(self._deps.get_dependents(engine))
-        while queue:
-            cur = queue.popleft()
-            if cur in visited:
-                continue
-            visited.add(cur)
-            result.append(cur)
-            queue.extend(self._deps.get_dependents(cur))
-        return result
+    # =========================================================================
+    # INCIDENT MANAGEMENT
+    # =========================================================================
 
-    # ═══════════════════════════════════════════════════════════════════
-    # ALERTING
-    # ═══════════════════════════════════════════════════════════════════
+    def _create_incidents(
+        self,
+        diagnoses: List[Diagnosis],
+    ) -> List[Incident]:
 
-    def _send_alert(self, d: Diagnosis) -> None:
-        if self._alert_callback:
-            try:
-                self._alert_callback(d)
-            except Exception as exc:
-                logger.error("Alert callback failed: %s", exc)
+        created: List[Incident] = []
 
-    def _send_telegram_alert(self, d: Diagnosis) -> None:
-        if not self.alert_limiter.can_send():
-            return
-        key = f"{d.engine}:{d.severity.value}"
-        now = time.monotonic()
-        if now - self._last_telegram_alert.get(key, 0) < 300:
-            return
-        self._last_telegram_alert[key] = now
-        self.alert_limiter.record_send()
-        try:
-            from services.email_service import email_service
-            email_service.send_telegram(
-                f"🔴 <b>OVERSEER CRITICAL: {d.engine}</b>\n{d.symptom}\n{d.root_cause}\n<i>{utcnow().strftime('%H:%M UTC')}</i>"
-            )
-        except Exception as exc:
-            logger.error("Telegram alert failed: %s", exc)
+        for diagnosis in diagnoses:
 
-    # ═══════════════════════════════════════════════════════════════════
-    # INCIDENT MANAGEMENT (with cleanup)
-    # ═══════════════════════════════════════════════════════════════════
+            existing = None
 
-    def _create_incidents(self, diagnoses: List[Diagnosis]) -> List[Incident]:
-        created = []
-        for d in diagnoses:
-            existing = next(
-                (i for i in self._incidents.values()
-                 if i.primary_engine == d.engine
-                 and i.status != IncidentStatus.RESOLVED
-                 and i.created_at >= utcnow() - timedelta(seconds=self.INCIDENT_DEDUP_SECONDS)),
-                None,
-            )
+            for incident in self._incidents.values():
+
+                if (
+                    incident.primary_engine
+                    != diagnosis.engine
+                ):
+                    continue
+
+                if incident.status in (
+                    IncidentStatus.RESOLVED,
+                ):
+                    continue
+
+                if (
+                    utcnow()
+                    - incident.created_at
+                ).total_seconds() <= (
+                    self.INCIDENT_DEDUP_SECONDS
+                ):
+                    existing = incident
+                    break
+
             if existing:
-                existing.diagnoses.append(d.id)
+
+                if (
+                    diagnosis.id
+                    not in existing.diagnoses
+                ):
+                    existing.diagnoses.append(
+                        diagnosis.id
+                    )
+
                 existing.updated_at = utcnow()
+
                 continue
+
+            # Hard incident cap.
+            if (
+                len(self._incidents)
+                >= self.MAX_INCIDENTS
+            ):
+                self._cleanup_old_incidents()
+
+                if (
+                    len(self._incidents)
+                    >= self.MAX_INCIDENTS
+                ):
+                    continue
+
             incident = Incident(
-                id=f"inc_{uuid.uuid4().hex[:10]}",
-                title=d.symptom,
-                severity=d.severity,
+                id=(
+                    "inc_"
+                    + uuid.uuid4().hex[:10]
+                ),
+                title=diagnosis.symptom,
+                severity=diagnosis.severity,
                 status=IncidentStatus.OPEN,
-                primary_engine=d.engine,
-                affected_engines=d.affected_engines,
-                diagnoses=[d.id],
-                root_cause=d.root_cause,
-                confidence=d.confidence,
+                primary_engine=diagnosis.engine,
+                affected_engines=(
+                    diagnosis.affected_engines[
+                        :20
+                    ]
+                ),
+                diagnoses=[diagnosis.id],
+                root_cause=diagnosis.root_cause,
+                confidence=diagnosis.confidence,
             )
-            self._incidents[incident.id] = incident
+
+            self._incidents[
+                incident.id
+            ] = incident
+
             created.append(incident)
+
         return created
 
     def _cleanup_old_incidents(self) -> None:
-        cutoff = utcnow() - timedelta(hours=1)
-        for incident_id in list(self._incidents.keys()):
-            incident = self._incidents[incident_id]
-            if incident.status == IncidentStatus.RESOLVED and incident.resolved_at and incident.resolved_at < cutoff:
-                del self._incidents[incident_id]
 
-    def learn_from_incident(self, incident: Incident) -> None:
-        if incident.status != IncidentStatus.RESOLVED:
+        cutoff = (
+            utcnow()
+            - timedelta(
+                seconds=self.RESOLVED_INCIDENT_RETENTION_SECONDS
+            )
+        )
+
+        for incident_id in list(
+            self._incidents.keys()
+        ):
+
+            incident = self._incidents[
+                incident_id
+            ]
+
+            if (
+                incident.status
+                == IncidentStatus.RESOLVED
+                and incident.resolved_at
+                and incident.resolved_at < cutoff
+            ):
+                del self._incidents[
+                    incident_id
+                ]
+
+    # =========================================================================
+    # LEARNING
+    # =========================================================================
+
+    def learn_from_incident(
+        self,
+        incident: Incident,
+    ) -> None:
+
+        if (
+            incident.status
+            != IncidentStatus.RESOLVED
+        ):
             return
-        signature = f"{incident.primary_engine}:{incident.root_cause}"
-        existing = next((p for p in self._failure_patterns if p.signature == signature), None)
+
+        signature = (
+            incident.primary_engine
+            + ":"
+            + incident.root_cause
+        )
+
+        existing = next(
+            (
+                pattern
+                for pattern
+                in self._failure_patterns
+                if pattern.signature
+                == signature
+            ),
+            None,
+        )
+
         if existing:
+
             existing.occurrences += 1
             existing.last_seen = utcnow()
+
+            if incident.recovery_attempts:
+                existing.fix_applied = (
+                    incident.recovery_attempts[-1]
+                )
+
         else:
-            self._failure_patterns.append(FailurePattern(
-                id=f"fp_{uuid.uuid4().hex[:10]}",
-                signature=signature,
-                root_cause=incident.root_cause,
-                fix_applied=incident.recovery_attempts[0] if incident.recovery_attempts else "manual",
-                occurrences=1,
-                last_seen=utcnow(),
-            ))
 
-    # ═══════════════════════════════════════════════════════════════════
-    # PREDICTIONS
-    # ═══════════════════════════════════════════════════════════════════
+            self._failure_patterns.append(
+                FailurePattern(
+                    id=(
+                        "fp_"
+                        + uuid.uuid4().hex[:10]
+                    ),
+                    signature=signature,
+                    root_cause=incident.root_cause,
+                    fix_applied=(
+                        incident.recovery_attempts[0]
+                        if incident.recovery_attempts
+                        else "manual"
+                    ),
+                    occurrences=1,
+                )
+            )
 
-    def predict_failures(self) -> List[Prediction]:
-        predictions = []
-        for name in self._engines:
-            history = list(self._health_history[name])
-            if len(history) < self.PREDICTION_MIN_SAMPLES:
+    # =========================================================================
+    # RECOVERY
+    # =========================================================================
+
+    def _perform_recovery(
+        self,
+        diagnosis: Diagnosis,
+    ) -> RecoveryAttempt:
+
+        started = utcnow()
+
+        attempt = RecoveryAttempt(
+            id=(
+                "rec_"
+                + uuid.uuid4().hex[:10]
+            ),
+            engine=diagnosis.engine,
+            reason=diagnosis.symptom,
+            started_at=started,
+            action=diagnosis.recommended_action,
+            status=RecoveryStatus.RUNNING,
+        )
+
+        handler = self._recovery_handlers.get(
+            diagnosis.engine
+        )
+
+        if not handler:
+            attempt.status = (
+                RecoveryStatus.FAILED
+            )
+
+            attempt.error = (
+                "No recovery handler registered"
+            )
+
+            attempt.finished_at = utcnow()
+
+            return attempt
+
+        try:
+            handler(diagnosis)
+
+            attempt.status = (
+                RecoveryStatus.SUCCESS
+            )
+
+            attempt.finished_at = utcnow()
+
+            # Invalidate cache so verification performs a real probe.
+            self._cached_health.pop(
+                diagnosis.engine,
+                None,
+            )
+
+            health = self.check_engine_health(
+                diagnosis.engine,
+                force=True,
+                record_history=False,
+            )
+
+            if (
+                health.status
+                == EngineStatus.NOMINAL
+            ):
+                attempt.status = (
+                    RecoveryStatus.VERIFIED
+                )
+
+                attempt.verification_passed = True
+
+            else:
+                attempt.error = (
+                    "Recovery completed but "
+                    "health verification failed"
+                )
+
+        except Exception as exc:
+
+            attempt.status = (
+                RecoveryStatus.FAILED
+            )
+
+            attempt.error = (
+                f"{type(exc).__name__}: {exc}"
+            )
+
+            logger.error(
+                "Recovery failed for %s: %s",
+                diagnosis.engine,
+                exc,
+            )
+
+        attempt.finished_at = utcnow()
+
+        return attempt
+
+    def _start_recovery(
+        self,
+        diagnosis: Diagnosis,
+    ) -> bool:
+
+        if not self._recovery_allowed_by_resources():
+            return False
+
+        if (
+            not diagnosis.auto_fixable
+            or diagnosis.confidence
+            < self.RECOVERY_MIN_CONFIDENCE
+            or diagnosis.risk_score
+            > self.RECOVERY_MAX_RISK_SCORE
+        ):
+            return False
+
+        if (
+            not self._recovery_allowed(
+                diagnosis.engine
+            )
+        ):
+            return False
+
+        if self._recovery_executor.busy():
+            return False
+
+        self._recovery_timestamps[
+            diagnosis.engine
+        ].append(utcnow())
+
+        future = self._recovery_executor.submit(
+            self._perform_recovery,
+            diagnosis,
+        )
+
+        if future is None:
+            return False
+
+        def _complete(
+            completed: Future,
+        ) -> None:
+
+            try:
+                attempt = completed.result()
+
+                self._recovery_history.append(
+                    attempt
+                )
+
+                for incident in self._incidents.values():
+
+                    if (
+                        incident.primary_engine
+                        == diagnosis.engine
+                        and incident.status
+                        not in (
+                            IncidentStatus.RESOLVED,
+                        )
+                    ):
+                        incident.recovery_attempts.append(
+                            attempt.id
+                        )
+
+                        incident.status = (
+                            IncidentStatus.HEALING
+                        )
+
+                        incident.updated_at = (
+                            utcnow()
+                        )
+
+            except Exception:
+                logger.exception(
+                    "Meta Engine recovery callback failed"
+                )
+
+        future.add_done_callback(
+            _complete
+        )
+
+        return True
+
+    # =========================================================================
+    # ALERTING
+    # =========================================================================
+
+    def _send_alert(
+        self,
+        diagnosis: Diagnosis,
+    ) -> None:
+
+        if not self._alert_callback:
+            return
+
+        try:
+            self._alert_callback(
+                diagnosis
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "Alert callback failed: %s",
+                exc,
+            )
+
+    def _send_telegram_alert(
+        self,
+        diagnosis: Diagnosis,
+    ) -> None:
+
+        if not self._alert_limiter.can_send():
+            return
+
+        key = (
+            diagnosis.engine
+            + ":"
+            + diagnosis.severity.value
+        )
+
+        now = time.monotonic()
+
+        if (
+            now
+            - self._last_alert.get(
+                key,
+                0.0,
+            )
+            < 300
+        ):
+            return
+
+        self._last_alert[key] = now
+
+        self._alert_limiter.record_send()
+
+        try:
+            from services.email_service import email_service
+
+            email_service.send_telegram(
+                (
+                    f"🔴 <b>OVERSEER CRITICAL: "
+                    f"{diagnosis.engine}</b>\n"
+                    f"{diagnosis.symptom}\n"
+                    f"{diagnosis.root_cause}\n"
+                    f"<i>{utcnow().strftime('%H:%M UTC')}</i>"
+                )
+            )
+
+        except Exception as exc:
+            logger.debug(
+                "Telegram alert unavailable: %s",
+                exc,
+            )
+
+    # =========================================================================
+    # PREDICTIVE ANALYSIS
+    # =========================================================================
+
+    def predict_failures(
+        self,
+        snapshot: Optional[SystemSnapshot] = None,
+    ) -> List[Prediction]:
+
+        predictions: List[Prediction] = []
+
+        if snapshot is None:
+            snapshot = self._current_snapshot
+
+        if snapshot is None:
+            return predictions
+
+        # Prediction is deliberately skipped under resource pressure.
+        if not self._expensive_operations_allowed():
+            return predictions
+
+        for name in snapshot.engines:
+
+            history = list(
+                self._health_history[name]
+            )
+
+            if (
+                len(history)
+                < self.PREDICTION_MIN_SAMPLES
+            ):
                 continue
-            scores = [h.health_score for h in history[-20:]]
-            n = len(scores)
-            x_mean = (n - 1) / 2
+
+            scores = [
+                health.health_score
+                for health
+                in history[-20:]
+            ]
+
+            count = len(scores)
+
+            if count < 2:
+                continue
+
+            x_mean = (
+                count - 1
+            ) / 2
+
             y_mean = mean(scores)
-            numerator = sum((i - x_mean) * (scores[i] - y_mean) for i in range(n))
-            denominator = sum((i - x_mean) ** 2 for i in range(n))
+
+            numerator = sum(
+                (
+                    index - x_mean
+                )
+                * (
+                    scores[index]
+                    - y_mean
+                )
+                for index in range(count)
+            )
+
+            denominator = sum(
+                (
+                    index - x_mean
+                ) ** 2
+                for index in range(count)
+            )
+
             if denominator == 0:
                 continue
-            slope = numerator / denominator
-            if slope < self.PREDICTION_DECLINE_SLOPE:
-                current = scores[-1]
-                cycles_to_failure = (current - self.PREDICTION_CRITICAL_SCORE) / abs(slope)
-                if cycles_to_failure < self.PREDICTION_MAX_CYCLES:
-                    predictions.append(Prediction(
-                        engine=name,
-                        predicted_failure=f"Critical in {cycles_to_failure:.0f} cycles",
-                        confidence=min(0.9, abs(slope) / 2),
-                        estimated_time_to_failure_minutes=cycles_to_failure * self._monitor_interval_minutes,
-                    ))
-        predictions.sort(key=lambda p: p.estimated_time_to_failure_minutes)
-        self._predictions = deque(predictions, maxlen=self.MAX_PREDICTIONS)
+
+            slope = (
+                numerator
+                / denominator
+            )
+
+            if (
+                slope
+                >= self.PREDICTION_DECLINE_SLOPE
+            ):
+                continue
+
+            current_score = scores[-1]
+
+            cycles_to_failure = (
+                current_score
+                - self.PREDICTION_CRITICAL_SCORE
+            ) / abs(slope)
+
+            if (
+                cycles_to_failure <= 0
+                or cycles_to_failure
+                > self.PREDICTION_MAX_CYCLES
+            ):
+                continue
+
+            confidence = clamp(
+                abs(slope) * 50,
+                0,
+                90,
+            ) / 100
+
+            predictions.append(
+                Prediction(
+                    engine=name,
+                    predicted_failure=(
+                        f"Critical in approximately "
+                        f"{cycles_to_failure:.0f} cycles"
+                    ),
+                    confidence=confidence,
+                    estimated_time_to_failure_minutes=(
+                        cycles_to_failure
+                        * (
+                            self._monitor_interval_seconds
+                            / 60.0
+                        )
+                    ),
+                    contributing_factors=[
+                        (
+                            f"health slope={slope:.2f}"
+                        ),
+                        (
+                            f"current score="
+                            f"{current_score:.1f}"
+                        ),
+                    ],
+                )
+            )
+
+        predictions.sort(
+            key=lambda prediction:
+                prediction.estimated_time_to_failure_minutes
+        )
+
+        self._predictions = deque(
+            predictions[:self.MAX_PREDICTIONS],
+            maxlen=self.MAX_PREDICTIONS,
+        )
+
         return predictions
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STATUS
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
+    # SAFE STATUS
+    # =========================================================================
 
-    def get_status(self) -> Dict[str, Any]:
-        snap = self.take_snapshot()
-        predictions = self.predict_failures()
-        self_health = self.self_monitor.check_self_health()
+    def get_status(
+        self,
+    ) -> Dict[str, Any]:
+
+        # IMPORTANT:
+        # This method DOES NOT trigger a system scan.
+        # API consumers can call it repeatedly without causing monitoring
+        # storms.
+
+        snapshot = self._current_snapshot
+
+        if snapshot is None:
+            snapshot = SystemSnapshot(
+                resources=self._current_resources
+            )
+
         return {
             "version": self.VERSION,
-            "timestamp": iso(snap.timestamp),
-            "overall": snap.overall_status.value,
-            "health_score": snap.health_score,
-            "risk_score": snap.risk_score,
-            "uptime_hours": round(snap.uptime_seconds / 3600, 2),
-            "engine_count": len(snap.engines),
+            "timestamp": iso(
+                snapshot.timestamp
+            ),
+            "overall": (
+                snapshot.overall_status.value
+            ),
+            "health_score": (
+                snapshot.health_score
+            ),
+            "risk_score": (
+                snapshot.risk_score
+            ),
+            "uptime_hours": round(
+                snapshot.uptime_seconds / 3600,
+                2,
+            ),
+            "engine_count": len(
+                self._engines
+            ),
+            "resources": {
+                "rss_mb": snapshot.resources.rss_mb,
+                "memory_percent": (
+                    snapshot.resources.memory_percent
+                ),
+                "cpu_percent": (
+                    snapshot.resources.cpu_percent
+                ),
+                "available_memory_mb": (
+                    snapshot.resources.available_memory_mb
+                ),
+                "disk_percent": (
+                    snapshot.resources.disk_percent
+                ),
+                "mode": (
+                    snapshot.resources.mode.value
+                ),
+            },
             "engines": {
                 name: {
-                    "status": h.status.value,
-                    "health_score": h.health_score,
-                    "risk_score": h.risk_score,
-                    "error_count_1h": h.error_count_1h,
-                    "avg_latency_ms": round(h.avg_latency_ms, 2),
-                    "cpu_percent": round(h.cpu_percent, 1),
-                    "memory_mb": round(h.memory_mb, 1),
-                    "dependents": h.dependents,
+                    "status": (
+                        health.status.value
+                    ),
+                    "health_score": (
+                        health.health_score
+                    ),
+                    "risk_score": (
+                        health.risk_score
+                    ),
+                    "error_count_5m": (
+                        health.error_count_5m
+                    ),
+                    "error_count_1h": (
+                        health.error_count_1h
+                    ),
+                    "throughput_5m": (
+                        health.throughput_5m
+                    ),
+                    "avg_latency_ms": round(
+                        health.avg_latency_ms,
+                        2,
+                    ),
+                    "p95_latency_ms": round(
+                        health.p95_latency_ms,
+                        2,
+                    ),
+                    "cpu_percent": round(
+                        health.cpu_percent,
+                        1,
+                    ),
+                    "memory_mb": round(
+                        health.memory_mb,
+                        1,
+                    ),
+                    "queue_depth": (
+                        health.queue_depth
+                    ),
+                    "dependents": (
+                        health.dependents
+                    ),
+                    "dependencies": (
+                        health.dependencies
+                    ),
+                    "anomalies": (
+                        health.anomaly_flags
+                    ),
                 }
-                for name, h in snap.engines.items()
+                for name, health
+                in snapshot.engines.items()
             },
-            "active_incidents": len([i for i in self._incidents.values() if i.status != IncidentStatus.RESOLVED]),
-            "critical_alerts": snap.critical_alerts,
-            "self_health": self_health,
+            "active_incidents": sum(
+                incident.status
+                not in (
+                    IncidentStatus.RESOLVED,
+                )
+                for incident
+                in self._incidents.values()
+            ),
+            "critical_alerts": (
+                snapshot.critical_alerts
+            ),
             "predictions": [
-                {"engine": p.engine, "predicted_failure": p.predicted_failure, "eta_minutes": p.estimated_time_to_failure_minutes}
-                for p in predictions[:5]
+                {
+                    "engine": prediction.engine,
+                    "predicted_failure": (
+                        prediction.predicted_failure
+                    ),
+                    "confidence": (
+                        prediction.confidence
+                    ),
+                    "eta_minutes": (
+                        prediction
+                        .estimated_time_to_failure_minutes
+                    ),
+                }
+                for prediction
+                in list(
+                    self._predictions
+                )[:5]
             ],
-            "failure_patterns_learned": len(self._failure_patterns),
+            "failure_patterns_learned": (
+                len(self._failure_patterns)
+            ),
             "monitoring": {
                 "running": self._running,
                 "cycle_count": self._cycle_count,
-                "last_cycle": iso(self._last_monitor_cycle),
+                "last_cycle": iso(
+                    self._last_monitor_cycle
+                ),
+                "interval_seconds": (
+                    self._monitor_interval_seconds
+                ),
+                "resource_mode": (
+                    self._current_resources.mode.value
+                ),
+                "recovery_worker_busy": (
+                    self._recovery_executor.busy()
+                ),
+                "health_probe_worker": "single-bounded-worker",
             },
         }
 
-    def get_engine_report(self, engine_name: str) -> Dict[str, Any]:
-        health = self.check_engine_health(engine_name)
-        history = list(self._health_history[engine_name])[-30:]
+    # =========================================================================
+    # ENGINE REPORT
+    # =========================================================================
+
+    def get_engine_report(
+        self,
+        engine_name: str,
+    ) -> Dict[str, Any]:
+
+        health = self.check_engine_health(
+            engine_name,
+            force=False,
+            record_history=False,
+        )
+
+        history = list(
+            self._health_history[
+                engine_name
+            ]
+        )[-20:]
+
         return {
             "engine": engine_name,
             "current": {
                 "status": health.status.value,
-                "health_score": health.health_score,
-                "risk_score": health.risk_score,
-                "error_count_1h": health.error_count_1h,
-                "avg_latency_ms": health.avg_latency_ms,
-                "cpu_percent": health.cpu_percent,
-                "memory_mb": health.memory_mb,
+                "health_score": (
+                    health.health_score
+                ),
+                "risk_score": (
+                    health.risk_score
+                ),
+                "error_count_5m": (
+                    health.error_count_5m
+                ),
+                "error_count_1h": (
+                    health.error_count_1h
+                ),
+                "throughput_5m": (
+                    health.throughput_5m
+                ),
+                "avg_latency_ms": (
+                    health.avg_latency_ms
+                ),
+                "p95_latency_ms": (
+                    health.p95_latency_ms
+                ),
+                "cpu_percent": (
+                    health.cpu_percent
+                ),
+                "memory_mb": (
+                    health.memory_mb
+                ),
+                "queue_depth": (
+                    health.queue_depth
+                ),
             },
-            "dependencies": health.dependencies,
-            "dependents": health.dependents,
-            "history": [{"status": h.status.value, "health_score": h.health_score, "timestamp": iso(h.checked_at)} for h in history],
+            "dependencies": (
+                health.dependencies
+            ),
+            "dependents": (
+                health.dependents
+            ),
+            "history": [
+                {
+                    "status": (
+                        item.status.value
+                    ),
+                    "health_score": (
+                        item.health_score
+                    ),
+                    "risk_score": (
+                        item.risk_score
+                    ),
+                    "timestamp": iso(
+                        item.checked_at
+                    ),
+                }
+                for item in history
+            ],
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # LIFECYCLE
-    # ═══════════════════════════════════════════════════════════════════
+    # =========================================================================
+    # MONITORING CYCLE
+    # =========================================================================
 
-    def start(self, interval_seconds: int = 60) -> None:
-        if self._running:
+    def _run_cycle(self) -> None:
+
+        if self._cycle_running:
+            logger.warning(
+                "Meta Engine skipped overlapping cycle"
+            )
             return
-        self._running = True
-        self._monitor_interval_minutes = max(5, interval_seconds) / 60.0
-        recent = self.persistence.load_recent_snapshot()
-        if recent:
-            logger.info("MetaEngine: loaded previous state from %s", recent.get("timestamp"))
-        self._thread = threading.Thread(target=self._monitoring_loop, args=(max(5, interval_seconds),), daemon=True, name="kanyoza-meta-engine")
-        self._thread.start()
-        logger.info("MetaEngine v%s: monitoring started (every %ds)", self.VERSION, interval_seconds)
+
+        self._cycle_running = True
+
+        cycle_started = time.monotonic()
+
+        try:
+
+            self._cycle_count += 1
+
+            # --------------------------------------------------------------
+            # PHASE 1: RESOURCE SAMPLE
+            # --------------------------------------------------------------
+
+            resources = self._sample_resources()
+
+            # --------------------------------------------------------------
+            # PHASE 2: SINGLE HEALTH SNAPSHOT
+            # --------------------------------------------------------------
+
+            snapshot = self._scan_all_engines(
+                force=True
+            )
+
+            # --------------------------------------------------------------
+            # PHASE 3: CHEAP ANOMALY DETECTION
+            # --------------------------------------------------------------
+
+            anomalies = self.detect_anomalies(
+                snapshot
+            )
+
+            # --------------------------------------------------------------
+            # PHASE 4: DIAGNOSIS
+            # --------------------------------------------------------------
+
+            diagnoses = self.diagnose(
+                snapshot
+            )
+
+            # Cascading analysis is skipped under emergency pressure.
+            if (
+                resources.mode
+                != ResourceMode.EMERGENCY
+            ):
+                diagnoses.extend(
+                    self.detect_cascading_failures(
+                        snapshot
+                    )
+                )
+
+            # --------------------------------------------------------------
+            # PHASE 5: INCIDENTS
+            # --------------------------------------------------------------
+
+            self._create_incidents(
+                diagnoses
+            )
+
+            # --------------------------------------------------------------
+            # PHASE 6: ALERTS + RECOVERY
+            # --------------------------------------------------------------
+
+            for diagnosis in diagnoses:
+
+                if (
+                    diagnosis.severity
+                    == AlertLevel.CRITICAL
+                ):
+                    self._send_alert(
+                        diagnosis
+                    )
+
+                    self._send_telegram_alert(
+                        diagnosis
+                    )
+
+                elif (
+                    diagnosis.auto_fixable
+                    and diagnosis.confidence
+                    >= self.RECOVERY_MIN_CONFIDENCE
+                    and diagnosis.risk_score
+                    <= self.RECOVERY_MAX_RISK_SCORE
+                ):
+                    self._start_recovery(
+                        diagnosis
+                    )
+
+            # --------------------------------------------------------------
+            # PHASE 7: INCIDENT RESOLUTION
+            # --------------------------------------------------------------
+
+            resolved = (
+                self._incident_manager
+                .resolve_healthy_incidents(
+                    snapshot
+                )
+            )
+
+            escalated = (
+                self._incident_manager
+                .escalate_old_incidents()
+            )
+
+            self._cleanup_old_incidents()
+
+            # --------------------------------------------------------------
+            # PHASE 8: EXPENSIVE INTELLIGENCE
+            # --------------------------------------------------------------
+
+            now = time.monotonic()
+
+            expensive_due = (
+                now
+                - self._last_full_diagnostic
+                >= 300
+            )
+
+            if (
+                expensive_due
+                and self._expensive_operations_allowed()
+            ):
+                self.predict_failures(
+                    snapshot
+                )
+
+                self._last_full_diagnostic = now
+
+            # --------------------------------------------------------------
+            # PHASE 9: PERSISTENCE
+            # --------------------------------------------------------------
+
+            # Persistence is internally throttled.
+            self._persistence.save_snapshot(
+                snapshot
+            )
+
+            # --------------------------------------------------------------
+            # PHASE 10: SELF MONITORING
+            # --------------------------------------------------------------
+
+            self._last_monitor_cycle = (
+                utcnow()
+            )
+
+            if resolved:
+                logger.info(
+                    "Meta Engine resolved %d incidents",
+                    resolved,
+                )
+
+            if escalated:
+                logger.warning(
+                    "Meta Engine escalated %d incidents",
+                    escalated,
+                )
+
+            if anomalies:
+                logger.info(
+                    "Meta Engine detected %d anomalies",
+                    len(anomalies),
+                )
+
+            elapsed = (
+                time.monotonic()
+                - cycle_started
+            )
+
+            logger.debug(
+                (
+                    "Meta Engine cycle %d "
+                    "completed in %.2fs "
+                    "(resource mode=%s)"
+                ),
+                self._cycle_count,
+                elapsed,
+                resources.mode.value,
+            )
+
+        except Exception:
+            # Meta Engine failures must NEVER propagate into application
+            # request paths.
+            logger.error(
+                "Meta Engine cycle failed:\n%s",
+                traceback.format_exc(),
+            )
+
+        finally:
+            self._cycle_running = False
+
+    # =========================================================================
+    # LIFECYCLE
+    # =========================================================================
+
+    def start(
+        self,
+        interval_seconds: int = NORMAL_INTERVAL_SECONDS,
+    ) -> None:
+
+        with self._lock:
+
+            if self._running:
+                return
+
+            self._running = True
+
+            self._monitor_interval_seconds = max(
+                30,
+                int(interval_seconds),
+            )
+
+            previous = (
+                self._persistence
+                .load_recent_snapshot()
+            )
+
+            if previous:
+                logger.info(
+                    "Meta Engine restored previous state from %s",
+                    previous.get(
+                        "timestamp"
+                    ),
+                )
+
+            self._thread = threading.Thread(
+                target=self._monitoring_loop,
+                name="kanyoza-meta-supervisor",
+                daemon=True,
+            )
+
+            self._thread.start()
+
+            logger.info(
+                (
+                    "KANYOZA META ENGINE v%s "
+                    "started — adaptive supervision"
+                ),
+                self.VERSION,
+            )
 
     def stop(self) -> None:
-        self._running = False
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5)
+
+        with self._lock:
+
+            if not self._running:
+                return
+
+            self._running = False
+
+        if (
+            self._thread
+            and self._thread.is_alive()
+        ):
+            self._thread.join(
+                timeout=3
+            )
+
         self._thread = None
-        self.health_timeout.shutdown()
-        logger.info("MetaEngine: monitoring stopped")
 
-    def _monitoring_loop(self, interval_seconds: int) -> None:
+        try:
+            self._probe_executor.shutdown()
+        except Exception:
+            pass
+
+        try:
+            self._recovery_executor.shutdown()
+        except Exception:
+            pass
+
+        logger.info(
+            "Meta Engine v%s stopped",
+            self.VERSION,
+        )
+
+    def _monitoring_loop(self) -> None:
+
         while self._running:
+
             cycle_started = time.monotonic()
+
             try:
-                self._cycle_count += 1
-                self.take_snapshot()
-                self.detect_anomalies()
-                diagnoses = self.diagnose()
-                self._create_incidents(diagnoses)
-                actions = self.auto_heal()
-                resolved = self.incident_manager.check_and_resolve()
-                escalated = self.incident_manager.escalate_if_unresolved()
-                self._cleanup_old_incidents()  # v5.0.1
-                self.self_monitor.record_cycle_completed()
-                if resolved:
-                    logger.info("MetaEngine: %d incidents resolved", resolved)
-                if escalated:
-                    logger.warning("MetaEngine: %d incidents escalated", escalated)
-                if actions:
-                    logger.info("MetaEngine: %d recovery actions", len(actions))
-            except Exception as exc:
-                logger.error("MetaEngine cycle failed: %s", exc)
-                self._record_db_failure()
-            elapsed = time.monotonic() - cycle_started
-            sleep_for = max(0.1, interval_seconds - elapsed) + random.uniform(0, 5)
-            end = time.monotonic() + sleep_for
-            while self._running and time.monotonic() < end:
-                time.sleep(min(1.0, max(0.01, end - time.monotonic())))
+                self._run_cycle()
+
+            except Exception:
+                logger.exception(
+                    "Meta Engine supervisor loop error"
+                )
+
+            # Adaptive interval.
+            interval = (
+                self._monitor_interval_seconds
+            )
+
+            if (
+                self._current_resources.mode
+                == ResourceMode.CAUTIOUS
+            ):
+                interval = max(
+                    interval,
+                    self.CAUTIOUS_INTERVAL_SECONDS,
+                )
+
+            elif (
+                self._current_resources.mode
+                == ResourceMode.PRESSURED
+            ):
+                interval = max(
+                    interval,
+                    self.PRESSURED_INTERVAL_SECONDS,
+                )
+
+            elif (
+                self._current_resources.mode
+                == ResourceMode.EMERGENCY
+            ):
+                interval = max(
+                    interval,
+                    self.EMERGENCY_INTERVAL_SECONDS,
+                )
+
+            elapsed = (
+                time.monotonic()
+                - cycle_started
+            )
+
+            sleep_for = max(
+                1.0,
+                interval - elapsed,
+            )
+
+            sleep_for += random.uniform(
+                0,
+                5,
+            )
+
+            end = (
+                time.monotonic()
+                + sleep_for
+            )
+
+            while (
+                self._running
+                and time.monotonic() < end
+            ):
+                time.sleep(
+                    min(
+                        1.0,
+                        max(
+                            0.05,
+                            end
+                            - time.monotonic(),
+                        ),
+                    )
+                )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 # SINGLETON
-# ═══════════════════════════════════════════════════════════════════════════
+# ============================================================================
 
-meta_engine = MetaEngineV5()
+meta_engine = MetaEngineV6()
 
 
-def init_meta_engine(event_bus: Any = None, container: Any = None, supabase_client: Any = None) -> MetaEngineV5:
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+def init_meta_engine(
+    event_bus: Any = None,
+    container: Any = None,
+    supabase_client: Any = None,
+) -> MetaEngineV6:
+
     global meta_engine
+
     try:
         meta_engine.stop()
     except Exception:
         pass
+
     meta_engine.event_bus = event_bus
     meta_engine.container = container
     meta_engine.supabase = supabase_client
-    meta_engine.persistence = StatePersistence(supabase_client=supabase_client)
+
+    meta_engine._persistence = StatePersistence(
+        supabase_client=supabase_client
+    )
+
     meta_engine.register_all_engines()
 
-    def generic_restart(d: Diagnosis) -> None:
-        engine = meta_engine._engines.get(d.engine)
+    # ------------------------------------------------------------------------
+    # Generic conservative recovery handler
+    # ------------------------------------------------------------------------
+
+    def generic_restart(
+        diagnosis: Diagnosis,
+    ) -> None:
+
+        engine = meta_engine._engines.get(
+            diagnosis.engine
+        )
+
         if not engine:
-            raise RuntimeError(f"Unknown engine: {d.engine}")
-        if hasattr(engine, "restart"):
-            engine.restart()
-        elif hasattr(engine, "reset"):
-            engine.reset()
-        elif hasattr(engine, "stop") and hasattr(engine, "start"):
-            engine.stop()
-            time.sleep(0.1)
-            engine.start()
-        else:
-            raise RuntimeError(f"No recovery for {d.engine}")
+            raise RuntimeError(
+                f"Unknown engine: {diagnosis.engine}"
+            )
 
-    for name, engine in list(meta_engine._engines.items()):
-        if any(hasattr(engine, m) for m in ("restart", "reset")):
-            meta_engine.register_recovery_handler(name, generic_restart)
+        restart = getattr(
+            engine,
+            "restart",
+            None,
+        )
 
-    meta_engine.start(interval_seconds=60)
-    logger.info("KANYOZA META ENGINE v%s — %d engines under supervision", meta_engine.VERSION, len(meta_engine._engines))
+        reset = getattr(
+            engine,
+            "reset",
+            None,
+        )
+
+        stop = getattr(
+            engine,
+            "stop",
+            None,
+        )
+
+        start = getattr(
+            engine,
+            "start",
+            None,
+        )
+
+        if callable(restart):
+            restart()
+            return
+
+        if callable(reset):
+            reset()
+            return
+
+        if callable(stop) and callable(start):
+            stop()
+
+            time.sleep(
+                0.1
+            )
+
+            start()
+
+            return
+
+        raise RuntimeError(
+            f"No safe recovery interface for "
+            f"{diagnosis.engine}"
+        )
+
+    # Register only engines that explicitly expose safe recovery APIs.
+    for name, engine in list(
+        meta_engine._engines.items()
+    ):
+
+        if any(
+            callable(
+                getattr(
+                    engine,
+                    method,
+                    None,
+                )
+            )
+            for method in (
+                "restart",
+                "reset",
+            )
+        ):
+
+            meta_engine.register_recovery_handler(
+                name,
+                generic_restart,
+            )
+
+    meta_engine.start(
+        interval_seconds=60
+    )
+
+    logger.info(
+        (
+            "KANYOZA META ENGINE v%s "
+            "— supervising %d engines"
+        ),
+        meta_engine.VERSION,
+        len(meta_engine._engines),
+    )
+
     return meta_engine
 
+
+# ============================================================================
+# SHUTDOWN
+# ============================================================================
 
 def shutdown_meta_engine() -> None:
     try:
@@ -1546,5 +4369,6 @@ def shutdown_meta_engine() -> None:
         pass
 
 
-import atexit
-atexit.register(shutdown_meta_engine)
+atexit.register(
+    shutdown_meta_engine
+)
