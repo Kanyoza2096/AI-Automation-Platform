@@ -1,25 +1,22 @@
 # Dockerfile — Kanyoza Systems AI Platform v14.4
-# Multi-service Docker image for zero-budget distributed deployment
 
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Service mode — defaults to "full", override with --build-arg
 ARG SERVICE_MODE=full
 ENV SERVICE_MODE=${SERVICE_MODE}
-
-# Render sets PORT env var
 ENV PORT=10000
 
-# Install system dependencies (REMOVED libgdk-pixbuf2.0-0 — not available in Trixie)
+# Install system dependencies (INCLUDING pkg-config and dev headers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     build-essential \
-    libcairo2 \
-    libpango-1.0-0 \
-    libpangocairo-1.0-0 \
+    pkg-config \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libgdk-pixbuf-2.0-dev \
     libffi-dev \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
@@ -41,5 +38,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=5 \
 
 EXPOSE ${PORT}
 
-# Start command depends on SERVICE_MODE
 CMD ["sh", "-c", "if [ \"$SERVICE_MODE\" = \"api\" ] || [ \"$SERVICE_MODE\" = \"full\" ]; then gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --threads 4 --bind 0.0.0.0:$PORT --timeout 120; else python worker.py; fi"]
