@@ -134,6 +134,7 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 # DIRECTOR PROXY (v14.6)
 # ═══════════════════════════════════════════════════════════════════════════
 def _mount_director_proxy(app: FastAPI) -> None:
+def _mount_director_proxy(app: FastAPI) -> None:
     @app.api_route(
         "/director/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -168,26 +169,47 @@ def _mount_director_proxy(app: FastAPI) -> None:
                     content=content,
                 )
 
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers={
-                    k: v for k, v in response.headers.items()
-                    if k.lower() not in ("content-encoding", "transfer-encoding", "connection", "content-length")
-                },
-                media_type=response.headers.get("content-type", "application/json"),
-            )
+            # ── Always return clean JSON ──────────────────────────
+            try:
+                # Try to parse as JSON
+                response_data = response.json()
+                return Response(
+                    content=json.dumps(response_data),
+                    status_code=response.status_code,
+                    media_type="application/json",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+                    },
+                )
+            except Exception:
+                # Not JSON — return as plain text with clean content
+                raw_text = response.content.decode("utf-8", errors="replace")
+                return Response(
+                    content=raw_text,
+                    status_code=response.status_code,
+                    media_type="text/plain",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
+                    },
+                )
+
         except httpx.TimeoutException:
             return Response(
                 content=json.dumps({"error": "Director service timed out"}),
                 status_code=504,
                 media_type="application/json",
+                headers={"Access-Control-Allow-Origin": "*"},
             )
         except httpx.ConnectError:
             return Response(
                 content=json.dumps({"error": "Director service unavailable"}),
                 status_code=503,
                 media_type="application/json",
+                headers={"Access-Control-Allow-Origin": "*"},
             )
         except Exception as exc:
             logger.error("Director proxy error: %s", exc)
@@ -195,13 +217,13 @@ def _mount_director_proxy(app: FastAPI) -> None:
                 content=json.dumps({"error": "Proxy error", "detail": str(exc)[:200]}),
                 status_code=502,
                 media_type="application/json",
+                headers={"Access-Control-Allow-Origin": "*"},
             )
 
     logger.info(
         "Director proxy mounted — forwarding /director/* to %s",
         DIRECTOR_SERVICE_URL,
-    )
-
+          )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LIFESPAN
