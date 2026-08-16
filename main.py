@@ -146,7 +146,7 @@ def _mount_director_proxy(app: FastAPI) -> None:
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     )
     async def proxy_director(request: Request, path: str):
-        target_url = f"{DIRECTOR_SERVICE_URL}/director/{path}"
+        target_url = f"{DIRECTOR_SERVICE_URL}/{path}"
 
         # Forward headers (strip host and content-length)
         headers = {
