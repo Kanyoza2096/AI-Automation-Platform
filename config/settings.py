@@ -1,5 +1,5 @@
 """
-Kanyoza Systems AI Platform v14.4 — Strongly-typed configuration.
+Kanyoza Systems AI Platform v14.5 — Strongly-typed configuration.
 
 Architecture Principles:
   1. Startup validation catches misconfiguration before it causes runtime errors
@@ -9,14 +9,17 @@ Architecture Principles:
   5. Production requires Supabase persistence (Architecture §14)
   6. Production requires valid Fernet encryption — never silently downgrade to plaintext
 
-v14.4 — SERVICE_MODE (with core):
+v14.5 — SERVICE_MODE (with split engines):
   Valid values:
-    - "full"    → All services (default)
-    - "api"     → FastAPI routes, Industry Plugins, Health (frontend-facing)
-    - "core"    → Director + MetaEngine + ConditionEngine (autonomous intelligence)
-    - "workers" → BrandScheduler (background publishing)
-    - "monitor" → Monitor, Backup, TrendIntelligence
-    - "github"  → GitHub Connector
+    - "full"      → All services (default, single instance)
+    - "api"       → FastAPI routes, Industry Plugins, Health (frontend-facing)
+    - "core"      → Director + MetaEngine + ConditionEngine (backwards compat)
+    - "director"  → Director only (autonomous CEO)
+    - "meta"      → MetaEngine only (overseer)
+    - "condition" → ConditionEngine only (brand intelligence)
+    - "workers"   → BrandScheduler (background publishing)
+    - "monitor"   → Monitor, Backup, TrendIntelligence
+    - "github"    → GitHub Connector
 """
 
 from __future__ import annotations
@@ -80,7 +83,7 @@ class Settings(BaseSettings):
     upstash_redis_rest_token: str = Field(default="")
 
     # ═══════════════════════════════════════════════════════════════════
-    # FACEBOOK — Legacy global fallbacks. Per-brand credentials are authoritative.
+    # FACEBOOK — Legacy global fallbacks
     # ═══════════════════════════════════════════════════════════════════
     page_access_token: str = Field(default="")
     page_id: str = Field(default="")
@@ -229,10 +232,13 @@ class Settings(BaseSettings):
     environment: str = Field(default="production")
     log_level: str = Field(default="INFO")
 
-    # v14.4: Service mode for distributed deployment
+    # v14.5: Service mode for distributed deployment (with split engines)
     service_mode: str = Field(
         default="full",
-        description="Which services to start. Valid: 'full', 'api', 'core', 'workers', 'monitor', 'github'"
+        description=(
+            "Which services to start. Valid: 'full', 'api', 'core', "
+            "'director', 'meta', 'condition', 'workers', 'monitor', 'github'"
+        )
     )
 
     # ═══════════════════════════════════════════════════════════════════
@@ -269,7 +275,11 @@ class Settings(BaseSettings):
     @field_validator("service_mode")
     @classmethod
     def validate_service_mode(cls, v: str) -> str:
-        valid = {"full", "api", "core", "workers", "monitor", "github"}
+        valid = {
+            "full", "api", "core",
+            "director", "meta", "condition",  # v14.5 — split engines
+            "workers", "monitor", "github",
+        }
         lower = v.lower()
         if lower not in valid:
             raise ValueError(f"service_mode must be one of {valid}")
@@ -325,21 +335,61 @@ class Settings(BaseSettings):
     def redis_configured(self) -> bool:
         return bool(self.upstash_redis_rest_url and self.upstash_redis_rest_token)
 
+    @property
+    def is_split_engine_mode(self) -> bool:
+        """True when running a single engine split across instances."""
+        return self.service_mode in ("director", "meta", "condition")
+
+    @property
+    def is_intelligence_mode(self) -> bool:
+        """True when running any intelligence engine."""
+        return self.service_mode in ("full", "core", "director", "meta", "condition")
+
+    @property
+    def is_api_mode(self) -> bool:
+        """True when running API-facing services."""
+        return self.service_mode in ("full", "api")
+
+    @property
+    def is_background_mode(self) -> bool:
+        """True when running background workers."""
+        return self.service_mode in ("workers", "monitor", "github")
+
     # ═══════════════════════════════════════════════════════════════════
     # RETRY CONFIG HELPERS
     # ═══════════════════════════════════════════════════════════════════
 
     def get_ai_retry_config(self) -> dict:
-        return {"max_attempts": self.ai_max_retries, "base_delay_seconds": self.ai_retry_base_delay_seconds, "max_delay_seconds": self.job_max_delay_seconds, "backoff_multiplier": self.job_retry_backoff_multiplier}
+        return {
+            "max_attempts": self.ai_max_retries,
+            "base_delay_seconds": self.ai_retry_base_delay_seconds,
+            "max_delay_seconds": self.job_max_delay_seconds,
+            "backoff_multiplier": self.job_retry_backoff_multiplier,
+        }
 
     def get_publish_retry_config(self) -> dict:
-        return {"max_attempts": self.publish_max_retries, "base_delay_seconds": self.publish_retry_base_delay_seconds, "max_delay_seconds": self.job_max_delay_seconds, "backoff_multiplier": self.job_retry_backoff_multiplier}
+        return {
+            "max_attempts": self.publish_max_retries,
+            "base_delay_seconds": self.publish_retry_base_delay_seconds,
+            "max_delay_seconds": self.job_max_delay_seconds,
+            "backoff_multiplier": self.job_retry_backoff_multiplier,
+        }
 
     def get_render_retry_config(self) -> dict:
-        return {"max_attempts": self.render_max_retries, "base_delay_seconds": 1.0, "max_delay_seconds": self.job_max_delay_seconds, "backoff_multiplier": self.job_retry_backoff_multiplier}
+        return {
+            "max_attempts": self.render_max_retries,
+            "base_delay_seconds": 1.0,
+            "max_delay_seconds": self.job_max_delay_seconds,
+            "backoff_multiplier": self.job_retry_backoff_multiplier,
+        }
 
     def get_supabase_retry_config(self) -> dict:
-        return {"max_attempts": self.supabase_max_retries, "base_delay_seconds": 1.0, "max_delay_seconds": 10.0, "backoff_multiplier": 2.0}
+        return {
+            "max_attempts": self.supabase_max_retries,
+            "base_delay_seconds": 1.0,
+            "max_delay_seconds": 10.0,
+            "backoff_multiplier": 2.0,
+        }
 
     # ═══════════════════════════════════════════════════════════════════
     # STARTUP VALIDATION
@@ -353,7 +403,10 @@ class Settings(BaseSettings):
         return [env_names[f] for f in self.REQUIRED_VARS if not getattr(self, f)]
 
     def missing_warn(self) -> List[str]:
-        env_names = {"supabase_url": "SUPABASE_URL", "supabase_service_role_key": "SUPABASE_SERVICE_ROLE_KEY"}
+        env_names = {
+            "supabase_url": "SUPABASE_URL",
+            "supabase_service_role_key": "SUPABASE_SERVICE_ROLE_KEY",
+        }
         return [env_names[f] for f in self.WARN_VARS if not getattr(self, f)]
 
     def validate_required(self) -> None:
@@ -364,23 +417,30 @@ class Settings(BaseSettings):
         missing = self.missing_required()
         if missing:
             if env.is_production:
-                logger.critical("Missing required environment variables: %s — exiting.", ", ".join(missing))
+                logger.critical(
+                    "Missing required environment variables: %s — exiting.",
+                    ", ".join(missing),
+                )
                 import sys
                 sys.exit(1)
             else:
-                logger.warning("Missing environment variables: %s — running in DEGRADED mode.", ", ".join(missing))
+                logger.warning(
+                    "Missing environment variables: %s — running in DEGRADED mode.",
+                    ", ".join(missing),
+                )
 
         if env.is_production:
             if not self.supabase_url:
-                errors.append("SUPABASE_URL is required in production. Set SUPABASE_URL=https://yourproject.supabase.co")
+                errors.append("SUPABASE_URL is required in production.")
             if not self.supabase_service_role_key:
                 errors.append(
                     "SUPABASE_SERVICE_ROLE_KEY is required in production. "
-                    "Backend services (Director, JobService) need this key to write to Supabase. "
                     "Get it from: Supabase Dashboard → Settings → API → service_role secret"
                 )
             if not self.supabase_anon_key:
-                errors.append("SUPABASE_ANON_KEY is required in production. The frontend console needs this key for read-only access.")
+                errors.append(
+                    "SUPABASE_ANON_KEY is required in production."
+                )
 
         if env.is_production:
             if not self.encryption_key:
@@ -391,9 +451,13 @@ class Settings(BaseSettings):
             else:
                 try:
                     from cryptography.fernet import Fernet
-                    Fernet(self.encryption_key.encode() if isinstance(self.encryption_key, str) else self.encryption_key)
+                    Fernet(
+                        self.encryption_key.encode()
+                        if isinstance(self.encryption_key, str)
+                        else self.encryption_key
+                    )
                 except ImportError:
-                    errors.append("cryptography package is not installed. Add 'cryptography' to requirements.txt.")
+                    errors.append("cryptography package is not installed.")
                 except Exception:
                     errors.append(
                         "ENCRYPTION_KEY is not a valid Fernet key. "
@@ -404,14 +468,17 @@ class Settings(BaseSettings):
             for err in errors:
                 logger.critical("Configuration error: %s", err)
             raise ValueError(
-                "Production configuration incomplete:\n\n" +
-                "\n".join(f"  • {e}" for e in errors) +
-                "\n\nSet these environment variables and restart."
+                "Production configuration incomplete:\n\n"
+                + "\n".join(f"  • {e}" for e in errors)
+                + "\n\nSet these environment variables and restart."
             )
 
         warn_missing = self.missing_warn()
         if warn_missing and not env.is_production:
-            logger.warning("Missing optional environment variables: %s — some features disabled.", ", ".join(warn_missing))
+            logger.warning(
+                "Missing optional environment variables: %s — some features disabled.",
+                ", ".join(warn_missing),
+            )
 
         if self.supabase_anon_key and not self.supabase_service_role_key:
             logger.warning(
@@ -434,6 +501,8 @@ class Settings(BaseSettings):
             "environment": self.environment,
             "log_level": self.log_level,
             "service_mode": self.service_mode,
+            "is_split_engine_mode": self.is_split_engine_mode,
+            "is_intelligence_mode": self.is_intelligence_mode,
             "rate_limit_per_user": self.rate_limit_per_user,
             "content_posting_hours_utc": self.content_posting_hours_utc,
             "news_posting_hours_utc": self.news_posting_hours_utc,
