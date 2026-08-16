@@ -1,19 +1,20 @@
 """
-Kanyoza Systems AI Platform v14.5 — FastAPI Entry Point.
+Kanyoza Systems AI Platform v14.6 — FastAPI Entry Point.
 
 Orchestrates application creation, middleware, route mounting, and
 the phased boot sequence via the lifecycle module.
 
+v14.6 DIRECTOR PROXY:
+  - /director/* routes proxy to Director instance
+  - Dashboard can call director endpoints from API instance
+
 v14.5 SERVICE_MODE FIX:
   - Removed duplicate service initialization
-  - _build_boot_sequence in lifecycle.py now handles ALL services
-  - main.py only mounts routes and initializes API stores
-  - No more double-booting Director, MetaEngine, ContentEngine
+  - _build_boot_sequence handles ALL services
 
 v14.0 FIXES (retained):
   - _safe_publish() logs EventBus failures
   - _stop_director() logs shutdown failures
-  - supabase_auth garbage collection noise suppression
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -50,6 +52,12 @@ logger = logging.getLogger("kanyoza.main")
 logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", message=".*_refresh_token_timer.*")
 
+# Director service URL for proxy (set in Render env vars)
+DIRECTOR_SERVICE_URL = os.getenv(
+    "DIRECTOR_SERVICE_URL",
+    "https://omnexa-director.onrender.com",
+)
+
 
 def _get_service_mode() -> str:
     """Get SERVICE_MODE from env or settings."""
@@ -67,11 +75,9 @@ _startup_started_at: Optional[datetime] = None
 _startup_completed_at: Optional[datetime] = None
 _startup_duration_seconds: float = 0.0
 _boot_warnings: list[dict[str, Any]] = []
-_app_instance: Optional[FastAPI] = None
 
 
 def _record_boot_warning(service: str, exc: Exception) -> None:
-    """Record a boot warning (thread-safe)."""
     _boot_warnings.append({
         "service": service,
         "error": str(exc)[:500],
@@ -125,6 +131,81 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# DIRECTOR PROXY (v14.6)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _mount_director_proxy(app: FastAPI) -> None:
+    """Proxy /director/* requests to the Director instance.
+
+    v14.6: The dashboard calls Director endpoints from the API instance.
+    This proxy forwards those requests to the Director service.
+    """
+
+    @app.api_route(
+        "/director/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    )
+    async def proxy_director(request: Request, path: str):
+        target_url = f"{DIRECTOR_SERVICE_URL}/director/{path}"
+
+        # Forward headers (strip host and content-length)
+        headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower() not in ("host", "content-length")
+        }
+
+        # Forward query params
+        params = dict(request.query_params)
+
+        # Forward body
+        body = await request.body()
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.request(
+                    method=request.method,
+                    url=target_url,
+                    headers=headers,
+                    params=params,
+                    content=body if body else None,
+                )
+
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={
+                    k: v for k, v in response.headers.items()
+                    if k.lower() not in ("content-encoding", "transfer-encoding", "connection", "content-length")
+                },
+                media_type=response.headers.get("content-type", "application/json"),
+            )
+        except httpx.TimeoutException:
+            return Response(
+                content=json.dumps({"error": "Director service timed out"}),
+                status_code=504,
+                media_type="application/json",
+            )
+        except httpx.ConnectError:
+            return Response(
+                content=json.dumps({"error": "Director service unavailable"}),
+                status_code=503,
+                media_type="application/json",
+            )
+        except Exception as exc:
+            logger.error("Director proxy error: %s", exc)
+            return Response(
+                content=json.dumps({"error": "Proxy error", "detail": str(exc)[:200]}),
+                status_code=502,
+                media_type="application/json",
+            )
+
+    logger.info(
+        "Director proxy mounted — forwarding /director/* to %s",
+        DIRECTOR_SERVICE_URL,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LIFESPAN
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -132,13 +213,12 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 async def lifespan(app: FastAPI):
     global _startup_started_at, _startup_completed_at, _startup_duration_seconds
 
-    # ── STARTUP ───────────────────────────────────────────────────
     _startup_started_at = datetime.now(timezone.utc)
     startup_start = time.monotonic()
     service_mode = _get_service_mode()
 
     logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v14.5 — Starting up...")
+    logger.info("Kanyoza AI Platform v14.6 — Starting up...")
     logger.info("  Environment : %s", settings.environment)
     logger.info("  Service Mode: %s", service_mode)
     logger.info("  Log level   : %s", settings.log_level)
@@ -153,8 +233,7 @@ async def lifespan(app: FastAPI):
 
     redis_client = _resolve_redis(container)
 
-    # v14.5 — boot_infrastructure handles ALL services based on SERVICE_MODE
-    # No more _wire_content_engine, _wire_meta_engine, _wire_director calls!
+    # Boot only what this service mode needs
     try:
         boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
@@ -162,10 +241,6 @@ async def lifespan(app: FastAPI):
         raise
     except Exception as exc:
         _record_boot_warning("boot_sequence", exc)
-
-    # v14.5 — Mount Director routes (only if Director was booted)
-    if service_mode in ("full", "api", "core", "director"):
-        _mount_director_routes(app, container)
 
     # API stores (always needed for API modes)
     if service_mode in ("full", "api", ""):
@@ -207,7 +282,7 @@ async def lifespan(app: FastAPI):
 
     # ── SHUTDOWN ──────────────────────────────────────────────────
     logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v14.5 — Shutting down...")
+    logger.info("Kanyoza AI Platform v14.6 — Shutting down...")
     logger.info("=" * 60)
 
     if cleanup_task and not cleanup_task.done():
@@ -217,14 +292,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
-    _stop_director()
     graceful_shutdown(container)
 
     logger.info("Shutdown complete.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# POST-BOOT HELPERS (SERVICE_MODE-aware)
+# POST-BOOT HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _resolve_redis(container: ServiceContainer):
@@ -237,29 +311,6 @@ def _resolve_redis(container: ServiceContainer):
     except Exception as exc:
         logger.debug("Redis not available: %s", exc)
         return None
-
-
-def _mount_director_routes(app: FastAPI, container: ServiceContainer) -> None:
-    """Mount Director routes if Director instance exists."""
-    try:
-        from services.director import create_app as create_director_app, director as dir_instance
-        if dir_instance:
-            director_app = create_director_app(dir_instance)
-            app.mount("/director", director_app)
-            logger.info("Director routes mounted at /director.")
-    except Exception as exc:
-        logger.warning("Director mount failed: %s", exc)
-
-
-def _stop_director() -> None:
-    """Stop the Director during shutdown."""
-    try:
-        from services.director import director as dir_instance
-        if dir_instance:
-            dir_instance.stop()
-            logger.info("👔 Director: Shut down.")
-    except Exception as exc:
-        logger.error("Director shutdown failed: %s", exc, exc_info=True)
 
 
 def _init_api_stores(app, redis_client) -> None:
@@ -300,7 +351,7 @@ def _build_health_response(app: FastAPI) -> dict[str, Any]:
     if not booted:
         return {
             "status": "starting",
-            "version": "14.5.0",
+            "version": "14.6.0",
             "uptime_seconds": 0,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -324,7 +375,7 @@ def _build_health_response(app: FastAPI) -> dict[str, Any]:
 
     return {
         "status": overall,
-        "version": "14.5.0",
+        "version": "14.6.0",
         "uptime_seconds": round(uptime, 1),
         "boot_duration_seconds": round(_startup_duration_seconds, 3),
         "boot_warnings": len(_boot_warnings),
@@ -341,7 +392,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
         description="Multi-tenant social media AI platform with industry plugins",
-        version="14.5.0",
+        version="14.6.0",
         lifespan=lifespan,
         docs_url="/docs" if settings.is_development else None,
         redoc_url=None,
@@ -354,16 +405,30 @@ def create_app() -> FastAPI:
     app.add_middleware(ApiCallCounterMiddleware)
     _register_health_endpoints(app)
     _mount_routes(app)
+    _mount_director_proxy(app)  # v14.6 — Director proxy
 
     @app.get("/")
     @app.head("/")
     async def root():
         return {
             "status": "ok",
-            "version": "14.5.0",
+            "version": "14.6.0",
             "platform": "Kanyoza AI",
             "docs": "/docs" if settings.is_development else None,
         }
+
+    # Workspaces endpoint (fix 404)
+    @app.get("/workspaces")
+    async def get_workspaces():
+        try:
+            from services.supabase import get_service_client_from_settings
+            client = get_service_client_from_settings()
+            if client:
+                result = client.table("workspaces").select("*").execute()
+                return {"workspaces": result.data or []}
+        except Exception:
+            pass
+        return {"workspaces": []}
 
     return app
 
@@ -419,7 +484,7 @@ def _register_health_endpoints(app: FastAPI) -> None:
     async def liveness_check():
         return {
             "status": "alive",
-            "version": "14.5.0",
+            "version": "14.6.0",
             "uptime_seconds": round(
                 (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
             ) if _startup_started_at else 0,
@@ -491,9 +556,6 @@ def _mount_routes(app: FastAPI) -> None:
             logger.warning("%s routes failed to mount: %s", name, exc)
 
     _mount_plugin(app, "growthbridge", "Growthbridge")
-    _mount_plugin(app, "monitor", "Monitor")
-    _mount_plugin(app, "backup", "Backup")
-    _mount_plugin(app, "trend_intelligence", "Trend Intelligence")
 
     try:
         from routes.code_intel_routes import router as code_intel_router
