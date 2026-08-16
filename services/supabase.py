@@ -1,9 +1,15 @@
 """
-Supabase client factory — v12.1.
+Supabase client factory — v12.2.
 
 Provides separate anon and service-role clients.
 SocialAccountRepository and other backend operations should use
 the service-role client for credential lookups.
+
+v12.2 FIXES:
+  - Added create_fresh_service_client() and create_fresh_anon_client()
+  - Never reuse dead HTTP/2 connections
+  - Per-request fresh clients for reliability
+  - Singleton clients retained for backwards compatibility
 
 Architecture §13 — Supabase Architecture:
   - User-facing / RLS-aware client (anon)
@@ -25,8 +31,9 @@ Architecture §9 — No Silent Fallback:
 
 import logging
 import os
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable
 
 from core.errors import (
     DatabaseUnavailableError,
@@ -55,7 +62,7 @@ class SupabaseHealth:
       Python process is alive.
     """
     healthy: bool
-    client_type: str  # "anon", "service", "none"
+    client_type: str  # "anon", "service", "none", "fresh"
     message: str = ""
     latency_ms: Optional[float] = None
     error_code: Optional[str] = None
@@ -145,6 +152,100 @@ def get_service_client(url: str, service_role_key: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# v12.2 — FRESH CLIENT FACTORIES (Never Reuse Dead Connections)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def create_fresh_service_client():
+    """Create a BRAND NEW service-role client.
+
+    v12.2 — FIX: Never reuse a dead HTTP/2 connection.
+    Used by JobStatsService and other services that need
+    reliable per-request connections.
+
+    Returns None only if not configured.
+    Raises DatabaseUnavailableError on connection failure.
+    """
+    from config.settings import settings
+
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        logger.warning(
+            "Supabase: fresh service client not configured — URL='%s', key_provided=%s",
+            "set" if settings.supabase_url else "missing",
+            "set" if settings.supabase_service_role_key else "missing",
+        )
+        return None
+
+    try:
+        from supabase import create_client
+        client = create_client(
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+        )
+        logger.debug("Supabase: fresh service client created")
+        return client
+    except Exception as exc:
+        logger.error("Failed to create fresh Supabase service client: %s", exc)
+        raise DatabaseUnavailableError(
+            message="Failed to create fresh Supabase service client",
+            cause=exc,
+            context={"client_type": "fresh_service"},
+        )
+
+
+def create_fresh_anon_client():
+    """Create a BRAND NEW anon client.
+
+    v12.2 — FIX: Never reuse a dead HTTP/2 connection.
+    Used by services that need reliable per-request connections
+    without service-role privileges.
+    """
+    from config.settings import settings
+
+    if not settings.supabase_url or not settings.supabase_anon_key:
+        logger.warning(
+            "Supabase: fresh anon client not configured — URL='%s', key_provided=%s",
+            "set" if settings.supabase_url else "missing",
+            "set" if settings.supabase_anon_key else "missing",
+        )
+        return None
+
+    try:
+        from supabase import create_client
+        client = create_client(
+            settings.supabase_url,
+            settings.supabase_anon_key,
+        )
+        logger.debug("Supabase: fresh anon client created")
+        return client
+    except Exception as exc:
+        logger.error("Failed to create fresh Supabase anon client: %s", exc)
+        raise DatabaseUnavailableError(
+            message="Failed to create fresh Supabase anon client",
+            cause=exc,
+            context={"client_type": "fresh_anon"},
+        )
+
+
+def get_fresh_service_client_factory() -> Callable:
+    """Return a factory function that creates fresh service clients.
+
+    v12.2 — Use this for services that need per-request clients
+    (e.g., JobStatsService) to avoid broken pipe errors.
+
+    Usage:
+        factory = get_fresh_service_client_factory()
+        client = factory()  # New client every time
+    """
+    return create_fresh_service_client
+
+
+def get_fresh_anon_client_factory() -> Callable:
+    """Return a factory function that creates fresh anon clients."""
+    return create_fresh_anon_client
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Health Check
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -154,9 +255,6 @@ def ping(client) -> SupabaseHealth:
     
     Returns SupabaseHealth with latency and structured status.
     Never returns a bare bool.
-    
-    Architecture §33 — Health Checks:
-      Differentiate: healthy, degraded, unavailable.
     """
     if not client:
         return SupabaseHealth(
@@ -166,7 +264,6 @@ def ping(client) -> SupabaseHealth:
             error_code="NO_CLIENT",
         )
     
-    import time
     _t0 = time.monotonic()
     
     try:
@@ -183,7 +280,6 @@ def ping(client) -> SupabaseHealth:
         latency_ms = (time.monotonic() - _t0) * 1000
         error_str = str(exc).lower()
         
-        # Classify the type of failure
         if "auth" in error_str or "unauthorized" in error_str or "jwt" in error_str:
             error_code = "DATABASE_AUTH_ERROR"
             message = "Authentication failed — check credentials"
@@ -224,7 +320,7 @@ def _classify_client(client) -> str:
         return "service_role"
     elif client is _anon_client:
         return "anon"
-    return "unknown"
+    return "fresh"  # Fresh clients are neither singleton
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -247,11 +343,7 @@ class _SupabaseServiceShim:
 
     @property
     def service_client(self):
-        """Service-role client for backend credential operations.
-        
-        Architecture §13: Use this for server-side operations
-        like social account lookups, not for user-facing queries.
-        """
+        """Service-role client for backend credential operations."""
         return _service_client
 
     @property
@@ -309,3 +401,24 @@ def get_service_client_from_settings():
         settings.supabase_url,
         settings.supabase_service_role_key,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Exports
+# ═══════════════════════════════════════════════════════════════════════════
+
+__all__ = [
+    "SupabaseHealth",
+    "get_anon_client",
+    "get_service_client",
+    "create_fresh_service_client",
+    "create_fresh_anon_client",
+    "get_fresh_service_client_factory",
+    "get_fresh_anon_client_factory",
+    "ping",
+    "ping_service",
+    "ping_anon",
+    "supabase_service",
+    "get_anon_client_from_settings",
+    "get_service_client_from_settings",
+]
