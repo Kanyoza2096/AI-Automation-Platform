@@ -1,4 +1,4 @@
-# Dockerfile — Kanyoza Systems AI Platform v14.4
+# Dockerfile — Kanyoza Systems AI Platform v14.4.1
 
 FROM python:3.12-slim
 
@@ -37,5 +37,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=5 \
 
 EXPOSE 10000
 
-# SERVICE_MODE comes from Render env vars, NOT baked in
-CMD ["sh", "-c", "if [ \"$SERVICE_MODE\" = \"api\" ] || [ \"$SERVICE_MODE\" = \"full\" ] || [ -z \"$SERVICE_MODE\" ]; then gunicorn main:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --threads 4 --bind 0.0.0.0:$PORT --timeout 120; else python worker.py; fi"]
+# v14.4.1 FIX: No --threads with UvicornWorker (breaks Socket.IO)
+# Use uvicorn directly for API mode (best for Socket.IO)
+# Use python worker.py for background modes
+CMD ["sh", "-c", "if [ \"$SERVICE_MODE\" = \"api\" ] || [ \"$SERVICE_MODE\" = \"full\" ] || [ -z \"$SERVICE_MODE\" ]; then uvicorn main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75; else python worker.py; fi"]
