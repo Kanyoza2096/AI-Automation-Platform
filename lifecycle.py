@@ -494,38 +494,31 @@ def graceful_shutdown(container: ServiceContainer) -> None:
 # BOOT SEQUENCE BUILDER (v14.3 — Distributed Service Mode)
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════
+# BOOT SEQUENCE BUILDER (v14.4.1 — Fixed Distributed Service Mode)
+# ═══════════════════════════════════════════════════════════════════════════
+
 def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
-    from config.settings import settings
-    import os
-    
-    steps: list[BootStep] = []
-    mode = getattr(settings, "service_mode", "full")
-    
-    # v14.4 NUCLEAR CHECK: Also read directly from env
-    env_mode = os.getenv("SERVICE_MODE", "").strip().lower()
-    if env_mode:
-        mode = env_mode
-        _log(logging.INFO, "SERVICE_MODE from env: %s", mode)
-    else:
-        _log(logging.WARNING, "SERVICE_MODE not set in env — using settings: %s", mode)
-    
-    _log(logging.INFO, "Boot sequence mode: %s", mode)
-    # ... rest of function ...
     """Build boot sequence based on SERVICE_MODE.
 
     SERVICE_MODE values:
-      - "full"    → All services (default, same as before)
-      - "api"     → FastAPI routes + Industry Plugins + Health (frontend-facing)
-      - "core"    → Director + MetaEngine + ConditionEngine (autonomous intelligence)
-      - "workers" → BrandScheduler only (background publishing)
-      - "monitor" → Monitor, Backup, TrendIntelligence (background)
-      - "github"  → GitHub Connector (background)
+      - "full"    → All services (single instance, default)
+      - "api"     → FastAPI + Routes + Plugins + Socket.IO (frontend-facing)
+      - "core"    → Director + MetaEngine + ConditionEngine + AI (brain)
+      - "workers" → BrandSchedulerManager (background publishing)
+      - "monitor" → MonitorPlugin + BackupPlugin + TrendIntelligence
+      - "github"  → GitHub Connector only
     """
     from config.settings import settings
+    import os
 
     steps: list[BootStep] = []
-    mode = getattr(settings, "service_mode", "full")
-
+    
+    # Read SERVICE_MODE from env first, then settings
+    mode = os.getenv("SERVICE_MODE", "").strip().lower()
+    if not mode:
+        mode = getattr(settings, "service_mode", "full")
+    
     _log(logging.INFO, "Boot sequence mode: %s", mode)
 
     # ═══════════════════════════════════════════════════════════════
@@ -548,9 +541,9 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
     ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 1: CORE SERVICES (full, api, core modes)
+    # Phase 1: CORE SERVICES (full, api only — NOT core/workers/monitor)
     # ═══════════════════════════════════════════════════════════════
-    if mode in ("full", "api", "core"):
+    if mode in ("full", "api"):
         steps.append(BootStep(
             name="TaskQueue",
             phase=BootPhase.CORE,
@@ -574,16 +567,11 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             phase=BootPhase.CORE,
             action=lambda: _boot_render_queue(container),
         ))
-        steps.append(BootStep(
-            name="EventRecorder",
-            phase=BootPhase.CORE,
-            action=lambda: _boot_event_recorder(container),
-        ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 2: INTELLIGENCE (full, api, core modes)
+    # Phase 2: INTELLIGENCE (full, core only — NOT api!)
     # ═══════════════════════════════════════════════════════════════
-    if mode in ("full", "api", "core"):
+    if mode in ("full", "core"):
         steps.append(BootStep(
             name="AIOrchestrator",
             phase=BootPhase.BUSINESS,
@@ -611,7 +599,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 2: INDUSTRY PLUGINS + SOCKET (api mode only)
+    # Phase 2: API-ONLY SERVICES (full, api only)
     # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "api"):
         steps.append(BootStep(
@@ -621,18 +609,13 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             rollback=lambda: _stop_industry_plugins(container),
         ))
         steps.append(BootStep(
-            name="JobRecovery",
-            phase=BootPhase.BUSINESS,
-            action=lambda: _recover_stale_jobs(container),
-        ))
-        steps.append(BootStep(
             name="SocketBridge",
             phase=BootPhase.BUSINESS,
             action=lambda: _wire_socket_events(container),
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 2: SCHEDULER (workers mode only)
+    # Phase 2: SCHEDULER (full, workers only)
     # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "workers"):
         steps.append(BootStep(
@@ -643,7 +626,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 3: HEALTH + EMITTERS (api mode only)
+    # Phase 3: HEALTH + EMITTERS (full, api only)
     # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "api"):
         steps.append(BootStep(
@@ -665,7 +648,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 3: MONITOR (monitor mode only)
+    # Phase 3: MONITOR PLUGINS (full, monitor only)
     # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "monitor"):
         steps.append(BootStep(
@@ -688,7 +671,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         ))
 
     # ═══════════════════════════════════════════════════════════════
-    # Phase 3: GITHUB (github mode only)
+    # Phase 3: GITHUB (full, github only)
     # ═══════════════════════════════════════════════════════════════
     if mode in ("full", "github"):
         steps.append(BootStep(
@@ -699,7 +682,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         ))
 
     return steps
-
+        
 def _boot_github_connector(container: ServiceContainer) -> None:
     """Start GitHub Connector Plugin."""
     try:
