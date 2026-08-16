@@ -543,7 +543,7 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
     # ═══════════════════════════════════════════════════════════════
     # Phase 1: CORE SERVICES (full, api only — NOT core/workers/monitor)
     # ═══════════════════════════════════════════════════════════════
-    if mode in ("full", "api"):
+    if mode in ("full", "api", "core", "director", "meta", "condition"):
         steps.append(BootStep(
             name="TaskQueue",
             phase=BootPhase.CORE,
