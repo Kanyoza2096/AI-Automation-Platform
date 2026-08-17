@@ -135,6 +135,10 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _mount_director_proxy(app: FastAPI) -> None:
+import gzip
+import zlib
+
+def _mount_director_proxy(app: FastAPI) -> None:
     @app.api_route(
         "/director/{path:path}",
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -142,22 +146,16 @@ def _mount_director_proxy(app: FastAPI) -> None:
     async def proxy_director(request: Request, path: str):
         target_url = f"{DIRECTOR_SERVICE_URL}/{path}"
 
-        # Forward headers (strip host and problematic headers)
         headers = {
             k: v for k, v in request.headers.items()
-            if k.lower() not in ("host", "content-length", "content-type", "connection")
+            if k.lower() not in ("host", "content-length", "content-type", "connection", "accept-encoding")
         }
+        # IMPORTANT: Tell Director NOT to compress response
+        headers["accept-encoding"] = "identity"
 
-        # Forward query params
         params = dict(request.query_params)
-
-        # Forward body — only if present
         body = await request.body()
         content = body if body else None
-
-        # If there's a body, set content-type
-        if content:
-            headers["content-type"] = request.headers.get("content-type", "application/json")
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -169,12 +167,27 @@ def _mount_director_proxy(app: FastAPI) -> None:
                     content=content,
                 )
 
-            # ── Always return clean JSON ──────────────────────────
+            # Get raw content
+            raw_content = response.content
+
+            # Decompress if needed
+            encoding = response.headers.get("content-encoding", "").lower()
+            if encoding == "gzip":
+                raw_content = gzip.decompress(raw_content)
+            elif encoding == "deflate":
+                raw_content = zlib.decompress(raw_content)
+            elif encoding == "br":
+                try:
+                    import brotli
+                    raw_content = brotli.decompress(raw_content)
+                except ImportError:
+                    pass
+
+            # Try to parse as JSON
             try:
-                # Try to parse as JSON
-                response_data = response.json()
+                data = json.loads(raw_content.decode("utf-8"))
                 return Response(
-                    content=json.dumps(response_data),
+                    content=json.dumps(data),
                     status_code=response.status_code,
                     media_type="application/json",
                     headers={
@@ -184,47 +197,23 @@ def _mount_director_proxy(app: FastAPI) -> None:
                     },
                 )
             except Exception:
-                # Not JSON — return as plain text with clean content
-                raw_text = response.content.decode("utf-8", errors="replace")
+                # Not JSON — return as text
+                text = raw_content.decode("utf-8", errors="replace")
                 return Response(
-                    content=raw_text,
+                    content=text,
                     status_code=response.status_code,
                     media_type="text/plain",
-                    headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
-                    },
+                    headers={"Access-Control-Allow-Origin": "*"},
                 )
 
         except httpx.TimeoutException:
-            return Response(
-                content=json.dumps({"error": "Director service timed out"}),
-                status_code=504,
-                media_type="application/json",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            return Response(content=json.dumps({"error": "Timeout"}), status_code=504, media_type="application/json")
         except httpx.ConnectError:
-            return Response(
-                content=json.dumps({"error": "Director service unavailable"}),
-                status_code=503,
-                media_type="application/json",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            return Response(content=json.dumps({"error": "Unavailable"}), status_code=503, media_type="application/json")
         except Exception as exc:
-            logger.error("Director proxy error: %s", exc)
-            return Response(
-                content=json.dumps({"error": "Proxy error", "detail": str(exc)[:200]}),
-                status_code=502,
-                media_type="application/json",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            return Response(content=json.dumps({"error": str(exc)[:200]}), status_code=502, media_type="application/json")
 
-    logger.info(
-        "Director proxy mounted — forwarding /director/* to %s",
-        DIRECTOR_SERVICE_URL,
-          )
-
+    logger.info("Director proxy mounted with decompression support")
 # ═══════════════════════════════════════════════════════════════════════════
 # LIFESPAN
 # ═══════════════════════════════════════════════════════════════════════════
