@@ -1,14 +1,17 @@
 """
-Autonomous Content Engine — Self-driving content generation with brand-specific sources.
+Autonomous Content Engine — Self-driving content with adaptive scheduling.
 
-v1.2 — Brand-specific topic sourcing:
-  - Dev Comparisons: Internet trends (tech news, AI, programming)
-  - Spiritual Teacher: Knowledge Base + Fallback (timeless wisdom, not trends)
-  - Each brand gets content from the RIGHT source
+v1.3 — Adaptive posting time:
+  - Learns best posting hours from engagement data
+  - Starts with default hours
+  - Improves over time based on actual engagement
   - Never stops posting
 
-Key principle: POSTING IS ALWAYS ON.
-Topics are ALWAYS relevant to the brand AND from the right source.
+Key principles:
+  1. POSTING IS ALWAYS ON
+  2. Topics from brand-specific sources
+  3. Time adapts to audience engagement
+  4. Passive learning — never waits for engagement to post
 """
 
 from __future__ import annotations
@@ -25,40 +28,39 @@ logger = logging.getLogger("kanyoza.autonomous_content")
 
 
 class AutonomousContentEngine:
-    """Self-driving content generation with brand-specific topic sources."""
+    """Self-driving content generation with adaptive scheduling."""
 
     # ═══════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ═══════════════════════════════════════════════════════════════
 
-    POST_INTERVAL_MINUTES = 60
     MAX_POSTS_PER_DAY = 10
     MIN_ENGAGEMENT_THRESHOLD = 5
+    MIN_POST_INTERVAL_MINUTES = 30  # Don't post more often than every 30 min
+    LEARNING_MIN_SAMPLES = 5        # Need at least 5 data points before learning
 
     # ═══════════════════════════════════════════════════════════════
     # BRAND-SPECIFIC TOPIC SOURCES
     # ═══════════════════════════════════════════════════════════════
 
     BRAND_TOPIC_SOURCES = {
-        "Spiritual Teacher": [
-            "knowledge_base",   # Timeless spiritual wisdom
-            "custom",           # Topics from database
-            "fallback",         # Hardcoded spiritual topics
-        ],
-        "Dev Comparisons": [
-            "trends",           # Internet tech trends
-            "knowledge_base",   # Knowledge base articles
-            "custom",           # Custom topics from DB
-            "fallback",         # Hardcoded comparison topics
-        ],
-        "default": [
-            "trends",
-            "fallback",
-        ],
+        "Spiritual Teacher": ["knowledge_base", "custom", "fallback"],
+        "Dev Comparisons": ["trends", "knowledge_base", "custom", "fallback"],
+        "default": ["trends", "fallback"],
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # BRAND KEYWORDS (for trend filtering)
+    # DEFAULT POSTING HOURS (Before learning)
+    # ═══════════════════════════════════════════════════════════════
+
+    DEFAULT_POSTING_HOURS = {
+        "Spiritual Teacher": [6, 8, 10, 12, 16, 18, 20, 22],  # Spiritual: morning + evening
+        "Dev Comparisons": [9, 11, 13, 15, 17, 19, 21],        # Tech: work hours
+        "default": [9, 12, 15, 18, 21],
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # BRAND KEYWORDS
     # ═══════════════════════════════════════════════════════════════
 
     BRAND_KEYWORDS = {
@@ -86,7 +88,7 @@ class AutonomousContentEngine:
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # BRAND TOPIC TEMPLATES (for generating from trends)
+    # BRAND TOPIC TEMPLATES
     # ═══════════════════════════════════════════════════════════════
 
     BRAND_TOPIC_TEMPLATES = {
@@ -124,7 +126,7 @@ class AutonomousContentEngine:
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # FALLBACK TOPICS (NEVER EMPTY — always brand-relevant)
+    # FALLBACK TOPICS
     # ═══════════════════════════════════════════════════════════════
 
     FALLBACK_TOPICS = {
@@ -187,6 +189,8 @@ class AutonomousContentEngine:
         self._posts_today: Dict[str, int] = {}
         self._used_topics: Dict[str, List[str]] = {}
         self._engagement_data: Dict[str, List[Dict]] = {}
+        self._hour_engagement: Dict[str, Dict[int, List[float]]] = {}
+        self._learned_hours: Dict[str, List[int]] = {}
 
     # ═══════════════════════════════════════════════════════════════
     # LIFECYCLE
@@ -202,7 +206,7 @@ class AutonomousContentEngine:
             daemon=True,
         )
         self._thread.start()
-        logger.info("🚀 Autonomous Content Engine started — brand-specific sourcing")
+        logger.info("🚀 Autonomous Content Engine started — adaptive scheduling active")
 
     def stop(self) -> None:
         self._running = False
@@ -220,7 +224,7 @@ class AutonomousContentEngine:
                 self._tick()
             except Exception:
                 logger.exception("Autonomous Content Loop error")
-            time.sleep(60)
+            time.sleep(60)  # Check every minute
 
     def _tick(self) -> None:
         brands = self._get_active_brands()
@@ -229,24 +233,89 @@ class AutonomousContentEngine:
             brand_id = brand.get("id", "")
             brand_name = brand.get("name", "default")
 
-            if self._should_post(brand_id):
+            if self._should_post(brand_id, brand_name):
                 self._generate_and_publish(brand_id, brand_name)
 
-    def _should_post(self, brand_id: str) -> bool:
-        now = datetime.now(timezone.utc)
+    # ═══════════════════════════════════════════════════════════════
+    # ADAPTIVE SCHEDULING
+    # ═══════════════════════════════════════════════════════════════
 
+    def _should_post(self, brand_id: str, brand_name: str) -> bool:
+        """Check if it's the RIGHT TIME to post for this brand."""
+        now = datetime.now(timezone.utc)
+        current_hour = now.hour
+
+        # Check if this hour is in the brand's posting hours
+        posting_hours = self._get_posting_hours(brand_id, brand_name)
+
+        if current_hour not in posting_hours:
+            return False
+
+        # Check minimum interval
         last_post = self._last_post_time.get(brand_id)
         if last_post:
             minutes_since = (now - last_post).total_seconds() / 60
-            if minutes_since < self.POST_INTERVAL_MINUTES:
+            if minutes_since < self.MIN_POST_INTERVAL_MINUTES:
                 return False
 
+        # Check daily limit
         today = now.strftime("%Y-%m-%d")
         posts_today = self._posts_today.get(f"{brand_id}:{today}", 0)
         if posts_today >= self.MAX_POSTS_PER_DAY:
             return False
 
         return True
+
+    def _get_posting_hours(self, brand_id: str, brand_name: str) -> List[int]:
+        """Get posting hours for brand — learned or default."""
+        # Check if we've learned better hours
+        learned = self._learned_hours.get(brand_id)
+        if learned:
+            return learned
+
+        # Check if we have enough engagement data to learn
+        hour_engagement = self._hour_engagement.get(brand_id, {})
+        total_samples = sum(len(scores) for scores in hour_engagement.values())
+
+        if total_samples >= self.LEARNING_MIN_SAMPLES:
+            learned_hours = self._calculate_best_hours(hour_engagement)
+            if learned_hours:
+                self._learned_hours[brand_id] = learned_hours
+                logger.info(
+                    f"🎯 Learned best posting hours for {brand_name}: "
+                    f"{[f'{h}:00' for h in learned_hours]}"
+                )
+                return learned_hours
+
+        # Use default hours
+        return self.DEFAULT_POSTING_HOURS.get(
+            brand_name,
+            self.DEFAULT_POSTING_HOURS["default"],
+        )
+
+    def _calculate_best_hours(self, hour_engagement: Dict[int, List[float]]) -> List[int]:
+        """Calculate best posting hours from engagement data."""
+        hour_averages = {}
+
+        for hour, scores in hour_engagement.items():
+            if scores:
+                hour_averages[hour] = sum(scores) / len(scores)
+
+        if not hour_averages:
+            return []
+
+        # Sort hours by average engagement (highest first)
+        sorted_hours = sorted(
+            hour_averages,
+            key=hour_averages.get,
+            reverse=True,
+        )
+
+        # Take top 4-6 hours
+        best_hours = sorted_hours[:5]
+
+        # Sort back chronologically for posting
+        return sorted(best_hours)
 
     # ═══════════════════════════════════════════════════════════════
     # BRAND DATA
@@ -267,70 +336,57 @@ class AutonomousContentEngine:
             return []
 
     # ═══════════════════════════════════════════════════════════════
-    # TOPIC SELECTION (Brand-Specific Sources)
+    # TOPIC SELECTION
     # ═══════════════════════════════════════════════════════════════
 
     def _select_topic(self, brand_id: str, brand_name: str) -> str:
-        """Select topic using brand-specific source priority."""
-        
-        sources = self.BRAND_TOPIC_SOURCES.get(
-            brand_name,
-            self.BRAND_TOPIC_SOURCES["default"],
-        )
-        
+        sources = self.BRAND_TOPIC_SOURCES.get(brand_name, self.BRAND_TOPIC_SOURCES["default"])
+
         for source in sources:
             topic = None
-            
+
             if source == "trends":
                 topic = self._get_trend_topic(brand_id, brand_name)
-            
             elif source == "knowledge_base":
                 topic = self._get_knowledge_base_topic(brand_id)
-            
             elif source == "custom":
                 topic = self._get_custom_topic(brand_id)
-            
             elif source == "fallback":
                 fallback = self.FALLBACK_TOPICS.get(brand_name, self.FALLBACK_TOPICS["default"])
                 topic = random.choice(fallback)
                 logger.info(f"🛟 Fallback topic for {brand_name}: {topic}")
                 return topic
-            
+
             if topic and self._is_unused(brand_id, topic):
                 return topic
-        
-        # Ultimate fallback
+
         fallback = self.FALLBACK_TOPICS.get(brand_name, self.FALLBACK_TOPICS["default"])
         return random.choice(fallback)
 
     def _get_trend_topic(self, brand_id: str, brand_name: str) -> Optional[str]:
-        """Get topic from internet trends, filtered by brand."""
         trending = self._get_trending_topics()
-        
+
         if not trending:
             return None
-        
-        # Filter by brand keywords
+
         relevant = self._filter_by_brand_keywords(trending, brand_name)
         if relevant:
             topic = random.choice(relevant)
             logger.info(f"📡 Trend topic for {brand_name}: {topic}")
             return topic
-        
-        # Generate brand-inspired topic from trend
+
         trend = random.choice(trending)
         topic = self._generate_brand_topic(trend, brand_name)
         if topic:
             logger.info(f"🔄 Generated trend topic for {brand_name}: {topic}")
             return topic
-        
+
         return None
 
     def _get_knowledge_base_topic(self, brand_id: str) -> Optional[str]:
-        """Get topic from brand's knowledge base (timeless content)."""
         if not self.supabase:
             return None
-        
+
         try:
             result = self.supabase.table("knowledge_entries") \
                 .select("title, content") \
@@ -338,45 +394,44 @@ class AutonomousContentEngine:
                 .order("created_at", desc=True) \
                 .limit(20) \
                 .execute()
-            
+
             if result.data:
                 entry = random.choice(result.data)
-                
+
                 title = entry.get("title", "")
                 if title and len(title) > 5:
                     logger.info(f"📚 Knowledge base topic: {title}")
                     return title
-                
+
                 content = entry.get("content", "")
                 if content:
                     first_sentence = content.split(".")[0].strip()
                     if len(first_sentence) > 10:
                         logger.info(f"📚 Knowledge base topic (from content): {first_sentence[:100]}")
                         return first_sentence[:100]
-            
+
             return None
         except Exception:
             return None
 
     def _get_custom_topic(self, brand_id: str) -> Optional[str]:
-        """Get topic from brand's custom_topics in database."""
         if not self.supabase:
             return None
-        
+
         try:
             result = self.supabase.table("brands") \
                 .select("custom_topics") \
                 .eq("id", brand_id) \
                 .execute()
-            
+
             if result.data:
                 topics = result.data[0].get("custom_topics", [])
-                
+
                 if isinstance(topics, list) and topics:
                     topic = random.choice(topics)
                     logger.info(f"📋 Custom topic: {topic}")
                     return topic
-                
+
                 if isinstance(topics, str):
                     try:
                         parsed = json.loads(topics)
@@ -386,23 +441,22 @@ class AutonomousContentEngine:
                             return topic
                     except json.JSONDecodeError:
                         pass
-            
+
             return None
         except Exception:
             return None
 
     def _get_trending_topics(self) -> List[str]:
-        """Fetch trending topics from Supabase."""
         if not self.supabase:
             return []
-        
+
         try:
             result = self.supabase.table("trend_posts") \
                 .select("title") \
                 .order("fetched_at", desc=True) \
                 .limit(20) \
                 .execute()
-            
+
             topics = []
             for row in result.data or []:
                 title = row.get("title", "")
@@ -413,37 +467,32 @@ class AutonomousContentEngine:
             return []
 
     def _filter_by_brand_keywords(self, topics: List[str], brand_name: str) -> List[str]:
-        """Filter trending topics by brand-specific keywords."""
         keywords = self.BRAND_KEYWORDS.get(brand_name, self.BRAND_KEYWORDS["default"])
-        
         relevant = []
+
         for topic in topics:
             topic_lower = topic.lower()
             for keyword in keywords:
                 if keyword in topic_lower:
                     relevant.append(topic)
                     break
-        
+
         return relevant
 
     def _generate_brand_topic(self, trend_topic: str, brand_name: str) -> Optional[str]:
-        """Generate a brand-relevant topic inspired by a trend."""
         templates = self.BRAND_TOPIC_TEMPLATES.get(brand_name, self.BRAND_TOPIC_TEMPLATES["default"])
-        
         keyword = self._extract_keyword(trend_topic)
-        
+
         if not keyword:
             return None
-        
+
         template = random.choice(templates)
-        topic = template.replace("{keyword}", keyword)
-        return topic
+        return template.replace("{keyword}", keyword)
 
     def _extract_keyword(self, topic: str) -> str:
-        """Extract the main keyword from a trending topic title."""
         clean = topic.lower().replace("'s", "").replace("'", "")
         words = clean.split()
-        
+
         stop_words = {
             "the", "a", "an", "is", "are", "was", "were", "to", "for",
             "of", "in", "on", "at", "and", "or", "but", "with", "without",
@@ -451,26 +500,15 @@ class AutonomousContentEngine:
             "after", "above", "below", "up", "down", "out", "off", "over",
             "under", "again", "further", "then", "once", "here", "there",
         }
-        
+
         meaningful = [w for w in words if w not in stop_words and len(w) > 2]
-        
+
         if not meaningful:
             return None
-        
-        keyword = " ".join(meaningful[:3])
-        return keyword.title()
 
-    def _get_successful_topics(self, brand_id: str) -> List[str]:
-        """Get topics that previously got engagement."""
-        engagement = self._engagement_data.get(brand_id, [])
-        successful = [
-            e.get("topic", "") for e in engagement
-            if e.get("engagement", 0) >= self.MIN_ENGAGEMENT_THRESHOLD
-        ]
-        return successful
+        return " ".join(meaningful[:3]).title()
 
     def _is_unused(self, brand_id: str, topic: str) -> bool:
-        """Check if topic was already used recently."""
         used = self._used_topics.get(brand_id, [])
         if len(used) > 50:
             used = used[-50:]
@@ -506,7 +544,7 @@ class AutonomousContentEngine:
         logger.info(f"✅ Published request sent for '{brand_name}' — {topic}")
 
     # ═══════════════════════════════════════════════════════════════
-    # LEARNING (PASSIVE)
+    # LEARNING (PASSIVE ENGAGEMENT TRACKING)
     # ═══════════════════════════════════════════════════════════════
 
     def record_engagement(
@@ -515,14 +553,30 @@ class AutonomousContentEngine:
         topic: str,
         engagement: int,
     ) -> None:
+        """Record engagement — used for BOTH topic selection AND time learning."""
+        timestamp = datetime.now(timezone.utc)
+
+        # Store engagement for topic learning
         self._engagement_data.setdefault(brand_id, []).append({
             "topic": topic,
             "engagement": engagement,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": timestamp.isoformat(),
         })
 
         if len(self._engagement_data.get(brand_id, [])) > 100:
             self._engagement_data[brand_id] = self._engagement_data[brand_id][-100:]
+
+        # Store engagement by HOUR for time learning
+        hour = timestamp.hour
+        self._hour_engagement.setdefault(brand_id, {}).setdefault(hour, []).append(
+            float(engagement)
+        )
+
+        # Check if we should re-learn best hours
+        total = sum(len(scores) for scores in self._hour_engagement.get(brand_id, {}).values())
+        if total >= self.LEARNING_MIN_SAMPLES:
+            # Invalidate learned hours so it recalculates
+            self._learned_hours.pop(brand_id, None)
 
     def get_status(self) -> Dict[str, Any]:
         return {
@@ -531,11 +585,12 @@ class AutonomousContentEngine:
             "topics_used": sum(len(v) for v in self._used_topics.values()),
             "engagement_data_points": sum(len(v) for v in self._engagement_data.values()),
             "brands_tracked": list(self._last_post_time.keys()),
+            "learned_hours": {
+                brand: [f"{h}:00" for h in hours]
+                for brand, hours in self._learned_hours.items()
+            },
             "brand_topic_sources": {
-                brand: {
-                    "sources": self.BRAND_TOPIC_SOURCES.get(brand, ["default"]),
-                    "topics_used": len(self._used_topics.get(brand, [])),
-                }
+                brand: self.BRAND_TOPIC_SOURCES.get(brand, ["default"])
                 for brand in self.FALLBACK_TOPICS
             },
         }
