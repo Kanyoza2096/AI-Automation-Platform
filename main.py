@@ -1,21 +1,23 @@
 """
 Kanyoza Systems AI Platform v14.6 — FastAPI Entry Point.
 
-Orchestrates application creation, middleware, route mounting, and
-the phased boot sequence via the lifecycle module.
+Orchestrates application creation, middleware, route mounting, and the
+phased boot sequence via the lifecycle module.
 
 v14.6 DIRECTOR PROXY:
-  - /director/* routes proxy to Director instance
-  - Dashboard can call director endpoints from API instance
+- /director/* routes proxy to the Director instance.
+- Dashboard can call Director endpoints from the API instance.
 
 v14.5 SERVICE_MODE FIX:
-  - Removed duplicate service initialization
-  - _build_boot_sequence handles ALL services
+- Removed duplicate service initialization.
+- _build_boot_sequence handles ALL services.
 
 v14.0 FIXES (retained):
-  - _safe_publish() logs EventBus failures
-  - _stop_director() logs shutdown failures
+- _safe_publish() logs EventBus failures.
+- _stop_director() logs shutdown failures.
 """
+
+from __future__ import annotations
 
 import asyncio
 import hmac
@@ -30,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -46,24 +48,34 @@ from lifecycle import (
 )
 from core.socket_server import create_socket_app
 
+
 logger = logging.getLogger("kanyoza.main")
 
-# ── Suppress known library noise ──────────────────────────────────────
+
+# ── Suppress known library noise ────────────────────────────────────────────
+
 logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", message=".*_refresh_token_timer.*")
 
-# Director service URL for proxy (set in Render env vars)
+
+# ── Director service URL ─────────────────────────────────────────────────────
+#
+# Set DIRECTOR_SERVICE_URL in Render/environment variables.
+# The default must be a real URL, not Markdown.
+
 DIRECTOR_SERVICE_URL = os.getenv(
     "DIRECTOR_SERVICE_URL",
     "https://omnexa-director.onrender.com",
-)
+).strip().rstrip("/")
 
 
 def _get_service_mode() -> str:
-    """Get SERVICE_MODE from env or settings."""
+    """Get SERVICE_MODE from environment or settings."""
     mode = os.getenv("SERVICE_MODE", "").strip().lower()
+
     if not mode:
         mode = getattr(settings, "service_mode", "full")
+
     return mode
 
 
@@ -78,17 +90,26 @@ _boot_warnings: list[dict[str, Any]] = []
 
 
 def _record_boot_warning(service: str, exc: Exception) -> None:
-    _boot_warnings.append({
+    """Record a startup warning for health reporting."""
+    warning = {
         "service": service,
         "error": str(exc)[:500],
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-    logger.warning("Boot warning [%s]: %s", service, exc)
+    }
+
+    _boot_warnings.append(warning)
+
+    logger.warning(
+        "Boot warning [%s]: %s",
+        service,
+        exc,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MIDDLEWARE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class ApiCallCounterMiddleware(BaseHTTPMiddleware):
     """Tracks daily API call counts in Redis."""
@@ -96,300 +117,658 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/"):
             try:
-                container = getattr(request.app.state, "container", None)
+                container = getattr(
+                    request.app.state,
+                    "container",
+                    None,
+                )
+
                 if container:
                     from core.redis_client import UpstashRedisClient
-                    redis = container.try_resolve(UpstashRedisClient)
+
+                    redis = container.try_resolve(
+                        UpstashRedisClient
+                    )
+
                     if redis and redis.is_available:
-                        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        today = datetime.now(
+                            timezone.utc
+                        ).strftime("%Y-%m-%d")
+
                         key = f"metrics:api_calls:{today}"
+
                         count = redis.incr(key)
+
                         if count == 1:
-                            redis.expire(key, 86400 * 2)
+                            redis.expire(
+                                key,
+                                86400 * 2,
+                            )
+
             except Exception:
+                # Metrics must never break an API request.
                 pass
+
         return await call_next(request)
 
 
 class StartupGateMiddleware(BaseHTTPMiddleware):
-    """Returns 503 until boot is complete."""
+    """Returns 503 until boot has completed."""
 
     async def dispatch(self, request: Request, call_next):
-        if not getattr(request.app.state, "boot_completed", False):
-            if request.url.path in ("/health", "/health/live", "/health/ready"):
+        if not getattr(
+            request.app.state,
+            "boot_completed",
+            False,
+        ):
+            if request.url.path in (
+                "/health",
+                "/health/live",
+                "/health/ready",
+            ):
                 return await call_next(request)
+
             return Response(
-                content=json.dumps({
-                    "status": "starting",
-                    "message": "Application is still initializing. Please retry.",
-                }),
+                content=json.dumps(
+                    {
+                        "status": "starting",
+                        "message": (
+                            "Application is still initializing. "
+                            "Please retry."
+                        ),
+                    }
+                ),
                 status_code=503,
                 media_type="application/json",
-                headers={"Retry-After": "5"},
+                headers={
+                    "Retry-After": "5",
+                },
             )
+
         return await call_next(request)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DIRECTOR PROXY (v14.6)
+# DIRECTOR PROXY
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _mount_director_proxy(app: FastAPI) -> None:
-import gzip
-import zlib
 
 def _mount_director_proxy(app: FastAPI) -> None:
+    """
+    Mount /director/* as a reverse proxy to the Director service.
+
+    The API service remains the public-facing entry point while the Director
+    can operate as a separate service.
+
+    Request bodies, query parameters, authorization headers, API keys,
+    correlation IDs and content types are forwarded.
+
+    Hop-by-hop headers are intentionally removed.
+    """
+
+    request_hop_by_hop_headers = {
+        "host",
+        "content-length",
+        "connection",
+        "transfer-encoding",
+        "accept-encoding",
+    }
+
+    response_hop_by_hop_headers = {
+        "content-length",
+        "connection",
+        "transfer-encoding",
+        "content-encoding",
+    }
+
     @app.api_route(
         "/director/{path:path}",
-        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        methods=[
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH",
+            "OPTIONS",
+            "HEAD",
+        ],
     )
-    async def proxy_director(request: Request, path: str):
+    async def proxy_director(
+        request: Request,
+        path: str,
+    ):
         target_url = f"{DIRECTOR_SERVICE_URL}/{path}"
 
         headers = {
-            k: v for k, v in request.headers.items()
-            if k.lower() not in ("host", "content-length", "content-type", "connection", "accept-encoding")
+            key: value
+            for key, value in request.headers.items()
+            if key.lower()
+            not in request_hop_by_hop_headers
         }
-        # IMPORTANT: Tell Director NOT to compress response
+
+        # Prevent an upstream compression cycle.
         headers["accept-encoding"] = "identity"
 
-        params = dict(request.query_params)
+        params = list(
+            request.query_params.multi_items()
+        )
+
         body = await request.body()
-        content = body if body else None
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.request(
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=10.0,
+                    read=30.0,
+                    write=30.0,
+                    pool=10.0,
+                ),
+                follow_redirects=False,
+            ) as client:
+
+                upstream = await client.request(
                     method=request.method,
                     url=target_url,
                     headers=headers,
                     params=params,
-                    content=content,
+                    content=body if body else None,
                 )
 
-            # Get raw content
-            raw_content = response.content
+            response_headers: dict[str, str] = {}
 
-            # Decompress if needed
-            encoding = response.headers.get("content-encoding", "").lower()
-            if encoding == "gzip":
-                raw_content = gzip.decompress(raw_content)
-            elif encoding == "deflate":
-                raw_content = zlib.decompress(raw_content)
-            elif encoding == "br":
-                try:
-                    import brotli
-                    raw_content = brotli.decompress(raw_content)
-                except ImportError:
-                    pass
+            for key, value in upstream.headers.items():
+                if key.lower() in response_hop_by_hop_headers:
+                    continue
 
-            # Try to parse as JSON
-            try:
-                data = json.loads(raw_content.decode("utf-8"))
-                return Response(
-                    content=json.dumps(data),
-                    status_code=response.status_code,
-                    media_type="application/json",
-                    headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
-                        "Access-Control-Allow-Headers": "Authorization, Content-Type, X-API-Key",
-                    },
-                )
-            except Exception:
-                # Not JSON — return as text
-                text = raw_content.decode("utf-8", errors="replace")
-                return Response(
-                    content=text,
-                    status_code=response.status_code,
-                    media_type="text/plain",
-                    headers={"Access-Control-Allow-Origin": "*"},
-                )
+                response_headers[key] = value
+
+            response_headers.setdefault(
+                "Access-Control-Allow-Origin",
+                "*",
+            )
+
+            response_headers.setdefault(
+                "Access-Control-Allow-Methods",
+                (
+                    "GET, POST, PUT, DELETE, PATCH, "
+                    "OPTIONS, HEAD"
+                ),
+            )
+
+            response_headers.setdefault(
+                "Access-Control-Allow-Headers",
+                (
+                    "Authorization, Content-Type, "
+                    "X-API-Key, X-Correlation-ID"
+                ),
+            )
+
+            # httpx handles normal upstream decompression internally.
+            # Return the resulting bytes directly instead of trying to
+            # JSON-decode and re-encode every response.
+
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                headers=response_headers,
+            )
 
         except httpx.TimeoutException:
-            return Response(content=json.dumps({"error": "Timeout"}), status_code=504, media_type="application/json")
-        except httpx.ConnectError:
-            return Response(content=json.dumps({"error": "Unavailable"}), status_code=503, media_type="application/json")
-        except Exception as exc:
-            return Response(content=json.dumps({"error": str(exc)[:200]}), status_code=502, media_type="application/json")
+            logger.warning(
+                "Director proxy timeout: %s %s",
+                request.method,
+                request.url.path,
+            )
 
-    logger.info("Director proxy mounted with decompression support")
+            return Response(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "Director service timeout",
+                    }
+                ),
+                status_code=504,
+                media_type="application/json",
+            )
+
+        except httpx.ConnectError:
+            logger.warning(
+                "Director proxy unavailable: %s",
+                DIRECTOR_SERVICE_URL,
+            )
+
+            return Response(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "Director service unavailable",
+                    }
+                ),
+                status_code=503,
+                media_type="application/json",
+            )
+
+        except httpx.RequestError as exc:
+            logger.warning(
+                "Director proxy request failed: %s",
+                str(exc)[:200],
+            )
+
+            return Response(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": (
+                            "Director service request failed"
+                        ),
+                    }
+                ),
+                status_code=502,
+                media_type="application/json",
+            )
+
+        except Exception:
+            logger.exception(
+                "Unexpected Director proxy failure: %s",
+                request.url.path,
+            )
+
+            return Response(
+                content=json.dumps(
+                    {
+                        "status": "error",
+                        "error": "Director proxy failure",
+                    }
+                ),
+                status_code=502,
+                media_type="application/json",
+            )
+
+    logger.info(
+        "Director proxy mounted: /director/* -> %s",
+        DIRECTOR_SERVICE_URL,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # LIFESPAN
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _startup_started_at, _startup_completed_at, _startup_duration_seconds
+    global _startup_started_at
+    global _startup_completed_at
+    global _startup_duration_seconds
 
     _startup_started_at = datetime.now(timezone.utc)
+
     startup_start = time.monotonic()
+
     service_mode = _get_service_mode()
 
+    # Reset per-process startup state.
+    _boot_warnings.clear()
+
+    app.state.boot_completed = False
+    app.state.boot_warnings = []
+
     logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v14.6 — Starting up...")
-    logger.info("  Environment : %s", settings.environment)
-    logger.info("  Service Mode: %s", service_mode)
-    logger.info("  Log level   : %s", settings.log_level)
-    logger.info("  Python      : %s", _get_python_version())
+    logger.info(
+        "Kanyoza AI Platform v14.6 — Starting up..."
+    )
+    logger.info(
+        "  Environment : %s",
+        settings.environment,
+    )
+    logger.info(
+        "  Service Mode: %s",
+        service_mode,
+    )
+    logger.info(
+        "  Log level   : %s",
+        settings.log_level,
+    )
+    logger.info(
+        "  Python      : %s",
+        _get_python_version(),
+    )
     logger.info("=" * 60)
 
     settings.validate_required()
 
-    logger.info("Building service container...")
+    logger.info(
+        "Building service container..."
+    )
+
     container: ServiceContainer = build_container()
+
     app.state.container = container
 
     redis_client = _resolve_redis(container)
 
-    # Boot only what this service mode needs
+    # All service initialization belongs to lifecycle.py.
     try:
-        boot_infrastructure(app, container)
-        logger.info("Phased boot sequence complete.")
+        boot_infrastructure(
+            app,
+            container,
+        )
+
+        logger.info(
+            "Phased boot sequence complete."
+        )
+
     except SystemExit:
         raise
+
     except Exception as exc:
-        _record_boot_warning("boot_sequence", exc)
+        _record_boot_warning(
+            "boot_sequence",
+            exc,
+        )
 
-    # API stores (always needed for API modes)
-    if service_mode in ("full", "api", ""):
-        _init_api_stores(app, redis_client)
+    # API-local stores.
+    if service_mode in (
+        "full",
+        "api",
+        "",
+    ):
+        _init_api_stores(
+            app,
+            redis_client,
+        )
 
-    # Draft cleanup (API modes only)
-    cleanup_task = None
-    if service_mode in ("full", "api", ""):
-        cleanup_task = asyncio.create_task(_draft_cleanup_loop(app))
+    cleanup_task: Optional[
+        asyncio.Task
+    ] = None
+
+    if service_mode in (
+        "full",
+        "api",
+        "",
+    ):
+        cleanup_task = asyncio.create_task(
+            _draft_cleanup_loop(app),
+            name="draft-cleanup-loop",
+        )
+
         shutdown_registry.register(
             "DraftCleanup",
-            lambda: cleanup_task.cancel(),
+            lambda: (
+                cleanup_task.cancel()
+                if cleanup_task
+                and not cleanup_task.done()
+                else None
+            ),
             timeout_seconds=5.0,
         )
 
     app.state.boot_completed = True
-    app.state.boot_warnings = list(_boot_warnings)
 
-    _startup_completed_at = datetime.now(timezone.utc)
-    _startup_duration_seconds = time.monotonic() - startup_start
+    app.state.boot_warnings = list(
+        _boot_warnings
+    )
+
+    _startup_completed_at = datetime.now(
+        timezone.utc
+    )
+
+    _startup_duration_seconds = (
+        time.monotonic() - startup_start
+    )
 
     if _boot_warnings:
         logger.warning(
             "Boot completed with %d warning(s) in %.2fs:",
-            len(_boot_warnings), _startup_duration_seconds,
-        )
-        for w in _boot_warnings:
-            logger.warning("  ⚠ %s: %s", w["service"], w["error"])
-    else:
-        logger.info(
-            "Boot complete — all services healthy (%.2fs).",
+            len(_boot_warnings),
             _startup_duration_seconds,
         )
 
-    logger.info("Application ready to accept requests.")
+        for warning in _boot_warnings:
+            logger.warning(
+                "  ⚠ %s: %s",
+                warning["service"],
+                warning["error"],
+            )
+
+    else:
+        logger.info(
+            "Boot complete — all configured services "
+            "initialized (%.2fs).",
+            _startup_duration_seconds,
+        )
+
+    logger.info(
+        "Application ready to accept requests."
+    )
+
     logger.info("=" * 60)
 
-    yield
+    try:
+        yield
 
-    # ── SHUTDOWN ──────────────────────────────────────────────────
-    logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v14.6 — Shutting down...")
-    logger.info("=" * 60)
+    finally:
+        logger.info("=" * 60)
 
-    if cleanup_task and not cleanup_task.done():
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        logger.info(
+            "Kanyoza AI Platform v14.6 — Shutting down..."
+        )
 
-    graceful_shutdown(container)
+        logger.info("=" * 60)
 
-    logger.info("Shutdown complete.")
+        if (
+            cleanup_task
+            and not cleanup_task.done()
+        ):
+            cleanup_task.cancel()
+
+            try:
+                await cleanup_task
+
+            except asyncio.CancelledError:
+                pass
+
+            except Exception as exc:
+                logger.debug(
+                    "Draft cleanup shutdown error: %s",
+                    str(exc)[:200],
+                )
+
+        graceful_shutdown(container)
+
+        app.state.boot_completed = False
+
+        logger.info(
+            "Shutdown complete."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # POST-BOOT HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _resolve_redis(container: ServiceContainer):
+
+def _resolve_redis(
+    container: ServiceContainer,
+):
+    """Resolve Redis from the application container."""
     try:
         from core.redis_client import UpstashRedisClient
-        redis = container.try_resolve(UpstashRedisClient)
+
+        redis = container.try_resolve(
+            UpstashRedisClient
+        )
+
         if redis:
-            logger.info("Redis client resolved for wiring.")
+            logger.info(
+                "Redis client resolved for wiring."
+            )
+
         return redis
+
     except Exception as exc:
-        logger.debug("Redis not available: %s", exc)
+        logger.debug(
+            "Redis not available: %s",
+            exc,
+        )
+
         return None
 
 
-def _init_api_stores(app, redis_client) -> None:
-    from api.v1 import DraftStore, AsyncAuditLog, AsyncWorkflowHistory, AsyncKeyStore
+def _init_api_stores(
+    app,
+    redis_client,
+) -> None:
+    """Initialize API-local stores."""
+    from api.v1 import (
+        DraftStore,
+        AsyncAuditLog,
+        AsyncWorkflowHistory,
+        AsyncKeyStore,
+    )
 
-    app.state.draft_store = DraftStore(redis_client=redis_client)
-    app.state.audit_log = AsyncAuditLog(maxlen=200)
-    app.state.workflow_history = AsyncWorkflowHistory(maxlen=20)
+    app.state.draft_store = DraftStore(
+        redis_client=redis_client
+    )
+
+    app.state.audit_log = AsyncAuditLog(
+        maxlen=200
+    )
+
+    app.state.workflow_history = (
+        AsyncWorkflowHistory(
+            maxlen=20
+        )
+    )
+
     app.state.key_store = AsyncKeyStore()
 
     try:
-        asyncio.create_task(app.state.audit_log.seed_from_supabase())
+        asyncio.create_task(
+            app.state.audit_log.seed_from_supabase(),
+            name="audit-log-seed",
+        )
+
     except Exception as exc:
-        logger.debug("Audit log seeding skipped: %s", exc)
+        logger.debug(
+            "Audit log seeding skipped: %s",
+            exc,
+        )
 
-    logger.info("API stores initialized (DraftStore, AuditLog, WorkflowHistory, KeyStore).")
+    logger.info(
+        "API stores initialized "
+        "(DraftStore, AuditLog, WorkflowHistory, KeyStore)."
+    )
 
 
-async def _draft_cleanup_loop(app) -> None:
+async def _draft_cleanup_loop(
+    app,
+) -> None:
+    """Periodically clean expired drafts."""
     while True:
-        await asyncio.sleep(3600)
         try:
+            await asyncio.sleep(3600)
+
             await app.state.draft_store.cleanup_expired()
-            logger.debug("Draft cleanup completed.")
+
+            logger.debug(
+                "Draft cleanup completed."
+            )
+
         except asyncio.CancelledError:
             raise
+
         except Exception as exc:
-            logger.debug("Draft cleanup error: %s", exc)
+            logger.debug(
+                "Draft cleanup error: %s",
+                exc,
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _build_health_response(app: FastAPI) -> dict[str, Any]:
-    booted = getattr(app.state, "boot_completed", False)
+
+def _build_health_response(
+    app: FastAPI,
+) -> dict[str, Any]:
+    """Build the detailed platform health response."""
+
+    booted = getattr(
+        app.state,
+        "boot_completed",
+        False,
+    )
 
     if not booted:
         return {
             "status": "starting",
             "version": "14.6.0",
             "uptime_seconds": 0,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checked_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
         }
 
-    service_health = health_registry.check_all()
-    statuses = [r.status for r in service_health.values()]
+    service_health = (
+        health_registry.check_all()
+    )
 
-    if any(s == HealthStatus.UNHEALTHY for s in statuses):
+    statuses = [
+        report.status
+        for report in service_health.values()
+    ]
+
+    if any(
+        status == HealthStatus.UNHEALTHY
+        for status in statuses
+    ):
         overall = "unhealthy"
-    elif any(s == HealthStatus.DEGRADED for s in statuses):
+
+    elif any(
+        status == HealthStatus.DEGRADED
+        for status in statuses
+    ):
         overall = "degraded"
+
     elif _boot_warnings:
         overall = "degraded"
+
     else:
         overall = "healthy"
 
     uptime = (
-        (datetime.now(timezone.utc) - _startup_started_at).total_seconds()
-        if _startup_started_at else 0
+        (
+            datetime.now(timezone.utc)
+            - _startup_started_at
+        ).total_seconds()
+        if _startup_started_at
+        else 0
     )
 
     return {
         "status": overall,
         "version": "14.6.0",
-        "uptime_seconds": round(uptime, 1),
-        "boot_duration_seconds": round(_startup_duration_seconds, 3),
-        "boot_warnings": len(_boot_warnings),
-        "services": {name: report.to_dict() for name, report in service_health.items()},
-        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "uptime_seconds": round(
+            uptime,
+            1,
+        ),
+        "boot_duration_seconds": round(
+            _startup_duration_seconds,
+            3,
+        ),
+        "boot_warnings": len(
+            _boot_warnings
+        ),
+        "services": {
+            name: report.to_dict()
+            for name, report
+            in service_health.items()
+        },
+        "checked_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
     }
 
 
@@ -397,24 +776,49 @@ def _build_health_response(app: FastAPI) -> dict[str, Any]:
 # APPLICATION FACTORY
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
-        description="Multi-tenant social media AI platform with industry plugins",
+        description=(
+            "Multi-tenant social media AI platform "
+            "with industry plugins"
+        ),
         version="14.6.0",
         lifespan=lifespan,
-        docs_url="/docs" if settings.is_development else None,
+        docs_url=(
+            "/docs"
+            if settings.is_development
+            else None
+        ),
         redoc_url=None,
-        openapi_url="/openapi.json" if settings.is_development else None,
+        openapi_url=(
+            "/openapi.json"
+            if settings.is_development
+            else None
+        ),
     )
+
+    app.state.boot_completed = False
+    app.state.container = None
+    app.state.boot_warnings = []
 
     _configure_middleware(app)
     _configure_cors(app)
-    app.add_middleware(StartupGateMiddleware)
-    app.add_middleware(ApiCallCounterMiddleware)
+
+    app.add_middleware(
+        StartupGateMiddleware
+    )
+
+    app.add_middleware(
+        ApiCallCounterMiddleware
+    )
+
     _register_health_endpoints(app)
+
     _mount_routes(app)
-    _mount_director_proxy(app)  # v14.6 — Director proxy
+
+    _mount_director_proxy(app)
 
     @app.get("/")
     @app.head("/")
@@ -423,26 +827,56 @@ def create_app() -> FastAPI:
             "status": "ok",
             "version": "14.6.0",
             "platform": "Kanyoza AI",
-            "docs": "/docs" if settings.is_development else None,
+            "docs": (
+                "/docs"
+                if settings.is_development
+                else None
+            ),
         }
 
-    # Workspaces endpoint (fix 404)
     @app.get("/workspaces")
     async def get_workspaces():
+        """Return available workspaces from Supabase."""
         try:
-            from services.supabase import get_service_client_from_settings
-            client = get_service_client_from_settings()
+            from services.supabase import (
+                get_service_client_from_settings,
+            )
+
+            client = (
+                get_service_client_from_settings()
+            )
+
             if client:
-                result = client.table("workspaces").select("*").execute()
-                return {"workspaces": result.data or []}
-        except Exception:
-            pass
-        return {"workspaces": []}
+                result = (
+                    client
+                    .table("workspaces")
+                    .select("*")
+                    .execute()
+                )
+
+                return {
+                    "workspaces": (
+                        result.data or []
+                    )
+                }
+
+        except Exception as exc:
+            logger.debug(
+                "Workspace lookup failed: %s",
+                str(exc)[:200],
+            )
+
+        return {
+            "workspaces": []
+        }
 
     return app
 
 
-def _configure_middleware(app: FastAPI) -> None:
+def _configure_middleware(
+    app: FastAPI,
+) -> None:
+    """Register application middleware."""
     from api.v1 import (
         SecurityHeadersMiddleware,
         RequestSizeLimitMiddleware,
@@ -450,28 +884,61 @@ def _configure_middleware(app: FastAPI) -> None:
         CorrelationIDMiddleware,
     )
 
-    app.add_middleware(CorrelationIDMiddleware)
-    app.add_middleware(RequestSizeLimitMiddleware, max_size=1_048_576)
-    app.add_middleware(RequestTracingMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(
+        CorrelationIDMiddleware
+    )
+
+    app.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_size=1_048_576,
+    )
+
+    app.add_middleware(
+        RequestTracingMiddleware
+    )
+
+    app.add_middleware(
+        SecurityHeadersMiddleware
+    )
 
     try:
-        from middleware.traffic_capture import TrafficCaptureMiddleware
-        app.add_middleware(TrafficCaptureMiddleware)
-        logger.info("Traffic capture middleware registered.")
+        from middleware.traffic_capture import (
+            TrafficCaptureMiddleware,
+        )
+
+        app.add_middleware(
+            TrafficCaptureMiddleware
+        )
+
+        logger.info(
+            "Traffic capture middleware registered."
+        )
+
     except ImportError:
-        logger.debug("Traffic capture middleware not available.")
+        logger.debug(
+            "Traffic capture middleware "
+            "not available."
+        )
 
 
-def _configure_cors(app: FastAPI) -> None:
+def _configure_cors(
+    app: FastAPI,
+) -> None:
+    """Configure CORS according to environment."""
+
     if settings.is_production:
-        origins = settings.cors_allowed_origins
+        origins = (
+            settings.cors_allowed_origins
+        )
+
         if not origins:
             raise RuntimeError(
                 "No CORS origins configured for production. "
                 "Set ALLOWED_ORIGINS environment variable."
             )
+
         allow_creds = True
+
     else:
         origins = ["*"]
         allow_creds = False
@@ -480,111 +947,341 @@ def _configure_cors(app: FastAPI) -> None:
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=allow_creds,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
+        allow_methods=[
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH",
+            "OPTIONS",
+            "HEAD",
+        ],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-API-Key",
+            "X-Correlation-ID",
+        ],
         max_age=86400,
     )
 
-    logger.info("CORS origins: %s", origins if len(origins) < 5 else f"{origins[:3]}... ({len(origins)} total)")
+    logger.info(
+        "CORS origins: %s",
+        (
+            origins
+            if len(origins) < 5
+            else (
+                f"{origins[:3]}... "
+                f"({len(origins)} total)"
+            )
+        ),
+    )
 
 
-def _register_health_endpoints(app: FastAPI) -> None:
+def _register_health_endpoints(
+    app: FastAPI,
+) -> None:
+    """Register liveness, readiness and detailed health endpoints."""
+
     @app.get("/health")
     async def liveness_check():
         return {
             "status": "alive",
             "version": "14.6.0",
             "uptime_seconds": round(
-                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
-            ) if _startup_started_at else 0,
+                (
+                    datetime.now(
+                        timezone.utc
+                    )
+                    - _startup_started_at
+                ).total_seconds(),
+                1,
+            )
+            if _startup_started_at
+            else 0,
+        }
+
+    @app.get("/health/live")
+    async def live_check():
+        return {
+            "status": "alive",
+            "version": "14.6.0",
         }
 
     @app.get("/health/ready")
     async def readiness_check():
-        if not getattr(app.state, "boot_completed", False):
+        if not getattr(
+            app.state,
+            "boot_completed",
+            False,
+        ):
             return Response(
-                content=json.dumps({"status": "not_ready", "reason": "Boot in progress"}),
+                content=json.dumps(
+                    {
+                        "status": "not_ready",
+                        "reason": (
+                            "Boot in progress"
+                        ),
+                    }
+                ),
                 status_code=503,
                 media_type="application/json",
             )
 
-        service_health = health_registry.check_all()
-        unhealthy = [name for name, r in service_health.items() if r.status == HealthStatus.UNHEALTHY]
+        service_health = (
+            health_registry.check_all()
+        )
+
+        unhealthy = [
+            name
+            for name, report
+            in service_health.items()
+            if report.status
+            == HealthStatus.UNHEALTHY
+        ]
 
         if unhealthy:
             return Response(
-                content=json.dumps({
-                    "status": "not_ready",
-                    "reason": "Unhealthy services detected",
-                    "unhealthy_services": unhealthy,
-                }),
+                content=json.dumps(
+                    {
+                        "status": "not_ready",
+                        "reason": (
+                            "Unhealthy services detected"
+                        ),
+                        "unhealthy_services": unhealthy,
+                    }
+                ),
                 status_code=503,
                 media_type="application/json",
             )
 
-        return {"status": "ready", "services_monitored": len(service_health)}
+        return {
+            "status": "ready",
+            "services_monitored": len(
+                service_health
+            ),
+        }
 
     @app.get("/health/detailed")
-    async def detailed_health(request: Request):
+    async def detailed_health(
+        request: Request,
+    ):
         if settings.is_production:
-            token = request.headers.get("X-API-Key", "")
-            auth_header = request.headers.get("Authorization", "")
-            if not token and auth_header.startswith("Bearer "):
+            token = request.headers.get(
+                "X-API-Key",
+                "",
+            )
+
+            auth_header = request.headers.get(
+                "Authorization",
+                "",
+            )
+
+            if (
+                not token
+                and auth_header.startswith(
+                    "Bearer "
+                )
+            ):
                 token = auth_header[7:]
 
-            master_token = getattr(settings, "master_api_token", "") or ""
-            if not master_token or not token or not hmac.compare_digest(token, master_token):
-                raise HTTPException(status_code=401, detail="Authentication required")
+            master_token = (
+                getattr(
+                    settings,
+                    "master_api_token",
+                    "",
+                )
+                or ""
+            )
 
-        return _build_health_response(app)
+            if (
+                not master_token
+                or not token
+                or not hmac.compare_digest(
+                    token,
+                    master_token,
+                )
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Authentication required"
+                    ),
+                )
+
+        return _build_health_response(
+            app
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ROUTE MOUNTING
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _mount_routes(app: FastAPI) -> None:
+
+def _mount_routes(
+    app: FastAPI,
+) -> None:
+    """Mount core application routers."""
+
     route_modules = [
-        ("API v1", "api.v1", "router", "include_router"),
-        ("Rule Engine", "routes.rule_routes", "router", "include_router"),
-        ("Meta Engine", "routes.meta_routes", "router", "include_router"),
-        ("Email Service", "routes.email_routes", "router", "include_router"),
-        ("Webhook", "routes.webhook", "router", "include_router"),
+        (
+            "API v1",
+            "api.v1",
+            "router",
+        ),
+        (
+            "Rule Engine",
+            "routes.rule_routes",
+            "router",
+        ),
+        (
+            "Meta Engine",
+            "routes.meta_routes",
+            "router",
+        ),
+        (
+            "Email Service",
+            "routes.email_routes",
+            "router",
+        ),
+        (
+            "Webhook",
+            "routes.webhook",
+            "router",
+        ),
     ]
 
-    for name, module_path, attr, method in route_modules:
+    for (
+        name,
+        module_path,
+        attr,
+    ) in route_modules:
         try:
-            module = __import__(module_path, fromlist=[attr])
-            router = getattr(module, attr, None)
+            module = __import__(
+                module_path,
+                fromlist=[attr],
+            )
+
+            router = getattr(
+                module,
+                attr,
+                None,
+            )
+
             if router:
-                getattr(app, method)(router)
-                logger.info("%s routes mounted.", name)
+                app.include_router(
+                    router
+                )
+
+                logger.info(
+                    "%s routes mounted.",
+                    name,
+                )
+
         except ImportError:
-            logger.debug("%s routes not available — skipping.", name)
+            logger.debug(
+                "%s routes not available — skipping.",
+                name,
+            )
+
         except Exception as exc:
-            logger.warning("%s routes failed to mount: %s", name, exc)
+            logger.warning(
+                "%s routes failed to mount: %s",
+                name,
+                str(exc)[:300],
+            )
 
-    _mount_plugin(app, "growthbridge", "Growthbridge")
+    _mount_plugin(
+        app,
+        "growthbridge",
+        "Growthbridge",
+    )
 
     try:
-        from routes.code_intel_routes import router as code_intel_router
-        app.include_router(code_intel_router)
-        logger.info("Code Intelligence routes mounted.")
-    except ImportError:
-        logger.debug("Code Intelligence routes not available.")
+        from routes.code_intel_routes import (
+            router as code_intel_router,
+        )
 
+        app.include_router(
+            code_intel_router
+        )
 
-def _mount_plugin(app: FastAPI, plugin_name: str, display_name: str) -> None:
-    try:
-        public_module = __import__(f"plugins.{plugin_name}.routes.public", fromlist=["router"])
-        admin_module = __import__(f"plugins.{plugin_name}.routes.admin", fromlist=["router"])
-        app.include_router(public_module.router)
-        app.include_router(admin_module.router)
-        logger.info("%s plugin routes mounted.", display_name)
+        logger.info(
+            "Code Intelligence routes mounted."
+        )
+
     except ImportError:
-        logger.debug("%s plugin not available — skipping.", display_name)
+        logger.debug(
+            "Code Intelligence routes "
+            "not available."
+        )
+
     except Exception as exc:
-        logger.warning("%s mount failed: %s", display_name, exc)
+        logger.warning(
+            "Code Intelligence routes failed "
+            "to mount: %s",
+            str(exc)[:300],
+        )
+
+
+def _mount_plugin(
+    app: FastAPI,
+    plugin_name: str,
+    display_name: str,
+) -> None:
+    """Mount public and admin routes for an optional plugin."""
+
+    try:
+        public_module = __import__(
+            f"plugins.{plugin_name}.routes.public",
+            fromlist=["router"],
+        )
+
+        admin_module = __import__(
+            f"plugins.{plugin_name}.routes.admin",
+            fromlist=["router"],
+        )
+
+        public_router = getattr(
+            public_module,
+            "router",
+            None,
+        )
+
+        admin_router = getattr(
+            admin_module,
+            "router",
+            None,
+        )
+
+        if public_router:
+            app.include_router(
+                public_router
+            )
+
+        if admin_router:
+            app.include_router(
+                admin_router
+            )
+
+        logger.info(
+            "%s plugin routes mounted.",
+            display_name,
+        )
+
+    except ImportError:
+        logger.debug(
+            "%s plugin not available — skipping.",
+            display_name,
+        )
+
+    except Exception as exc:
+        logger.warning(
+            "%s mount failed: %s",
+            display_name,
+            str(exc)[:300],
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -592,23 +1289,33 @@ def _mount_plugin(app: FastAPI, plugin_name: str, display_name: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 fastapi_app = create_app()
-app = create_socket_app(fastapi_app)
+
+app = create_socket_app(
+    fastapi_app
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # UTILITY
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def _get_python_version() -> str:
-    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return (
+        f"{sys.version_info.major}."
+        f"{sys.version_info.minor}."
+        f"{sys.version_info.micro}"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
