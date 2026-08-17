@@ -1,10 +1,14 @@
 """
-KANYOZA AUTONOMOUS CONDITION + DECISION ENGINE v4.0
+KANYOZA AUTONOMOUS CONDITION + DECISION ENGINE v4.0.1
 ====================================================
 
-Version: 4.0
+Version: 4.0.1
 Purpose:
     Complete autonomous decision intelligence for social-media/content systems.
+
+v4.0.1 CHANGES:
+    - Added event bus integration for strategy_executed and brand_health_updated events
+    - Defensive event publishing with fallback handling
 
 v4.0 NEW CAPABILITIES:
     - Adaptive thresholds (self-tuning based on outcomes)
@@ -41,6 +45,30 @@ from enum import Enum
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger("kanyoza.condition_engine")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    logger.warning("Shared event bus not available — events will be skipped")
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
 
 
 # ============================================================================
@@ -707,7 +735,7 @@ class AdaptiveThresholdManager:
 
 
 # ============================================================================
-# COMPLETE AUTONOMOUS CONDITION ENGINE v4.0
+# COMPLETE AUTONOMOUS CONDITION ENGINE v4.0.1
 # ============================================================================
 
 class AutonomousConditionEngine:
@@ -758,10 +786,10 @@ class AutonomousConditionEngine:
 
         self._register_default_strategies()
         logger.info(
-            "Autonomous Condition Engine v4.0 initialized "
+            "Autonomous Condition Engine v4.0.1 initialized "
             "(complete with adaptive thresholds, multi-metric, "
             "predictive trends, anomaly classification, "
-            "brand clustering)"
+            "brand clustering, event bus integration)"
         )
 
     # ═══════════════════════════════════════════════════════════════
@@ -1442,10 +1470,27 @@ class AutonomousConditionEngine:
             plan.status = ActionStatus.EXECUTED
             plan.executed_at = utc_now()
             self._last_action_at[(plan.brand_id, plan.action)] = utc_now()
+            
+            # Publish strategy_executed event
+            _publish_event("strategy_executed", {
+                "brand_id": plan.brand_id,
+                "action": plan.action,
+                "success": True,
+            })
+            
             return plan
         except Exception as exc:
             plan.status = ActionStatus.FAILED
             plan.outcome = {"error": str(exc)}
+            
+            # Publish strategy_executed event with failure
+            _publish_event("strategy_executed", {
+                "brand_id": plan.brand_id,
+                "action": plan.action,
+                "success": False,
+                "error": str(exc),
+            })
+            
             return plan
 
     # ═══════════════════════════════════════════════════════════════
@@ -1500,6 +1545,13 @@ class AutonomousConditionEngine:
                 "components": {},
             }
             self._brand_health[brand_id] = health
+            
+            # Publish brand_health_updated event
+            _publish_event("brand_health_updated", {
+                "brand_id": brand_id,
+                "health_score": health.get("health_score", 0),
+            })
+            
             return health
 
         # Multi-metric baselines
@@ -1563,6 +1615,13 @@ class AutonomousConditionEngine:
             "updated_at": iso_now(),
         }
         self._brand_health[brand_id] = health
+        
+        # Publish brand_health_updated event
+        _publish_event("brand_health_updated", {
+            "brand_id": brand_id,
+            "health_score": score,
+        })
+        
         return health
 
     # ═══════════════════════════════════════════════════════════════
@@ -2177,7 +2236,7 @@ def health_check() -> Dict[str, Any]:
     return {
         "service": "autonomous_condition_engine",
         "status": "healthy",
-        "version": "4.0",
+        "version": "4.0.1",
         "timestamp": iso_now(),
         "engine": autonomous_engine.get_status(),
     }
