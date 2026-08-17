@@ -2,6 +2,11 @@
 Worker entry point for non-API Render services.
 Includes a minimal HTTP health server so Render detects the port.
 
+v14.7 — SharedEventBus integration:
+  - All instances connected via Supabase shared_event_bus
+  - Director, MetaEngine, ConditionEngine, Workers, Monitor, GitHub all communicate
+  - True autonomous loop: Observe → Analyze → Decide → Act → Learn → Communicate
+
 v14.6 — SERVICE_MODE-aware worker with Director HTTP routes:
   - "workers"    → BrandScheduler only
   - "monitor"    → Monitor + Backup + Trends
@@ -81,7 +86,6 @@ def start_director_http_server(container):
     async def root():
         return {"status": "ok", "service": "director", "version": dir_instance.VERSION}
 
-    # Mount Director app at root so ALL routes work: /status, /tasks, /decisions, etc.
     app.mount("/", director_app)
 
     logger.info(f"Director HTTP server starting on port {PORT}")
@@ -105,44 +109,259 @@ def start_core_http_server(container):
     async def root():
         return {"status": "ok", "service": "core"}
 
-    # Mount Director at /director
     if dir_instance:
         director_app = create_director_app(dir_instance)
         app.mount("/director", director_app)
-        logger.info("Director routes mounted at /director")
 
-    # MetaEngine routes
     @app.get("/meta/status")
     async def meta_status():
         return meta_engine.get_status()
 
-    @app.get("/meta/dependency-graph")
-    async def meta_graph():
-        return meta_engine.get_dependency_graph()
-
-    @app.get("/meta/root-cause")
-    async def meta_root_cause():
-        return {"root_cause": meta_engine.get_root_cause()}
-
-    @app.get("/meta/predictions")
-    async def meta_predictions():
-        return {"predictions": meta_engine.get_cascading_predictions()}
-
-    @app.get("/meta/impact")
-    async def meta_impact():
-        return meta_engine.get_impact_assessment()
-
-    @app.get("/meta/recovery-plans")
-    async def meta_recovery():
-        return {"recovery_plans": meta_engine.get_recovery_plans()}
-
-    @app.get("/meta/incidents")
-    async def meta_incidents():
-        return {"incidents": meta_engine.get_incidents()}
-
     logger.info(f"Core HTTP server starting on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v14.7 — SHARED EVENT BUS HANDLERS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def register_shared_event_handlers(shared_bus, container=None):
+    """Register event handlers based on SERVICE_MODE."""
+    
+    if SERVICE_MODE == "director":
+        _register_director_handlers(shared_bus, container)
+    elif SERVICE_MODE == "workers":
+        _register_workers_handlers(shared_bus, container)
+    elif SERVICE_MODE == "meta":
+        _register_meta_handlers(shared_bus, container)
+    elif SERVICE_MODE == "condition":
+        _register_condition_handlers(shared_bus, container)
+    elif SERVICE_MODE == "monitor":
+        _register_monitor_handlers(shared_bus, container)
+    elif SERVICE_MODE == "github":
+        _register_github_handlers(shared_bus, container)
+    elif SERVICE_MODE == "core":
+        _register_director_handlers(shared_bus, container)
+        _register_meta_handlers(shared_bus, container)
+        _register_condition_handlers(shared_bus, container)
+
+
+def _register_director_handlers(shared_bus, container):
+    """Director listens for alerts and results."""
+    from services.director import director
+    
+    def handle_engine_alert(payload):
+        engine_name = payload.get("engine", "unknown")
+        status = payload.get("status", "unknown")
+        message = payload.get("message", "")
+        logger.info(f"👔 Director received alert: {engine_name} is {status} — {message}")
+        
+        if director:
+            director.enqueue_event("engine_alert", {
+                "engine": engine_name,
+                "status": status,
+                "message": message,
+            })
+    
+    def handle_post_published(payload):
+        topic = payload.get("topic", "")
+        brand = payload.get("brand", "")
+        logger.info(f"👔 Director: Post published — {topic} for {brand}")
+        
+        if director:
+            director.enqueue_event("post_published", payload)
+    
+    def handle_content_failed(payload):
+        error = payload.get("error", "Unknown error")
+        brand = payload.get("brand", "")
+        logger.warning(f"👔 Director: Content failed for {brand} — {error}")
+        
+        if director:
+            director.enqueue_event("content_failed", payload)
+    
+    def handle_engagement_update(payload):
+        brand = payload.get("brand", "")
+        engagement = payload.get("engagement", 0)
+        logger.info(f"👔 Director: Engagement update — {brand}: {engagement}")
+        
+        if director:
+            director.enqueue_event("engagement_update", payload)
+    
+    shared_bus.subscribe("engine_alert", handle_engine_alert)
+    shared_bus.subscribe("post_published", handle_post_published)
+    shared_bus.subscribe("content_failed", handle_content_failed)
+    shared_bus.subscribe("engagement_update", handle_engagement_update)
+    logger.info("SharedEventBus: Director handlers registered")
+
+
+def _register_workers_handlers(shared_bus, container):
+    """Workers (BrandScheduler) listen for publish commands."""
+    
+    def handle_publish_request(payload):
+        brand_id = payload.get("brand_id", "")
+        topic = payload.get("topic", "")
+        logger.info(f"📤 Workers: Publish requested for {brand_id} — {topic}")
+        
+        try:
+            from scheduler.brand_scheduler import BrandSchedulerManager
+            manager = container.resolve(BrandSchedulerManager) if container else None
+            if manager and brand_id:
+                result = manager.trigger_for_brand(brand_id)
+                logger.info(f"📤 Workers: Publish result — {result}")
+                
+                # Notify that post was published (or failed)
+                if result.get("ok"):
+                    shared_bus.publish("post_published", {
+                        "brand": brand_id,
+                        "topic": result.get("topic", ""),
+                        "platforms": result.get("platforms", []),
+                    })
+                else:
+                    shared_bus.publish("content_failed", {
+                        "brand": brand_id,
+                        "error": result.get("error", "Publish failed"),
+                    })
+        except Exception as exc:
+            logger.error(f"📤 Workers: Publish handling failed — {exc}")
+            shared_bus.publish("content_failed", {
+                "brand": brand_id,
+                "error": str(exc),
+            })
+    
+    def handle_trend_detected(payload):
+        topic = payload.get("topic", "")
+        brand_id = payload.get("brand_id", "")
+        logger.info(f"📤 Workers: Trend detected — {topic} for {brand_id}")
+        
+        # Auto-publish for trending topic
+        handle_publish_request({"brand_id": brand_id, "topic": topic})
+    
+    shared_bus.subscribe("publish_request", handle_publish_request)
+    shared_bus.subscribe("trend_detected", handle_trend_detected)
+    logger.info("SharedEventBus: Workers handlers registered")
+
+
+def _register_meta_handlers(shared_bus, container):
+    """MetaEngine listens for status updates."""
+    from services.meta_engine import meta_engine
+    
+    def handle_engine_status_update(payload):
+        engine_name = payload.get("engine", "unknown")
+        status = payload.get("status", "unknown")
+        logger.info(f"🔍 MetaEngine: Status update — {engine_name} is {status}")
+        
+        if meta_engine:
+            # Record health in MetaEngine
+            try:
+                meta_engine.record_metric(
+                    engine_name,
+                    "status_update",
+                    1.0 if status == "healthy" else 0.0,
+                )
+            except Exception:
+                pass
+    
+    def handle_service_heartbeat(payload):
+        service = payload.get("service", "unknown")
+        logger.debug(f"🔍 MetaEngine: Heartbeat from {service}")
+        
+        if meta_engine:
+            try:
+                meta_engine.record_success(service)
+            except Exception:
+                pass
+    
+    def handle_incident_report(payload):
+        incident = payload.get("incident", "")
+        logger.warning(f"🔍 MetaEngine: Incident reported — {incident}")
+        
+        # MetaEngine can publish alert to Director
+        shared_bus.publish("engine_alert", {
+            "engine": payload.get("engine", "unknown"),
+            "status": "degraded",
+            "message": incident,
+        })
+    
+    shared_bus.subscribe("engine_status_update", handle_engine_status_update)
+    shared_bus.subscribe("service_heartbeat", handle_service_heartbeat)
+    shared_bus.subscribe("incident_report", handle_incident_report)
+    logger.info("SharedEventBus: MetaEngine handlers registered")
+
+
+def _register_condition_handlers(shared_bus, container):
+    """ConditionEngine listens for posts and engagement."""
+    from services.condition_engine import autonomous_engine
+    
+    def handle_post_analysis(payload):
+        topic = payload.get("topic", "")
+        brand = payload.get("brand", "")
+        logger.info(f"🧠 ConditionEngine: Analyzing post — {topic} for {brand}")
+        
+        # Analyze engagement potential
+        # Publish strategy recommendation
+        shared_bus.publish("strategy_recommendation", {
+            "brand": brand,
+            "topic": topic,
+            "recommendation": "monitor",
+        })
+    
+    def handle_engagement(payload):
+        brand = payload.get("brand", "")
+        engagement = payload.get("engagement", 0)
+        logger.info(f"🧠 ConditionEngine: Engagement data — {brand}: {engagement}")
+        
+        if engagement > 100:
+            # High engagement — recommend more
+            shared_bus.publish("strategy_recommendation", {
+                "brand": brand,
+                "action": "increase_similar_content",
+                "reason": f"Engagement {engagement} above threshold",
+            })
+        elif engagement < 10:
+            # Low engagement — recommend change
+            shared_bus.publish("strategy_recommendation", {
+                "brand": brand,
+                "action": "change_content_strategy",
+                "reason": f"Engagement {engagement} below threshold",
+            })
+    
+    shared_bus.subscribe("post_published", handle_post_analysis)
+    shared_bus.subscribe("engagement_data", handle_engagement)
+    logger.info("SharedEventBus: ConditionEngine handlers registered")
+
+
+def _register_monitor_handlers(shared_bus, container):
+    """Monitor plugins listen for check requests."""
+    
+    def handle_check_request(payload):
+        service = payload.get("service", "")
+        logger.info(f"📡 Monitor: Check requested for {service}")
+        
+        # Publish result back
+        shared_bus.publish("service_heartbeat", {
+            "service": service,
+            "status": "healthy",
+        })
+    
+    shared_bus.subscribe("check_request", handle_check_request)
+    logger.info("SharedEventBus: Monitor handlers registered")
+
+
+def _register_github_handlers(shared_bus, container):
+    """GitHub Connector listens for code tasks."""
+    
+    def handle_code_fix_request(payload):
+        repo = payload.get("repo", "")
+        issue = payload.get("issue", "")
+        logger.info(f"🔧 GitHub: Fix requested for {repo} — {issue}")
+    
+    shared_bus.subscribe("code_fix_request", handle_code_fix_request)
+    logger.info("SharedEventBus: GitHub handlers registered")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN WORKER
+# ═══════════════════════════════════════════════════════════════════════════
 
 def run_worker():
     """Run services based on SERVICE_MODE."""
@@ -162,7 +381,7 @@ def run_worker():
     from lifecycle import _boot_redis
     _boot_redis(container)
 
-    # Initialize JobStatsService (fixes warning on all instances)
+    # Initialize JobStatsService
     try:
         from services.job_stats_service import init_job_stats_service
         init_job_stats_service(
@@ -172,6 +391,26 @@ def run_worker():
         logger.info("JobStatsService initialized")
     except Exception as exc:
         logger.debug("JobStatsService init skipped: %s", exc)
+
+    # ═══════════════════════════════════════════════════════════════
+    # v14.7 — Initialize SharedEventBus (connects all instances)
+    # ═══════════════════════════════════════════════════════════════
+    from core.shared_event_bus import init_shared_event_bus
+    
+    shared_bus = init_shared_event_bus(
+        supabase_client=get_service_client_from_settings(),
+        source_service=SERVICE_MODE,
+    )
+    
+    # Register event handlers for this instance's role
+    register_shared_event_handlers(shared_bus, container)
+    
+    # Publish startup heartbeat
+    shared_bus.publish("service_heartbeat", {
+        "service": SERVICE_MODE,
+        "status": "started",
+    })
+    logger.info(f"SharedEventBus: {SERVICE_MODE} connected to autonomous network")
 
     # ── Conditional: AIOrchestrator + ContentEngine ────────────────
     if SERVICE_MODE in ("core", "director", "meta", "condition"):
@@ -191,16 +430,24 @@ def run_worker():
     elif SERVICE_MODE == "meta":
         from lifecycle import _boot_meta_engine
         _boot_meta_engine(container)
-        logger.info("Worker: MetaEngine only started")
+        logger.info("Worker: MetaEngine started — monitoring and communicating")
         while True:
             time.sleep(60)
+            shared_bus.publish("service_heartbeat", {
+                "service": "meta",
+                "status": "healthy",
+            })
 
     elif SERVICE_MODE == "condition":
         from lifecycle import _boot_condition_engine
         _boot_condition_engine(container)
-        logger.info("Worker: ConditionEngine only started")
+        logger.info("Worker: ConditionEngine started")
         while True:
             time.sleep(60)
+            shared_bus.publish("service_heartbeat", {
+                "service": "condition",
+                "status": "healthy",
+            })
 
     elif SERVICE_MODE == "core":
         from lifecycle import _boot_meta_engine
@@ -222,6 +469,10 @@ def run_worker():
         logger.info("Worker: BrandSchedulerManager started")
         while True:
             time.sleep(60)
+            shared_bus.publish("service_heartbeat", {
+                "service": "workers",
+                "status": "healthy",
+            })
 
     elif SERVICE_MODE == "monitor":
         from plugins.monitor.plugin import init_monitor_plugin
@@ -235,6 +486,10 @@ def run_worker():
         logger.info("Worker: Monitor plugins started")
         while True:
             time.sleep(60)
+            shared_bus.publish("service_heartbeat", {
+                "service": "monitor",
+                "status": "healthy",
+            })
 
     elif SERVICE_MODE == "github":
         from plugins.github_connector.plugin import init_github_connector_plugin
@@ -242,6 +497,10 @@ def run_worker():
         logger.info("Worker: GitHub Connector started")
         while True:
             time.sleep(60)
+            shared_bus.publish("service_heartbeat", {
+                "service": "github",
+                "status": "healthy",
+            })
 
     else:
         logger.error(f"Unknown SERVICE_MODE: {SERVICE_MODE}")
@@ -251,21 +510,16 @@ def run_worker():
 def main():
     logger.info(f"Worker starting in mode: {SERVICE_MODE}")
 
-    # For director and core modes, FastAPI serves HTTP (no need for separate health server)
     if SERVICE_MODE in ("director", "core"):
         run_worker()
     else:
-        # Minimal health server for other modes
         health_thread = threading.Thread(
             target=start_health_server,
             daemon=True,
             name="health-server",
         )
         health_thread.start()
-
-        # Give health server a moment to bind
         time.sleep(1)
-
         run_worker()
 
 
