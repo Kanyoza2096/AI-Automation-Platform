@@ -2,13 +2,14 @@
 Worker entry point for non-API Render services.
 Includes a minimal HTTP health server so Render detects the port.
 
-v14.7 — Full Autonomous System:
+v14.8 — Full Autonomous System with Event Consumer:
   - SharedEventBus: Cross-instance communication
-  - Autonomous Content Engine: Self-driving topic selection
-  - Workers: Generate actual content from topics and publish
+  - Autonomous Content Engine: Self-driving topic selection + adaptive scheduling
+  - Event Consumer: Reactive brain that responds to events
+  - Workers: Generate content from topics + publish + consume events
 
 SERVICE_MODE values:
-  - "workers"    → BrandScheduler + Autonomous Content Engine + Content Publisher
+  - "workers"    → BrandScheduler + Autonomous Content + Event Consumer
   - "monitor"    → Monitor + Backup + Trends
   - "github"     → GitHub Connector only
   - "director"   → Director only (WITH HTTP routes)
@@ -122,7 +123,7 @@ def start_core_http_server(container):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# v14.7 — SHARED EVENT BUS HANDLERS
+# SHARED EVENT BUS HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def register_shared_event_handlers(shared_bus, container=None):
@@ -213,12 +214,10 @@ def _register_workers_handlers(shared_bus, container):
         logger.info(f"📤 Workers: Generating content — '{topic}' for {brand_name}")
         
         try:
-            # Import required services
             from repositories.brand_repository import BrandRepository
             from repositories.ai_profile_repository import AIProfileRepository
             from services.content_engine import content_engine
             
-            # Get the Brand object
             repo = BrandRepository()
             brand = repo.find_by_id(brand_id)
             
@@ -230,13 +229,11 @@ def _register_workers_handlers(shared_bus, container):
                 })
                 return
             
-            # Get AI Profile
             ai_profile = None
             if getattr(brand, "ai_profile_id", None):
                 ai_repo = AIProfileRepository()
                 ai_profile = ai_repo.find_by_id(brand.ai_profile_id)
             
-            # Generate content using the TOPIC we selected
             logger.info(f"🤖 Generating AI content for: {topic}")
             
             result = content_engine.generate_post(
@@ -249,7 +246,6 @@ def _register_workers_handlers(shared_bus, container):
             if result and result.get("caption"):
                 logger.info(f"✅ Content generated: {result['caption'][:100]}...")
                 
-                # Publish the generated content
                 publish_result = content_engine.publish(
                     brand=brand,
                     caption=result["caption"],
@@ -282,12 +278,12 @@ def _register_workers_handlers(shared_bus, container):
             })
     
     def handle_publish_command(payload):
-        """Direct publish command from Autonomous Content Engine."""
+        """Direct publish command."""
         handle_publish_request(payload)
     
     shared_bus.subscribe("publish_request", handle_publish_request)
     shared_bus.subscribe("publish_command", handle_publish_command)
-    logger.info("SharedEventBus: Workers handlers registered (topic → content → publish)")
+    logger.info("SharedEventBus: Workers handlers registered")
 
 
 def _register_meta_handlers(shared_bus, container):
@@ -297,7 +293,6 @@ def _register_meta_handlers(shared_bus, container):
     def handle_engine_status_update(payload):
         engine_name = payload.get("engine", "unknown")
         status = payload.get("status", "unknown")
-        logger.info(f"🔍 MetaEngine: Status update — {engine_name} is {status}")
         if meta_engine:
             try:
                 meta_engine.record_metric(engine_name, "status", 1.0 if status == "healthy" else 0.0)
@@ -306,7 +301,6 @@ def _register_meta_handlers(shared_bus, container):
     
     def handle_service_heartbeat(payload):
         service = payload.get("service", "unknown")
-        logger.debug(f"🔍 MetaEngine: Heartbeat from {service}")
         if meta_engine:
             try:
                 meta_engine.record_success(service)
@@ -314,12 +308,10 @@ def _register_meta_handlers(shared_bus, container):
                 pass
     
     def handle_incident_report(payload):
-        incident = payload.get("incident", "")
-        logger.warning(f"🔍 MetaEngine: Incident reported — {incident}")
         shared_bus.publish("engine_alert", {
             "engine": payload.get("engine", "unknown"),
             "status": "degraded",
-            "message": incident,
+            "message": payload.get("incident", ""),
         })
     
     shared_bus.subscribe("engine_status_update", handle_engine_status_update)
@@ -369,12 +361,10 @@ def _register_monitor_handlers(shared_bus, container):
     
     def handle_check_request(payload):
         service = payload.get("service", "")
-        logger.info(f"📡 Monitor: Check requested for {service}")
         shared_bus.publish("service_heartbeat", {"service": service, "status": "healthy"})
     
     def handle_trend_detected(payload):
         topic = payload.get("topic", "")
-        logger.info(f"📡 Monitor: Trend detected — {topic}")
         shared_bus.publish("trend_analysis_request", {
             "topic": topic,
             "source": payload.get("source", "trend_intelligence"),
@@ -409,7 +399,7 @@ def run_worker():
     container = build_container()
     supabase_client = get_service_client_from_settings()
 
-    # ── Phase 0: Infrastructure ───────────────────────────────────
+    # Phase 0: Infrastructure
     from lifecycle import _boot_event_bus
     _boot_event_bus(container)
 
@@ -423,11 +413,10 @@ def run_worker():
     try:
         from services.job_stats_service import init_job_stats_service
         init_job_stats_service(supabase_client=create_fresh_service_client, event_bus=None)
-        logger.info("JobStatsService initialized")
     except Exception as exc:
         logger.debug("JobStatsService init skipped: %s", exc)
 
-    # ── v14.7 — Initialize SharedEventBus ─────────────────────────
+    # Initialize SharedEventBus
     from core.shared_event_bus import init_shared_event_bus
     
     shared_bus = init_shared_event_bus(
@@ -437,36 +426,29 @@ def run_worker():
     
     register_shared_event_handlers(shared_bus, container)
     
-    shared_bus.publish("service_heartbeat", {
-        "service": SERVICE_MODE,
-        "status": "started",
-    })
-    logger.info(f"SharedEventBus: {SERVICE_MODE} connected to autonomous network")
+    shared_bus.publish("service_heartbeat", {"service": SERVICE_MODE, "status": "started"})
+    logger.info(f"SharedEventBus: {SERVICE_MODE} connected")
 
-    # ── Conditional services ──────────────────────────────────────
+    # Conditional services
     if SERVICE_MODE in ("core", "director", "meta", "condition"):
         from lifecycle import _boot_ai_orchestrator
         _boot_ai_orchestrator(container)
-
         from lifecycle import _boot_content_engine
         _boot_content_engine(container)
 
     if SERVICE_MODE == "director":
         from lifecycle import _boot_director
         _boot_director(container)
-        logger.info("Worker: Director booted — starting HTTP server")
         start_director_http_server(container)
 
     elif SERVICE_MODE == "meta":
         from lifecycle import _boot_meta_engine
         _boot_meta_engine(container)
-        logger.info("Worker: MetaEngine started")
         _keep_alive_with_heartbeat(shared_bus, "meta")
 
     elif SERVICE_MODE == "condition":
         from lifecycle import _boot_condition_engine
         _boot_condition_engine(container)
-        logger.info("Worker: ConditionEngine started")
         _keep_alive_with_heartbeat(shared_bus, "condition")
 
     elif SERVICE_MODE == "core":
@@ -476,7 +458,6 @@ def run_worker():
         _boot_director(container)
         from lifecycle import _boot_condition_engine
         _boot_condition_engine(container)
-        logger.info("Worker: Core services booted — starting HTTP server")
         start_core_http_server(container)
 
     elif SERVICE_MODE == "workers":
@@ -486,15 +467,23 @@ def run_worker():
         manager.start()
         logger.info("Worker: BrandSchedulerManager started")
 
-        # v14.7 — Autonomous Content Engine
+        # Autonomous Content Engine
         from core.autonomous_content import init_autonomous_content
         content_engine = init_autonomous_content(
             supabase_client=get_service_client_from_settings(),
             shared_bus=shared_bus,
             container=container,
         )
-        logger.info("Worker: Autonomous Content Engine started — brand-aware posting")
-        
+        logger.info("Worker: Autonomous Content Engine started")
+
+        # Event Consumer (Reactive Brain)
+        from core.event_consumer import init_event_consumer
+        event_consumer = init_event_consumer(
+            shared_bus=shared_bus,
+            supabase_client=get_service_client_from_settings(),
+        )
+        logger.info("Worker: Event Consumer started — system is reactive")
+
         _keep_alive_with_heartbeat(shared_bus, "workers")
 
     elif SERVICE_MODE == "monitor":
@@ -504,13 +493,11 @@ def run_worker():
         init_backup_plugin(supabase_client=supabase_client)
         from plugins.trend_intelligence.plugin import init_trend_plugin
         init_trend_plugin(supabase_client=supabase_client)
-        logger.info("Worker: Monitor plugins started")
         _keep_alive_with_heartbeat(shared_bus, "monitor")
 
     elif SERVICE_MODE == "github":
         from plugins.github_connector.plugin import init_github_connector_plugin
         init_github_connector_plugin(supabase_client=supabase_client)
-        logger.info("Worker: GitHub Connector started")
         _keep_alive_with_heartbeat(shared_bus, "github")
 
     else:
