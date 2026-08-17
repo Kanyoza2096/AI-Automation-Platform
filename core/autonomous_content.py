@@ -1,16 +1,14 @@
 """
-Autonomous Content Engine — Self-driving content generation with brand relevance.
+Autonomous Content Engine — Self-driving content generation with brand-specific sources.
 
-v1.1 — Brand-aware topic selection:
-  - Fetches trends from internet
-  - Filters by brand-specific keywords
-  - Generates brand-relevant topics inspired by trends
-  - Falls back to brand-appropriate topics when no trends match
+v1.2 — Brand-specific topic sourcing:
+  - Dev Comparisons: Internet trends (tech news, AI, programming)
+  - Spiritual Teacher: Knowledge Base + Fallback (timeless wisdom, not trends)
+  - Each brand gets content from the RIGHT source
   - Never stops posting
 
 Key principle: POSTING IS ALWAYS ON.
-Engagement is feedback, not a requirement.
-Topics are ALWAYS relevant to the brand.
+Topics are ALWAYS relevant to the brand AND from the right source.
 """
 
 from __future__ import annotations
@@ -27,18 +25,40 @@ logger = logging.getLogger("kanyoza.autonomous_content")
 
 
 class AutonomousContentEngine:
-    """Self-driving content generation with brand relevance."""
+    """Self-driving content generation with brand-specific topic sources."""
 
     # ═══════════════════════════════════════════════════════════════
     # CONFIGURATION
     # ═══════════════════════════════════════════════════════════════
 
-    POST_INTERVAL_MINUTES = 60          # Post at least every 60 minutes
-    MAX_POSTS_PER_DAY = 10              # Don't exceed 10 posts/day per brand
-    MIN_ENGAGEMENT_THRESHOLD = 5        # Below this = consider changing
+    POST_INTERVAL_MINUTES = 60
+    MAX_POSTS_PER_DAY = 10
+    MIN_ENGAGEMENT_THRESHOLD = 5
 
     # ═══════════════════════════════════════════════════════════════
-    # BRAND-SPECIFIC KEYWORDS
+    # BRAND-SPECIFIC TOPIC SOURCES
+    # ═══════════════════════════════════════════════════════════════
+
+    BRAND_TOPIC_SOURCES = {
+        "Spiritual Teacher": [
+            "knowledge_base",   # Timeless spiritual wisdom
+            "custom",           # Topics from database
+            "fallback",         # Hardcoded spiritual topics
+        ],
+        "Dev Comparisons": [
+            "trends",           # Internet tech trends
+            "knowledge_base",   # Knowledge base articles
+            "custom",           # Custom topics from DB
+            "fallback",         # Hardcoded comparison topics
+        ],
+        "default": [
+            "trends",
+            "fallback",
+        ],
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # BRAND KEYWORDS (for trend filtering)
     # ═══════════════════════════════════════════════════════════════
 
     BRAND_KEYWORDS = {
@@ -66,7 +86,7 @@ class AutonomousContentEngine:
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # BRAND-SPECIFIC TOPIC TEMPLATES
+    # BRAND TOPIC TEMPLATES (for generating from trends)
     # ═══════════════════════════════════════════════════════════════
 
     BRAND_TOPIC_TEMPLATES = {
@@ -104,7 +124,7 @@ class AutonomousContentEngine:
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # FALLBACK TOPICS (NEVER EMPTY)
+    # FALLBACK TOPICS (NEVER EMPTY — always brand-relevant)
     # ═══════════════════════════════════════════════════════════════
 
     FALLBACK_TOPICS = {
@@ -173,10 +193,8 @@ class AutonomousContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     def start(self) -> None:
-        """Start the autonomous content loop."""
         if self._running:
             return
-
         self._running = True
         self._thread = threading.Thread(
             target=self._loop,
@@ -184,10 +202,9 @@ class AutonomousContentEngine:
             daemon=True,
         )
         self._thread.start()
-        logger.info("🚀 Autonomous Content Engine started — brand-aware self-driving posting")
+        logger.info("🚀 Autonomous Content Engine started — brand-specific sourcing")
 
     def stop(self) -> None:
-        """Stop the loop."""
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3)
@@ -198,7 +215,6 @@ class AutonomousContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     def _loop(self) -> None:
-        """Main loop — continuously checks and posts."""
         while self._running:
             try:
                 self._tick()
@@ -207,7 +223,6 @@ class AutonomousContentEngine:
             time.sleep(60)
 
     def _tick(self) -> None:
-        """One iteration — check if we should post."""
         brands = self._get_active_brands()
 
         for brand in brands:
@@ -218,7 +233,6 @@ class AutonomousContentEngine:
                 self._generate_and_publish(brand_id, brand_name)
 
     def _should_post(self, brand_id: str) -> bool:
-        """Determine if it's time to post for this brand."""
         now = datetime.now(timezone.utc)
 
         last_post = self._last_post_time.get(brand_id)
@@ -239,7 +253,6 @@ class AutonomousContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     def _get_active_brands(self) -> List[Dict[str, Any]]:
-        """Get all active brands from Supabase."""
         if not self.supabase:
             return []
 
@@ -254,71 +267,142 @@ class AutonomousContentEngine:
             return []
 
     # ═══════════════════════════════════════════════════════════════
-    # TOPIC SELECTION (Brand-Aware)
+    # TOPIC SELECTION (Brand-Specific Sources)
     # ═══════════════════════════════════════════════════════════════
 
     def _select_topic(self, brand_id: str, brand_name: str) -> str:
-        """Select the best topic for this brand.
-
-        Priority:
-        1. Brand-relevant trending topics (filtered by keywords)
-        2. Brand-inspired topics from trends (using templates)
-        3. Custom topics from database
-        4. Previously successful topics
-        5. Fallback topics (guaranteed relevant)
-        """
-        # 1. Try trending topics filtered by brand keywords
-        trending = self._get_trending_topics()
-        if trending:
-            relevant = self._filter_by_brand_keywords(trending, brand_name)
-            if relevant:
-                topic = random.choice(relevant)
-                if self._is_unused(brand_id, topic):
-                    logger.info(f"✅ Found relevant trend for {brand_name}: {topic}")
-                    return topic
-
-            # 2. Generate brand-inspired topic from trend
-            if trending:
-                trend = random.choice(trending)
-                topic = self._generate_brand_topic(trend, brand_name)
-                if topic and self._is_unused(brand_id, topic):
-                    logger.info(f"🔄 Generated brand topic from trend for {brand_name}: {topic}")
-                    return topic
-
-        # 3. Try custom topics from database
-        custom = self._get_custom_topics(brand_id)
-        if custom:
-            topic = random.choice(custom)
-            if self._is_unused(brand_id, topic):
-                logger.info(f"📋 Using custom topic for {brand_name}: {topic}")
+        """Select topic using brand-specific source priority."""
+        
+        sources = self.BRAND_TOPIC_SOURCES.get(
+            brand_name,
+            self.BRAND_TOPIC_SOURCES["default"],
+        )
+        
+        for source in sources:
+            topic = None
+            
+            if source == "trends":
+                topic = self._get_trend_topic(brand_id, brand_name)
+            
+            elif source == "knowledge_base":
+                topic = self._get_knowledge_base_topic(brand_id)
+            
+            elif source == "custom":
+                topic = self._get_custom_topic(brand_id)
+            
+            elif source == "fallback":
+                fallback = self.FALLBACK_TOPICS.get(brand_name, self.FALLBACK_TOPICS["default"])
+                topic = random.choice(fallback)
+                logger.info(f"🛟 Fallback topic for {brand_name}: {topic}")
                 return topic
-
-        # 4. Try previously successful topics
-        successful = self._get_successful_topics(brand_id)
-        if successful:
-            topic = random.choice(successful)
-            if self._is_unused(brand_id, topic):
-                logger.info(f"📈 Reusing successful topic for {brand_name}: {topic}")
+            
+            if topic and self._is_unused(brand_id, topic):
                 return topic
-
-        # 5. Fallback topics (guaranteed relevant)
+        
+        # Ultimate fallback
         fallback = self.FALLBACK_TOPICS.get(brand_name, self.FALLBACK_TOPICS["default"])
-        topic = random.choice(fallback)
-        logger.info(f"🛟 Using fallback topic for {brand_name}: {topic}")
-        return topic
+        return random.choice(fallback)
+
+    def _get_trend_topic(self, brand_id: str, brand_name: str) -> Optional[str]:
+        """Get topic from internet trends, filtered by brand."""
+        trending = self._get_trending_topics()
+        
+        if not trending:
+            return None
+        
+        # Filter by brand keywords
+        relevant = self._filter_by_brand_keywords(trending, brand_name)
+        if relevant:
+            topic = random.choice(relevant)
+            logger.info(f"📡 Trend topic for {brand_name}: {topic}")
+            return topic
+        
+        # Generate brand-inspired topic from trend
+        trend = random.choice(trending)
+        topic = self._generate_brand_topic(trend, brand_name)
+        if topic:
+            logger.info(f"🔄 Generated trend topic for {brand_name}: {topic}")
+            return topic
+        
+        return None
+
+    def _get_knowledge_base_topic(self, brand_id: str) -> Optional[str]:
+        """Get topic from brand's knowledge base (timeless content)."""
+        if not self.supabase:
+            return None
+        
+        try:
+            result = self.supabase.table("knowledge_entries") \
+                .select("title, content") \
+                .eq("brand_id", brand_id) \
+                .order("created_at", desc=True) \
+                .limit(20) \
+                .execute()
+            
+            if result.data:
+                entry = random.choice(result.data)
+                
+                title = entry.get("title", "")
+                if title and len(title) > 5:
+                    logger.info(f"📚 Knowledge base topic: {title}")
+                    return title
+                
+                content = entry.get("content", "")
+                if content:
+                    first_sentence = content.split(".")[0].strip()
+                    if len(first_sentence) > 10:
+                        logger.info(f"📚 Knowledge base topic (from content): {first_sentence[:100]}")
+                        return first_sentence[:100]
+            
+            return None
+        except Exception:
+            return None
+
+    def _get_custom_topic(self, brand_id: str) -> Optional[str]:
+        """Get topic from brand's custom_topics in database."""
+        if not self.supabase:
+            return None
+        
+        try:
+            result = self.supabase.table("brands") \
+                .select("custom_topics") \
+                .eq("id", brand_id) \
+                .execute()
+            
+            if result.data:
+                topics = result.data[0].get("custom_topics", [])
+                
+                if isinstance(topics, list) and topics:
+                    topic = random.choice(topics)
+                    logger.info(f"📋 Custom topic: {topic}")
+                    return topic
+                
+                if isinstance(topics, str):
+                    try:
+                        parsed = json.loads(topics)
+                        if isinstance(parsed, list) and parsed:
+                            topic = random.choice(parsed)
+                            logger.info(f"📋 Custom topic (parsed): {topic}")
+                            return topic
+                    except json.JSONDecodeError:
+                        pass
+            
+            return None
+        except Exception:
+            return None
 
     def _get_trending_topics(self) -> List[str]:
-        """Fetch trending topics from Supabase (populated by TrendIntelligence)."""
+        """Fetch trending topics from Supabase."""
         if not self.supabase:
             return []
-
+        
         try:
             result = self.supabase.table("trend_posts") \
                 .select("title") \
                 .order("fetched_at", desc=True) \
                 .limit(20) \
                 .execute()
-
+            
             topics = []
             for row in result.data or []:
                 title = row.get("title", "")
@@ -343,16 +427,9 @@ class AutonomousContentEngine:
         return relevant
 
     def _generate_brand_topic(self, trend_topic: str, brand_name: str) -> Optional[str]:
-        """Generate a brand-relevant topic inspired by a trend.
-
-        Example:
-          Trend: "Thinking Machines Lab Drops Its First Model"
-          Spiritual Teacher → "Mindfulness in the Age of Thinking Machines Lab"
-          Dev Comparisons → "Thinking Machines Lab: Which Tool is Best in 2026?"
-        """
+        """Generate a brand-relevant topic inspired by a trend."""
         templates = self.BRAND_TOPIC_TEMPLATES.get(brand_name, self.BRAND_TOPIC_TEMPLATES["default"])
         
-        # Extract meaningful keyword from trend
         keyword = self._extract_keyword(trend_topic)
         
         if not keyword:
@@ -364,13 +441,9 @@ class AutonomousContentEngine:
 
     def _extract_keyword(self, topic: str) -> str:
         """Extract the main keyword from a trending topic title."""
-        # Remove apostrophes and lowercase
         clean = topic.lower().replace("'s", "").replace("'", "")
-        
-        # Split into words
         words = clean.split()
         
-        # Remove stop words
         stop_words = {
             "the", "a", "an", "is", "are", "was", "were", "to", "for",
             "of", "in", "on", "at", "and", "or", "but", "with", "without",
@@ -384,37 +457,8 @@ class AutonomousContentEngine:
         if not meaningful:
             return None
         
-        # Take up to 3 words as the keyword
         keyword = " ".join(meaningful[:3])
-        
-        # Capitalize first letter of each word
-        keyword = keyword.title()
-        
-        return keyword
-
-    def _get_custom_topics(self, brand_id: str) -> List[str]:
-        """Get brand's custom topics from database."""
-        if not self.supabase:
-            return []
-
-        try:
-            result = self.supabase.table("brands") \
-                .select("custom_topics") \
-                .eq("id", brand_id) \
-                .execute()
-
-            if result.data:
-                topics = result.data[0].get("custom_topics", [])
-                if isinstance(topics, list):
-                    return topics
-                if isinstance(topics, str):
-                    try:
-                        return json.loads(topics)
-                    except json.JSONDecodeError:
-                        return []
-            return []
-        except Exception:
-            return []
+        return keyword.title()
 
     def _get_successful_topics(self, brand_id: str) -> List[str]:
         """Get topics that previously got engagement."""
@@ -428,7 +472,6 @@ class AutonomousContentEngine:
     def _is_unused(self, brand_id: str, topic: str) -> bool:
         """Check if topic was already used recently."""
         used = self._used_topics.get(brand_id, [])
-        # Keep only last 50 topics
         if len(used) > 50:
             used = used[-50:]
             self._used_topics[brand_id] = used
@@ -439,15 +482,12 @@ class AutonomousContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     def _generate_and_publish(self, brand_id: str, brand_name: str) -> None:
-        """Generate content for topic and publish."""
         topic = self._select_topic(brand_id, brand_name)
 
         logger.info(f"📝 Generating content for '{brand_name}' — topic: {topic}")
 
-        # Record that we're using this topic
         self._used_topics.setdefault(brand_id, []).append(topic)
 
-        # Publish to SharedEventBus for Workers to handle
         if self.shared_bus:
             self.shared_bus.publish("publish_request", {
                 "brand_id": brand_id,
@@ -457,7 +497,6 @@ class AutonomousContentEngine:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
-        # Update tracking
         now = datetime.now(timezone.utc)
         self._last_post_time[brand_id] = now
         today = now.strftime("%Y-%m-%d")
@@ -476,7 +515,6 @@ class AutonomousContentEngine:
         topic: str,
         engagement: int,
     ) -> None:
-        """Record engagement passively — used for FUTURE topic selection."""
         self._engagement_data.setdefault(brand_id, []).append({
             "topic": topic,
             "engagement": engagement,
@@ -487,13 +525,19 @@ class AutonomousContentEngine:
             self._engagement_data[brand_id] = self._engagement_data[brand_id][-100:]
 
     def get_status(self) -> Dict[str, Any]:
-        """Get autonomous content engine status."""
         return {
             "running": self._running,
             "posts_today": sum(self._posts_today.values()),
             "topics_used": sum(len(v) for v in self._used_topics.values()),
             "engagement_data_points": sum(len(v) for v in self._engagement_data.values()),
             "brands_tracked": list(self._last_post_time.keys()),
+            "brand_topic_sources": {
+                brand: {
+                    "sources": self.BRAND_TOPIC_SOURCES.get(brand, ["default"]),
+                    "topics_used": len(self._used_topics.get(brand, [])),
+                }
+                for brand in self.FALLBACK_TOPICS
+            },
         }
 
 
@@ -509,7 +553,6 @@ def init_autonomous_content(
     shared_bus=None,
     container=None,
 ) -> AutonomousContentEngine:
-    """Initialize the autonomous content engine."""
     global _autonomous_content
 
     _autonomous_content = AutonomousContentEngine(
@@ -522,7 +565,6 @@ def init_autonomous_content(
 
 
 def get_autonomous_content() -> Optional[AutonomousContentEngine]:
-    """Get the autonomous content engine singleton."""
     return _autonomous_content
 
 
