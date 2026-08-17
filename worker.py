@@ -4,11 +4,11 @@ Includes a minimal HTTP health server so Render detects the port.
 
 v14.7 — Full Autonomous System:
   - SharedEventBus: Cross-instance communication
-  - Autonomous Content Engine: Self-driving content generation
-  - All instances connected, posting never stops
+  - Autonomous Content Engine: Self-driving topic selection
+  - Workers: Generate actual content from topics and publish
 
 SERVICE_MODE values:
-  - "workers"    → BrandScheduler + Autonomous Content Engine
+  - "workers"    → BrandScheduler + Autonomous Content Engine + Content Publisher
   - "monitor"    → Monitor + Backup + Trends
   - "github"     → GitHub Connector only
   - "director"   → Director only (WITH HTTP routes)
@@ -76,7 +76,6 @@ def start_director_http_server(container):
         return
 
     director_app = create_director_app(dir_instance)
-
     app = FastAPI(title="Kanyoza Director Service", version=dir_instance.VERSION)
 
     @app.get("/health")
@@ -88,7 +87,6 @@ def start_director_http_server(container):
         return JSONResponse(content={"status": "ok", "service": "director", "version": dir_instance.VERSION}, status_code=200)
 
     app.mount("/", director_app)
-
     logger.info(f"Director HTTP server starting on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 
@@ -157,13 +155,8 @@ def _register_director_handlers(shared_bus, container):
         status = payload.get("status", "unknown")
         message = payload.get("message", "")
         logger.info(f"👔 Director received alert: {engine_name} is {status} — {message}")
-        
         if director:
-            director.enqueue_event("engine_alert", {
-                "engine": engine_name,
-                "status": status,
-                "message": message,
-            })
+            director.enqueue_event("engine_alert", {"engine": engine_name, "status": status, "message": message})
     
     def handle_post_published(payload):
         topic = payload.get("topic", "")
@@ -209,40 +202,80 @@ def _register_director_handlers(shared_bus, container):
 
 
 def _register_workers_handlers(shared_bus, container):
-    """Workers listen for publish commands and handle them."""
+    """Workers generate content from topic and publish."""
     
     def handle_publish_request(payload):
+        """Generate actual content for the topic and publish it."""
         brand_id = payload.get("brand_id", "")
         topic = payload.get("topic", "")
         brand_name = payload.get("brand_name", "")
         
-        logger.info(f"📤 Workers: Publish requested — '{topic}' for {brand_name}")
+        logger.info(f"📤 Workers: Generating content — '{topic}' for {brand_name}")
         
         try:
-            from scheduler.brand_scheduler import BrandSchedulerManager
-            manager = container.resolve(BrandSchedulerManager) if container else None
+            # Import required services
+            from repositories.brand_repository import BrandRepository
+            from repositories.ai_profile_repository import AIProfileRepository
+            from services.content_engine import content_engine
             
-            if manager and brand_id:
-                result = manager.trigger_for_brand(brand_id)
-                logger.info(f"📤 Workers: Publish result — {result}")
+            # Get the Brand object
+            repo = BrandRepository()
+            brand = repo.find_by_id(brand_id)
+            
+            if not brand:
+                logger.error(f"❌ Brand not found: {brand_id}")
+                shared_bus.publish("content_failed", {
+                    "brand": brand_name,
+                    "error": f"Brand not found: {brand_id}",
+                })
+                return
+            
+            # Get AI Profile
+            ai_profile = None
+            if getattr(brand, "ai_profile_id", None):
+                ai_repo = AIProfileRepository()
+                ai_profile = ai_repo.find_by_id(brand.ai_profile_id)
+            
+            # Generate content using the TOPIC we selected
+            logger.info(f"🤖 Generating AI content for: {topic}")
+            
+            result = content_engine.generate_post(
+                brand=brand,
+                ai_profile=ai_profile,
+                topic=topic,
+                base_prompt=None,
+            )
+            
+            if result and result.get("caption"):
+                logger.info(f"✅ Content generated: {result['caption'][:100]}...")
                 
-                if result.get("ok"):
-                    shared_bus.publish("post_published", {
-                        "brand": brand_name,
-                        "brand_id": brand_id,
-                        "topic": result.get("topic", topic),
-                        "platforms": result.get("platforms", []),
-                    })
-                else:
-                    shared_bus.publish("content_failed", {
-                        "brand": brand_name,
-                        "error": result.get("error", "Publish failed"),
-                    })
+                # Publish the generated content
+                publish_result = content_engine.publish(
+                    brand=brand,
+                    caption=result["caption"],
+                    image_bytes=result.get("image_bytes"),
+                    media_artifact=result.get("media_artifact"),
+                )
+                
+                platforms = list(publish_result.keys()) if publish_result else []
+                
+                shared_bus.publish("post_published", {
+                    "brand": brand_name,
+                    "brand_id": brand_id,
+                    "topic": topic,
+                    "platforms": platforms,
+                    "caption_preview": result["caption"][:100],
+                })
+                logger.info(f"✅ Published: '{topic}' for {brand_name} on {platforms}")
             else:
-                # If no manager, just log — the Autonomous Content Engine will retry
-                logger.warning(f"📤 Workers: No BrandSchedulerManager available for {brand_id}")
+                shared_bus.publish("content_failed", {
+                    "brand": brand_name,
+                    "error": "Content generation returned empty result",
+                })
+                logger.error(f"❌ Content generation failed for {brand_name}")
+                
         except Exception as exc:
-            logger.error(f"📤 Workers: Publish handling failed — {exc}")
+            logger.error(f"❌ Publish failed: {exc}")
             shared_bus.publish("content_failed", {
                 "brand": brand_name,
                 "error": str(exc),
@@ -254,7 +287,7 @@ def _register_workers_handlers(shared_bus, container):
     
     shared_bus.subscribe("publish_request", handle_publish_request)
     shared_bus.subscribe("publish_command", handle_publish_command)
-    logger.info("SharedEventBus: Workers handlers registered")
+    logger.info("SharedEventBus: Workers handlers registered (topic → content → publish)")
 
 
 def _register_meta_handlers(shared_bus, container):
@@ -265,7 +298,6 @@ def _register_meta_handlers(shared_bus, container):
         engine_name = payload.get("engine", "unknown")
         status = payload.get("status", "unknown")
         logger.info(f"🔍 MetaEngine: Status update — {engine_name} is {status}")
-        
         if meta_engine:
             try:
                 meta_engine.record_metric(engine_name, "status", 1.0 if status == "healthy" else 0.0)
@@ -343,7 +375,6 @@ def _register_monitor_handlers(shared_bus, container):
     def handle_trend_detected(payload):
         topic = payload.get("topic", "")
         logger.info(f"📡 Monitor: Trend detected — {topic}")
-        # Forward to Director
         shared_bus.publish("trend_analysis_request", {
             "topic": topic,
             "source": payload.get("source", "trend_intelligence"),
@@ -378,7 +409,7 @@ def run_worker():
     container = build_container()
     supabase_client = get_service_client_from_settings()
 
-    # ── Phase 0: Infrastructure (always needed) ───────────────────
+    # ── Phase 0: Infrastructure ───────────────────────────────────
     from lifecycle import _boot_event_bus
     _boot_event_bus(container)
 
@@ -391,17 +422,12 @@ def run_worker():
     # Initialize JobStatsService
     try:
         from services.job_stats_service import init_job_stats_service
-        init_job_stats_service(
-            supabase_client=create_fresh_service_client,
-            event_bus=None,
-        )
+        init_job_stats_service(supabase_client=create_fresh_service_client, event_bus=None)
         logger.info("JobStatsService initialized")
     except Exception as exc:
         logger.debug("JobStatsService init skipped: %s", exc)
 
-    # ═══════════════════════════════════════════════════════════════
-    # v14.7 — Initialize SharedEventBus
-    # ═══════════════════════════════════════════════════════════════
+    # ── v14.7 — Initialize SharedEventBus ─────────────────────────
     from core.shared_event_bus import init_shared_event_bus
     
     shared_bus = init_shared_event_bus(
@@ -409,17 +435,15 @@ def run_worker():
         source_service=SERVICE_MODE,
     )
     
-    # Register event handlers for this instance's role
     register_shared_event_handlers(shared_bus, container)
     
-    # Publish startup heartbeat
     shared_bus.publish("service_heartbeat", {
         "service": SERVICE_MODE,
         "status": "started",
     })
     logger.info(f"SharedEventBus: {SERVICE_MODE} connected to autonomous network")
 
-    # ── Conditional: AIOrchestrator + ContentEngine ────────────────
+    # ── Conditional services ──────────────────────────────────────
     if SERVICE_MODE in ("core", "director", "meta", "condition"):
         from lifecycle import _boot_ai_orchestrator
         _boot_ai_orchestrator(container)
@@ -427,7 +451,6 @@ def run_worker():
         from lifecycle import _boot_content_engine
         _boot_content_engine(container)
 
-    # ── Individual services ───────────────────────────────────────
     if SERVICE_MODE == "director":
         from lifecycle import _boot_director
         _boot_director(container)
@@ -437,7 +460,7 @@ def run_worker():
     elif SERVICE_MODE == "meta":
         from lifecycle import _boot_meta_engine
         _boot_meta_engine(container)
-        logger.info("Worker: MetaEngine started — monitoring and communicating")
+        logger.info("Worker: MetaEngine started")
         _keep_alive_with_heartbeat(shared_bus, "meta")
 
     elif SERVICE_MODE == "condition":
@@ -449,10 +472,8 @@ def run_worker():
     elif SERVICE_MODE == "core":
         from lifecycle import _boot_meta_engine
         _boot_meta_engine(container)
-
         from lifecycle import _boot_director
         _boot_director(container)
-
         from lifecycle import _boot_condition_engine
         _boot_condition_engine(container)
         logger.info("Worker: Core services booted — starting HTTP server")
@@ -465,27 +486,22 @@ def run_worker():
         manager.start()
         logger.info("Worker: BrandSchedulerManager started")
 
-        # ═══════════════════════════════════════════════════════════
-        # v14.7 — Start Autonomous Content Engine
-        # ═══════════════════════════════════════════════════════════
+        # v14.7 — Autonomous Content Engine
         from core.autonomous_content import init_autonomous_content
-        
         content_engine = init_autonomous_content(
             supabase_client=get_service_client_from_settings(),
             shared_bus=shared_bus,
             container=container,
         )
-        logger.info("Worker: Autonomous Content Engine started — will never stop posting")
+        logger.info("Worker: Autonomous Content Engine started — brand-aware posting")
         
         _keep_alive_with_heartbeat(shared_bus, "workers")
 
     elif SERVICE_MODE == "monitor":
         from plugins.monitor.plugin import init_monitor_plugin
         init_monitor_plugin(supabase_client=supabase_client)
-
         from plugins.backup.plugin import init_backup_plugin
         init_backup_plugin(supabase_client=supabase_client)
-
         from plugins.trend_intelligence.plugin import init_trend_plugin
         init_trend_plugin(supabase_client=supabase_client)
         logger.info("Worker: Monitor plugins started")
