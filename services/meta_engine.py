@@ -1,5 +1,5 @@
 """
-KANYOZA META ENGINE v6.0.1
+KANYOZA META ENGINE v6.0.2
 ===========================
 
 RESOURCE-SAFE INTELLIGENT SUPERVISOR
@@ -18,6 +18,13 @@ Design goals
 10. Perform conservative automatic recovery.
 11. Learn recurring failure patterns without unbounded memory.
 12. Fail open: Meta Engine failure must NOT bring down the application.
+
+v6.0.2 CHANGES:
+  - Added event bus integration for engine_alert and service_heartbeat
+  - Enhanced false positive prevention for Redis and Event Bus
+  - Added alert confirmation windows for infrastructure services
+  - Added severity deduplication to prevent alert fatigue
+  - Added minimum threshold for critical alerts on known-flaky services
 
 v6.0.1 API COMPATIBILITY:
   - Added get_dependency_graph()
@@ -67,6 +74,30 @@ from typing import (
 )
 
 logger = logging.getLogger("kanyoza.meta_engine")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    logger.warning("Shared event bus not available — events will be skipped")
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
+
 
 # ============================================================================
 # OPTIONAL PSUTIL
@@ -143,7 +174,7 @@ class ResourceMode(str, Enum):
 
 
 # ============================================================================
-# DATACLASSES (all dataclasses remain same as v6.0.0)
+# DATACLASSES
 # ============================================================================
 
 @dataclass
@@ -692,13 +723,13 @@ class IncidentManager:
 
 
 # ============================================================================
-# META ENGINE V6.0.1
+# META ENGINE V6.0.2
 # ============================================================================
 
 class MetaEngineV6:
     """Intelligent, bounded, resource-aware supervisory engine."""
 
-    VERSION = "6.0.1"
+    VERSION = "6.0.2"
 
     # Health
     ERROR_DEGRADED_THRESHOLD = 0.10
@@ -751,6 +782,12 @@ class MetaEngineV6:
     DB_FAILURE_THRESHOLD = 3
     DB_COOLDOWN_SECONDS = 300
 
+    # False positive prevention
+    INFRASTRUCTURE_SERVICES = {"redis", "event_bus", "supabase", "task_queue"}
+    INFRA_CONFIRMATION_CYCLES = 3  # Must be unhealthy for 3 consecutive cycles
+    INFRA_MIN_ERROR_COUNT = 5  # Minimum errors before alerting
+    ALERT_DEDUP_SECONDS = 600  # 10 minutes between same alert
+
     def __init__(self, event_bus: Any = None, container: Any = None, supabase_client: Any = None):
         self.event_bus = event_bus
         self.container = container
@@ -780,6 +817,7 @@ class MetaEngineV6:
         self._adaptive_thresholds: Dict[str, Dict[str, float]] = {}
         self._alert_callback: Optional[Callable] = None
         self._last_alert: Dict[str, float] = {}
+        self._unhealthy_cycles: Dict[str, int] = defaultdict(int)  # Track consecutive unhealthy cycles
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.RLock()
@@ -802,7 +840,7 @@ class MetaEngineV6:
         self._incident_manager = IncidentManager(self)
         self._alert_limiter = GlobalAlertRateLimiter()
         self._build_dependency_graph()
-        logger.info("KANYOZA META ENGINE v%s initialized — resource-safe intelligence", self.VERSION)
+        logger.info("KANYOZA META ENGINE v%s initialized — resource-safe intelligence with false positive prevention", self.VERSION)
 
     def _build_dependency_graph(self) -> None:
         dependencies = [
@@ -827,6 +865,7 @@ class MetaEngineV6:
             ("brand_scheduler", []),
             ("monitor_plugin", []),
             ("backup_plugin", []),
+            ("redis", []),
         ]
         for engine, deps in dependencies:
             self._deps.add(engine, deps)
@@ -931,6 +970,9 @@ class MetaEngineV6:
 
     def record_success(self, engine_name: str) -> None:
         self._success_counts[engine_name].append(utcnow())
+        # Reset unhealthy counter on success
+        if engine_name in self._unhealthy_cycles:
+            self._unhealthy_cycles[engine_name] = 0
 
     def record_error(self, engine_name: str, error: str = "") -> None:
         self._error_counts[engine_name].append(utcnow())
@@ -1039,6 +1081,26 @@ class MetaEngineV6:
     def _cache_health(self, name: str, health: EngineHealth) -> None:
         self._cached_health[name] = CachedHealth(health=health, expires_at=time.monotonic() + self.HEALTH_CACHE_SECONDS)
 
+    def _is_infrastructure_service(self, name: str) -> bool:
+        """Check if service is infrastructure that's prone to false positives."""
+        return name in self.INFRASTRUCTURE_SERVICES or name.startswith("redis") or name.startswith("event_bus")
+
+    def _should_alert_for_service(self, name: str, health: EngineHealth) -> bool:
+        """Determine if alert should be sent for this service based on false positive prevention."""
+        if not self._is_infrastructure_service(name):
+            return True
+        
+        # For infrastructure services, require confirmation
+        consecutive = self._unhealthy_cycles[name]
+        if consecutive < self.INFRA_CONFIRMATION_CYCLES:
+            return False
+        
+        # Require minimum error count
+        if health.error_count_1h < self.INFRA_MIN_ERROR_COUNT:
+            return False
+        
+        return True
+
     def check_engine_health(self, name: str, force: bool = False, record_history: bool = True) -> EngineHealth:
         if not force and self._cached_health_valid(name):
             return self._cached_health[name].health
@@ -1053,6 +1115,8 @@ class MetaEngineV6:
             self._cache_health(name, health)
             if record_history:
                 self._health_history[name].append(health)
+            # Track unhealthy cycles
+            self._unhealthy_cycles[name] += 1
             return health
         if not self._ping_engine(engine, name):
             health.status = EngineStatus.OFFLINE
@@ -1061,7 +1125,11 @@ class MetaEngineV6:
             self._cache_health(name, health)
             if record_history:
                 self._health_history[name].append(health)
+            # Track unhealthy cycles
+            self._unhealthy_cycles[name] += 1
             return health
+        # Reset unhealthy counter on success
+        self._unhealthy_cycles[name] = 0
         now = utcnow()
         five_minutes_ago = now - timedelta(minutes=5)
         one_hour_ago = now - timedelta(hours=1)
@@ -1172,9 +1240,11 @@ class MetaEngineV6:
                 health_scores.append(health.health_score)
                 risk_scores.append(health.risk_score)
                 if health.status == EngineStatus.OFFLINE:
-                    snapshot.critical_alerts += 1
+                    if self._should_alert_for_service(name, health):
+                        snapshot.critical_alerts += 1
                 elif health.status in (EngineStatus.DEGRADED, EngineStatus.STALE):
-                    snapshot.active_alerts += 1
+                    if self._should_alert_for_service(name, health):
+                        snapshot.active_alerts += 1
             except Exception as exc:
                 logger.debug("Engine scan failed for %s: %s", name, exc)
         for name, health in snapshot.engines.items():
@@ -1200,6 +1270,14 @@ class MetaEngineV6:
         self._snapshots.append(snapshot)
         self._current_snapshot = snapshot
         self._last_monitor_cycle = snapshot.timestamp
+        
+        # Publish service_heartbeat event
+        _publish_event("service_heartbeat", {
+            "service": "meta",
+            "status": snapshot.overall_status.value,
+            "health_score": snapshot.health_score,
+        })
+        
         return snapshot
 
     def detect_anomalies(self, snapshot: Optional[SystemSnapshot] = None) -> List[Anomaly]:
@@ -1230,6 +1308,9 @@ class MetaEngineV6:
             errors_1h = health.error_count_1h
             baseline_5m = errors_1h / 12.0 if errors_1h else 0.0
             if errors_5m >= 3 and (baseline_5m == 0 or errors_5m >= baseline_5m * self.ERROR_SPIKE_MULTIPLIER):
+                # Additional check for infrastructure services
+                if self._is_infrastructure_service(name) and errors_5m < self.INFRA_MIN_ERROR_COUNT:
+                    continue
                 detected.append(Anomaly(
                     id="an_" + uuid.uuid4().hex[:10], engine=name,
                     anomaly_type=AnomalyType.ERROR_SPIKE,
@@ -1273,6 +1354,9 @@ class MetaEngineV6:
         for name, health in snapshot.engines.items():
             if health.status not in (EngineStatus.OFFLINE, EngineStatus.DEGRADED):
                 continue
+            # Skip diagnosis for infrastructure services that haven't met confirmation threshold
+            if self._is_infrastructure_service(name) and not self._should_alert_for_service(name, health):
+                continue
             root_cause, chain, confidence = self._find_root_cause(name, snapshot)
             if health.status == EngineStatus.OFFLINE:
                 severity = AlertLevel.CRITICAL
@@ -1295,6 +1379,16 @@ class MetaEngineV6:
             diagnosis.escalation = self._determine_escalation(diagnosis)
             diagnoses.append(diagnosis)
         self._diagnoses.extend(diagnoses)
+        
+        # Publish engine_alert events for diagnoses
+        for diagnosis in diagnoses:
+            _publish_event("engine_alert", {
+                "engine": diagnosis.engine,
+                "status": diagnosis.severity.value,
+                "message": diagnosis.symptom,
+                "root_cause": diagnosis.root_cause,
+            })
+        
         return diagnoses
 
     def _find_root_cause(self, engine_name: str, snapshot: SystemSnapshot) -> Tuple[str, List[str], float]:
@@ -1366,6 +1460,9 @@ class MetaEngineV6:
         for root in self._deps.nodes():
             root_health = snapshot.engines.get(root)
             if not root_health or root_health.status not in (EngineStatus.OFFLINE, EngineStatus.DEGRADED):
+                continue
+            # Skip infrastructure services that haven't met confirmation threshold
+            if self._is_infrastructure_service(root) and not self._should_alert_for_service(root, root_health):
                 continue
             affected: List[str] = []
             queue = deque(self._deps.get_dependents(root))
@@ -1510,6 +1607,13 @@ class MetaEngineV6:
         return True
 
     def _send_alert(self, diagnosis: Diagnosis) -> None:
+        # Check dedup window
+        key = diagnosis.engine + ":" + diagnosis.severity.value
+        now = time.monotonic()
+        if now - self._last_alert.get(key, 0.0) < self.ALERT_DEDUP_SECONDS:
+            return
+        self._last_alert[key] = now
+        
         if not self._alert_callback:
             return
         try:
@@ -1852,7 +1956,7 @@ class MetaEngineV6:
                 logger.info("Meta Engine restored previous state from %s", previous.get("timestamp"))
             self._thread = threading.Thread(target=self._monitoring_loop, name="kanyoza-meta-supervisor", daemon=True)
             self._thread.start()
-            logger.info("KANYOZA META ENGINE v%s started — adaptive supervision", self.VERSION)
+            logger.info("KANYOZA META ENGINE v%s started — adaptive supervision with false positive prevention", self.VERSION)
 
     def stop(self) -> None:
         with self._lock:
