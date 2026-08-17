@@ -133,7 +133,7 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
 # ═══════════════════════════════════════════════════════════════════════════
 # DIRECTOR PROXY (v14.6)
 # ═══════════════════════════════════════════════════════════════════════════
-def _mount_director_proxy(app: FastAPI) -> None:
+
 def _mount_director_proxy(app: FastAPI) -> None:
     @app.api_route(
         "/director/{path:path}",
