@@ -1,6 +1,11 @@
 """
-Backup Plugin v2.0 — Automated database backups to Google Drive.
+Backup Plugin v2.1 — Automated database backups to Google Drive.
 Scheduled backups with retention policies.
+
+v2.1 CHANGES:
+  - Added event bus integration for backup_completed events
+  - Defensive event publishing with fallback handling
+  - Enhanced event payload with backup metadata
 
 v2.0 UPGRADES:
   - Notification on backup failure
@@ -31,6 +36,30 @@ logger = logging.getLogger("kanyoza.plugins.backup")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    logger.warning("Shared event bus not available — events will be skipped")
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # GOOGLE DRIVE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -56,7 +85,7 @@ def _escape_drive_query(value: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BACKUP PLUGIN v2.0
+# BACKUP PLUGIN v2.1
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BackupPlugin:
@@ -309,6 +338,20 @@ class BackupPlugin:
                 file_size,
             )
 
+            # Publish backup_completed event
+            _publish_event("backup_completed", {
+                "status": "completed",
+                "target_id": target.get("id", ""),
+                "target_name": target.get("name", ""),
+                "filename": filename,
+                "size_bytes": file_size,
+                "storage_url": drive_file.get(
+                    "webViewLink",
+                    f"drive://{drive_file['id']}",
+                ),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
             # Optional: notify success
             if os.getenv("BACKUP_NOTIFY_SUCCESS", "false").lower() == "true":
                 self._notify_success(target, file_size)
@@ -331,6 +374,15 @@ class BackupPlugin:
                         timezone.utc
                     ).isoformat(),
                 }).eq("id", record_id).execute()
+
+            # Publish backup_completed event with failure status
+            _publish_event("backup_completed", {
+                "status": "failed",
+                "target_id": target.get("id", ""),
+                "target_name": target.get("name", ""),
+                "error": str(e)[:500],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
             # v2.0 — Notify on failure
             self._notify_failure(target, str(e))
