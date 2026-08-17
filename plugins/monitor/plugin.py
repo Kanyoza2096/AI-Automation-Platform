@@ -1,5 +1,10 @@
 """
-Monitor Plugin v3.0 — Decoupled system administrator.
+Monitor Plugin v3.1 — Decoupled system administrator.
+
+v3.1 CHANGES:
+  - Added event bus integration for engine_alert events
+  - Enhanced false positive prevention with confirmation cycles
+  - Defensive event publishing with fallback handling
 
 v3.0 CHANGES:
   - Queued alerts: no synchronous Director callbacks during checks
@@ -25,10 +30,34 @@ import requests
 logger = logging.getLogger("kanyoza.plugins.monitor")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    logger.warning("Shared event bus not available — events will be skipped")
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
+
+
 class MonitorPlugin:
     """Watches external websites and services.
 
-    v3.0: Fully decoupled. No synchronous callbacks. No blocking loops.
+    v3.1: Event bus integration with false positive prevention.
     """
 
     ALERT_COOLDOWN = 300  # 5 minutes
@@ -38,6 +67,10 @@ class MonitorPlugin:
     HTTP_TIMEOUT = 10
     MAX_WORKERS = 5       # Concurrent HTTP checks
     ALERT_QUEUE_DRAIN_INTERVAL = 30  # Seconds between alert queue processing
+    
+    # v3.1 — False positive prevention
+    CONFIRMATION_CYCLES = 2  # Must be down for 2 consecutive checks before alerting
+    EVENT_DEDUP_SECONDS = 300  # 5 minutes between same event
 
     def __init__(
         self, supabase_client=None, redis_client=None
@@ -53,6 +86,10 @@ class MonitorPlugin:
         self._last_alerted: Dict[str, float] = {}
         self._target_states: Dict[str, str] = {}
         self._alert_queue: deque = deque(maxlen=500)
+        
+        # v3.1 — Event publishing state
+        self._consecutive_down_cycles: Dict[str, int] = {}
+        self._last_event_published: Dict[str, float] = {}
 
         # Stats
         self._checks_completed = 0
@@ -63,7 +100,7 @@ class MonitorPlugin:
         self._alert_callback: Optional[Callable] = None
         self._event_callback: Optional[Callable] = None
 
-        logger.info("MonitorPlugin v3.0 initialized")
+        logger.info("MonitorPlugin v3.1 initialized")
 
     # ═══════════════════════════════════════════════════════════════════
     # v3.0 — External callback wiring (async-safe)
@@ -223,13 +260,23 @@ class MonitorPlugin:
 
             # Queue alert if down
             if status == "down":
-                self._queue_alert(
-                    target, f"HTTP {resp.status_code} (expected {expected_status})"
-                )
+                # Track consecutive down cycles
+                self._consecutive_down_cycles[target_id] = self._consecutive_down_cycles.get(target_id, 0) + 1
+                
+                # Only alert after confirmation cycles
+                if self._should_alert(target_id):
+                    self._queue_alert(
+                        target, f"HTTP {resp.status_code} (expected {expected_status})"
+                    )
+                    self._publish_engine_alert(target, "offline", f"HTTP {resp.status_code} (expected {expected_status})")
             else:
+                # Reset consecutive down counter on recovery
+                self._consecutive_down_cycles[target_id] = 0
+                
                 # Recovery notification
                 if previous_state == "down":
                     self._queue_recovery_alert(target, elapsed_ms)
+                    self._publish_engine_alert(target, "recovered", f"Recovered in {elapsed_ms}ms")
 
                 # Slow response warning
                 if elapsed_ms > self.SLOW_RESPONSE_MS:
@@ -251,7 +298,15 @@ class MonitorPlugin:
 
         except Exception as e:
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            self._queue_alert(target, str(e)[:200])
+            
+            # Track consecutive down cycles
+            self._consecutive_down_cycles[target_id] = self._consecutive_down_cycles.get(target_id, 0) + 1
+            
+            # Only alert after confirmation cycles
+            if self._should_alert(target_id):
+                self._queue_alert(target, str(e)[:200])
+                self._publish_engine_alert(target, "offline", str(e)[:200])
+            
             self._target_states[target_id] = "down"
 
             return {
@@ -262,6 +317,32 @@ class MonitorPlugin:
                 "error_message": str(e)[:500],
                 "checked_at": datetime.now(timezone.utc).isoformat(),
             }
+
+    def _should_alert(self, target_id: str) -> bool:
+        """Determine if alert should be sent based on confirmation cycles."""
+        consecutive = self._consecutive_down_cycles.get(target_id, 0)
+        return consecutive >= self.CONFIRMATION_CYCLES
+
+    def _publish_engine_alert(self, target: dict, status: str, message: str) -> None:
+        """Publish engine_alert event with deduplication."""
+        target_id = target["id"]
+        now = time.monotonic()
+        
+        # Check dedup window
+        if now - self._last_event_published.get(target_id, 0) < self.EVENT_DEDUP_SECONDS:
+            return
+        
+        self._last_event_published[target_id] = now
+        
+        # Publish event
+        _publish_event("engine_alert", {
+            "engine": target.get("name", target["url"]),
+            "status": status,
+            "message": f"Monitor detected {target.get('name', target['url'])} is {status}: {message}",
+            "url": target["url"],
+            "target_id": target_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
 
     # ═══════════════════════════════════════════════════════════════════
     # v3.0 — BULK INSERT WITH RETRY
