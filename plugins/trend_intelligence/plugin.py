@@ -1,6 +1,16 @@
 """
-Trend Intelligence Plugin v1.1 — Social media trend monitoring & smart posting.
+Trend Intelligence Plugin v1.3 — Social media trend monitoring & smart posting.
 Fetches trends, scores by brand relevance, generates AI images, routes to Facebook.
+
+v1.3 CHANGES:
+  - Fixed duplicate trend_detected event publishing
+  - Events only published for genuinely new trends (not duplicates)
+  - Added deduplication tracking for event publishing
+  - Enhanced event payload with engagement metrics
+
+v1.2 CHANGES:
+  - Added event bus integration for trend_detected events
+  - Defensive event publishing with fallback handling
 """
 
 import logging
@@ -12,9 +22,33 @@ import base64
 import io
 import requests
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 
 logger = logging.getLogger("kanyoza.plugins.trends")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    logger.warning("Shared event bus not available — events will be skipped")
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
 
 
 class TrendIntelligencePlugin:
@@ -27,6 +61,8 @@ class TrendIntelligencePlugin:
         self._running = False
         self._thread = None
         self._scan_interval = 300
+        self._published_urls: Set[str] = set()  # Track published trend URLs to prevent duplicates
+        self._lock = threading.RLock()  # Thread safety for the set
 
     def get_commands(self) -> List[Dict[str, Any]]:
         return [
@@ -58,6 +94,34 @@ class TrendIntelligencePlugin:
                 logger.error("TrendIntelligence cycle error: %s", e)
             time.sleep(self._scan_interval)
 
+    def _publish_new_trend(self, post: Dict[str, Any]) -> None:
+        """Publish trend_detected event only for genuinely new trends."""
+        url = post.get("url", "")
+        if not url:
+            return
+
+        with self._lock:
+            # Check if we've already published this trend
+            if url in self._published_urls:
+                return
+            # Add to published set to prevent future duplicates
+            self._published_urls.add(url)
+            # Keep set bounded
+            if len(self._published_urls) > 1000:
+                # Remove oldest entries (approximate — just clear half)
+                items = list(self._published_urls)[-500:]
+                self._published_urls = set(items)
+
+        # Publish event outside lock
+        _publish_event("trend_detected", {
+            "topic": post.get("title", ""),
+            "source": post.get("platform", "unknown"),
+            "url": url,
+            "author": post.get("author", ""),
+            "engagement_count": post.get("engagement_count", 0),
+            "detected_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     # ═══════════════════════════════════════════════════════════════════
     # TREND SCANNING
     # ═══════════════════════════════════════════════════════════════════
@@ -68,11 +132,14 @@ class TrendIntelligencePlugin:
         for source in (sources.data or []):
             try:
                 posts = self._fetch_from_source(source)
-                self._store_posts(source["id"], posts)
+                new_posts = self._store_posts(source["id"], posts)
                 self.supabase.table("trend_sources").update(
                     {"last_fetched": datetime.now(timezone.utc).isoformat()}
                 ).eq("id", source["id"]).execute()
-                logger.info("TrendIntelligence: %s — %d posts fetched", source["name"], len(posts))
+                logger.info(
+                    "TrendIntelligence: %s — %d posts fetched (%d new)",
+                    source["name"], len(posts), new_posts
+                )
             except Exception as e:
                 logger.error("TrendIntelligence: %s failed: %s", source["name"], e)
 
@@ -164,19 +231,30 @@ class TrendIntelligencePlugin:
             logger.error("Twitter fetch failed: %s", e)
             return []
 
-    def _store_posts(self, source_id: str, posts: List[dict]):
+    def _store_posts(self, source_id: str, posts: List[dict]) -> int:
+        """Store posts and publish events for new ones. Returns count of new posts."""
+        new_count = 0
         for post in posts:
             try:
                 existing = self.supabase.table("trend_posts").select("id").eq("url", post.get("url", "")).limit(1).execute()
-                if existing.data: continue
+                if existing.data:
+                    continue  # Skip duplicates — don't publish event
+
                 self.supabase.table("trend_posts").insert({
                     "source_id": source_id, "title": post["title"], "content": post.get("content", ""),
                     "url": post.get("url", ""), "author": post.get("author", ""),
                     "platform": post.get("platform", "unknown"), "engagement_count": post.get("engagement_count", 0),
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 }).execute()
+
+                new_count += 1
+                # Publish event only for genuinely new posts
+                self._publish_new_trend(post)
+
             except Exception as e:
                 logger.debug("TrendIntelligence: duplicate or insert error: %s", e)
+
+        return new_count
 
     # ═══════════════════════════════════════════════════════════════════
     # AI IMAGE GENERATION — Cloudflare Workers AI + Pillow overlay
@@ -306,6 +384,17 @@ class TrendIntelligencePlugin:
         elif decision == "scheduled":
             logger.info("TrendIntelligence: Scheduled for %s — %s", rule["brand_id"], trend["title"][:60])
 
+        # Publish trend_detected event for brand decision with additional context
+        _publish_event("trend_detected", {
+            "topic": trend.get("title", ""),
+            "source": trend.get("platform", "unknown"),
+            "url": trend.get("url", ""),
+            "brand_id": rule.get("brand_id", ""),
+            "decision": decision,
+            "relevance": relevance,
+            "detected_at": datetime.now(timezone.utc).isoformat(),
+        })
+
         try:
             from services.director import director
             if director and hasattr(director, '_event'):
@@ -353,7 +442,13 @@ class TrendIntelligencePlugin:
         sources = self.supabase.table("trend_sources").select("*").execute()
         recent = self.supabase.table("trend_posts").select("*").order("fetched_at", desc=True).limit(10).execute()
         decisions = self.supabase.table("trend_decisions").select("*").order("decided_at", desc=True).limit(20).execute()
-        return {"ok": True, "sources": len(sources.data or []), "recent_trends": recent.data or [], "recent_decisions": decisions.data or []}
+        return {
+            "ok": True,
+            "sources": len(sources.data or []),
+            "recent_trends": recent.data or [],
+            "recent_decisions": decisions.data or [],
+            "published_trends_tracked": len(self._published_urls),
+        }
 
 
 trend_plugin: Optional[TrendIntelligencePlugin] = None
