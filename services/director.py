@@ -59,6 +59,18 @@ from typing import (
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
+# EVENT BUS INTEGRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
+try:
+    from core.shared_event_bus import get_shared_event_bus
+    HAS_EVENT_BUS = True
+except ImportError:
+    HAS_EVENT_BUS = False
+    log = logging.getLogger("kanyoza.director")
+    log.warning("Shared event bus not available — events will be skipped")
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LOGGING
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -126,6 +138,18 @@ def sanitize_error_message(exc: Exception, max_len: int = 300) -> str:
     raw = re.sub(r"/[^\s]*\.py", "[path_redacted]", raw)
     raw = re.sub(r"0x[0-9a-fA-F]+", "[addr]", raw)
     return raw[:max_len]
+
+
+def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
+    """Safely publish event to shared bus with defensive error handling."""
+    if not HAS_EVENT_BUS:
+        return
+    try:
+        bus = get_shared_event_bus()
+        bus.publish(event_name, payload)
+    except Exception:
+        # Never let event publishing break core logic
+        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1571,7 +1595,7 @@ def _infer_plugin_sector(name: str) -> Sector:
 class Director:
     """The Autonomous CEO — complete self-contained version."""
 
-    VERSION = "4.0.0"
+    VERSION = "4.0.1"
 
     def __init__(self, supabase_client=None, interval: int = 60):
         # Storage
@@ -2064,6 +2088,15 @@ class Director:
         )
         self.tasks[task.id] = task
         self.store.save_task(task)
+        
+        # Publish task_created event
+        _publish_event("task_created", {
+            "task_id": task.id,
+            "description": desc,
+            "capability": cap_name,
+            "sector": sector.value,
+        })
+        
         return task
 
     def decide(self) -> List[Task]:
@@ -2279,6 +2312,14 @@ class Director:
                 task.result = safe(result or {})
                 self.history.append(task)
                 self.store.save_task(task)
+                
+                # Publish task_completed event
+                _publish_event("task_completed", {
+                    "task_id": task.id,
+                    "description": task.description,
+                    "capability": task.capability,
+                })
+                
                 self._record_decision(f"Executed: {task.description}", task.reason, task)
                 self._learn(task)
                 self._event("director_action_completed", {"task": safe(asdict(task))})
@@ -2289,6 +2330,14 @@ class Director:
                 task.result = {"error": sanitize_error_message(exc)}
                 self.history.append(task)
                 self.store.save_task(task)
+                
+                # Publish task_failed event
+                _publish_event("task_failed", {
+                    "task_id": task.id,
+                    "description": task.description,
+                    "error": task.error,
+                })
+                
                 self._record_decision(f"Failed: {task.description}", sanitize_error_message(exc), task, "failed")
                 self._learn(task)
                 self._alert({"type": "task_failed", "task": safe(asdict(task))})
@@ -2739,6 +2788,9 @@ class Director:
     def get_recovery_plans(self) -> List[Dict[str, Any]]:
         return self.recovery_coordinator.get_recovery_plans()
 
+    def get_recent_analyses(self, limit: int = 10) -> List[Dict[str, Any]]:
+        return [safe(asdict(a)) for a in self.root_cause_analyzer.get_recent_analyses(limit)]
+
     # ═══════════════════════════════════════════════════════════════════
     # LIFECYCLE
     # ═══════════════════════════════════════════════════════════════════
@@ -2842,10 +2894,6 @@ class Director:
 
             time.sleep(self.interval)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# FASTAPI APP
-# ═══════════════════════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FASTAPI APP
@@ -3019,9 +3067,9 @@ def create_app(director: Director):
             "total": len(observations),
         }
 
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
     # DIAGNOSTICS (NO /director prefix)
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     @app.get("/diagnostics")
     async def get_diagnostics(
@@ -3070,9 +3118,9 @@ def create_app(director: Director):
         await _require_auth(credentials, request)
         return {"recovery_plans": director.get_recovery_plans()}
 
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
     # DECISIONS & ALERTS (NO /director prefix)
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     @app.get("/decisions")
     async def get_decisions(
@@ -3092,9 +3140,9 @@ def create_app(director: Director):
         await _require_auth(credentials, request)
         return {"alerts": list(director._alert_history)[-limit:]}
 
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
     # CAPABILITIES (NO /director prefix)
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     @app.get("/capabilities")
     async def get_capabilities(
@@ -3134,9 +3182,9 @@ def create_app(director: Director):
         )
         return {"capability": cap_name, "enabled": cap.enabled}
 
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
     # CONTROL ACTIONS
-    # ═══════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════
 
     @app.post("/observe")
     async def run_observe(
