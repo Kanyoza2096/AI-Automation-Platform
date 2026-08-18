@@ -1,5 +1,5 @@
 """
-Kanyoza Systems AI Platform v14.5 — Strongly-typed configuration.
+Kanyoza Systems AI Platform v14.6 — Strongly-typed configuration.
 
 Architecture Principles:
   1. Startup validation catches misconfiguration before it causes runtime errors
@@ -9,7 +9,7 @@ Architecture Principles:
   5. Production requires Supabase persistence (Architecture §14)
   6. Production requires valid Fernet encryption — never silently downgrade to plaintext
 
-v14.5 — SERVICE_MODE (with split engines):
+v14.6 — SERVICE_MODE (with split engines + chaos):
   Valid values:
     - "full"      → All services (default, single instance)
     - "api"       → FastAPI routes, Industry Plugins, Health (frontend-facing)
@@ -20,6 +20,7 @@ v14.5 — SERVICE_MODE (with split engines):
     - "workers"   → BrandScheduler (background publishing)
     - "monitor"   → Monitor, Backup, TrendIntelligence
     - "github"    → GitHub Connector
+    - "chaos"     → Chaos engineering mode (full + fault injection)
 """
 
 from __future__ import annotations
@@ -207,6 +208,26 @@ class Settings(BaseSettings):
     )
 
     # ═══════════════════════════════════════════════════════════════════
+    # CHAOS ENGINEERING (NEW v14.6)
+    # ═══════════════════════════════════════════════════════════════════
+    chaos_enabled: bool = Field(
+        default=False,
+        description="Enable chaos engineering endpoints for fault injection testing",
+    )
+    chaos_fault_injection_rate: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Probability of fault injection (0.0-1.0) when chaos mode is active",
+    )
+    chaos_max_downtime_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=300,
+        description="Maximum simulated downtime duration in seconds",
+    )
+
+    # ═══════════════════════════════════════════════════════════════════
     # CORS
     # ═══════════════════════════════════════════════════════════════════
     mutex_url: str = Field(default="")
@@ -232,12 +253,13 @@ class Settings(BaseSettings):
     environment: str = Field(default="production")
     log_level: str = Field(default="INFO")
 
-    # v14.5: Service mode for distributed deployment (with split engines)
+    # v14.6: Service mode for distributed deployment (with split engines + chaos)
     service_mode: str = Field(
         default="full",
         description=(
             "Which services to start. Valid: 'full', 'api', 'core', "
-            "'director', 'meta', 'condition', 'workers', 'monitor', 'github'"
+            "'director', 'meta', 'condition', 'workers', 'monitor', "
+            "'github', 'chaos'"
         )
     )
 
@@ -279,6 +301,7 @@ class Settings(BaseSettings):
             "full", "api", "core",
             "director", "meta", "condition",  # v14.5 — split engines
             "workers", "monitor", "github",
+            "chaos",  # v14.6 — chaos engineering mode
         }
         lower = v.lower()
         if lower not in valid:
@@ -293,6 +316,20 @@ class Settings(BaseSettings):
                     "SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY are identical. "
                     "They should be different keys with different permissions."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_chaos_mode(self):
+        """Ensure chaos mode has chaos_enabled or fault injection rate set."""
+        if self.service_mode == "chaos":
+            # Auto-enable chaos features when in chaos mode
+            self.chaos_enabled = True
+            logger.info(
+                "Chaos mode activated — fault injection enabled "
+                "(rate: %.0f%%, max downtime: %ds)",
+                self.chaos_fault_injection_rate * 100,
+                self.chaos_max_downtime_seconds,
+            )
         return self
 
     # ═══════════════════════════════════════════════════════════════════
@@ -343,17 +380,22 @@ class Settings(BaseSettings):
     @property
     def is_intelligence_mode(self) -> bool:
         """True when running any intelligence engine."""
-        return self.service_mode in ("full", "core", "director", "meta", "condition")
+        return self.service_mode in ("full", "core", "director", "meta", "condition", "chaos")
 
     @property
     def is_api_mode(self) -> bool:
         """True when running API-facing services."""
-        return self.service_mode in ("full", "api")
+        return self.service_mode in ("full", "api", "chaos")
 
     @property
     def is_background_mode(self) -> bool:
         """True when running background workers."""
         return self.service_mode in ("workers", "monitor", "github")
+
+    @property
+    def is_chaos_mode(self) -> bool:
+        """True when running chaos engineering mode."""
+        return self.service_mode == "chaos"
 
     # ═══════════════════════════════════════════════════════════════════
     # RETRY CONFIG HELPERS
@@ -503,6 +545,8 @@ class Settings(BaseSettings):
             "service_mode": self.service_mode,
             "is_split_engine_mode": self.is_split_engine_mode,
             "is_intelligence_mode": self.is_intelligence_mode,
+            "is_chaos_mode": self.is_chaos_mode,
+            "chaos_enabled": self.chaos_enabled,
             "rate_limit_per_user": self.rate_limit_per_user,
             "content_posting_hours_utc": self.content_posting_hours_utc,
             "news_posting_hours_utc": self.news_posting_hours_utc,
