@@ -1,5 +1,11 @@
 """
-Kanyoza Systems AI Platform v14.7 — FastAPI Entry Point.
+Kanyoza Systems AI Platform v14.7.1 — FastAPI Entry Point.
+
+v14.7.1 FIXES:
+  - Director proxy DISABLED when Director runs in-process (full/core/director mode)
+  - Director routes mounted DIRECTLY at /director/* for in-process mode
+  - Proxy only used when SERVICE_MODE=api (Director on separate instance)
+  - No more 502 errors from frontend calling /director/*
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ logger = logging.getLogger("kanyoza.main")
 logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", message=".*_refresh_token_timer.*")
 
-# Director service URL
+# Director service URL (only used when SERVICE_MODE=api)
 DIRECTOR_SERVICE_URL = os.getenv(
     "DIRECTOR_SERVICE_URL",
     "https://omnexa-director.onrender.com",
@@ -176,7 +182,7 @@ def _register_health_endpoints(app: FastAPI) -> None:
     async def liveness_check():
         return {
             "status": "alive",
-            "version": "14.7.0",
+            "version": "14.7.1",
             "uptime_seconds": round(
                 (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
             ) if _startup_started_at else 0,
@@ -184,7 +190,7 @@ def _register_health_endpoints(app: FastAPI) -> None:
 
     @app.get("/health/live")
     async def live_check():
-        return {"status": "alive", "version": "14.7.0"}
+        return {"status": "alive", "version": "14.7.1"}
 
     @app.get("/health/ready")
     async def readiness_check():
@@ -230,7 +236,7 @@ def _build_health_response(app: FastAPI) -> dict[str, Any]:
     if not booted:
         return {
             "status": "starting",
-            "version": "14.7.0",
+            "version": "14.7.1",
             "uptime_seconds": 0,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -254,7 +260,7 @@ def _build_health_response(app: FastAPI) -> dict[str, Any]:
 
     return {
         "status": overall,
-        "version": "14.7.0",
+        "version": "14.7.1",
         "uptime_seconds": round(uptime, 1),
         "boot_duration_seconds": round(_startup_duration_seconds, 3),
         "boot_warnings": len(_boot_warnings),
@@ -280,11 +286,48 @@ def _mount_event_api(app: FastAPI) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DIRECTOR PROXY
+# DIRECTOR ROUTES (v14.7.1 — In-process or Proxy)
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _mount_director_routes(app: FastAPI) -> None:
+    """Mount Director routes DIRECTLY for in-process Director."""
+    try:
+        from services.director import create_app as create_director_app
+        from services.director import director
+        
+        if director:
+            director_app = create_director_app(director)
+            app.mount("/director", director_app)
+            logger.info("Director routes mounted directly at /director/*")
+        else:
+            logger.warning("Director instance not available — routes not mounted")
+    except ImportError:
+        logger.debug("Director module not available")
+    except Exception as exc:
+        logger.warning("Director route mounting failed: %s", str(exc)[:200])
+
+
 def _mount_director_proxy(app: FastAPI) -> None:
-    """Mount /director/* as a reverse proxy to the Director service."""
+    """Mount /director/* proxy ONLY when Director is on a SEPARATE instance."""
+    
+    service_mode = _get_service_mode()
+    
+    # Director runs in-process — mount routes directly, NO proxy
+    if service_mode in ("full", "core", "director"):
+        logger.info(
+            "Director proxy DISABLED — Director runs in-process (SERVICE_MODE=%s)",
+            service_mode,
+        )
+        _mount_director_routes(app)
+        return
+    
+    # Director on separate instance — use proxy
+    logger.info(
+        "Director proxy ENABLED: /director/* -> %s (SERVICE_MODE=%s)",
+        DIRECTOR_SERVICE_URL,
+        service_mode,
+    )
+    
     request_hop_by_hop_headers = {
         "host", "content-length", "connection", "transfer-encoding", "accept-encoding",
     }
@@ -364,8 +407,6 @@ def _mount_director_proxy(app: FastAPI) -> None:
                 status_code=502,
                 media_type="application/json",
             )
-
-    logger.info("Director proxy mounted: /director/* -> %s", DIRECTOR_SERVICE_URL)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -535,7 +576,7 @@ async def lifespan(app: FastAPI):
     app.state.boot_warnings = []
 
     logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v14.7 — Starting up...")
+    logger.info("Kanyoza AI Platform v14.7.1 — Starting up...")
     logger.info("  Environment : %s", settings.environment)
     logger.info("  Service Mode: %s", service_mode)
     logger.info("  Log level   : %s", settings.log_level)
@@ -603,7 +644,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("=" * 60)
-        logger.info("Kanyoza AI Platform v14.7 — Shutting down...")
+        logger.info("Kanyoza AI Platform v14.7.1 — Shutting down...")
         logger.info("=" * 60)
 
         if cleanup_task and not cleanup_task.done():
@@ -621,14 +662,14 @@ async def lifespan(app: FastAPI):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# APPLICATION FACTORY (NOW ALL HELPERS ARE DEFINED ABOVE)
+# APPLICATION FACTORY
 # ═══════════════════════════════════════════════════════════════════════════
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
         description="Multi-tenant social media AI platform with industry plugins",
-        version="14.7.0",
+        version="14.7.1",
         lifespan=lifespan,
         docs_url="/docs" if settings.is_development else None,
         redoc_url=None,
@@ -648,6 +689,8 @@ def create_app() -> FastAPI:
     _register_health_endpoints(app)
     _mount_routes(app)
     _mount_event_api(app)
+    
+    # v14.7.1 — Fixed: In-process Director or Proxy based on SERVICE_MODE
     _mount_director_proxy(app)
 
     @app.get("/")
@@ -655,10 +698,11 @@ def create_app() -> FastAPI:
     async def root():
         return {
             "status": "ok",
-            "version": "14.7.0",
+            "version": "14.7.1",
             "platform": "Kanyoza AI",
             "docs": "/docs" if settings.is_development else None,
             "events_api": "/api/v1/events",
+            "director": "/director" if _get_service_mode() in ("full", "core", "director") else "proxied",
         }
 
     @app.get("/workspaces")
