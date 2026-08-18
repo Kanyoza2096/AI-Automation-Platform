@@ -1,4 +1,5 @@
-# Dockerfile — Kanyoza Systems AI Platform v14.4.1
+# Dockerfile — Kanyoza Systems AI Platform v14.7.1
+# Single-instance full platform deployment
 
 FROM python:3.12-slim
 
@@ -15,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdk-pixbuf-2.0-dev \
     libffi-dev \
     shared-mime-info \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -32,12 +34,11 @@ USER botuser
 ENV PORT=10000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=5 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 \
+    CMD curl -f http://localhost:${PORT}/health/live || exit 1
 
 EXPOSE 10000
 
-# v14.4.1 FIX: No --threads with UvicornWorker (breaks Socket.IO)
-# Use uvicorn directly for API mode (best for Socket.IO)
-# Use python worker.py for background modes
-CMD ["sh", "-c", "if [ \"$SERVICE_MODE\" = \"api\" ] || [ \"$SERVICE_MODE\" = \"full\" ] || [ -z \"$SERVICE_MODE\" ]; then uvicorn main:app --host 0.0.0.0 --port $PORT --timeout-keep-alive 75; else python worker.py; fi"]
+# v14.7.1 — Single instance full mode
+# Always run API server (all services start via SERVICE_MODE=full)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000} --timeout-keep-alive 75 --workers 1"]
