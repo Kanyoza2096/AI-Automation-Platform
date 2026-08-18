@@ -2,20 +2,22 @@
 Worker entry point for non-API Render services.
 Includes a minimal HTTP health server so Render detects the port.
 
-v14.8 — Full Autonomous System with Event Consumer:
+v14.8 FINAL — Complete Autonomous System:
   - SharedEventBus: Cross-instance communication
   - Autonomous Content Engine: Self-driving topic selection + adaptive scheduling
   - Event Consumer: Reactive brain that responds to events
-  - Workers: Generate content from topics + publish + consume events
+  - Chaos Monkey: Testing mode (auto-stops after duration)
+  - Workers: Generate content + publish + consume events
+  - Event API: REST endpoints for visibility (mounted on API instance)
 
-SERVICE_MODE values:
+SERVICE_MODE values (NO CORE — individual instances only):
   - "workers"    → BrandScheduler + Autonomous Content + Event Consumer
   - "monitor"    → Monitor + Backup + Trends
   - "github"     → GitHub Connector only
   - "director"   → Director only (WITH HTTP routes)
   - "meta"       → MetaEngine only
   - "condition"  → ConditionEngine only
-  - "core"       → Director + MetaEngine + ConditionEngine (WITH HTTP routes)
+  - "chaos"      → Chaos Monkey (testing — auto-stops)
 """
 
 import logging
@@ -92,36 +94,6 @@ def start_director_http_server(container):
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 
 
-def start_core_http_server(container):
-    """Start FastAPI server with Director + MetaEngine routes for core mode."""
-    import uvicorn
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse
-    from services.director import create_app as create_director_app, director as dir_instance
-    from services.meta_engine import meta_engine
-
-    app = FastAPI(title="Kanyoza Core Service", version="6.0.1")
-
-    @app.get("/health")
-    async def health():
-        return JSONResponse(content={"status": "healthy", "mode": SERVICE_MODE, "service": "core"}, status_code=200)
-
-    @app.get("/")
-    async def root():
-        return JSONResponse(content={"status": "ok", "service": "core"}, status_code=200)
-
-    if dir_instance:
-        director_app = create_director_app(dir_instance)
-        app.mount("/director", director_app)
-
-    @app.get("/meta/status")
-    async def meta_status():
-        return JSONResponse(content=meta_engine.get_status(), status_code=200)
-
-    logger.info(f"Core HTTP server starting on port {PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # SHARED EVENT BUS HANDLERS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -141,10 +113,8 @@ def register_shared_event_handlers(shared_bus, container=None):
         _register_monitor_handlers(shared_bus, container)
     elif SERVICE_MODE == "github":
         _register_github_handlers(shared_bus, container)
-    elif SERVICE_MODE == "core":
-        _register_director_handlers(shared_bus, container)
-        _register_meta_handlers(shared_bus, container)
-        _register_condition_handlers(shared_bus, container)
+    elif SERVICE_MODE == "chaos":
+        logger.info("SharedEventBus: Chaos Monkey mode — no handlers (publisher only)")
 
 
 def _register_director_handlers(shared_bus, container):
@@ -413,6 +383,7 @@ def run_worker():
     try:
         from services.job_stats_service import init_job_stats_service
         init_job_stats_service(supabase_client=create_fresh_service_client, event_bus=None)
+        logger.info("JobStatsService initialized")
     except Exception as exc:
         logger.debug("JobStatsService init skipped: %s", exc)
 
@@ -429,12 +400,16 @@ def run_worker():
     shared_bus.publish("service_heartbeat", {"service": SERVICE_MODE, "status": "started"})
     logger.info(f"SharedEventBus: {SERVICE_MODE} connected")
 
-    # Conditional services
-    if SERVICE_MODE in ("core", "director", "meta", "condition"):
+    # Conditional: Intelligence engines (individual — no core)
+    if SERVICE_MODE in ("director", "meta", "condition"):
         from lifecycle import _boot_ai_orchestrator
         _boot_ai_orchestrator(container)
         from lifecycle import _boot_content_engine
         _boot_content_engine(container)
+
+    # ═══════════════════════════════════════════════════════════════
+    # INDIVIDUAL SERVICE MODES
+    # ═══════════════════════════════════════════════════════════════
 
     if SERVICE_MODE == "director":
         from lifecycle import _boot_director
@@ -450,15 +425,6 @@ def run_worker():
         from lifecycle import _boot_condition_engine
         _boot_condition_engine(container)
         _keep_alive_with_heartbeat(shared_bus, "condition")
-
-    elif SERVICE_MODE == "core":
-        from lifecycle import _boot_meta_engine
-        _boot_meta_engine(container)
-        from lifecycle import _boot_director
-        _boot_director(container)
-        from lifecycle import _boot_condition_engine
-        _boot_condition_engine(container)
-        start_core_http_server(container)
 
     elif SERVICE_MODE == "workers":
         from scheduler.brand_scheduler import BrandSchedulerManager
@@ -493,12 +459,38 @@ def run_worker():
         init_backup_plugin(supabase_client=supabase_client)
         from plugins.trend_intelligence.plugin import init_trend_plugin
         init_trend_plugin(supabase_client=supabase_client)
+        logger.info("Worker: Monitor plugins started")
         _keep_alive_with_heartbeat(shared_bus, "monitor")
 
     elif SERVICE_MODE == "github":
         from plugins.github_connector.plugin import init_github_connector_plugin
         init_github_connector_plugin(supabase_client=supabase_client)
+        logger.info("Worker: GitHub Connector started")
         _keep_alive_with_heartbeat(shared_bus, "github")
+
+    elif SERVICE_MODE == "chaos":
+        # Chaos Monkey — testing resilience (auto-stops)
+        from core.chaos_monkey import init_chaos_monkey
+        
+        chaos = init_chaos_monkey(shared_bus=shared_bus)
+        logger.info("Worker: Chaos Monkey started — will auto-stop after duration")
+        
+        while True:
+            time.sleep(30)
+            
+            if chaos.is_complete():
+                logger.info("🐒 Chaos test complete — shutting down chaos instance")
+                break
+            
+            shared_bus.publish("service_heartbeat", {
+                "service": "chaos",
+                "status": "running",
+                "chaos_count": chaos._chaos_count,
+            })
+        
+        logger.info("Chaos test finished. Instance will sleep.")
+        while True:
+            time.sleep(3600)
 
     else:
         logger.error(f"Unknown SERVICE_MODE: {SERVICE_MODE}")
@@ -522,7 +514,7 @@ def _keep_alive_with_heartbeat(shared_bus, service_name):
 def main():
     logger.info(f"Worker starting in mode: {SERVICE_MODE}")
 
-    if SERVICE_MODE in ("director", "core"):
+    if SERVICE_MODE == "director":
         run_worker()
     else:
         health_thread = threading.Thread(
