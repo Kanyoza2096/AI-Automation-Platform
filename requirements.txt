@@ -27,7 +27,7 @@ python-dotenv==1.1.0
 
 # Image card rendering (Pillow — no browser required)
 Pillow>=10.4.0
-pycairo>=1.26.0
+
 
 # Testing
 pytest==8.3.4
