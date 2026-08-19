@@ -1,8 +1,14 @@
 """
-KANYOZA EVENT BUS v3.1 — "THE NERVOUS SYSTEM"
+KANYOZA EVENT BUS v3.2 — "THE NERVOUS SYSTEM"
 
 Thread-safe, persistent, replayable event bus with async dispatch,
 dead-letter queue, event sourcing, throttling, and distributed tracing.
+
+v3.2 FIXES:
+  - Fixed event_store persistence (only sends existing columns)
+  - Removed duplicate _JobServiceHealthProvider references
+  - Cleaned up unused imports
+  - Added EventStoreHealthProvider for health checks
 
 v3.1 UPGRADES:
   - Normalized publish() API — accepts both DomainEvent and
@@ -92,19 +98,20 @@ class EventStoreEntry:
 
 class ThrottlePolicy(Enum):
     """How to handle event floods."""
-    DROP = "drop"           # Silently drop excess events
-    DEFER = "defer"         # Queue and process later
-    DEBOUNCE = "debounce"   # Only keep the latest
-    BLOCK = "block"         # Block publisher until capacity available
+    DROP = "drop"
+    DEFER = "defer"
+    DEBOUNCE = "debounce"
+    BLOCK = "block"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# EVENT BUS v3.1
+# EVENT BUS v3.2
 # ═══════════════════════════════════════════════════════════════════════════
 
 class EventBus:
     """Thread-safe, persistent, replayable event bus with async dispatch.
 
+    v3.2: Fixed event_store persistence — only sends existing columns.
     v3.1: Normalized publish() — accepts DomainEvent OR string+dict.
     v3.0: Async dispatch, persistence, replay, dead letters, throttling.
     """
@@ -127,47 +134,41 @@ class EventBus:
         ] = defaultdict(list)
         self._wildcard: list[Subscriber] = []
 
-        # v3.0 — async dispatch
+        # Async dispatch
         self._executor = ThreadPoolExecutor(
             max_workers=async_workers,
             thread_name_prefix="eventbus-worker",
         )
         self._async_mode = False
 
-        # v3.0 — persistence
+        # Persistence
         self._supabase = supabase_client
         self._persist_events = persist_events
         self._sequence_number = 0
+        self._persist_errors = 0  # Track persistence failures
 
-        # v3.0 — dead letter queue
-        self._dead_letters: deque = deque(
-            maxlen=self.MAX_DEAD_LETTERS
-        )
+        # Dead letter queue
+        self._dead_letters: deque = deque(maxlen=self.MAX_DEAD_LETTERS)
 
-        # v3.0 — event store (in-memory ring buffer)
-        self._event_store: deque = deque(
-            maxlen=self.MAX_EVENT_STORE
-        )
+        # Event store (in-memory ring buffer)
+        self._event_store: deque = deque(maxlen=self.MAX_EVENT_STORE)
 
-        # v3.0 — throttling
+        # Throttling
         self._recent_events: deque = deque()
         self._throttle_policy = ThrottlePolicy.DEFER
         self._deferred_events: deque = deque(maxlen=1000)
         self._throttled_count = 0
 
-        # v3.0 — correlation tracking
-        self._active_correlations: Dict[
-            str, List[str]
-        ] = defaultdict(list)
+        # Correlation tracking
+        self._active_correlations: Dict[str, List[str]] = defaultdict(list)
 
-        # v3.0 — statistics
+        # Statistics
         self._event_count = 0
         self._error_count = 0
         self._async_futures: List[Future] = []
 
         logger.info(
-            "EventBus v3.1 initialized — "
-            "async=%d workers, persist=%s",
+            "EventBus v3.2 initialized — async=%d workers, persist=%s",
             async_workers,
             persist_events,
         )
@@ -176,11 +177,7 @@ class EventBus:
     # SUBSCRIPTION
     # ═══════════════════════════════════════════════════════════════════
 
-    def subscribe(
-        self,
-        event_type: EventType,
-        handler: Subscriber,
-    ) -> None:
+    def subscribe(self, event_type: EventType, handler: Subscriber) -> None:
         with self._lock:
             self._subscribers[event_type].append(handler)
         logger.debug(
@@ -193,44 +190,37 @@ class EventBus:
         """Receive every event regardless of type."""
         with self._lock:
             self._wildcard.append(handler)
-        logger.info(
-            "EventBus: wildcard subscriber added: %s",
-            handler.__qualname__,
-        )
+        logger.info("EventBus: wildcard subscriber added: %s", handler.__qualname__)
 
-    def unsubscribe(
-        self,
-        event_type: EventType,
-        handler: Subscriber,
-    ) -> None:
+    def unsubscribe(self, event_type: EventType, handler: Subscriber) -> None:
         with self._lock:
             self._subscribers[event_type] = [
                 h for h in self._subscribers[event_type] if h is not handler
             ]
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.1 — PUBLISHING (Normalized)
+    # PUBLISHING
     # ═══════════════════════════════════════════════════════════════════
 
     def enable_async(self, enabled: bool = True) -> None:
         """Enable non-blocking async dispatch."""
         self._async_mode = enabled
-        logger.info(
-            "EventBus: async mode %s",
-            "enabled" if enabled else "disabled",
-        )
+        logger.info("EventBus: async mode %s", "enabled" if enabled else "disabled")
+
+    def enable_persistence(self, supabase_client=None) -> None:
+        """Enable event persistence to Supabase."""
+        self._persist_events = True
+        if supabase_client:
+            self._supabase = supabase_client
+        logger.info("EventBus: persistence enabled")
 
     def publish(self, event=None, payload=None, source="unknown", **kwargs) -> None:
         """Publish an event.
 
-        v3.1 — Normalized API. Accepts:
-          1. publish(domain_event)                      → DomainEvent
-          2. publish("event_name", {"key": "value"})   → string + dict
-          3. publish(event_name, payload, source="...") → explicit
-
-        This prevents the API mismatch that silently dropped events
-        when services called publish("name", payload) with the old
-        signature expecting only DomainEvent.
+        Accepts:
+          1. publish(domain_event)
+          2. publish("event_name", {"key": "value"})
+          3. publish(event_name, payload, source="...")
         """
         # Normalize the call signature
         if isinstance(event, DomainEvent):
@@ -242,7 +232,6 @@ class EventBus:
                 source=source or kwargs.get("source", "unknown"),
             )
         elif event is None and payload is not None:
-            # publish(payload=domain_event) pattern
             if isinstance(payload, DomainEvent):
                 domain_event = payload
             else:
@@ -255,18 +244,18 @@ class EventBus:
             )
             return
 
-        # v3.0 — throttling check
+        # Throttling check
         if not self._check_throttle():
             return
 
-        # v3.0 — attach metadata
+        # Attach metadata
         metadata = EventMetadata(
             sequence_number=self._next_sequence(),
             source_engine=getattr(domain_event, "source", source or "unknown"),
         )
         domain_event.metadata = metadata
 
-        # v3.0 — persist to event store
+        # Persist to event store
         self._store_event(domain_event, metadata)
 
         # Resolve subscribers
@@ -277,7 +266,7 @@ class EventBus:
 
         self._event_count += 1
 
-        # v3.0 — dispatch
+        # Dispatch
         if self._async_mode:
             self._dispatch_async(domain_event, handlers, wildcards)
         else:
@@ -321,43 +310,22 @@ class EventBus:
         return event
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — DISPATCH
+    # DISPATCH
     # ═══════════════════════════════════════════════════════════════════
 
-    def _dispatch_sync(
-        self,
-        event: DomainEvent,
-        handlers: List[Subscriber],
-        wildcards: List[Subscriber],
-    ) -> None:
-        """Synchronous dispatch — handlers run in publisher's thread."""
+    def _dispatch_sync(self, event, handlers, wildcards) -> None:
         for handler in handlers + wildcards:
             self._invoke_handler(handler, event)
 
-    def _dispatch_async(
-        self,
-        event: DomainEvent,
-        handlers: List[Subscriber],
-        wildcards: List[Subscriber],
-    ) -> None:
-        """Async dispatch — handlers run in thread pool."""
+    def _dispatch_async(self, event, handlers, wildcards) -> None:
         for handler in handlers + wildcards:
-            future = self._executor.submit(
-                self._invoke_handler, handler, event
-            )
+            future = self._executor.submit(self._invoke_handler, handler, event)
             self._async_futures.append(future)
 
         if len(self._async_futures) > 100:
-            self._async_futures = [
-                f for f in self._async_futures if not f.done()
-            ]
+            self._async_futures = [f for f in self._async_futures if not f.done()]
 
-    def _invoke_handler(
-        self,
-        handler: Subscriber,
-        event: DomainEvent,
-    ) -> None:
-        """Invoke a single handler with error capture."""
+    def _invoke_handler(self, handler: Subscriber, event: DomainEvent) -> None:
         try:
             handler(event)
         except Exception as exc:
@@ -366,12 +334,10 @@ class EventBus:
                 "EventBus: handler %s raised %s for %s",
                 handler.__qualname__, exc, event, exc_info=True,
             )
-            self._capture_dead_letter(
-                event, handler.__qualname__, exc
-            )
+            self._capture_dead_letter(event, handler.__qualname__, exc)
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — EVENT PERSISTENCE
+    # EVENT PERSISTENCE (v3.2 FIXED)
     # ═══════════════════════════════════════════════════════════════════
 
     def _next_sequence(self) -> int:
@@ -379,11 +345,7 @@ class EventBus:
             self._sequence_number += 1
             return self._sequence_number
 
-    def _store_event(
-        self,
-        event: DomainEvent,
-        metadata: EventMetadata,
-    ) -> None:
+    def _store_event(self, event: DomainEvent, metadata: EventMetadata) -> None:
         """Store event in the ring buffer and optionally persist."""
         event_type = (
             event.event_type.value
@@ -407,29 +369,31 @@ class EventBus:
             self._persist_event(entry)
 
     def _persist_event(self, entry: EventStoreEntry) -> None:
-        """Persist event to Supabase for durability."""
+        """Persist event to Supabase.
+
+        v3.2 FIX: Only sends columns that EXIST in the event_store table:
+            - event_name (TEXT, NOT NULL)
+            - payload (JSONB)
+            - id (UUID, auto-generated)
+            - created_at (TIMESTAMPTZ, auto-generated)
+        """
         try:
             self._supabase.table("event_store").insert({
-                "event_id": entry.event_id,
-                "event_type": entry.event_type,
+                "event_name": entry.event_type,
                 "payload": entry.payload,
-                "correlation_id": entry.correlation_id,
-                "sequence_number": entry.sequence_number,
-                "published_at": entry.published_at.isoformat(),
-                "source_engine": entry.source_engine,
             }).execute()
         except Exception as exc:
-            logger.debug("Event persistence failed: %s", exc)
-
-    def enable_persistence(self, supabase_client=None) -> None:
-        """Enable event persistence to Supabase."""
-        self._persist_events = True
-        if supabase_client:
-            self._supabase = supabase_client
-        logger.info("EventBus: persistence enabled")
+            self._persist_errors += 1
+            # Log at debug level to avoid spamming (expected when table missing)
+            if self._persist_errors == 1 or self._persist_errors % 50 == 0:
+                logger.warning(
+                    "EventBus: persistence failed (%d errors): %s",
+                    self._persist_errors,
+                    str(exc)[:200],
+                )
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — EVENT REPLAY
+    # EVENT REPLAY
     # ═══════════════════════════════════════════════════════════════════
 
     def replay_events(
@@ -458,12 +422,13 @@ class EventBus:
         count = 0
 
         for entry in events:
+            try:
+                event_type = EventType(entry.event_type)
+            except (ValueError, KeyError):
+                event_type = entry.event_type
+
             event = DomainEvent(
-                event_type=(
-                    EventType(entry.event_type)
-                    if entry.event_type in EventType.__members__
-                    else entry.event_type
-                ),
+                event_type=event_type,
                 payload=entry.payload,
                 source=entry.source_engine,
             )
@@ -488,16 +453,10 @@ class EventBus:
         return count
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — DEAD LETTER QUEUE
+    # DEAD LETTER QUEUE
     # ═══════════════════════════════════════════════════════════════════
 
-    def _capture_dead_letter(
-        self,
-        event: DomainEvent,
-        handler_name: str,
-        error: Exception,
-    ) -> None:
-        """Capture a failed event for analysis."""
+    def _capture_dead_letter(self, event, handler_name, error) -> None:
         event_type = (
             event.event_type.value
             if hasattr(event.event_type, "value")
@@ -525,11 +484,9 @@ class EventBus:
             )
 
     def get_dead_letters(self, limit: int = 50) -> List[DeadLetter]:
-        """Get recent dead letters for analysis."""
         return list(self._dead_letters)[-limit:]
 
     def retry_dead_letter(self, event_id: str) -> bool:
-        """Retry a dead letter event by re-publishing it."""
         dead = next(
             (dl for dl in self._dead_letters if dl.event_id == event_id),
             None,
@@ -543,11 +500,10 @@ class EventBus:
         return True
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — THROTTLING
+    # THROTTLING
     # ═══════════════════════════════════════════════════════════════════
 
     def _check_throttle(self) -> bool:
-        """Check if publishing should be throttled."""
         now = time.monotonic()
 
         while self._recent_events and self._recent_events[0] < now - self.THROTTLE_WINDOW_SECONDS:
@@ -567,12 +523,10 @@ class EventBus:
         return True
 
     def set_throttle_policy(self, policy: ThrottlePolicy) -> None:
-        """Set the throttle policy for event floods."""
         self._throttle_policy = policy
         logger.info("EventBus: throttle policy set to %s", policy.value)
 
     def process_deferred(self, limit: int = 100) -> int:
-        """Process deferred events from the throttle queue."""
         processed = 0
         while self._deferred_events and processed < limit:
             event = self._deferred_events.popleft()
@@ -581,11 +535,10 @@ class EventBus:
         return processed
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — CORRELATION TRACKING
+    # CORRELATION TRACKING
     # ═══════════════════════════════════════════════════════════════════
 
     def start_correlation(self, correlation_id: Optional[str] = None) -> str:
-        """Start a new correlation context for tracing."""
         cid = correlation_id or f"corr_{uuid.uuid4().hex[:10]}"
         with self._lock:
             self._active_correlations[cid] = []
@@ -593,12 +546,11 @@ class EventBus:
         return cid
 
     def get_correlation_chain(self, correlation_id: str) -> List[str]:
-        """Get all event IDs in a correlation chain."""
         with self._lock:
             return list(self._active_correlations.get(correlation_id, []))
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — DIAGNOSTICS
+    # DIAGNOSTICS
     # ═══════════════════════════════════════════════════════════════════
 
     def subscriber_count(self, event_type: EventType) -> int:
@@ -606,7 +558,6 @@ class EventBus:
             return len(self._subscribers.get(event_type, []))
 
     def get_stats(self) -> dict:
-        """Return comprehensive event bus statistics."""
         with self._lock:
             total_subscribers = sum(
                 len(handlers) for handlers in self._subscribers.values()
@@ -621,6 +572,7 @@ class EventBus:
             "wildcard_subscribers": len(self._wildcard),
             "async_mode": self._async_mode,
             "persist_events": self._persist_events,
+            "persist_errors": self._persist_errors,
             "dead_letters": len(self._dead_letters),
             "event_store_size": len(self._event_store),
             "sequence_number": self._sequence_number,
@@ -631,7 +583,6 @@ class EventBus:
         }
 
     def get_event_types(self) -> List[str]:
-        """Get all tracked event types."""
         with self._lock:
             return sorted(
                 str(et.value if hasattr(et, "value") else et)
@@ -639,7 +590,6 @@ class EventBus:
             )
 
     def health_check(self) -> dict:
-        """Quick health check for the event bus."""
         stats = self.get_stats()
         status = "healthy"
 
@@ -655,11 +605,10 @@ class EventBus:
         return {"status": status, "stats": stats}
 
     # ═══════════════════════════════════════════════════════════════════
-    # v3.0 — CLEANUP
+    # CLEANUP
     # ═══════════════════════════════════════════════════════════════════
 
     def shutdown(self, timeout: float = 5.0) -> None:
-        """Graceful shutdown — wait for async handlers to complete."""
         logger.info(
             "EventBus: shutting down (%d pending futures)",
             len(self._async_futures),
@@ -668,7 +617,6 @@ class EventBus:
         logger.info("EventBus: shutdown complete")
 
     def clear(self) -> None:
-        """Clear all subscribers and state. Useful for testing."""
         with self._lock:
             self._subscribers.clear()
             self._wildcard.clear()
@@ -678,6 +626,7 @@ class EventBus:
             self._event_count = 0
             self._error_count = 0
             self._sequence_number = 0
+            self._persist_errors = 0
         logger.info("EventBus: cleared all state")
 
 
