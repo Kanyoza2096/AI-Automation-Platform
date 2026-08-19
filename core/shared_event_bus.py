@@ -1,16 +1,19 @@
 """
 SharedEventBus — Cross-instance communication via Supabase.
 
-v1.0 — Connects all Kanyoza instances into an autonomous system.
-Each instance publishes events that other instances can subscribe to.
+v2.0 — UNIFIED EVENT SYSTEM
+Uses single `events` table for both local and cross-instance events.
 
-Events:
-  - trend_detected      → Director tells Scheduler to post
-  - post_published       → Scheduler tells ConditionEngine to analyze
-  - content_failed       → Scheduler tells Director about failure
-  - strategy_change      → ConditionEngine tells Director to adjust
-  - engine_alert         → MetaEngine tells Director about issues
-  - publish_request      → Director tells Scheduler to publish now
+Table Schema:
+    events (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        event_name TEXT NOT NULL,
+        payload JSONB DEFAULT '{}'::jsonb,
+        source_service TEXT DEFAULT 'unknown',
+        processed BOOLEAN DEFAULT FALSE,
+        processed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )
 """
 
 from __future__ import annotations
@@ -28,9 +31,8 @@ logger = logging.getLogger("kanyoza.shared_event_bus")
 class SharedEventBus:
     """Cross-instance event bus using Supabase as transport."""
 
-    POLL_INTERVAL_SECONDS = 15  # Check for new events every 15 seconds
-    MAX_EVENTS_PER_POLL = 50    # Max events to process per poll
-    EVENT_RETENTION_HOURS = 24  # Keep events for 24 hours
+    POLL_INTERVAL_SECONDS = 15
+    MAX_EVENTS_PER_POLL = 50
 
     def __init__(
         self,
@@ -46,14 +48,13 @@ class SharedEventBus:
         self._lock = threading.RLock()
         self._poll_thread: Optional[threading.Thread] = None
         self._running = False
-        self._last_poll = 0.0
 
         # Stats
         self._events_published = 0
         self._events_received = 0
 
     # ═══════════════════════════════════════════════════════════════
-    # PUBLISH
+    # PUBLISH (v2.0 — Fixed to match `events` table)
     # ═══════════════════════════════════════════════════════════════
 
     def publish(
@@ -63,14 +64,16 @@ class SharedEventBus:
     ) -> bool:
         """Publish an event for other instances to receive."""
         if not self.supabase:
-            logger.debug("SharedEventBus: no Supabase client — publish skipped")
+            logger.debug("SharedEventBus: no Supabase — publish skipped")
             return False
 
         try:
-            result = self.supabase.table("shared_event_bus").insert({
+            # v2.0 FIX: Only send existing columns, payload as dict (not string)
+            self.supabase.table("events").insert({
                 "event_name": event_name,
-                "payload": json.dumps(payload or {}),
+                "payload": payload or {},       # ✅ Direct dict for JSONB
                 "source_service": self.source_service,
+                # id, processed, created_at → use table defaults
             }).execute()
 
             self._events_published += 1
@@ -81,31 +84,20 @@ class SharedEventBus:
             return False
 
     # ═══════════════════════════════════════════════════════════════
-    # SUBSCRIBE
+    # SUBSCRIBE (unchanged)
     # ═══════════════════════════════════════════════════════════════
 
-    def subscribe(
-        self,
-        event_name: str,
-        handler: Callable[[Dict[str, Any]], None],
-    ) -> None:
-        """Register a handler for a specific event."""
+    def subscribe(self, event_name: str, handler: Callable) -> None:
         with self._lock:
             if event_name not in self._handlers:
                 self._handlers[event_name] = []
             self._handlers[event_name].append(handler)
             logger.info(
                 "SharedEventBus: subscribed to '%s' (%d handlers)",
-                event_name,
-                len(self._handlers[event_name]),
+                event_name, len(self._handlers[event_name]),
             )
 
-    def unsubscribe(
-        self,
-        event_name: str,
-        handler: Callable[[Dict[str, Any]], None],
-    ) -> None:
-        """Remove a handler."""
+    def unsubscribe(self, event_name: str, handler: Callable) -> None:
         with self._lock:
             if event_name in self._handlers:
                 self._handlers[event_name] = [
@@ -113,18 +105,15 @@ class SharedEventBus:
                 ]
 
     # ═══════════════════════════════════════════════════════════════
-    # POLLING LOOP
+    # POLLING (unchanged logic, updated table name)
     # ═══════════════════════════════════════════════════════════════
 
     def start(self) -> None:
-        """Start the background polling thread."""
         if not self.supabase:
             logger.warning("SharedEventBus: no Supabase — polling disabled")
             return
-
         if self._running:
             return
-
         self._running = True
         self._poll_thread = threading.Thread(
             target=self._polling_loop,
@@ -135,7 +124,6 @@ class SharedEventBus:
         logger.info("SharedEventBus: polling started for '%s'", self.source_service)
 
     def stop(self) -> None:
-        """Stop the polling thread."""
         self._running = False
         if self._poll_thread and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=3)
@@ -143,7 +131,6 @@ class SharedEventBus:
         logger.info("SharedEventBus: polling stopped")
 
     def _polling_loop(self) -> None:
-        """Background loop that polls for new events."""
         while self._running:
             try:
                 self.poll()
@@ -152,13 +139,11 @@ class SharedEventBus:
             time.sleep(self.poll_interval)
 
     def poll(self) -> int:
-        """Poll for new events and dispatch to handlers."""
         if not self.supabase:
             return 0
 
         try:
-            # Get unprocessed events
-            result = self.supabase.table("shared_event_bus") \
+            result = self.supabase.table("events") \
                 .select("*") \
                 .eq("processed", False) \
                 .order("created_at") \
@@ -166,10 +151,8 @@ class SharedEventBus:
                 .execute()
 
             events = result.data or []
-
             for event in events:
                 self._dispatch_event(event)
-
             return len(events)
 
         except Exception as exc:
@@ -177,7 +160,6 @@ class SharedEventBus:
             return 0
 
     def _dispatch_event(self, event: Dict[str, Any]) -> None:
-        """Dispatch a single event to registered handlers."""
         event_name = event.get("event_name", "")
         event_id = event.get("id")
         source = event.get("source_service", "unknown")
@@ -188,14 +170,16 @@ class SharedEventBus:
             return
 
         try:
-            payload = json.loads(event.get("payload", "{}"))
-        except json.JSONDecodeError:
+            # v2.0 FIX: payload is already JSONB dict (not string)
+            payload = event.get("payload", {})
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
             payload = {}
 
         handlers = self._handlers.get(event_name, [])
 
         if not handlers:
-            # No handlers — mark as processed anyway
             self._mark_processed(event_id)
             return
 
@@ -206,16 +190,14 @@ class SharedEventBus:
             except Exception as exc:
                 logger.error(
                     "SharedEventBus handler failed for '%s': %s",
-                    event_name,
-                    exc,
+                    event_name, exc,
                 )
 
         self._mark_processed(event_id)
 
     def _mark_processed(self, event_id: Any) -> None:
-        """Mark an event as processed."""
         try:
-            self.supabase.table("shared_event_bus") \
+            self.supabase.table("events") \
                 .update({
                     "processed": True,
                     "processed_at": datetime.now(timezone.utc).isoformat(),
@@ -224,23 +206,6 @@ class SharedEventBus:
                 .execute()
         except Exception:
             pass
-
-    # ═══════════════════════════════════════════════════════════════
-    # CLEANUP
-    # ═══════════════════════════════════════════════════════════════
-
-    def cleanup_old_events(self) -> int:
-        """Delete processed events older than retention period."""
-        try:
-            cutoff = datetime.now(timezone.utc).isoformat()
-            result = self.supabase.table("shared_event_bus") \
-                .delete() \
-                .eq("processed", True) \
-                .lt("created_at", cutoff) \
-                .execute()
-            return len(result.data or [])
-        except Exception:
-            return 0
 
     # ═══════════════════════════════════════════════════════════════
     # STATS
@@ -258,9 +223,6 @@ class SharedEventBus:
             },
         }
 
-    def is_running(self) -> bool:
-        return self._running
-
 
 # ═══════════════════════════════════════════════════════════════════
 # SINGLETON
@@ -270,7 +232,6 @@ _shared_bus: Optional[SharedEventBus] = None
 
 
 def get_shared_event_bus() -> SharedEventBus:
-    """Get the singleton SharedEventBus."""
     global _shared_bus
     if _shared_bus is None:
         _shared_bus = SharedEventBus(source_service="unknown")
@@ -281,9 +242,7 @@ def init_shared_event_bus(
     supabase_client: Any = None,
     source_service: str = "unknown",
 ) -> SharedEventBus:
-    """Initialize the singleton SharedEventBus."""
     global _shared_bus
-
     _shared_bus = SharedEventBus(
         supabase_client=supabase_client,
         source_service=source_service,
