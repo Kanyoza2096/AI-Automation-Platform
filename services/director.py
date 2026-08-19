@@ -58,83 +58,15 @@ from typing import (
     Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar,
 )
 
-# At the top of director.py, after existing imports:
+# ═══════════════════════════════════════════════════════════════════════════
+# COUNCIL INTEGRATION (v4.1.0)
+# ═══════════════════════════════════════════════════════════════════════════
 
 try:
     from plugins.council.personas import get_council
     HAS_COUNCIL = True
 except ImportError:
     HAS_COUNCIL = False
-
-
-# In Director.__init__, after self.adaptive_thresholds initialization:
-
-        # Council integration (v4.1.0)
-        self.council = get_council() if HAS_COUNCIL else None
-        if self.council:
-            logger.info(
-                "👔 Director v%s — Community Council activated (%d members)",
-                self.VERSION,
-                len(self.council.members),
-            )
-
-
-# In Director class, add these methods (before execute method):
-
-    def _run_council_vote(self, task: Task) -> Dict:
-        """Run community council vote on a task."""
-        if not self.council:
-            return {"decision": "APPROVED", "reason": "No council"}
-        
-        brand_context = {
-            "industry": task.params.get("industry", "general"),
-            "brand_id": task.params.get("brand_id", ""),
-            "task_sector": task.sector.value,
-        }
-        
-        proposal = {
-            "topic": task.description,
-            "content": task.description,
-            "hour": datetime.now().hour,
-            "day": datetime.now().strftime("%A").lower(),
-            "engagement_ratio": task.confidence,
-            "sample_count": int(task.confidence * 30),
-            "has_cta": "boost" in task.capability or "call" in task.description.lower(),
-            "system_health": self.health()["score"],
-            "engagement_trend": 0.0,
-            "topic_source": "trend" if "trend" in task.reason.lower() else "director",
-        }
-        
-        vote_result = self.council.vote_on(brand_context, proposal)
-        summary = self.council.get_summary(vote_result)
-        logger.info("👔 Council vote for '%s':\n%s", task.description[:50], summary)
-        
-        _publish_event("council_voted", {
-            "task_id": task.id,
-            "decision": vote_result["decision"],
-            "approve_ratio": vote_result["approve_ratio"],
-        })
-        
-        return vote_result
-
-
-# In Director.execute method, after the requires_approval check and BEFORE setting status to EXECUTING:
-
-            # Council vote (v4.1.0)
-            if self.council and task.risk in (Risk.LOW, Risk.MEDIUM):
-                vote_result = self._run_council_vote(task)
-                
-                if vote_result["decision"] == "REJECTED":
-                    task.status = Status.CANCELLED
-                    task.error = f"Rejected by council: {vote_result['reason']}"
-                    self.store.save_task(task)
-                    return task
-                
-                if vote_result["decision"] == "NEEDS_REVISION":
-                    task.status = Status.FLAGGED
-                    task.reason += f" (Council: {vote_result['approve_ratio']:.0%} approval)"
-                    self.store.save_task(task)
-                    return task
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EVENT BUS INTEGRATION
@@ -145,8 +77,6 @@ try:
     HAS_EVENT_BUS = True
 except ImportError:
     HAS_EVENT_BUS = False
-    log = logging.getLogger("kanyoza.director")
-    log.warning("Shared event bus not available — events will be skipped")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LOGGING
@@ -1749,10 +1679,59 @@ class Director:
         self.current_impact: Dict[str, Any] = {}
         self.current_predictions: List[Dict[str, Any]] = []
 
+        # Council integration (v4.1.0)
+        self.council = get_council() if HAS_COUNCIL else None
+        if self.council:
+            log.info(
+                "👔 Director v%s — Community Council activated (%d members)",
+                self.VERSION,
+                len(self.council.members),
+            )
+
         # Initialize
         self._init_goals()
         self._init_capabilities()
         log.info("👔 KANYOZA DIRECTOR v%s initialized — COMPLETE AUTONOMOUS CEO", self.VERSION)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # COUNCIL VOTING
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _run_council_vote(self, task: Task) -> Dict:
+        """Run community council vote on a task."""
+        if not self.council:
+            return {"decision": "APPROVED", "reason": "No council"}
+
+        brand_context = {
+            "industry": task.params.get("industry", "general"),
+            "brand_id": task.params.get("brand_id", ""),
+            "task_sector": task.sector.value,
+        }
+
+        proposal = {
+            "topic": task.description,
+            "content": task.description,
+            "hour": datetime.now().hour,
+            "day": datetime.now().strftime("%A").lower(),
+            "engagement_ratio": task.confidence,
+            "sample_count": int(task.confidence * 30),
+            "has_cta": "boost" in task.capability or "call" in task.description.lower(),
+            "system_health": self.health()["score"],
+            "engagement_trend": 0.0,
+            "topic_source": "trend" if "trend" in task.reason.lower() else "director",
+        }
+
+        vote_result = self.council.vote_on(brand_context, proposal)
+        summary = self.council.get_summary(vote_result)
+        log.info("👔 Council vote for '%s':\n%s", task.description[:50], summary)
+
+        _publish_event("council_voted", {
+            "task_id": task.id,
+            "decision": vote_result["decision"],
+            "approve_ratio": vote_result["approve_ratio"],
+        })
+
+        return vote_result
 
     # ═══════════════════════════════════════════════════════════════════
     # INITIALIZATION
@@ -2166,7 +2145,7 @@ class Director:
         )
         self.tasks[task.id] = task
         self.store.save_task(task)
-        
+
         # Publish task_created event
         _publish_event("task_created", {
             "task_id": task.id,
@@ -2174,7 +2153,7 @@ class Director:
             "capability": cap_name,
             "sector": sector.value,
         })
-        
+
         return task
 
     def decide(self) -> List[Task]:
@@ -2390,14 +2369,14 @@ class Director:
                 task.result = safe(result or {})
                 self.history.append(task)
                 self.store.save_task(task)
-                
+
                 # Publish task_completed event
                 _publish_event("task_completed", {
                     "task_id": task.id,
                     "description": task.description,
                     "capability": task.capability,
                 })
-                
+
                 self._record_decision(f"Executed: {task.description}", task.reason, task)
                 self._learn(task)
                 self._event("director_action_completed", {"task": safe(asdict(task))})
@@ -2408,14 +2387,14 @@ class Director:
                 task.result = {"error": sanitize_error_message(exc)}
                 self.history.append(task)
                 self.store.save_task(task)
-                
+
                 # Publish task_failed event
                 _publish_event("task_failed", {
                     "task_id": task.id,
                     "description": task.description,
                     "error": task.error,
                 })
-                
+
                 self._record_decision(f"Failed: {task.description}", sanitize_error_message(exc), task, "failed")
                 self._learn(task)
                 self._alert({"type": "task_failed", "task": safe(asdict(task))})
@@ -3024,7 +3003,7 @@ def create_app(director: Director):
         # v4.0.2: Allow disabling auth via environment variable
         if os.getenv("DISABLE_DIRECTOR_AUTH", "false").lower() == "true":
             return  # Skip auth check
-    
+
         if not _authenticate(credentials, request):
             raise HTTPException(
                 status_code=401,
@@ -3358,7 +3337,8 @@ def create_app(director: Director):
         await _require_auth(credentials, request)
         return {"alerts": list(director._alert_history)[-limit:]}
 
-    return app        
+    return app
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # INITIALIZER
