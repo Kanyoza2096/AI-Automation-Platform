@@ -58,6 +58,84 @@ from typing import (
     Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar,
 )
 
+# At the top of director.py, after existing imports:
+
+try:
+    from plugins.council.personas import get_council
+    HAS_COUNCIL = True
+except ImportError:
+    HAS_COUNCIL = False
+
+
+# In Director.__init__, after self.adaptive_thresholds initialization:
+
+        # Council integration (v4.1.0)
+        self.council = get_council() if HAS_COUNCIL else None
+        if self.council:
+            logger.info(
+                "👔 Director v%s — Community Council activated (%d members)",
+                self.VERSION,
+                len(self.council.members),
+            )
+
+
+# In Director class, add these methods (before execute method):
+
+    def _run_council_vote(self, task: Task) -> Dict:
+        """Run community council vote on a task."""
+        if not self.council:
+            return {"decision": "APPROVED", "reason": "No council"}
+        
+        brand_context = {
+            "industry": task.params.get("industry", "general"),
+            "brand_id": task.params.get("brand_id", ""),
+            "task_sector": task.sector.value,
+        }
+        
+        proposal = {
+            "topic": task.description,
+            "content": task.description,
+            "hour": datetime.now().hour,
+            "day": datetime.now().strftime("%A").lower(),
+            "engagement_ratio": task.confidence,
+            "sample_count": int(task.confidence * 30),
+            "has_cta": "boost" in task.capability or "call" in task.description.lower(),
+            "system_health": self.health()["score"],
+            "engagement_trend": 0.0,
+            "topic_source": "trend" if "trend" in task.reason.lower() else "director",
+        }
+        
+        vote_result = self.council.vote_on(brand_context, proposal)
+        summary = self.council.get_summary(vote_result)
+        logger.info("👔 Council vote for '%s':\n%s", task.description[:50], summary)
+        
+        _publish_event("council_voted", {
+            "task_id": task.id,
+            "decision": vote_result["decision"],
+            "approve_ratio": vote_result["approve_ratio"],
+        })
+        
+        return vote_result
+
+
+# In Director.execute method, after the requires_approval check and BEFORE setting status to EXECUTING:
+
+            # Council vote (v4.1.0)
+            if self.council and task.risk in (Risk.LOW, Risk.MEDIUM):
+                vote_result = self._run_council_vote(task)
+                
+                if vote_result["decision"] == "REJECTED":
+                    task.status = Status.CANCELLED
+                    task.error = f"Rejected by council: {vote_result['reason']}"
+                    self.store.save_task(task)
+                    return task
+                
+                if vote_result["decision"] == "NEEDS_REVISION":
+                    task.status = Status.FLAGGED
+                    task.reason += f" (Council: {vote_result['approve_ratio']:.0%} approval)"
+                    self.store.save_task(task)
+                    return task
+
 # ═══════════════════════════════════════════════════════════════════════════
 # EVENT BUS INTEGRATION
 # ═══════════════════════════════════════════════════════════════════════════
