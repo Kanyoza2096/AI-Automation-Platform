@@ -46,6 +46,50 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequenc
 
 logger = logging.getLogger("kanyoza.condition_engine")
 
+# At the top of condition_engine.py:
+
+try:
+    from plugins.council.personas import get_council
+    HAS_COUNCIL = True
+except ImportError:
+    HAS_COUNCIL = False
+
+
+# In AutonomousConditionEngine.__init__, after self.threshold_manager:
+
+        # Council integration
+        self.council = get_council() if HAS_COUNCIL else None
+
+
+# In _make_decision method, after creating decision but before return:
+
+        # Council vote for content decisions (v4.1.0)
+        if self.council and decision.recommended_action:
+            brand_context = {
+                "industry": "general",
+                "brand_id": observation.brand_id,
+            }
+            
+            proposal = {
+                "topic": observation.topic,
+                "content": decision.reason,
+                "hour": observation.posting_hour or datetime.now().hour,
+                "day": datetime.now().strftime("%A").lower(),
+                "engagement_ratio": baseline.ratio(observation.engagement) if baseline else 1.0,
+                "sample_count": baseline.sample_count if baseline else 0,
+                "has_cta": "call" in decision.reason.lower(),
+                "system_health": 80,
+                "topic_source": "condition_engine",
+            }
+            
+            vote_result = self.council.vote_on(brand_context, proposal)
+            
+            if vote_result["decision"] == "REJECTED":
+                decision.recommended_action = None
+                decision.reason = f"Cancelled by council: {vote_result['reason']}"
+            elif vote_result["decision"] == "NEEDS_REVISION":
+                decision.requires_approval = True
+                decision.reason += f" (Council: {vote_result['approve_ratio']:.0%} approval)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EVENT BUS INTEGRATION
