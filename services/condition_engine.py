@@ -9,23 +9,7 @@ Purpose:
 v4.0.1 CHANGES:
     - Added event bus integration for strategy_executed and brand_health_updated events
     - Defensive event publishing with fallback handling
-
-v4.0 NEW CAPABILITIES:
-    - Adaptive thresholds (self-tuning based on outcomes)
-    - Expanded action space (12+ actions)
-    - Multi-metric evaluation (engagement rate, CTR, share rate, comment rate)
-    - Per-topic, per-style, per-hour baselines
-    - Predictive trend analysis (forecast, reversal detection)
-    - Automated A/B testing (create, evaluate, deploy winning variants)
-    - Full state persistence (baselines, trends, strategy rewards)
-    - Brand clustering (shared learning across similar brands)
-    - Anomaly classification (spike, dip, drift, level shift)
-    - Confidence calibration (per-brand, outcome-based)
-    - UCB strategy selection (better than epsilon-greedy)
-
-v3.0 CHANGES (retained):
-    - set_action_executor() and set_supabase_client()
-    - Autonomous loop: Observe → Analyze → Decide → ACT
+    - Council integration (v4.1.0)
 """
 
 from __future__ import annotations
@@ -46,50 +30,16 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Sequenc
 
 logger = logging.getLogger("kanyoza.condition_engine")
 
-# At the top of condition_engine.py:
+# ═══════════════════════════════════════════════════════════════════════════
+# COUNCIL INTEGRATION (v4.1.0)
+# ═══════════════════════════════════════════════════════════════════════════
 
 try:
     from plugins.council.personas import get_council
     HAS_COUNCIL = True
 except ImportError:
     HAS_COUNCIL = False
-
-
-# In AutonomousConditionEngine.__init__, after self.threshold_manager:
-
-        # Council integration
-        self.council = get_council() if HAS_COUNCIL else None
-
-
-# In _make_decision method, after creating decision but before return:
-
-        # Council vote for content decisions (v4.1.0)
-        if self.council and decision.recommended_action:
-            brand_context = {
-                "industry": "general",
-                "brand_id": observation.brand_id,
-            }
-            
-            proposal = {
-                "topic": observation.topic,
-                "content": decision.reason,
-                "hour": observation.posting_hour or datetime.now().hour,
-                "day": datetime.now().strftime("%A").lower(),
-                "engagement_ratio": baseline.ratio(observation.engagement) if baseline else 1.0,
-                "sample_count": baseline.sample_count if baseline else 0,
-                "has_cta": "call" in decision.reason.lower(),
-                "system_health": 80,
-                "topic_source": "condition_engine",
-            }
-            
-            vote_result = self.council.vote_on(brand_context, proposal)
-            
-            if vote_result["decision"] == "REJECTED":
-                decision.recommended_action = None
-                decision.reason = f"Cancelled by council: {vote_result['reason']}"
-            elif vote_result["decision"] == "NEEDS_REVISION":
-                decision.requires_approval = True
-                decision.reason += f" (Council: {vote_result['approve_ratio']:.0%} approval)"
+    logger.debug("Council not available — continuing without community oversight")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EVENT BUS INTEGRATION
@@ -212,7 +162,7 @@ class EngineConfig:
     boost_exit_threshold: float = 1.10
     reduce_enter_threshold: float = 0.70
     reduce_exit_threshold: float = 0.95
-    critical_performance_ratio: float = 0.45  # ← ADD THIS
+    critical_performance_ratio: float = 0.45
     strong_positive_velocity: float = 0.15
     strong_negative_velocity: float = -0.15
     anomaly_z_score: float = 3.0
@@ -828,6 +778,14 @@ class AutonomousConditionEngine:
             lambda: deque(maxlen=100)
         )
 
+        # Council integration (v4.1.0)
+        self.council = get_council() if HAS_COUNCIL else None
+        if self.council:
+            logger.info(
+                "👔 AutonomousConditionEngine v4.1.0 — Community Council activated (%d members)",
+                len(self.council.members),
+            )
+
         self._register_default_strategies()
         logger.info(
             "Autonomous Condition Engine v4.0.1 initialized "
@@ -835,6 +793,55 @@ class AutonomousConditionEngine:
             "predictive trends, anomaly classification, "
             "brand clustering, event bus integration)"
         )
+
+    # ═══════════════════════════════════════════════════════════════
+    # COUNCIL VOTING (v4.1.0)
+    # ═══════════════════════════════════════════════════════════════
+
+    def _run_council_vote(
+        self,
+        observation: Observation,
+        decision: Decision,
+        baseline: Baseline,
+    ) -> Dict[str, Any]:
+        """Run community council vote on a decision."""
+        if not self.council:
+            return {"decision": "APPROVED", "reason": "No council"}
+
+        brand_context = {
+            "industry": observation.metadata.get("industry", "general"),
+            "brand_id": observation.brand_id,
+        }
+
+        proposal = {
+            "topic": observation.topic or "general",
+            "content": decision.reason,
+            "hour": observation.posting_hour or datetime.now().hour,
+            "day": datetime.now().strftime("%A").lower(),
+            "engagement_ratio": baseline.ratio(observation.engagement) if baseline else 1.0,
+            "sample_count": baseline.sample_count if baseline else 0,
+            "has_cta": observation.has_cta or "call" in decision.reason.lower(),
+            "system_health": 80,
+            "topic_source": "condition_engine",
+        }
+
+        vote_result = self.council.vote_on(brand_context, proposal)
+
+        if vote_result["decision"] == "REJECTED":
+            decision.recommended_action = None
+            decision.reason = f"Cancelled by council: {vote_result['reason']}"
+        elif vote_result["decision"] == "NEEDS_REVISION":
+            decision.requires_approval = True
+            decision.reason += f" (Council: {vote_result['approve_ratio']:.0%} approval)"
+
+        logger.info(
+            "👔 Council vote for decision %s: %s (%.0f%% approval)",
+            decision.id,
+            vote_result["decision"],
+            vote_result["approve_ratio"] * 100,
+        )
+
+        return vote_result
 
     # ═══════════════════════════════════════════════════════════════
     # WIRING METHODS
@@ -939,6 +946,10 @@ class AutonomousConditionEngine:
                 state=state,
                 confidence=confidence,
             )
+
+            # Run council vote for content decisions (v4.1.0)
+            if self.council and decision.recommended_action:
+                self._run_council_vote(observation, decision, baselines["engagement"])
 
             self._decisions[decision.id] = decision
             self._persist_decision(decision)
@@ -1514,19 +1525,19 @@ class AutonomousConditionEngine:
             plan.status = ActionStatus.EXECUTED
             plan.executed_at = utc_now()
             self._last_action_at[(plan.brand_id, plan.action)] = utc_now()
-            
+
             # Publish strategy_executed event
             _publish_event("strategy_executed", {
                 "brand_id": plan.brand_id,
                 "action": plan.action,
                 "success": True,
             })
-            
+
             return plan
         except Exception as exc:
             plan.status = ActionStatus.FAILED
             plan.outcome = {"error": str(exc)}
-            
+
             # Publish strategy_executed event with failure
             _publish_event("strategy_executed", {
                 "brand_id": plan.brand_id,
@@ -1534,7 +1545,7 @@ class AutonomousConditionEngine:
                 "success": False,
                 "error": str(exc),
             })
-            
+
             return plan
 
     # ═══════════════════════════════════════════════════════════════
@@ -1589,13 +1600,13 @@ class AutonomousConditionEngine:
                 "components": {},
             }
             self._brand_health[brand_id] = health
-            
+
             # Publish brand_health_updated event
             _publish_event("brand_health_updated", {
                 "brand_id": brand_id,
                 "health_score": health.get("health_score", 0),
             })
-            
+
             return health
 
         # Multi-metric baselines
@@ -1659,13 +1670,13 @@ class AutonomousConditionEngine:
             "updated_at": iso_now(),
         }
         self._brand_health[brand_id] = health
-        
+
         # Publish brand_health_updated event
         _publish_event("brand_health_updated", {
             "brand_id": brand_id,
             "health_score": score,
         })
-        
+
         return health
 
     # ═══════════════════════════════════════════════════════════════
