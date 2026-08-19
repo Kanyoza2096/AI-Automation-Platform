@@ -1,0 +1,113 @@
+# routes/council_routes.py
+
+from fastapi import APIRouter, HTTPException, Depends, Request
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
+import hmac
+import logging
+from datetime import datetime, timezone
+
+logger = logging.getLogger("kanyoza.council.api")
+
+router = APIRouter(prefix="/api/v1/council", tags=["council"])
+
+def _require_auth(request: Request):
+    from config.settings import settings
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if not token or not hmac.compare_digest(token, settings.master_api_token):
+        raise HTTPException(401, "Unauthorized")
+    return True
+
+class VoteRequest(BaseModel):
+    proposal: str = Field(min_length=1, max_length=500)
+    topic: str = Field(default="", max_length=200)
+    industry: str = Field(default="general", max_length=50)
+    hour: int = Field(default=12, ge=0, le=23)
+    day: str = Field(default="monday", max_length=20)
+    content: str = Field(default="", max_length=1000)
+    has_cta: bool = False
+    system_health: float = Field(default=80.0, ge=0, le=100)
+    engagement_ratio: float = Field(default=1.0, ge=0)
+    sample_count: int = Field(default=10, ge=0)
+    topic_source: str = Field(default="director")
+
+@router.post("/vote")
+async def run_council_vote(data: VoteRequest, _auth=Depends(_require_auth)):
+    """Run a community council vote on a proposal."""
+    from plugins.council.personas import get_council
+    
+    council = get_council()
+    
+    brand_context = {"industry": data.industry}
+    proposal = {
+        "topic": data.topic or data.proposal,
+        "content": data.content or data.proposal,
+        "hour": data.hour,
+        "day": data.day,
+        "has_cta": data.has_cta,
+        "system_health": data.system_health,
+        "engagement_ratio": data.engagement_ratio,
+        "sample_count": data.sample_count,
+        "topic_source": data.topic_source,
+    }
+    
+    result = council.vote_on(brand_context, proposal)
+    
+    return {
+        **result,
+        "proposal": data.proposal,
+        "voted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+@router.get("/members")
+async def get_council_members(_auth=Depends(_require_auth)):
+    """Get all council members with their details."""
+    from plugins.council.personas import get_council
+    
+    council = get_council()
+    return {
+        "members": [
+            {
+                "name": m.name,
+                "role": m.role,
+                "weight": m.weight,
+                "veto_power": m.veto_power,
+                "emoji": _get_member_emoji(m.name),
+            }
+            for m in council.members
+        ],
+        "total_members": len(council.members),
+    }
+
+@router.get("/statistics")
+async def get_council_statistics(_auth=Depends(_require_auth)):
+    """Get council voting statistics."""
+    from plugins.council.personas import get_council
+    
+    council = get_council()
+    return council.get_statistics()
+
+@router.get("/history")
+async def get_council_history(limit: int = 20, _auth=Depends(_require_auth)):
+    """Get recent council voting history."""
+    from plugins.council.personas import get_council
+    
+    council = get_council()
+    return {
+        "history": council.get_history(limit=limit),
+    }
+
+def _get_member_emoji(name: str) -> str:
+    emoji_map = {
+        "youth_advocate": "🧑🏾‍🎓",
+        "business_owner": "👨🏾‍💼",
+        "community_elder": "👵🏾",
+        "data_analyst": "📊",
+        "risk_manager": "🛡️",
+        "trend_spotter": "🔥",
+        "gut_feeling": "🎲",
+        "customer_voice": "💬",
+        "mood_ring": "🌈",
+        "rippler": "🌊",
+    }
+    return emoji_map.get(name, "🤖")
