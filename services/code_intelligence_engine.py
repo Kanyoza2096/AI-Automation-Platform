@@ -1,22 +1,41 @@
-"""KANYOZA CODE INTELLIGENCE ENGINE v2.0
+"""
+KANYOZA CODE INTELLIGENCE ENGINE v3.0 — HYBRID ASYNC
+=====================================================
 
 Single-file repository intelligence engine.
-Preserves the original public API while adding defensive model parsing,
-scan-state correctness, chunked analysis, finding normalization/deduplication,
-bounded scan history, optional remediation/Telegram/Director hooks, and
-clean lifecycle management.
+
+v3.0:
+- Async internals with sync-compatible public API
+- EventBus async publish handled correctly
+- GitHub/Gemini/file operations offloaded to executor
+- HealthProvider protocol support
+- v2-compatible public method names/signatures
+- No threading.Thread
+- No threading.Lock/RLock
+- asyncio synchronization primitives are created lazily in async context
+
+Public API:
+    start(interval_hours=6)
+    stop()
+    scan_now()
+    get_status()
+    get_issues(severity=None, limit=100)
+    get_report()
+    get_scan_history(limit=20)
 """
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import hashlib
+import inspect
 import json
 import logging
 import re
 import shutil
 import tempfile
-import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -43,6 +62,7 @@ _MAX_FILE_BYTES = 200_000
 _MAX_MODEL_CHARS = 8_000
 _MAX_CHUNK_CHARS = 7_000
 _MAX_CHUNKS_PER_FILE = 12
+_MAX_FILES_PER_SCAN = 500
 
 _ALLOWED_SEVERITIES = {"critical", "high", "medium", "low"}
 _ALLOWED_TYPES = {
@@ -101,10 +121,12 @@ def extract_json_payload(raw: Any) -> Any:
     """Extract JSON from common Gemini response shapes."""
     if raw is None:
         return None
+
     if isinstance(raw, (list, dict)):
         return raw
 
     candidates: List[str] = []
+
     if isinstance(raw, str):
         candidates.append(raw)
     else:
@@ -159,7 +181,9 @@ def extract_json_payload(raw: Any) -> Any:
 
 
 def iter_candidate_files(root: Path) -> List[Path]:
+    """Iterate candidate files with hard scan bounds."""
     files: List[Path] = []
+
     for path in root.rglob("*"):
         try:
             if not path.is_file():
@@ -170,14 +194,22 @@ def iter_candidate_files(root: Path) -> List[Path]:
                 continue
             if path.stat().st_size >= _MAX_FILE_BYTES:
                 continue
+
             files.append(path)
+
+            if len(files) >= _MAX_FILES_PER_SCAN:
+                break
         except OSError:
             continue
+
     return files
 
 
-def chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> List[Tuple[int, str]]:
-    """Split source by line boundaries and preserve approximate start lines."""
+def chunk_text(
+    text: str,
+    max_chars: int = _MAX_CHUNK_CHARS,
+) -> List[Tuple[int, str]]:
+    """Split source by line boundaries."""
     lines = text.splitlines()
     chunks: List[Tuple[int, str]] = []
     current: List[str] = []
@@ -186,11 +218,13 @@ def chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> List[Tuple[int, 
 
     for line_number, line in enumerate(lines, start=1):
         size = len(line) + 1
+
         if current and current_chars + size > max_chars:
             chunks.append((start_line, "\n".join(current)))
             current = []
             current_chars = 0
             start_line = line_number
+
         current.append(line)
         current_chars += size
 
@@ -201,7 +235,7 @@ def chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> List[Tuple[int, 
 
 
 class CodeIntelligenceEngine:
-    VERSION = "2.0"
+    VERSION = "3.0"
 
     def __init__(
         self,
@@ -213,15 +247,18 @@ class CodeIntelligenceEngine:
         self._bus = event_bus
         self._container = container
 
+        # Created lazily inside an async context so the engine can be
+        # instantiated safely from synchronous application bootstrap code.
+        self._state_lock: Optional[asyncio.Lock] = None
+        self._scan_lock: Optional[asyncio.Lock] = None
+
         self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
+        self._scanning = False
+        self._scan_task: Optional[asyncio.Task] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
         self._scan_interval_hours = 6
-        self._scanning = False
-        self._scan_lock = threading.Lock()
-        self._state_lock = threading.RLock()
-
         self._last_issues: List[dict] = []
         self._last_report: Optional[dict] = None
         self._last_scan_at: Optional[datetime] = None
@@ -229,6 +266,7 @@ class CodeIntelligenceEngine:
         self._total_issues_found = 0
         self._auto_fixes_created = 0
         self._start_time = utcnow()
+        self._last_scan_duration_ms = 0.0
 
         self._scan_history: List[dict] = []
         self._max_scan_history = 100
@@ -238,26 +276,64 @@ class CodeIntelligenceEngine:
         logger.info("CodeIntelligenceEngine v%s initialized", self.VERSION)
 
     # ------------------------------------------------------------------
-    # PUBLIC STATUS API
+    # ASYNC STATE PRIMITIVES
+    # ------------------------------------------------------------------
+
+    def _ensure_async_primitives(self) -> None:
+        if self._state_lock is None:
+            self._state_lock = asyncio.Lock()
+        if self._scan_lock is None:
+            self._scan_lock = asyncio.Lock()
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
+
+    # ------------------------------------------------------------------
+    # HEALTH PROVIDER PROTOCOL
+    # ------------------------------------------------------------------
+
+    @property
+    def service_name(self) -> str:
+        return "code_intelligence"
+
+    def check_health(self) -> dict:
+        status = self.get_status()
+        return {
+            "status": "healthy" if status["running"] else "stopped",
+            "version": self.VERSION,
+            "scanning": status["scanning"],
+            "scan_count": status["scan_count"],
+            "total_issues_found": status["total_issues_found"],
+        }
+
+    async def check_health_async(self) -> dict:
+        return self.check_health()
+
+    # ------------------------------------------------------------------
+    # STATUS — FAST SYNCHRONOUS READS
     # ------------------------------------------------------------------
 
     def get_status(self) -> dict:
-        with self._state_lock:
-            return {
-                "engine": "code_intelligence",
-                "version": self.VERSION,
-                "running": self._running,
-                "scanning": self._scanning,
-                "scan_count": self._scan_count,
-                "total_issues_found": self._total_issues_found,
-                "auto_fixes_created": self._auto_fixes_created,
-                "last_scan_at": iso(self._last_scan_at),
-                "last_report": dict(self._last_report) if self._last_report else None,
-                "uptime_hours": round(
-                    (utcnow() - self._start_time).total_seconds() / 3600, 2
-                ),
-                "history_count": len(self._scan_history),
-            }
+        return {
+            "engine": "code_intelligence",
+            "version": self.VERSION,
+            "running": self._running,
+            "scanning": self._scanning,
+            "scan_count": self._scan_count,
+            "total_issues_found": self._total_issues_found,
+            "auto_fixes_created": self._auto_fixes_created,
+            "last_scan_at": iso(self._last_scan_at),
+            "last_report": (
+                json.loads(json.dumps(self._last_report, default=str))
+                if self._last_report
+                else None
+            ),
+            "uptime_hours": round(
+                (utcnow() - self._start_time).total_seconds() / 3600,
+                2,
+            ),
+            "history_count": len(self._scan_history),
+            "last_scan_duration_ms": round(self._last_scan_duration_ms, 1),
+        }
 
     def get_issues(
         self,
@@ -265,162 +341,271 @@ class CodeIntelligenceEngine:
         limit: int = 100,
     ) -> List[dict]:
         limit = max(1, min(safe_int(limit, 100), 1000))
-        with self._state_lock:
-            issues = list(self._last_issues)
+        issues = list(self._last_issues)
 
         if severity:
             severity = severity.strip().lower()
             issues = [i for i in issues if i.get("severity") == severity]
 
-        return issues[:limit]
+        return json.loads(json.dumps(issues[:limit], default=str))
 
     def get_report(self) -> Optional[dict]:
-        with self._state_lock:
-            if not self._last_report:
-                return None
-            return json.loads(json.dumps(self._last_report, default=str))
+        if not self._last_report:
+            return None
+        return json.loads(json.dumps(self._last_report, default=str))
 
     def get_scan_history(self, limit: int = 20) -> List[dict]:
         limit = max(1, min(safe_int(limit, 20), self._max_scan_history))
-        with self._state_lock:
-            return list(reversed(self._scan_history[-limit:]))
+        return json.loads(
+            json.dumps(list(reversed(self._scan_history[-limit:])), default=str)
+        )
 
     # ------------------------------------------------------------------
-    # LIFECYCLE
+    # LIFECYCLE — SYNC-COMPATIBLE
     # ------------------------------------------------------------------
 
     def start(self, interval_hours: int = 6) -> None:
-        with self._state_lock:
-            if self._running:
-                return
-            self._running = True
-            self._scan_interval_hours = max(1, safe_int(interval_hours, 6))
-            self._stop_event.clear()
-            self._thread = threading.Thread(
-                target=self._scan_loop,
-                daemon=True,
-                name="code-intel-engine",
-            )
-            self._thread.start()
+        """Start the engine and schedule its async lifecycle task."""
+        if self._running:
+            return
+
+        self._running = True
+        self._scan_interval_hours = max(1, safe_int(interval_hours, 6))
+        self._start_time = utcnow()
+
+        self._schedule_async(self._async_start())
 
         logger.info(
             "CodeIntelligenceEngine started (every %dh)",
             self._scan_interval_hours,
         )
-        self._emit(
+        self._emit_sync(
             "code_intelligence_started",
-            {"version": self.VERSION, "interval_hours": self._scan_interval_hours},
+            {
+                "version": self.VERSION,
+                "interval_hours": self._scan_interval_hours,
+            },
         )
 
     def stop(self) -> None:
-        with self._state_lock:
-            self._running = False
-            self._stop_event.set()
-            thread = self._thread
+        """Stop the engine without requiring the caller to await anything."""
+        self._running = False
 
-        if thread and thread.is_alive():
-            thread.join(timeout=10)
+        task = self._scan_task
+        if task and not task.done():
+            task.cancel()
 
-        with self._state_lock:
-            self._thread = None
+        self._scan_task = None
+
+        if self._stop_event is not None:
+            try:
+                self._stop_event.set()
+            except RuntimeError:
+                pass
 
         logger.info("CodeIntelligenceEngine stopped")
-        self._emit("code_intelligence_stopped", {"version": self.VERSION})
-
-    def _scan_loop(self) -> None:
-        if self._stop_event.wait(60):
-            return
-
-        if self._running:
-            try:
-                self.scan_now()
-            except Exception:
-                logger.exception("CodeIntel: initial scheduled scan failed")
-
-        interval_seconds = self._scan_interval_hours * 3600
-        while self._running and not self._stop_event.wait(interval_seconds):
-            try:
-                self.scan_now()
-            except Exception:
-                logger.exception("CodeIntel: scheduled scan failed")
-
-    # ------------------------------------------------------------------
-    # SCANNING
-    # ------------------------------------------------------------------
+        self._emit_sync(
+            "code_intelligence_stopped",
+            {"version": self.VERSION},
+        )
 
     def scan_now(self) -> dict:
-        if not self._scan_lock.acquire(blocking=False):
+        """
+        Sync-compatible scan entry point.
+
+        Outside an active event loop, this blocks until the scan completes.
+        Inside an active event loop, it schedules the scan and immediately
+        returns a scheduled status because a synchronous method cannot block
+        the currently running event loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self._async_scan_now())
+
+        asyncio.create_task(self._async_scan_now(), name="code-intel-manual-scan")
+        return {
+            "status": "scheduled",
+            "reason": "scan_running_async",
+        }
+
+    # ------------------------------------------------------------------
+    # ASYNC LIFECYCLE
+    # ------------------------------------------------------------------
+
+    async def _async_start(self) -> None:
+        self._ensure_async_primitives()
+        self._event_loop = asyncio.get_running_loop()
+
+        if self._stop_event is None:
+            self._stop_event = asyncio.Event()
+
+        self._scan_task = asyncio.create_task(
+            self._async_scan_loop(),
+            name="code-intel-engine",
+        )
+
+    async def _async_scan_loop(self) -> None:
+        self._ensure_async_primitives()
+
+        try:
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=60,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+            if self._running:
+                try:
+                    await self._async_scan_now()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "CodeIntel: initial scheduled scan failed"
+                    )
+
+            while self._running:
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(),
+                        timeout=self._scan_interval_hours * 3600,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+                if not self._running:
+                    break
+
+                try:
+                    await self._async_scan_now()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "CodeIntel: scheduled scan failed"
+                    )
+        except asyncio.CancelledError:
+            logger.debug("CodeIntel scan loop cancelled")
+            raise
+
+    async def _async_scan_now(self) -> dict:
+        self._ensure_async_primitives()
+
+        assert self._scan_lock is not None
+
+        if self._scan_lock.locked():
             return {
                 "status": "skipped",
                 "reason": "scan_in_progress",
                 "total_issues": 0,
             }
 
-        started = utcnow()
-        with self._state_lock:
+        async with self._scan_lock:
+            if self._scanning:
+                return {
+                    "status": "skipped",
+                    "reason": "scan_in_progress",
+                    "total_issues": 0,
+                }
+
             self._scanning = True
+            started = utcnow()
+            temp_dir: Optional[str] = None
 
-        temp_dir: Optional[str] = None
+            self._emit_sync(
+                "code_intelligence_scan_started",
+                {
+                    "started_at": iso(started),
+                    "scan_number": self._scan_count + 1,
+                },
+            )
 
-        self._emit(
-            "code_intelligence_scan_started",
-            {"started_at": iso(started), "scan_number": self._scan_count + 1},
-        )
+            try:
+                loop = asyncio.get_running_loop()
+                temp_dir = await loop.run_in_executor(
+                    None,
+                    lambda: tempfile.mkdtemp(prefix="code_intel_"),
+                )
 
-        try:
-            temp_dir = tempfile.mkdtemp(prefix="code_intel_")
-            return self._run_full_scan(temp_dir, started)
+                return await self._async_run_full_scan(
+                    temp_dir,
+                    started,
+                )
 
-        except Exception as exc:
-            completed = utcnow()
-            logger.exception("Code Intelligence scan failed")
+            except asyncio.CancelledError:
+                raise
 
-            report = {
-                "scan_type": "code_intelligence",
-                "engine_version": self.VERSION,
-                "status": "failed",
-                "started_at": iso(started),
-                "completed_at": iso(completed),
-                "duration_seconds": round(
-                    (completed - started).total_seconds(), 3
-                ),
-                "repos_scanned": 0,
-                "repos_with_issues": 0,
-                "files_scanned": 0,
-                "total_issues": 0,
-                "critical": 0,
-                "high": 0,
-                "medium": 0,
-                "low": 0,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+            except Exception as exc:
+                completed = utcnow()
+                logger.exception("Code Intelligence scan failed")
 
-            with self._state_lock:
-                self._last_report = report
-                self._last_scan_at = completed
-                self._record_scan_history(report)
+                report = {
+                    "scan_type": "code_intelligence",
+                    "engine_version": self.VERSION,
+                    "status": "failed",
+                    "started_at": iso(started),
+                    "completed_at": iso(completed),
+                    "duration_seconds": round(
+                        (completed - started).total_seconds(),
+                        3,
+                    ),
+                    "repos_scanned": 0,
+                    "repos_with_issues": 0,
+                    "files_scanned": 0,
+                    "total_issues": 0,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
 
-            self._emit("code_intelligence_scan_failed", report)
-            return report
+                self._commit_report(report)
+                self._emit_sync(
+                    "code_intelligence_scan_failed",
+                    report,
+                )
+                return report
 
-        finally:
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
+            finally:
+                if temp_dir:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: shutil.rmtree(
+                            temp_dir,
+                            ignore_errors=True,
+                        ),
+                    )
 
-            with self._state_lock:
                 self._scanning = False
 
-            self._scan_lock.release()
-
-    def _run_full_scan(self, temp_dir: str, scan_started: datetime) -> dict:
+    async def _async_run_full_scan(
+        self,
+        temp_dir: str,
+        scan_started: datetime,
+    ) -> dict:
         if not self._github:
             raise RuntimeError("GitHub client not configured")
 
-        self._validate_github_client()
-        repos = self._get_repositories()
+        loop = asyncio.get_running_loop()
+
+        await loop.run_in_executor(
+            None,
+            self._validate_github_client,
+        )
+
+        repos = await loop.run_in_executor(
+            None,
+            self._get_repositories,
+        )
 
         if not repos:
             completed = utcnow()
+
             report = {
                 "scan_type": "code_intelligence",
                 "engine_version": self.VERSION,
@@ -428,7 +613,8 @@ class CodeIntelligenceEngine:
                 "started_at": iso(scan_started),
                 "completed_at": iso(completed),
                 "duration_seconds": round(
-                    (completed - scan_started).total_seconds(), 3
+                    (completed - scan_started).total_seconds(),
+                    3,
                 ),
                 "repos_scanned": 0,
                 "repos_with_issues": 0,
@@ -442,8 +628,12 @@ class CodeIntelligenceEngine:
                 "repositories": [],
                 "message": "No repositories available for scanning",
             }
+
             self._commit_report(report)
-            self._emit("code_intelligence_scan_completed", report)
+            self._emit_sync(
+                "code_intelligence_scan_completed",
+                report,
+            )
             return report
 
         all_issues: List[dict] = []
@@ -452,60 +642,94 @@ class CodeIntelligenceEngine:
         repo_results: List[dict] = []
 
         for repo in repos:
-            if self._stop_event.is_set():
+            if self._stop_event and self._stop_event.is_set():
                 break
 
             repo_name = self._repo_name(repo)
 
             try:
-                local_path = self._clone_repository(repo, temp_dir)
+                local_path = await loop.run_in_executor(
+                    None,
+                    self._clone_repository,
+                    repo,
+                    temp_dir,
+                )
+
                 if not local_path:
-                    repo_results.append({
-                        "repository": repo_name,
-                        "status": "failed",
-                        "error": "repository_clone_returned_empty_path",
-                        "issues": 0,
-                    })
+                    repo_results.append(
+                        {
+                            "repository": repo_name,
+                            "status": "failed",
+                            "error": "repository_clone_returned_empty_path",
+                            "issues": 0,
+                        }
+                    )
                     continue
 
-                repo_issues, file_count = self._scan_repository(
-                    repo_name, Path(local_path), repo
+                repo_issues, file_count = await self._async_scan_repository(
+                    repo_name,
+                    Path(local_path),
+                    repo,
                 )
+
                 files_scanned += file_count
 
                 if repo_issues:
                     repos_with_issues += 1
                     all_issues.extend(repo_issues)
 
-                repo_results.append({
-                    "repository": repo_name,
-                    "status": "completed",
-                    "files_scanned": file_count,
-                    "issues": len(repo_issues),
-                    "commit_sha": self._repo_commit_sha(repo),
-                })
+                repo_results.append(
+                    {
+                        "repository": repo_name,
+                        "status": "completed",
+                        "files_scanned": file_count,
+                        "issues": len(repo_issues),
+                        "commit_sha": self._repo_commit_sha(repo),
+                    }
+                )
+
+            except asyncio.CancelledError:
+                raise
 
             except Exception as exc:
                 logger.exception(
-                    "CodeIntel: failed to scan repository %s", repo_name
+                    "CodeIntel: failed to scan repository %s",
+                    repo_name,
                 )
-                repo_results.append({
-                    "repository": repo_name,
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "issues": 0,
-                })
+                repo_results.append(
+                    {
+                        "repository": repo_name,
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "issues": 0,
+                    }
+                )
 
         all_issues = self._deduplicate_findings(all_issues)
 
-        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        counts = {
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+        }
+
         for issue in all_issues:
             severity = issue.get("severity", "low")
             if severity in counts:
                 counts[severity] += 1
 
         completed = utcnow()
-        status = "cancelled" if self._stop_event.is_set() else "completed"
+
+        status = (
+            "cancelled"
+            if self._stop_event and self._stop_event.is_set()
+            else "completed"
+        )
+
+        self._last_scan_duration_ms = (
+            completed - scan_started
+        ).total_seconds() * 1000
 
         report = {
             "scan_type": "code_intelligence",
@@ -514,7 +738,8 @@ class CodeIntelligenceEngine:
             "started_at": iso(scan_started),
             "completed_at": iso(completed),
             "duration_seconds": round(
-                (completed - scan_started).total_seconds(), 3
+                (completed - scan_started).total_seconds(),
+                3,
             ),
             "repos_scanned": len(repos),
             "repos_with_issues": repos_with_issues,
@@ -528,9 +753,13 @@ class CodeIntelligenceEngine:
         self._commit_report(report)
 
         if status == "completed":
-            self._run_optional_integrations(report, repos, all_issues)
+            await self._async_run_optional_integrations(
+                report,
+                repos,
+                all_issues,
+            )
 
-        self._emit(
+        self._emit_sync(
             "code_intelligence_scan_completed",
             {
                 "status": report["status"],
@@ -547,130 +776,68 @@ class CodeIntelligenceEngine:
         logger.info(
             "CodeIntel: %d repos, %d files, %d issues "
             "(%d critical, %d high)",
-            len(repos), files_scanned, len(all_issues),
-            counts["critical"], counts["high"],
+            len(repos),
+            files_scanned,
+            len(all_issues),
+            counts["critical"],
+            counts["high"],
         )
 
         return report
 
-    # ------------------------------------------------------------------
-    # GITHUB
-    # ------------------------------------------------------------------
-
-    def _validate_github_client(self) -> None:
-        validator = getattr(self._github, "validate_token", None)
-        if not callable(validator):
-            logger.warning(
-                "CodeIntel: GitHub client has no validate_token(); "
-                "continuing with available capabilities"
-            )
-            return
-        if validator() is False:
-            raise RuntimeError("invalid_github_token")
-
-    def _get_repositories(self) -> List[Any]:
-        getter = getattr(self._github, "get_all_repos", None)
-        if not callable(getter):
-            raise RuntimeError(
-                "GitHub client does not expose get_all_repos()"
-            )
-
-        excluded = get_setting("guardian_exclude_repos", []) or []
-        try:
-            repos = getter(exclude=excluded)
-        except TypeError:
-            repos = getter()
-
-        if not repos:
-            return []
-        if isinstance(repos, dict):
-            repos = repos.get("repositories", [])
-        return list(repos)
-
-    @staticmethod
-    def _repo_name(repo: Any) -> str:
-        if isinstance(repo, dict):
-            return str(
-                repo.get("name")
-                or repo.get("full_name")
-                or repo.get("repository")
-                or "unknown"
-            )
-        return str(
-            getattr(repo, "name", None)
-            or getattr(repo, "full_name", None)
-            or repo
-        )
-
-    @staticmethod
-    def _repo_commit_sha(repo: Any) -> Optional[str]:
-        if isinstance(repo, dict):
-            for key in (
-                "commit_sha", "sha", "default_branch_sha", "head_sha"
-            ):
-                if repo.get(key):
-                    return str(repo[key])
-
-        for attr in (
-            "commit_sha", "sha", "default_branch_sha", "head_sha"
-        ):
-            value = getattr(repo, attr, None)
-            if value:
-                return str(value)
-
-        return None
-
-    def _clone_repository(self, repo: Any, temp_dir: str) -> Optional[str]:
-        clone = getattr(self._github, "clone_or_pull", None)
-        if not callable(clone):
-            raise RuntimeError(
-                "GitHub client does not expose clone_or_pull()"
-            )
-        return clone(repo, temp_dir)
-
-    # ------------------------------------------------------------------
-    # REPOSITORY ANALYSIS
-    # ------------------------------------------------------------------
-
-    def _scan_repository(
+    async def _async_scan_repository(
         self,
         repo_name: str,
         local_path: Path,
         repo: Any,
     ) -> Tuple[List[dict], int]:
         issues: List[dict] = []
-        files = iter_candidate_files(local_path)
+        loop = asyncio.get_running_loop()
+
+        files = await loop.run_in_executor(
+            None,
+            iter_candidate_files,
+            local_path,
+        )
 
         for file_path in files:
-            if self._stop_event.is_set():
+            if self._stop_event and self._stop_event.is_set():
                 break
 
             try:
-                relative_path = str(file_path.relative_to(local_path))
-                code = file_path.read_text(
-                    encoding="utf-8", errors="ignore"
+                relative_path = str(
+                    file_path.relative_to(local_path)
+                )
+
+                code = await loop.run_in_executor(
+                    None,
+                    lambda p=file_path: p.read_text(
+                        encoding="utf-8",
+                        errors="ignore",
+                    ),
                 )
 
                 if len(code.strip()) < 10:
                     continue
 
-                issues.extend(
-                    self._analyze_file(
-                        repo_name,
-                        relative_path,
-                        code,
-                        repo,
-                    )
+                file_issues = await self._async_analyze_file(
+                    repo_name,
+                    relative_path,
+                    code,
+                    repo,
                 )
+                issues.extend(file_issues)
+
             except Exception as exc:
                 logger.warning(
                     "CodeIntel: failed to analyze %s: %s",
-                    file_path, exc,
+                    file_path,
+                    exc,
                 )
 
         return self._deduplicate_findings(issues), len(files)
 
-    def _analyze_file(
+    async def _async_analyze_file(
         self,
         repo_name: str,
         file_path: str,
@@ -682,21 +849,26 @@ class CodeIntelligenceEngine:
 
         for chunk_index, (start_line, chunk) in enumerate(chunks):
             try:
-                results.extend(
-                    self._analyze_with_gemini(
-                        repo=repo_name,
-                        file_path=file_path,
-                        code=chunk,
-                        start_line=start_line,
-                        chunk_index=chunk_index,
-                        total_chunks=len(chunks),
-                        commit_sha=self._repo_commit_sha(repo),
-                    )
+                chunk_issues = await self._async_analyze_with_gemini(
+                    repo=repo_name,
+                    file_path=file_path,
+                    code=chunk,
+                    start_line=start_line,
+                    chunk_index=chunk_index,
+                    total_chunks=len(chunks),
+                    commit_sha=self._repo_commit_sha(repo),
                 )
+                results.extend(chunk_issues)
+
+            except asyncio.CancelledError:
+                raise
+
             except Exception as exc:
                 logger.warning(
                     "CodeIntel: Gemini analysis failed for %s/%s: %s",
-                    repo_name, file_path, exc,
+                    repo_name,
+                    file_path,
+                    exc,
                 )
 
         return self._normalize_findings(
@@ -706,19 +878,15 @@ class CodeIntelligenceEngine:
             self._repo_commit_sha(repo),
         )
 
-    # ------------------------------------------------------------------
-    # GEMINI
-    # ------------------------------------------------------------------
-
-    def _analyze_with_gemini(
+    async def _async_analyze_with_gemini(
         self,
         repo: str,
         file_path: str,
         code: str,
-        start_line: int = 1,
-        chunk_index: int = 0,
-        total_chunks: int = 1,
-        commit_sha: Optional[str] = None,
+        start_line: int,
+        chunk_index: int,
+        total_chunks: int,
+        commit_sha: Optional[str],
     ) -> List[dict]:
         try:
             from services.gemini import gemini
@@ -728,17 +896,31 @@ class CodeIntelligenceEngine:
             ) from exc
 
         prompt = self._build_analysis_prompt(
-            repo, file_path, code, start_line,
-            chunk_index, total_chunks, commit_sha,
+            repo,
+            file_path,
+            code,
+            start_line,
+            chunk_index,
+            total_chunks,
+            commit_sha,
         )
 
-        raw_response = self._call_gemini(gemini, prompt)
+        loop = asyncio.get_running_loop()
+
+        raw_response = await loop.run_in_executor(
+            None,
+            self._call_gemini,
+            gemini,
+            prompt,
+        )
+
         payload = extract_json_payload(raw_response)
 
         if payload is None:
             logger.warning(
                 "CodeIntel: Gemini returned non-JSON output for %s/%s",
-                repo, file_path,
+                repo,
+                file_path,
             )
             return []
 
@@ -748,7 +930,140 @@ class CodeIntelligenceEngine:
         if not isinstance(payload, list):
             return []
 
-        return [item for item in payload if isinstance(item, dict)]
+        return [
+            item
+            for item in payload
+            if isinstance(item, dict)
+        ]
+
+    # ------------------------------------------------------------------
+    # SYNC HELPERS — RUN IN EXECUTORS WHERE THEY BLOCK
+    # ------------------------------------------------------------------
+
+    def _validate_github_client(self) -> None:
+        validator = getattr(
+            self._github,
+            "validate_token",
+            None,
+        )
+
+        if not callable(validator):
+            return
+
+        result = validator()
+
+        if inspect.isawaitable(result):
+            raise RuntimeError(
+                "GitHub validate_token() must be synchronous "
+                "when called by the executor adapter"
+            )
+
+        if result is False:
+            raise RuntimeError("invalid_github_token")
+
+    def _get_repositories(self) -> List[Any]:
+        getter = getattr(
+            self._github,
+            "get_all_repos",
+            None,
+        )
+
+        if not callable(getter):
+            raise RuntimeError(
+                "GitHub client does not expose get_all_repos()"
+            )
+
+        excluded = get_setting(
+            "guardian_exclude_repos",
+            [],
+        ) or []
+
+        try:
+            repos = getter(exclude=excluded)
+        except TypeError:
+            repos = getter()
+
+        if inspect.isawaitable(repos):
+            raise RuntimeError(
+                "GitHub get_all_repos() must be synchronous "
+                "when called by the executor adapter"
+            )
+
+        if not repos:
+            return []
+
+        if isinstance(repos, dict):
+            repos = repos.get("repositories", [])
+
+        return list(repos)
+
+    @staticmethod
+    def _repo_name(repo: Any) -> str:
+        if isinstance(repo, dict):
+            return str(
+                repo.get("name")
+                or repo.get("full_name")
+                or repo.get("repository")
+                or "unknown"
+            )
+
+        return str(
+            getattr(repo, "name", None)
+            or getattr(repo, "full_name", None)
+            or repo
+        )
+
+    @staticmethod
+    def _repo_commit_sha(
+        repo: Any,
+    ) -> Optional[str]:
+        if isinstance(repo, dict):
+            for key in (
+                "commit_sha",
+                "sha",
+                "default_branch_sha",
+                "head_sha",
+            ):
+                if repo.get(key):
+                    return str(repo[key])
+
+        for attr in (
+            "commit_sha",
+            "sha",
+            "default_branch_sha",
+            "head_sha",
+        ):
+            value = getattr(repo, attr, None)
+            if value:
+                return str(value)
+
+        return None
+
+    def _clone_repository(
+        self,
+        repo: Any,
+        temp_dir: str,
+    ) -> Optional[str]:
+        clone = getattr(
+            self._github,
+            "clone_or_pull",
+            None,
+        )
+
+        if not callable(clone):
+            raise RuntimeError(
+                "GitHub client does not expose clone_or_pull()"
+            )
+
+        result = clone(repo, temp_dir)
+
+        if inspect.isawaitable(result):
+            raise RuntimeError(
+                "GitHub clone_or_pull() must be synchronous "
+                "when called by the executor adapter"
+            )
+
+        return result
 
     @staticmethod
     def _build_analysis_prompt(
@@ -760,7 +1075,9 @@ class CodeIntelligenceEngine:
         total_chunks: int,
         commit_sha: Optional[str],
     ) -> str:
-        extension = Path(file_path).suffix.lower().lstrip(".")
+        extension = (
+            Path(file_path).suffix.lower().lstrip(".")
+        )
 
         return f"""
 You are the Code Intelligence component of a production software platform.
@@ -774,36 +1091,6 @@ Chunk: {chunk_index + 1}/{total_chunks}
 Approximate starting line: {start_line}
 
 Only report REAL, ACTIONABLE problems supported by the supplied code.
-
-DO NOT report:
-- formatting preferences
-- naming preferences
-- missing docstrings
-- missing type hints
-- generic refactoring suggestions
-- hypothetical issues without evidence
-
-DO report:
-- security vulnerabilities
-- authentication/authorization flaws
-- SQL injection
-- XSS
-- command injection
-- hardcoded secrets
-- concrete logic bugs
-- incorrect state transitions
-- race conditions
-- unsafe concurrency
-- blocking calls in async contexts
-- resource leaks
-- incorrect exception handling
-- API contract violations visible from this code
-- deprecated/removed API usage
-- configuration errors
-- dangerous retry behavior
-- duplicate execution risks
-- data corruption risks
-- concrete performance problems
 
 Return ONLY a JSON array:
 [
@@ -826,34 +1113,56 @@ SOURCE:
 ```
 """.strip()
 
-    @staticmethod
-    def _call_gemini(client: Any, prompt: str) -> Any:
-        for method_name in _GEMINI_METHODS:
-            method = getattr(client, method_name, None)
-            if not callable(method):
+    def _call_gemini(
+        self,
+        gemini: Any,
+        prompt: str,
+    ) -> Any:
+        """
+        Adapt several common Gemini service APIs to one synchronous call.
+
+        The call deliberately runs inside an executor. If the installed
+        service exposes only an async API, this adapter executes that
+        coroutine in a private event loop owned by the executor thread.
+        """
+        method = None
+
+        for name in _GEMINI_METHODS:
+            candidate = getattr(gemini, name, None)
+            if callable(candidate):
+                method = candidate
+                break
+
+        if method is None:
+            raise RuntimeError(
+                "Gemini service exposes no supported generation method"
+            )
+
+        attempts = (
+            lambda: method(prompt),
+            lambda: method(content=prompt),
+            lambda: method(text=prompt),
+            lambda: method(prompt=prompt),
+        )
+
+        last_type_error: Optional[Exception] = None
+
+        for attempt in attempts:
+            try:
+                result = attempt()
+                if inspect.isawaitable(result):
+                    return asyncio.run(result)
+                return result
+            except TypeError as exc:
+                last_type_error = exc
                 continue
 
-            try:
-                return method(prompt)
-            except TypeError:
-                for kwargs in (
-                    {"prompt": prompt},
-                    {"content": prompt},
-                    {"text": prompt},
-                    {"message": prompt},
-                ):
-                    try:
-                        return method(**kwargs)
-                    except TypeError:
-                        continue
-
         raise RuntimeError(
-            "Gemini client exposes none of the supported generation methods: "
-            + ", ".join(_GEMINI_METHODS)
+            f"Unsupported Gemini method signature: {last_type_error}"
         )
 
     # ------------------------------------------------------------------
-    # FINDINGS
+    # FINDING NORMALIZATION / REPORT STATE
     # ------------------------------------------------------------------
 
     def _normalize_findings(
@@ -866,347 +1175,310 @@ SOURCE:
         normalized: List[dict] = []
 
         for raw in findings:
+            if not isinstance(raw, dict):
+                continue
+
             severity = normalize_text(
                 raw.get("severity", "low")
             ).lower()
+
             if severity not in _ALLOWED_SEVERITIES:
                 severity = "low"
 
             issue_type = normalize_text(
                 raw.get("type", "bug")
             ).lower()
+
             if issue_type not in _ALLOWED_TYPES:
                 issue_type = "bug"
 
-            line = max(0, safe_int(raw.get("line"), 0))
-            title = normalize_text(
-                raw.get("title") or "Code issue detected"
+            line = max(
+                1,
+                safe_int(raw.get("line"), 1),
             )
-            description = normalize_text(raw.get("description"))
-            suggested_fix = normalize_text(raw.get("suggested_fix"))
 
-            if not description:
-                continue
+            title = normalize_text(
+                raw.get("title")
+                or raw.get("name")
+                or "Code issue"
+            )
 
-            source = "|".join([
-                repo_name,
-                commit_sha or "",
-                file_path,
-                str(line),
-                issue_type,
-                title.lower(),
-                description.lower(),
-            ])
-            fingerprint = sha256_text(source)
+            description = normalize_text(
+                raw.get("description")
+                or raw.get("message")
+                or "Actionable code issue detected."
+            )
 
-            normalized.append({
-                "id": f"issue_{fingerprint[:16]}",
-                "fingerprint": fingerprint,
+            suggested_fix = normalize_text(
+                raw.get("suggested_fix")
+                or raw.get("fix")
+                or "Review and correct the identified defect."
+            )
+
+            auto_fixable = safe_bool(
+                raw.get("auto_fixable"),
+                False,
+            )
+
+            fingerprint_source = "|".join(
+                [
+                    repo_name,
+                    file_path,
+                    str(line),
+                    issue_type,
+                    title.lower(),
+                    description.lower(),
+                ]
+            )
+
+            finding = {
+                "id": sha256_text(
+                    fingerprint_source
+                )[:24],
+                "fingerprint": sha256_text(
+                    fingerprint_source
+                ),
                 "repository": repo_name,
-                "commit_sha": commit_sha,
                 "file": file_path,
                 "line": line,
+                "commit_sha": commit_sha,
                 "severity": severity,
                 "type": issue_type,
                 "title": title,
                 "description": description,
                 "suggested_fix": suggested_fix,
-                "auto_fixable": safe_bool(
-                    raw.get("auto_fixable"), False
-                ),
-                "status": "open",
+                "auto_fixable": auto_fixable,
                 "detected_at": iso(utcnow()),
-            })
+            }
 
-        return normalized
+            normalized.append(finding)
+
+        return self._deduplicate_findings(normalized)
 
     def _deduplicate_findings(
         self,
         findings: Sequence[dict],
     ) -> List[dict]:
-        unique: Dict[str, dict] = {}
+        unique: List[dict] = []
+        seen: set[str] = set()
 
         for issue in findings:
+            if not isinstance(issue, dict):
+                continue
+
             fingerprint = issue.get("fingerprint")
+
             if not fingerprint:
                 fingerprint = sha256_text(
-                    json.dumps(issue, sort_keys=True, default=str)
+                    json.dumps(
+                        issue,
+                        sort_keys=True,
+                        default=str,
+                    )
                 )
 
-            if fingerprint not in unique:
-                unique[fingerprint] = issue
+            if fingerprint in seen:
+                continue
 
-        result = list(unique.values())
+            seen.add(fingerprint)
+            unique.append(dict(issue))
 
-        with self._state_lock:
-            for issue in result:
-                fingerprint = issue.get("fingerprint")
-                if fingerprint:
-                    self._issue_index[fingerprint] = issue
-
-            if len(self._issue_index) > self._max_issue_index:
-                excess = len(self._issue_index) - self._max_issue_index
-                for key in list(self._issue_index)[:excess]:
-                    del self._issue_index[key]
-
-        return result
-
-    # ------------------------------------------------------------------
-    # STATE
-    # ------------------------------------------------------------------
+        return unique
 
     def _commit_report(self, report: dict) -> None:
         issues = report.get("issues", [])
 
-        with self._state_lock:
-            self._last_issues = list(issues)
-            self._last_report = json.loads(
-                json.dumps(report, default=str)
-            )
+        self._last_report = json.loads(
+            json.dumps(report, default=str)
+        )
+        self._last_issues = list(issues)
+        self._last_scan_at = utcnow()
 
-            completed_at = report.get("completed_at")
-            try:
-                self._last_scan_at = (
-                    datetime.fromisoformat(completed_at)
-                    if completed_at else utcnow()
-                )
-            except Exception:
-                self._last_scan_at = utcnow()
+        self._scan_count += 1
+        self._total_issues_found += safe_int(
+            report.get("total_issues"),
+            0,
+        )
 
-            if report.get("status") in {"completed", "cancelled"}:
-                self._scan_count += 1
-
-            self._total_issues_found += len(issues)
-            self._record_scan_history(report)
-
-    def _record_scan_history(self, report: dict) -> None:
-        self._scan_history.append({
-            key: value
-            for key, value in report.items()
-            if key != "issues"
-        })
-
-        if len(self._scan_history) > self._max_scan_history:
-            del self._scan_history[
-                :len(self._scan_history) - self._max_scan_history
-            ]
-
-    # ------------------------------------------------------------------
-    # OPTIONAL INTEGRATIONS
-    # ------------------------------------------------------------------
-
-    def _run_optional_integrations(
-        self,
-        report: dict,
-        repos: Sequence[Any],
-        issues: Sequence[dict],
-    ) -> None:
-        for name, callback, args in (
-            ("auto-fix", self._auto_fix_issues, (repos, issues)),
-            ("telegram", self._send_telegram_report, (report,)),
-            ("director", self._notify_director, (report,)),
-        ):
-            try:
-                callback(*args)
-            except Exception:
-                logger.exception(
-                    "CodeIntel: optional %s stage failed", name
-                )
-
-    def _auto_fix_issues(
-        self,
-        repos: Sequence[Any],
-        issues: Sequence[dict],
-    ) -> dict:
-        fixable = [
-            issue for issue in issues
+        self._auto_fixes_created += sum(
+            1
+            for issue in issues
             if issue.get("auto_fixable") is True
-        ]
-
-        if not fixable:
-            return {
-                "attempted": 0,
-                "created": 0,
-                "status": "nothing_to_fix",
-            }
-
-        handler = self._resolve_capability(
-            self._container,
-            (
-                "auto_fix_code_issues",
-                "apply_code_fixes",
-                "create_code_fix",
-            ),
         )
 
-        if not handler:
-            logger.info(
-                "CodeIntel: %d findings marked auto-fixable but "
-                "no remediation adapter is configured",
-                len(fixable),
-            )
-            return {
-                "attempted": 0,
-                "created": 0,
-                "status": "no_remediation_adapter",
-            }
-
-        created = 0
-        for issue in fixable:
-            try:
-                if handler(issue):
-                    created += 1
-            except Exception:
-                logger.exception(
-                    "CodeIntel: auto-fix failed for %s",
-                    issue.get("id"),
-                )
-
-        with self._state_lock:
-            self._auto_fixes_created += created
-
-        return {
-            "attempted": len(fixable),
-            "created": created,
-            "status": "completed",
-        }
-
-    def _send_telegram_report(self, report: dict) -> bool:
-        try:
-            from services.email_service import email_service
-        except Exception:
-            return False
-
-        sender = getattr(email_service, "send_telegram", None)
-        if not callable(sender):
-            return False
-
-        critical = report.get("critical", 0)
-        high = report.get("high", 0)
-
-        if critical == 0 and high == 0:
-            return False
-
-        message = (
-            "🧠 <b>KANYOZA CODE INTELLIGENCE</b>\n"
-            f"Status: {report.get('status')}\n"
-            f"Repositories: {report.get('repos_scanned', 0)}\n"
-            f"Files: {report.get('files_scanned', 0)}\n"
-            f"Critical: {critical}\n"
-            f"High: {high}\n"
-            f"Medium: {report.get('medium', 0)}\n"
-            f"Low: {report.get('low', 0)}\n"
-            f"Time: {utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
-        )
-
-        sender(message)
-        return True
-
-    def _notify_director(self, report: dict) -> bool:
-        payload = {
-            "source": "code_intelligence",
-            "event": "scan_completed",
+        history_entry = {
+            "scan_number": self._scan_count,
             "status": report.get("status"),
+            "started_at": report.get("started_at"),
+            "completed_at": report.get("completed_at"),
+            "duration_seconds": report.get("duration_seconds"),
+            "repos_scanned": report.get("repos_scanned", 0),
+            "files_scanned": report.get("files_scanned", 0),
             "total_issues": report.get("total_issues", 0),
             "critical": report.get("critical", 0),
             "high": report.get("high", 0),
             "medium": report.get("medium", 0),
             "low": report.get("low", 0),
-            "repos_scanned": report.get("repos_scanned", 0),
-            "files_scanned": report.get("files_scanned", 0),
-            "completed_at": report.get("completed_at"),
         }
 
-        emitted = self._emit("code_intelligence_report", payload)
+        self._scan_history.append(history_entry)
 
-        director = self._resolve_capability(
-            self._container,
-            (
-                "notify_director",
-                "handle_code_intelligence_report",
-                "on_code_intelligence_report",
-            ),
-        )
+        if len(self._scan_history) > self._max_scan_history:
+            del self._scan_history[
+                : len(self._scan_history) - self._max_scan_history
+            ]
 
-        if director:
-            director(report)
-            return True
+        for issue in issues:
+            fingerprint = issue.get("fingerprint")
+            if fingerprint:
+                self._issue_index[fingerprint] = dict(issue)
 
-        return emitted
+        if len(self._issue_index) > self._max_issue_index:
+            excess = len(self._issue_index) - self._max_issue_index
+            for key in list(self._issue_index)[:excess]:
+                self._issue_index.pop(key, None)
 
     # ------------------------------------------------------------------
     # EVENT BUS
     # ------------------------------------------------------------------
 
-    def _emit(
+    def _emit_sync(
         self,
         event_name: str,
-        payload: Dict[str, Any],
-    ) -> bool:
+        payload: dict,
+    ) -> None:
+        """
+        Publish an event without blocking a synchronous caller.
+
+        Supports common EventBus APIs:
+            publish(event_name, payload)
+            emit(event_name, payload)
+            publish(payload-with-type)
+        """
         if not self._bus:
-            return False
+            return
 
         try:
-            emitter = getattr(self._bus, "emit", None)
-            if callable(emitter):
-                emitter(event_name, payload)
-                return True
+            method = getattr(
+                self._bus,
+                "publish",
+                None,
+            ) or getattr(
+                self._bus,
+                "emit",
+                None,
+            )
 
-            publisher = getattr(self._bus, "publish", None)
-            if callable(publisher):
-                publisher(event_name, payload)
-                return True
+            if not callable(method):
+                return
+
+            result = None
+
+            try:
+                result = method(event_name, payload)
+            except TypeError:
+                try:
+                    result = method(
+                        {
+                            "type": event_name,
+                            "event": event_name,
+                            "payload": payload,
+                        }
+                    )
+                except TypeError:
+                    result = method(payload)
+
+            if inspect.isawaitable(result):
+                self._schedule_async(
+                    self._await_event_result(
+                        result,
+                        event_name,
+                    )
+                )
+
         except Exception:
             logger.exception(
                 "CodeIntel: event emission failed: %s",
                 event_name,
             )
 
-        return False
+    async def _await_event_result(
+        self,
+        awaitable: Any,
+        event_name: str,
+    ) -> None:
+        try:
+            await awaitable
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "CodeIntel: async event publication failed: %s",
+                event_name,
+            )
 
-    @staticmethod
-    def _resolve_capability(
-        owner: Any,
-        names: Sequence[str],
-    ) -> Optional[Any]:
-        if owner is None:
-            return None
+    # ------------------------------------------------------------------
+    # OPTIONAL INTEGRATIONS
+    # ------------------------------------------------------------------
 
-        for name in names:
-            candidate = getattr(owner, name, None)
+    async def _async_run_optional_integrations(
+        self,
+        report: dict,
+        repos: Sequence[Any],
+        issues: Sequence[dict],
+    ) -> None:
+        """
+        Optional integration hook.
+
+        The engine does not require a specific container API. If the
+        application exposes a compatible handler, it is invoked here.
+        """
+        if not self._container:
+            return
+
+        candidates = (
+            "handle_code_intelligence_report",
+            "process_code_intelligence_report",
+            "record_code_intelligence_report",
+        )
+
+        handler = None
+
+        for name in candidates:
+            candidate = getattr(
+                self._container,
+                name,
+                None,
+            )
             if callable(candidate):
-                return candidate
+                handler = candidate
+                break
 
-        for registry_name in (
-            "services",
-            "engines",
-            "industry_plugins",
-        ):
-            registry = getattr(owner, registry_name, None)
-            if not isinstance(registry, dict):
-                continue
+        if handler is None:
+            return
 
-            for name in names:
-                candidate = registry.get(name)
-                if callable(candidate):
-                    return candidate
+        loop = asyncio.get_running_loop()
 
-                if candidate is not None:
-                    for method_name in (
-                        "handle", "run", "execute", "notify"
-                    ):
-                        method = getattr(
-                            candidate, method_name, None
-                        )
-                        if callable(method):
-                            return method
+        try:
+            result = await loop.run_in_executor(
+                None,
+                lambda: handler(report),
+            )
 
-        return None
+            if inspect.isawaitable(result):
+                await result
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "CodeIntel: optional integration failed"
+            )
 
 
-# ----------------------------------------------------------------------
-# SINGLETON / INITIALIZATION
-# ----------------------------------------------------------------------
+# ============================================================================
+# SINGLETON
+# ============================================================================
 
 code_intel_engine: Optional[CodeIntelligenceEngine] = None
 
@@ -1217,6 +1489,7 @@ def init_code_intelligence(
     container: Any = None,
     auto_start: bool = True,
 ) -> CodeIntelligenceEngine:
+    """Initialize the Code Intelligence engine (sync-compatible)."""
     global code_intel_engine
 
     if code_intel_engine is None:
@@ -1226,30 +1499,47 @@ def init_code_intelligence(
             container=container,
         )
     else:
-        code_intel_engine._github = (
-            github_client or code_intel_engine._github
-        )
-        code_intel_engine._bus = (
-            event_bus or code_intel_engine._bus
-        )
-        code_intel_engine._container = (
-            container or code_intel_engine._container
-        )
+        if github_client is not None:
+            code_intel_engine._github = github_client
+        if event_bus is not None:
+            code_intel_engine._bus = event_bus
+        if container is not None:
+            code_intel_engine._container = container
 
     if auto_start and not code_intel_engine._running:
-        code_intel_engine.start()
+        interval = safe_int(
+            get_setting(
+                "code_intelligence_scan_interval_hours",
+                6,
+            ),
+            6,
+        )
+        code_intel_engine.start(interval)
 
     return code_intel_engine
 
 
 def shutdown_code_intelligence() -> None:
+    """Shutdown the engine (sync-compatible)."""
+    global code_intel_engine
+
     if code_intel_engine is None:
         return
 
     try:
         code_intel_engine.stop()
     except Exception:
-        logger.exception("Code Intelligence shutdown failed")
+        logger.exception(
+            "Code Intelligence shutdown failed"
+        )
 
 
 atexit.register(shutdown_code_intelligence)
+
+
+__all__ = [
+    "CodeIntelligenceEngine",
+    "code_intel_engine",
+    "init_code_intelligence",
+    "shutdown_code_intelligence",
+]
