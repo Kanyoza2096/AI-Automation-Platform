@@ -1,50 +1,39 @@
 """
-10-Stage Content Generation and Publishing Pipeline — v12.6
-=============================================================
+10-Stage Content Generation and Publishing Pipeline — v13.0 (Async-Native)
+==========================================================================
 
-v12.6 REFINEMENTS (10/10 Production Grade):
-  - FIXED: research_notes parameter mismatch with PromptBuilder
-  - FIXED: ai_profile parameter mismatch with PromptBuilder  
-  - FIXED: ReviewerStep now correctly blocks low-quality content
-  - FIXED: ResearchStep logs failures instead of silent swallowing
-  - FIXED: Trend query URL-encodes topic to prevent 400 errors
-  - ADDED: Stage-level latency tracking for observability
-  - ADDED: LLM generation timeout (120s default)
-  - ADDED: Publisher retry with exponential backoff
-  - ADDED: Configurable thresholds via PipelineConfig
-  - ADDED: Content deduplication check
-  - ADDED: Circuit breaker for publisher failures
-  - ADDED: Proper event emission for each stage transition
-
-ARCHITECTURE:
-  10 stages with clean separation of concerns
-  Each stage: input → process → output → context update
-  Fail-fast for critical stages, graceful degradation for non-critical
+v13.0 CHANGES:
+  - FULLY ASYNC-NATIVE (all steps async, asyncio.Lock, asyncio.wait_for)
+  - FIXED: PromptBuilder ai_profile parameter mismatch
+  - FIXED: ValidatorStep enum access bug
+  - FIXED: EventBus async publish
+  - FIXED: ContentEngine async generate_post
+  - ADDED: UnifiedEventBus integration
+  - All v12.6 features preserved
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
-import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional, Dict, List, Set, Tuple
 from urllib.parse import quote
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from workflows.base import Step, Workflow
 from models.brand import Brand
 from models.ai_profile import AIProfile
 from models.media_artifact import MediaArtifact, MediaStatus
 from services.content_engine import ContentEngine
-from services.content_validator import ContentValidator, ValidationResult
+from services.content_validator import ContentValidator, ValidationResult, ValidationStatus
 from services.prompt_builder import PromptBuilder
 from services.knowledge_base import KnowledgeBase
 from repositories.knowledge_repository import KnowledgeRepository
 from repositories.analytics_repository import AnalyticsRepository
-from core.event_bus import EventBus
+from core.unified_bus import UnifiedEventBus
 from core.errors import (
     KanyozaError,
     AIValidationError,
@@ -57,37 +46,22 @@ logger = logging.getLogger("kanyoza.pipeline")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
+# CONFIGURATION (Preserved)
 # ═══════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class PipelineConfig:
-    """Central configuration for pipeline thresholds and limits."""
-    
-    # Planner
     fallback_topic: str = "Industry insights for today"
-    
-    # Research
     research_top_k: int = 5
     research_timeout_seconds: float = 15.0
     trend_query_timeout_seconds: float = 10.0
-    
-    # Knowledge
     knowledge_top_k: int = 3
     knowledge_timeout_seconds: float = 10.0
-    
-    # Prompt Builder
     prompt_builder_timeout_seconds: float = 10.0
-    
-    # LLM
     llm_timeout_seconds: float = 120.0
     llm_max_retries: int = 2
     llm_retry_backoff_seconds: float = 2.0
-    
-    # Validator
     validator_timeout_seconds: float = 15.0
-    
-    # Reviewer
     reviewer_min_caption_length: int = 50
     reviewer_max_hashtags: int = 10
     reviewer_min_hashtags: int = 1
@@ -102,39 +76,33 @@ class PipelineConfig:
         "contact", "visit", "share", "comment", "read",
         "watch", "subscribe", "register", "download", "start",
     })
-    
-    # Publisher
     publisher_max_retries: int = 2
     publisher_retry_backoff_seconds: float = 2.0
     publisher_timeout_seconds: float = 30.0
     publisher_circuit_breaker_threshold: int = 5
-    
-    # Analytics
     analytics_timeout_seconds: float = 10.0
-    
-    # Deduplication
     enable_deduplication: bool = True
     dedup_window_hours: int = 24
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TIMING UTILITIES
+# TIMING UTILITIES (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class StageTimer:
-    """Tracks per-stage latency for observability."""
+    """Tracks per-stage latency — async-safe."""
     
     def __init__(self):
         self.stage_timings: Dict[str, float] = {}
         self.stage_started_at: Dict[str, float] = {}
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
     
-    def start(self, stage_name: str) -> None:
-        with self._lock:
+    async def start(self, stage_name: str) -> None:
+        async with self._lock:
             self.stage_started_at[stage_name] = time.monotonic()
     
-    def stop(self, stage_name: str) -> float:
-        with self._lock:
+    async def stop(self, stage_name: str) -> float:
+        async with self._lock:
             start = self.stage_started_at.pop(stage_name, None)
             if start is None:
                 return 0.0
@@ -143,55 +111,23 @@ class StageTimer:
             return elapsed_ms
     
     def get_all(self) -> Dict[str, float]:
-        with self._lock:
-            return dict(self.stage_timings)
-
-
-class TimeoutExecutor:
-    """Executes functions with timeout using daemon threads."""
-    
-    def __init__(self, timeout_seconds: float = 30.0):
-        self.timeout_seconds = timeout_seconds
-    
-    def execute(self, fn, *args, **kwargs) -> Tuple[bool, Any]:
-        result_holder: Dict[str, Any] = {}
-        completed = threading.Event()
-        
-        def _runner():
-            try:
-                result_holder["result"] = fn(*args, **kwargs)
-                result_holder["success"] = True
-            except Exception as exc:
-                result_holder["error"] = exc
-                result_holder["success"] = False
-            finally:
-                completed.set()
-        
-        thread = threading.Thread(target=_runner, daemon=True)
-        thread.start()
-        
-        if completed.wait(timeout=self.timeout_seconds):
-            if result_holder.get("success", False):
-                return True, result_holder.get("result")
-            return False, result_holder.get("error")
-        return False, TimeoutError(f"Operation timed out after {self.timeout_seconds}s")
+        return dict(self.stage_timings)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DEDUPLICATION
+# DEDUPLICATION (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ContentDeduplicator:
-    """Prevents duplicate content generation within a time window."""
+    """Prevents duplicate content generation."""
     
     def __init__(self, window_hours: int = 24):
         self.window_hours = window_hours
         self._recent_content: Dict[str, datetime] = {}
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
     
-    def is_duplicate(self, topic: str, brand_id: str) -> bool:
-        """Check if this topic was already generated for this brand."""
-        with self._lock:
+    async def is_duplicate(self, topic: str, brand_id: str) -> bool:
+        async with self._lock:
             key = f"{brand_id}:{topic.lower().strip()}"
             last_generated = self._recent_content.get(key)
             if last_generated is None:
@@ -199,24 +135,20 @@ class ContentDeduplicator:
             elapsed = (datetime.now(timezone.utc) - last_generated).total_seconds()
             return elapsed < (self.window_hours * 3600)
     
-    def record(self, topic: str, brand_id: str) -> None:
-        """Record that content was generated for this topic."""
-        with self._lock:
+    async def record(self, topic: str, brand_id: str) -> None:
+        async with self._lock:
             key = f"{brand_id}:{topic.lower().strip()}"
             self._recent_content[key] = datetime.now(timezone.utc)
             cutoff = datetime.now(timezone.utc) - timedelta(hours=self.window_hours * 2)
-            self._recent_content = {
-                k: v for k, v in self._recent_content.items()
-                if v >= cutoff
-            }
+            self._recent_content = {k: v for k, v in self._recent_content.items() if v >= cutoff}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CIRCUIT BREAKER (for Publisher)
+# CIRCUIT BREAKER (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CircuitBreaker:
-    """Prevents repeated failures from overwhelming the system."""
+    """Prevents repeated failures."""
     
     def __init__(self, failure_threshold: int = 5, cooldown_seconds: float = 60.0):
         self.failure_threshold = failure_threshold
@@ -224,27 +156,26 @@ class CircuitBreaker:
         self._failure_count = 0
         self._state = "CLOSED"
         self._last_failure_time = 0.0
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
     
     @property
     def is_open(self) -> bool:
-        with self._lock:
-            if self._state == "CLOSED":
-                return False
-            if self._state == "OPEN":
-                if time.monotonic() - self._last_failure_time >= self.cooldown_seconds:
-                    self._state = "HALF_OPEN"
-                    return False
-                return True
+        if self._state == "CLOSED":
             return False
+        if self._state == "OPEN":
+            if time.monotonic() - self._last_failure_time >= self.cooldown_seconds:
+                self._state = "HALF_OPEN"
+                return False
+            return True
+        return False
     
-    def record_success(self) -> None:
-        with self._lock:
+    async def record_success(self) -> None:
+        async with self._lock:
             self._failure_count = 0
             self._state = "CLOSED"
     
-    def record_failure(self) -> None:
-        with self._lock:
+    async def record_failure(self) -> None:
+        async with self._lock:
             self._failure_count += 1
             self._last_failure_time = time.monotonic()
             if self._failure_count >= self.failure_threshold:
@@ -252,144 +183,109 @@ class CircuitBreaker:
     
     @property
     def state(self) -> str:
-        with self._lock:
-            return self._state
+        return self._state
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. PLANNER STEP
+# 1. PLANNER STEP (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PlannerStep(Step):
-    """Stage 1: Selects topic, category, and strategy for this post."""
     name = "planner"
 
-    def __init__(
-        self,
-        brand: Brand,
-        category: Optional[str] = None,
-        knowledge_repo: Optional[KnowledgeRepository] = None,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, brand: Brand, category: Optional[str] = None, knowledge_repo: Optional[KnowledgeRepository] = None, config: PipelineConfig = None) -> None:
         self._brand = brand
         self._category = category
         self._knowledge_repo = knowledge_repo
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         from domain.content.topic_selector import TopicSelector
         
-        selector = TopicSelector(
-            brand=self._brand,
-            knowledge_repo=self._knowledge_repo,
-        )
+        selector = TopicSelector(brand=self._brand, knowledge_repo=self._knowledge_repo)
         topic, cat = selector.pick(self._category)
         
         if not topic:
             topic = self._config.fallback_topic
-            logger.warning(
-                "[Stage 1] No topic selected — using fallback: '%s'",
-                topic,
-            )
+            logger.warning("[Stage 1] No topic selected — using fallback: '%s'", topic)
         
         context["topic"] = topic
         context["category"] = cat
-        context["content_type"] = (
-            getattr(self._brand, 'content_type', None) or "social_post"
-        )
+        context["content_type"] = getattr(self._brand, 'content_type', None) or "social_post"
         
         logger.info("[Stage 1] Topic planned: '%s' (%s)", topic, cat)
         return {"topic": topic, "category": cat}
 
+    # Sync wrapper for backward compat
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2. RESEARCH STEP
+# 2. RESEARCH STEP (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ResearchStep(Step):
-    """Stage 2: Real research from TrendIntelligence or knowledge base."""
     name = "research"
     continue_on_failure = True
 
-    def __init__(
-        self,
-        brand: Optional[Brand] = None,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, brand: Optional[Brand] = None, config: PipelineConfig = None) -> None:
         self._brand = brand
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         research_facts: List[str] = []
         sources_used: List[str] = []
+        loop = asyncio.get_event_loop()
 
-        # Attempt 1: TrendIntelligence plugin
         try:
             from plugins.trend_intelligence.plugin import trend_plugin
             if trend_plugin and trend_plugin.supabase:
                 encoded_topic = quote(topic, safe='')
-                
-                timeout_exec = TimeoutExecutor(
-                    timeout_seconds=self._config.trend_query_timeout_seconds
-                )
-                success, result = timeout_exec.execute(
-                    lambda: trend_plugin.supabase.table("trend_posts")
-                    .select("title, source, url")
-                    .or_(f"title.ilike.%{topic}%,description.ilike.%{topic}%")
-                    .limit(self._config.research_top_k)
-                    .execute()
-                )
-                
-                if success and result and result.data:
-                    for row in result.data:
-                        research_facts.append(
-                            f"{row.get('title', '')} (source: {row.get('source', 'unknown')})"
-                        )
-                        sources_used.append(row.get("source", "trend_intelligence"))
-                    logger.info(
-                        "[Stage 2] TrendIntelligence research: %d facts",
-                        len(research_facts),
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda: trend_plugin.supabase.table("trend_posts")
+                            .select("title, source, url")
+                            .or_(f"title.ilike.%{topic}%,description.ilike.%{topic}%")
+                            .limit(self._config.research_top_k)
+                            .execute()
+                        ),
+                        timeout=self._config.trend_query_timeout_seconds,
                     )
-                else:
-                    logger.warning(
-                        "[Stage 2] TrendIntelligence returned no data — %s",
-                        "timeout" if not success else "empty result",
-                    )
+                    if result and result.data:
+                        for row in result.data:
+                            research_facts.append(f"{row.get('title', '')} (source: {row.get('source', 'unknown')})")
+                            sources_used.append(row.get("source", "trend_intelligence"))
+                        logger.info("[Stage 2] TrendIntelligence research: %d facts", len(research_facts))
+                    else:
+                        logger.warning("[Stage 2] TrendIntelligence returned no data")
+                except asyncio.TimeoutError:
+                    logger.warning("[Stage 2] TrendIntelligence research timed out")
         except Exception as exc:
-            logger.warning(
-                "[Stage 2] TrendIntelligence research failed: %s",
-                str(exc)[:200],
-            )
+            logger.warning("[Stage 2] TrendIntelligence research failed: %s", str(exc)[:200])
 
-        # Attempt 2: Knowledge Base
         if not research_facts and self._brand:
             try:
-                kb = KnowledgeBase(
-                    brand_id=self._brand.id,
-                    workspace_id=self._brand.workspace_id,
+                kb = KnowledgeBase(brand_id=self._brand.id, workspace_id=self._brand.workspace_id)
+                kb_results = await asyncio.wait_for(
+                    loop.run_in_executor(None, kb.search, topic, 3),
+                    timeout=self._config.knowledge_timeout_seconds,
                 )
-                kb_results = kb.search(topic, top_k=3)
                 for entry, _ in kb_results:
                     research_facts.append(entry.content)
                     sources_used.append("knowledge_base")
                 if kb_results:
-                    logger.info(
-                        "[Stage 2] Knowledge Base research: %d facts",
-                        len(kb_results),
-                    )
+                    logger.info("[Stage 2] Knowledge Base research: %d facts", len(kb_results))
+            except asyncio.TimeoutError:
+                logger.warning("[Stage 2] Knowledge Base research timed out")
             except Exception as exc:
-                logger.warning(
-                    "[Stage 2] Knowledge Base research failed: %s",
-                    str(exc)[:200],
-                )
+                logger.warning("[Stage 2] Knowledge Base research failed: %s", str(exc)[:200])
 
-        # Honest fallback
         if not research_facts:
-            research_notes = (
-                f"No external research available for topic: {topic}. "
-                "Proceeding with knowledge base grounding only."
-            )
+            research_notes = f"No external research available for topic: {topic}. Proceeding with knowledge base grounding only."
             context["research_notes"] = research_notes
             context["research_sources"] = []
             logger.info("[Stage 2] Research not available — using KB grounding only.")
@@ -398,200 +294,173 @@ class ResearchStep(Step):
         research_notes = "\n".join(research_facts)
         context["research_notes"] = research_notes
         context["research_sources"] = sources_used
-        logger.info(
-            "[Stage 2] Research complete: %d facts from %s",
-            len(research_facts),
-            ", ".join(set(sources_used)),
-        )
+        logger.info("[Stage 2] Research complete: %d facts", len(research_facts))
         return research_notes
+
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 3. KNOWLEDGE STEP
+# 3. KNOWLEDGE STEP (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class KnowledgeStep(Step):
-    """Stage 3: Retrieves relevant facts from the brand's knowledge base."""
     name = "knowledge_retrieval"
     continue_on_failure = True
 
-    def __init__(
-        self,
-        brand: Brand,
-        repo: KnowledgeRepository,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, brand: Brand, repo: KnowledgeRepository, config: PipelineConfig = None) -> None:
         self._brand = brand
         self._repo = repo
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
+        loop = asyncio.get_event_loop()
+        kb = KnowledgeBase(brand_id=self._brand.id, workspace_id=self._brand.workspace_id, repository=self._repo)
         
-        timeout_exec = TimeoutExecutor(
-            timeout_seconds=self._config.knowledge_timeout_seconds
-        )
-        
-        kb = KnowledgeBase(
-            brand_id=self._brand.id,
-            workspace_id=self._brand.workspace_id,
-            repository=self._repo,
-        )
-        
-        success, result = timeout_exec.execute(
-            lambda: kb.search(topic, top_k=self._config.knowledge_top_k)
-        )
-        
-        if not success:
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, kb.search, topic, self._config.knowledge_top_k),
+                timeout=self._config.knowledge_timeout_seconds,
+            )
+            facts = [entry.content for entry, _ in result]
+            knowledge_context = "\n".join(facts)
+            context["knowledge_context"] = knowledge_context
+            logger.info("[Stage 3] Knowledge retrieved: %d entries.", len(facts))
+            return facts
+        except asyncio.TimeoutError:
             logger.warning("[Stage 3] Knowledge retrieval timed out")
             context["knowledge_context"] = ""
             return []
-        
-        facts = [entry.content for entry, _ in result]
-        knowledge_context = "\n".join(facts)
-        context["knowledge_context"] = knowledge_context
-        logger.info("[Stage 3] Knowledge retrieved: %d entries.", len(facts))
-        return facts
+        except Exception as exc:
+            logger.warning("[Stage 3] Knowledge retrieval failed: %s", str(exc)[:200])
+            context["knowledge_context"] = ""
+            return []
+
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. PROMPT BUILDER STEP
+# 4. PROMPT BUILDER STEP (Async — FIXED ai_profile)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PromptBuilderStep(Step):
-    """Stage 4: Assembles the prompt using PromptBuilder."""
     name = "prompt_builder"
 
-    def __init__(
-        self,
-        brand: Brand,
-        ai_profile: AIProfile,
-        prompt_builder: PromptBuilder,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, brand: Brand, ai_profile: AIProfile, prompt_builder: PromptBuilder, config: PipelineConfig = None) -> None:
         self._brand = brand
         self._ai_profile = ai_profile
         self._pb = prompt_builder
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         knowledge_context = context.get("knowledge_context", "")
         research_notes = context.get("research_notes", "")
 
-        # Merge research into knowledge context
         combined_context = knowledge_context or ""
         if research_notes and "No external research" not in research_notes:
-            combined_context = (
-                f"{combined_context}\n\nResearch:\n{research_notes}"
-                if combined_context
-                else f"Research:\n{research_notes}"
-            )
+            combined_context = f"{combined_context}\n\nResearch:\n{research_notes}" if combined_context else f"Research:\n{research_notes}"
 
+        # FIXED: Pass ai_profile correctly
         prompt = self._pb.build_post_prompt(
             brand=self._brand,
+            ai_profile=self._ai_profile,
             topic=topic,
             knowledge_context=combined_context,
         )
         
         if not prompt or not prompt.strip():
-            raise AIValidationError(
-                message="PromptBuilder returned empty prompt",
-                context={"topic": topic},
-            )
+            raise AIValidationError(message="PromptBuilder returned empty prompt", context={"topic": topic})
         
         context["assembled_prompt"] = prompt
         logger.info("[Stage 4] Complete prompt assembled (%d chars).", len(prompt))
         return prompt
 
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. LLM STEP
+# 5. LLM STEP (Async — FIXED async content_engine)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class LLMStep(Step):
-    """Stage 5: Submits prompt to LLM with timeout and retry."""
     name = "llm_generation"
 
-    def __init__(
-        self,
-        content_engine: ContentEngine,
-        brand: Optional[Any] = None,
-        ai_profile: Optional[Any] = None,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, content_engine: ContentEngine, brand: Optional[Any] = None, ai_profile: Optional[Any] = None, config: PipelineConfig = None) -> None:
         self._engine = content_engine
         self._brand = brand
         self._ai_profile = ai_profile
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         assembled_prompt = context.get("assembled_prompt") or None
+        loop = asyncio.get_event_loop()
 
         last_error = None
         for attempt in range(self._config.llm_max_retries + 1):
-            timeout_exec = TimeoutExecutor(
-                timeout_seconds=self._config.llm_timeout_seconds
-            )
-            success, result = timeout_exec.execute(
-                lambda: self._engine.generate_post(
-                    brand=self._brand,
-                    ai_profile=self._ai_profile,
-                    topic=topic,
-                    base_prompt=assembled_prompt,
-                )
-            )
-            
-            if success and result:
-                context["content_result"] = result
-                context["caption"] = result.get("caption", "")
-                context["image_bytes"] = result.get("image_bytes")
-                context["media_artifact"] = result.get(
-                    "media_artifact", MediaArtifact.no_media()
+            try:
+                # FIXED: ContentEngine.generate_post is now async
+                result = await asyncio.wait_for(
+                    self._engine.generate_post(
+                        brand=self._brand,
+                        ai_profile=self._ai_profile,
+                        topic=topic,
+                        base_prompt=assembled_prompt,
+                    ),
+                    timeout=self._config.llm_timeout_seconds,
                 )
                 
-                media_status = context["media_artifact"].status.value
-                logger.info(
-                    "[Stage 5] LLM generation complete — brand='%s', media=%s",
-                    getattr(self._brand, "name", "default"), media_status,
-                )
-                return result
+                if result:
+                    context["content_result"] = result
+                    context["caption"] = result.get("caption", "")
+                    context["image_bytes"] = result.get("image_bytes")
+                    context["media_artifact"] = result.get("media_artifact", MediaArtifact.no_media())
+                    
+                    media_status = context["media_artifact"].status.value
+                    logger.info("[Stage 5] LLM generation complete — media=%s", media_status)
+                    return result
+                
+                last_error = "Empty result"
+                
+            except asyncio.TimeoutError:
+                last_error = f"Timeout after {self._config.llm_timeout_seconds}s"
+            except Exception as exc:
+                last_error = str(exc)[:200]
             
-            last_error = result if not success else "Empty result"
             if attempt < self._config.llm_max_retries:
                 backoff = self._config.llm_retry_backoff_seconds * (2 ** attempt)
-                logger.warning(
-                    "[Stage 5] LLM attempt %d failed: %s — retrying in %.1fs",
-                    attempt + 1, last_error, backoff,
-                )
-                time.sleep(backoff)
+                logger.warning("[Stage 5] LLM attempt %d failed: %s — retrying in %.1fs", attempt + 1, last_error, backoff)
+                await asyncio.sleep(backoff)
 
         raise AIValidationError(
             message=f"LLM generation failed after {self._config.llm_max_retries + 1} attempts: {last_error}",
             context={"brand": getattr(self._brand, "name", "unknown"), "topic": topic},
         )
 
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 6. VALIDATOR STEP
+# 6. VALIDATOR STEP (Async — FIXED enum access)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ValidatorStep(Step):
-    """Stage 6: Validates AI output against schema, platform, and brand rules."""
     name = "validator"
 
-    def __init__(
-        self,
-        validator: Optional[ContentValidator] = None,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, validator: Optional[ContentValidator] = None, config: PipelineConfig = None) -> None:
         self._validator = validator or ContentValidator()
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption", "")
         topic = context.get("topic", "")
+        brand = context.get("brand")
 
         content = {
             "title": context.get("content_result", {}).get("title", topic),
@@ -601,89 +470,52 @@ class ValidatorStep(Step):
             "media_required": True,
         }
 
-        brand = context.get("brand")
-        platform = context.get("platform", "facebook")
-
+        # FIXED: Validate is now async in ContentValidator v3.0
         validation_result = self._validator.validate(
             content=content,
             brand=brand,
-            platform=platform,
+            platform=context.get("platform", "facebook"),
             require_media=True,
         )
+        if asyncio.iscoroutine(validation_result):
+            validation_result = await validation_result
 
         context["validation_result"] = validation_result
 
         if validation_result.is_rejected:
-            errors = (
-                getattr(validation_result, "error_messages", None)
-                or getattr(validation_result, "errors", None)
-                or getattr(validation_result, "messages", None)
-                or []
-            )
-            if isinstance(errors, str):
-                errors = [errors]
-
-            warnings = (
-                getattr(validation_result, "warning_messages", None)
-                or getattr(validation_result, "warnings", None)
-                or []
-            )
-            if isinstance(warnings, str):
-                warnings = [warnings]
-
-            logger.error(
-                "[Stage 6] Validation REJECTED: %s", "; ".join(errors)
-            )
+            violations = getattr(validation_result, "violations", [])
+            errors = [v.message for v in violations if v.severity.value == "error"]
+            logger.error("[Stage 6] Validation REJECTED: %s", "; ".join(errors))
             raise AIValidationError(
                 message=f"Content validation failed: {'; '.join(errors)}",
-                context={
-                    "errors": errors,
-                    "warnings": warnings,
-                    "topic": topic,
-                },
+                context={"topic": topic},
             )
 
-        if (
-            validation_result.status
-            == validation_result.status.APPROVED_WITH_WARNINGS
-        ):
-            warnings = (
-                getattr(validation_result, "warning_messages", None)
-                or getattr(validation_result, "warnings", None)
-                or []
-            )
-            if isinstance(warnings, str):
-                warnings = [warnings]
-
-            warnings_count = (
-                getattr(validation_result, "warnings_count", None)
-                or len(warnings)
-            )
-
-            logger.warning(
-                "[Stage 6] Validation passed with %d warnings: %s",
-                warnings_count,
-                "; ".join(warnings),
-            )
+        # FIXED: Correct enum comparison
+        if validation_result.status == ValidationStatus.APPROVED_WITH_WARNINGS:
+            warnings = getattr(validation_result, "warnings_count", 0)
+            logger.warning("[Stage 6] Validation passed with %d warnings", warnings)
         else:
             logger.info("[Stage 6] Validation passed.")
 
         return validation_result.to_dict()
 
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 7. REVIEWER STEP
+# 7. REVIEWER STEP (Async — preserved)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ReviewerStep(Step):
-    """Stage 7: Brand voice quality control with blocking failure."""
     name = "reviewer"
     continue_on_failure = False
 
     def __init__(self, config: PipelineConfig = None) -> None:
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption", "")
         content_result = context.get("content_result", {})
         hashtags = content_result.get("hashtags", [])
@@ -693,40 +525,21 @@ class ReviewerStep(Step):
         warnings: List[str] = []
 
         if len(caption.strip()) < self._config.reviewer_min_caption_length:
-            issues.append(
-                f"Caption too short ({len(caption.strip())} chars, "
-                f"minimum {self._config.reviewer_min_caption_length})"
-            )
+            issues.append(f"Caption too short ({len(caption.strip())} chars, minimum {self._config.reviewer_min_caption_length})")
 
         if not hashtags:
             warnings.append("No hashtags provided")
         elif len(hashtags) > self._config.reviewer_max_hashtags:
-            issues.append(
-                f"Too many hashtags ({len(hashtags)}, "
-                f"maximum {self._config.reviewer_max_hashtags})"
-            )
+            issues.append(f"Too many hashtags ({len(hashtags)}, maximum {self._config.reviewer_max_hashtags})")
 
-        has_cta = any(
-            kw in caption.lower()
-            for kw in self._config.reviewer_cta_keywords
-        )
+        has_cta = any(kw in caption.lower() for kw in self._config.reviewer_cta_keywords)
         if not has_cta:
             warnings.append("No call-to-action detected")
 
         lower_caption = caption.lower()
-        toxic_found = [
-            word for word in self._config.reviewer_toxic_words
-            if word in lower_caption
-        ]
+        toxic_found = [word for word in self._config.reviewer_toxic_words if word in lower_caption]
         if toxic_found:
-            issues.append(
-                f"Potentially inappropriate language: {', '.join(toxic_found)}"
-            )
-
-        if brand:
-            brand_tone = getattr(brand, "tone", None)
-            if brand_tone:
-                context["brand_tone"] = brand_tone
+            issues.append(f"Potentially inappropriate language: {', '.join(toxic_found)}")
 
         quality_score = max(0, 100 - (20 * len(issues)) - (5 * len(warnings)))
 
@@ -744,112 +557,73 @@ class ReviewerStep(Step):
         context["review_result"] = review_result
 
         if quality_score < self._config.reviewer_fail_threshold_score:
-            logger.error(
-                "[Stage 7] Review FAILED — score=%d, issues=%s",
-                quality_score, "; ".join(issues),
-            )
-            raise AIValidationError(
-                message=(
-                    f"Content review failed: score={quality_score}, "
-                    f"issues={'; '.join(issues)}"
-                ),
-                context=review_result,
-            )
+            logger.error("[Stage 7] Review FAILED — score=%d, issues=%s", quality_score, "; ".join(issues))
+            raise AIValidationError(message=f"Content review failed: score={quality_score}", context=review_result)
 
         if quality_score < self._config.reviewer_warn_threshold_score:
-            logger.warning(
-                "[Stage 7] Review passed with low score=%d — warnings=%s",
-                quality_score, "; ".join(warnings),
-            )
+            logger.warning("[Stage 7] Review passed with low score=%d", quality_score)
         else:
-            logger.info(
-                "[Stage 7] Review passed — score=%d, warnings=%d",
-                quality_score, len(warnings),
-            )
+            logger.info("[Stage 7] Review passed — score=%d", quality_score)
 
         return review_result
 
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 8. CARD RENDERER STEP
+# 8. CARD RENDERER STEP (Async — preserved)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class CardRendererStep(Step):
-    """Stage 8: Inspects media readiness."""
     name = "card_renderer"
     continue_on_failure = True
 
     def __init__(self, content_engine: ContentEngine) -> None:
         self._engine = content_engine
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         media_artifact: MediaArtifact = context.get("media_artifact")
 
         if media_artifact is None:
-            logger.warning(
-                "[Stage 8] No MediaArtifact in context — creating NO_MEDIA"
-            )
             media_artifact = MediaArtifact.no_media()
             context["media_artifact"] = media_artifact
 
         if media_artifact.is_valid:
-            logger.info(
-                "[Stage 8] Media ready (%s, %dKB).",
-                media_artifact.source, media_artifact.size_kb,
-            )
-            return media_artifact.to_dict()
-
-        if media_artifact.is_text_only:
+            logger.info("[Stage 8] Media ready (%s, %dKB).", media_artifact.source, media_artifact.size_kb)
+        elif media_artifact.is_text_only:
             logger.info("[Stage 8] Text-only post — no media needed.")
-            return media_artifact.to_dict()
+        elif media_artifact.is_pending:
+            logger.warning("[Stage 8] Media still rendering")
+        elif media_artifact.has_failed:
+            logger.error("[Stage 8] Render FAILED: %s", media_artifact.error)
+        else:
+            logger.warning("[Stage 8] Unknown media status: %s", media_artifact.status)
 
-        if media_artifact.is_pending:
-            logger.warning(
-                "[Stage 8] Media still rendering — should have completed synchronously"
-            )
-            return media_artifact.to_dict()
-
-        if media_artifact.has_failed:
-            logger.error(
-                "[Stage 8] Render FAILED: %s (code=%s)",
-                media_artifact.error, media_artifact.error_code,
-            )
-            return media_artifact.to_dict()
-
-        logger.warning(
-            "[Stage 8] Unknown media status: %s", media_artifact.status
-        )
         return media_artifact.to_dict()
+
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 9. PUBLISHER STEP
+# 9. PUBLISHER STEP (Async — circuit breaker)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class PublisherStep(Step):
-    """Stage 9: Publishes content with retry and circuit breaker."""
     name = "publisher"
 
-    def __init__(
-        self,
-        brand: Brand,
-        container,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, brand: Brand, container, config: PipelineConfig = None) -> None:
         self._brand = brand
         self._container = container
         self._config = config or PipelineConfig()
-        self._circuit_breaker = CircuitBreaker(
-            failure_threshold=self._config.publisher_circuit_breaker_threshold
-        )
+        self._circuit_breaker = CircuitBreaker(failure_threshold=self._config.publisher_circuit_breaker_threshold)
 
-    def run(self, context: dict[str, Any]) -> Any:
+    async def run_async(self, context: dict[str, Any]) -> Any:
         from plugins.base import PluginRegistry
         
         if self._circuit_breaker.is_open:
-            raise RuntimeError(
-                "Publisher circuit breaker OPEN — too many recent failures"
-            )
+            raise RuntimeError("Publisher circuit breaker OPEN — too many recent failures")
         
         caption = context.get("caption", "")
         media_artifact: MediaArtifact = context.get("media_artifact")
@@ -858,109 +632,92 @@ class PublisherStep(Step):
         if media_artifact and media_artifact.is_valid:
             image_bytes = media_artifact.bytes if media_artifact.bytes else None
         elif media_artifact and media_artifact.has_failed:
-            raise RenderFailedError(
-                message=f"Media render failed: {media_artifact.error}",
-                context={"brand": self._brand.name},
-            )
+            raise RenderFailedError(message=f"Media render failed: {media_artifact.error}", context={"brand": self._brand.name})
         elif media_artifact and media_artifact.is_pending:
-            raise RenderFailedError(
-                message="Media still rendering",
-                context={"brand": self._brand.name},
-            )
+            raise RenderFailedError(message="Media still rendering", context={"brand": self._brand.name})
         
         registry = self._container.resolve(PluginRegistry)
         all_plugins = registry.get_all()
-        logger.info(
-            "[Stage 9] Publisher: %d plugins available", len(all_plugins)
-        )
+        logger.info("[Stage 9] Publisher: %d plugins available", len(all_plugins))
         
+        loop = asyncio.get_event_loop()
         results = {}
+        
         for attempt in range(self._config.publisher_max_retries + 1):
-            timeout_exec = TimeoutExecutor(
-                timeout_seconds=self._config.publisher_timeout_seconds
-            )
-            success, attempt_results = timeout_exec.execute(
-                lambda: registry.publish_all(
-                    content=caption,
-                    image_bytes=image_bytes,
-                    brand=self._brand,
+            try:
+                attempt_results = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        registry.publish_all,
+                        caption,
+                        image_bytes,
+                        self._brand,
+                    ),
+                    timeout=self._config.publisher_timeout_seconds,
                 )
-            )
-            
-            if success and attempt_results:
-                results = attempt_results
-                failed = {
-                    k: v for k, v in results.items()
-                    if not v.get("ok")
-                }
-                if not failed:
-                    self._circuit_breaker.record_success()
-                    break
                 
-                if attempt < self._config.publisher_max_retries:
-                    backoff = self._config.publisher_retry_backoff_seconds * (2 ** attempt)
-                    logger.warning(
-                        "[Stage 9] Publisher attempt %d — %d failed, retrying in %.1fs",
-                        attempt + 1, len(failed), backoff,
-                    )
-                    time.sleep(backoff)
-            else:
-                if attempt < self._config.publisher_max_retries:
-                    time.sleep(self._config.publisher_retry_backoff_seconds)
+                if attempt_results:
+                    results = attempt_results
+                    failed = {k: v for k, v in results.items() if not v.get("ok")}
+                    if not failed:
+                        await self._circuit_breaker.record_success()
+                        break
+                    
+                    if attempt < self._config.publisher_max_retries:
+                        backoff = self._config.publisher_retry_backoff_seconds * (2 ** attempt)
+                        logger.warning("[Stage 9] Publisher attempt %d — %d failed, retrying in %.1fs", attempt + 1, len(failed), backoff)
+                        await asyncio.sleep(backoff)
                 else:
-                    self._circuit_breaker.record_failure()
-                    raise RuntimeError("Publisher failed after retries")
+                    if attempt >= self._config.publisher_max_retries:
+                        await self._circuit_breaker.record_failure()
+                        raise RuntimeError("Publisher failed after retries")
+                    await asyncio.sleep(self._config.publisher_retry_backoff_seconds)
+                    
+            except asyncio.TimeoutError:
+                if attempt >= self._config.publisher_max_retries:
+                    await self._circuit_breaker.record_failure()
+                    raise RuntimeError("Publisher timed out after retries")
+                await asyncio.sleep(self._config.publisher_retry_backoff_seconds)
         
         context["publish_results"] = results
         
         if not results:
-            self._circuit_breaker.record_failure()
+            await self._circuit_breaker.record_failure()
             raise RuntimeError("No plugins returned results")
         
         failed_all = all(not r.get("ok") for r in results.values())
         if failed_all:
-            self._circuit_breaker.record_failure()
-            errors = {
-                k: v.get("error", {}).get("message", "Unknown")
-                for k, v in results.items()
-            }
-            raise RuntimeError(f"All plugins failed to publish: {errors}")
+            await self._circuit_breaker.record_failure()
+            raise RuntimeError("All plugins failed to publish")
         
         succeeded = sum(1 for r in results.values() if r.get("ok"))
         failed = sum(1 for r in results.values() if not r.get("ok"))
-        logger.info(
-            "[Stage 9] Published — %d succeeded, %d failed",
-            succeeded, failed,
-        )
+        logger.info("[Stage 9] Published — %d succeeded, %d failed", succeeded, failed)
         
         return results
 
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 10. ANALYTICS STEP
+# 10. ANALYTICS STEP (Async — FIXED EventBus)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AnalyticsStep(Step):
-    """Stage 10: Records metrics and emits events."""
     name = "analytics"
     continue_on_failure = True
 
-    def __init__(
-        self,
-        analytics_repo: AnalyticsRepository,
-        bus: EventBus,
-        config: PipelineConfig = None,
-    ) -> None:
+    def __init__(self, analytics_repo: AnalyticsRepository, bus: UnifiedEventBus, config: PipelineConfig = None) -> None:
         self._repo = analytics_repo
         self._bus = bus
         self._config = config or PipelineConfig()
 
-    def run(self, context: dict[str, Any]) -> Any:
-        from core.events import PostPublishedEvent
-        
+    async def run_async(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         publish_results = context.get("publish_results", {})
         caption = context.get("caption", "")
+        loop = asyncio.get_event_loop()
         
         published_count = 0
         failed_count = 0
@@ -969,38 +726,40 @@ class AnalyticsStep(Step):
             if res.get("ok"):
                 published_count += 1
                 try:
-                    self._repo.record_post_published(
-                        topic=topic,
-                        platform=platform,
-                        post_id=res.get("post_id", ""),
+                    await loop.run_in_executor(
+                        None,
+                        self._repo.record_post_published,
+                        topic, platform, res.get("post_id", ""),
                     )
-                    self._bus.publish(PostPublishedEvent(
-                        post_id=res.get("post_id", ""),
-                        topic=topic,
-                        platform=platform,
-                        caption_preview=caption[:100],
-                    ))
+                    # FIXED: EventBus publish is now async
+                    await self._bus.publish(
+                        "post_published",
+                        {
+                            "post_id": res.get("post_id", ""),
+                            "topic": topic,
+                            "platform": platform,
+                            "caption_preview": caption[:100],
+                        },
+                        source="pipeline",
+                    )
                 except Exception as exc:
-                    logger.warning(
-                        "[Stage 10] Analytics record failed for %s: %s",
-                        platform, str(exc)[:150],
-                    )
+                    logger.warning("[Stage 10] Analytics record failed for %s: %s", platform, str(exc)[:150])
             else:
                 failed_count += 1
         
-        logger.info(
-            "[Stage 10] Analytics recorded — %d published, %d failed",
-            published_count, failed_count,
-        )
+        logger.info("[Stage 10] Analytics recorded — %d published, %d failed", published_count, failed_count)
         return {"published": published_count, "failed": failed_count}
+
+    def run(self, context: dict[str, Any]) -> Any:
+        return asyncio.run(self.run_async(context))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# FULL 10-STAGE PIPELINE
+# FULL 10-STAGE PIPELINE (Async)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ContentGenerationPipeline(Workflow):
-    """Execution pipeline implementing the 10 core stages."""
+    """Execution pipeline implementing the 10 core stages — ASYNC-NATIVE."""
 
     name = "content_generation_pipeline"
 
@@ -1008,7 +767,7 @@ class ContentGenerationPipeline(Workflow):
         self,
         content_engine: ContentEngine,
         analytics_repo: AnalyticsRepository,
-        bus: EventBus,
+        bus: UnifiedEventBus,
         knowledge_repo: KnowledgeRepository,
         prompt_builder: PromptBuilder,
         brand: Brand,
@@ -1020,31 +779,18 @@ class ContentGenerationPipeline(Workflow):
     ) -> None:
         self._config = config or PipelineConfig()
         self._timer = StageTimer()
-        self._deduplicator = ContentDeduplicator(
-            window_hours=self._config.dedup_window_hours
-        )
+        self._deduplicator = ContentDeduplicator(window_hours=self._config.dedup_window_hours)
+        self._brand = brand
+        self._ai_profile = ai_profile
         
         super().__init__(
             steps=[
-                PlannerStep(
-                    brand, category,
-                    knowledge_repo=knowledge_repo,
-                    config=self._config,
-                ),
+                PlannerStep(brand, category, knowledge_repo=knowledge_repo, config=self._config),
                 ResearchStep(brand=brand, config=self._config),
                 KnowledgeStep(brand, knowledge_repo, config=self._config),
-                PromptBuilderStep(
-                    brand, ai_profile, prompt_builder, config=self._config
-                ),
-                LLMStep(
-                    content_engine,
-                    brand=brand,
-                    ai_profile=ai_profile,
-                    config=self._config,
-                ),
-                ValidatorStep(
-                    validator=content_validator, config=self._config
-                ),
+                PromptBuilderStep(brand, ai_profile, prompt_builder, config=self._config),
+                LLMStep(content_engine, brand=brand, ai_profile=ai_profile, config=self._config),
+                ValidatorStep(validator=content_validator, config=self._config),
                 ReviewerStep(config=self._config),
                 CardRendererStep(content_engine),
                 PublisherStep(brand, container, config=self._config),
@@ -1052,34 +798,92 @@ class ContentGenerationPipeline(Workflow):
             ]
         )
 
-    def execute(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def execute_async(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         context = context or {}
-        context["brand"] = getattr(self, "_brand", None)
+        context["brand"] = self._brand
+        context["ai_profile"] = self._ai_profile
         
         topic = context.get("topic", "")
-        brand_id = getattr(context.get("brand"), "id", "unknown")
+        brand_id = getattr(self._brand, "id", "unknown")
         
-        if (
-            self._config.enable_deduplication
-            and topic
-            and self._deduplicator.is_duplicate(topic, brand_id)
-        ):
-            logger.warning(
-                "Pipeline: Duplicate content detected for topic '%s' — skipping",
-                topic,
-            )
-            return {
-                "skipped": True,
-                "reason": "duplicate_content",
-                "topic": topic,
-            }
+        if self._config.enable_deduplication and topic:
+            if await self._deduplicator.is_duplicate(topic, brand_id):
+                logger.warning("Pipeline: Duplicate content detected for topic '%s' — skipping", topic)
+                return {"skipped": True, "reason": "duplicate_content", "topic": topic}
         
-        result = super().execute(context)
+        # Execute all steps async
+        result = {}
+        step_results = []
+        
+        for step in self.steps:
+            step_name = step.name
+            await self._timer.start(step_name)
+            
+            try:
+                if hasattr(step, "run_async"):
+                    step_output = await step.run_async(context)
+                elif hasattr(step, "run"):
+                    step_output = await asyncio.get_event_loop().run_in_executor(None, step.run, context)
+                else:
+                    step_output = None
+                
+                step_results.append({"step": step_name, "ok": True, "output": step_output})
+                await self._timer.stop(step_name)
+                
+            except Exception as exc:
+                await self._timer.stop(step_name)
+                step_results.append({"step": step_name, "ok": False, "error": str(exc)})
+                
+                if not getattr(step, "continue_on_failure", False):
+                    logger.error("Pipeline failed at stage '%s': %s", step_name, exc)
+                    result = {
+                        "steps": step_results,
+                        "status": "failed",
+                        "failed_step": step_name,
+                        "error": str(exc),
+                        "stage_timings_ms": self._timer.get_all(),
+                    }
+                    return result
+                else:
+                    logger.warning("Pipeline stage '%s' failed (non-critical): %s", step_name, exc)
         
         if topic and not result.get("skipped"):
-            self._deduplicator.record(topic, brand_id)
+            await self._deduplicator.record(topic, brand_id)
         
+        result["steps"] = step_results
+        result["status"] = "completed"
         result["stage_timings_ms"] = self._timer.get_all()
         result["pipeline_completed_at"] = datetime.now(timezone.utc).isoformat()
         
         return result
+
+    # Sync wrapper for backward compatibility
+    def run(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Sync wrapper — runs async pipeline."""
+        try:
+            loop = asyncio.get_running_loop()
+            # In async context — schedule and return future
+            return asyncio.ensure_future(self.execute_async(context))
+        except RuntimeError:
+            # No running loop — run synchronously
+            return asyncio.run(self.execute_async(context))
+
+    # Alias for existing callers
+    def execute(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return self.run(context)
+
+
+__all__ = [
+    "ContentGenerationPipeline",
+    "PipelineConfig",
+    "PlannerStep",
+    "ResearchStep",
+    "KnowledgeStep",
+    "PromptBuilderStep",
+    "LLMStep",
+    "ValidatorStep",
+    "ReviewerStep",
+    "CardRendererStep",
+    "PublisherStep",
+    "AnalyticsStep",
+]
