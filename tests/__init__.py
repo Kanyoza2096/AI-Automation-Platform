@@ -1,4 +1,1 @@
-"""
-Kanyoza Systems AI Platform v10 — Test suite.
-Run: pytest tests/ -v
-"""
+"""Test suite for AI-Automation-Platform."""

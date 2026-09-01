@@ -1,94 +1,107 @@
-"""
-Kanyoza Systems AI Platform v12.1 — pytest test fixtures.
+"""Pytest configuration and fixtures for integration tests."""
 
-Usage:
-    pytest tests/ -v
-
-The test client is created in a dedicated "testing" environment so that
-no real secrets are required.  All external services (Gemini, Facebook,
-GitHub) are mocked at the module level.
-"""
-
-from __future__ import annotations
-
-import os
-import sys
-import types
-from unittest.mock import MagicMock, patch
-
+import asyncio
 import pytest
-
-# ---------------------------------------------------------------------------
-# Environment setup — must happen before importing the app
-# ---------------------------------------------------------------------------
-
-os.environ.setdefault("ENVIRONMENT", "testing")
-os.environ.setdefault("GEMINI_KEY", "test-gemini-key")
-os.environ.setdefault("PAGE_ACCESS_TOKEN", "test-page-token")
-os.environ.setdefault("PAGE_ID", "12345")
-os.environ.setdefault("VERIFY_TOKEN", "test-verify-token")
-os.environ.setdefault("APP_SECRET", "test-app-secret")
-os.environ.setdefault("MASTER_API_TOKEN", "test-master-token")
+from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timezone
 
 
-# ---------------------------------------------------------------------------
-# Lightweight stubs for heavy optional dependencies
-# ---------------------------------------------------------------------------
-
-def _stub_module(name: str, **attrs) -> types.ModuleType:
-    mod = types.ModuleType(name)
-    for k, v in attrs.items():
-        setattr(mod, k, v)
-    return mod
+@pytest.fixture
+def event_loop():
+    """Create event loop for async tests."""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
 
 
-# Stub playwright so tests don't need the Chromium binary
-_playwright_stub = _stub_module("playwright")
-_playwright_sync = _stub_module("playwright.sync_api", sync_playwright=MagicMock())
-sys.modules.setdefault("playwright", _playwright_stub)
-sys.modules.setdefault("playwright.sync_api", _playwright_sync)
-
-# Stub google.generativeai
-_genai_stub = _stub_module("google.generativeai", GenerativeModel=MagicMock(), configure=MagicMock())
-_google_stub = _stub_module("google")
-sys.modules.setdefault("google", _google_stub)
-sys.modules.setdefault("google.generativeai", _genai_stub)
+@pytest.fixture
+def mock_event_bus():
+    """Mock event bus for testing."""
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    bus.subscribe = MagicMock()
+    bus.unsubscribe = MagicMock()
+    return bus
 
 
-# ---------------------------------------------------------------------------
-# App fixture
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def mock_supabase():
+    """Mock Supabase client."""
+    client = MagicMock()
+    client.table = MagicMock(return_value=MagicMock())
+    client.table().insert = MagicMock(return_value=MagicMock(data=[]))
+    client.table().update = MagicMock(return_value=MagicMock(data=[]))
+    client.table().select = MagicMock(return_value=MagicMock(data=[]))
+    return client
 
 
-@pytest.fixture(scope="session")
-def app():
-    """Create the FastAPI application in testing mode.
+@pytest.fixture
+def container():
+    """Mock DI container."""
+    container = MagicMock()
+    container.try_resolve = MagicMock(return_value=None)
+    return container
+
+
+@pytest.fixture
+async def director_instance(mock_event_bus, mock_supabase, container):
+    """Create Director instance for testing."""
+    from services.director import Director
     
-    Patches boot_infrastructure to prevent schedulers/emitters
-    from starting during tests.
-    """
-    # Suppress scheduler startup during tests
-    with patch("lifecycle.boot_infrastructure", return_value=None):
-        from main import create_app
-        application = create_app()
-    return application
+    director = Director(event_bus=mock_event_bus, supabase_client=mock_supabase, container=container)
+    director._shared_bus = mock_event_bus
+    return director
 
 
-
-@pytest.fixture()
-def client(app):
-    """Starlette TestClient for making HTTP requests."""
-    from starlette.testclient import TestClient
-    with TestClient(app) as c:
-        yield c
-
-
-@pytest.fixture()
-def auth_headers():
-    """Headers with a valid master API token for protected endpoints."""
-    return {"Authorization": f"Bearer {os.environ['MASTER_API_TOKEN']}"}
+@pytest.fixture
+async def condition_engine_instance(mock_event_bus, mock_supabase, container):
+    """Create ConditionEngine instance for testing."""
+    from services.condition_engine import ConditionEngine
+    
+    engine = ConditionEngine(event_bus=mock_event_bus, supabase_client=mock_supabase, container=container)
+    return engine
 
 
-@pytest.fixture()
-def verify_token():
-    return os.environ["VERIFY_TOKEN"]
+@pytest.fixture
+async def meta_engine_instance(mock_event_bus, mock_supabase, container):
+    """Create MetaEngine instance for testing."""
+    from services.meta_engine import MetaEngineV7
+    
+    engine = MetaEngineV7(event_bus=mock_event_bus, container=container, supabase_client=mock_supabase)
+    return engine
+
+
+@pytest.fixture
+def sample_observation():
+    """Sample observation for testing."""
+    return {
+        "brand_id": "test_brand_1",
+        "topic": "Python testing best practices",
+        "engagement": 45.5,
+        "posting_hour": 14,
+        "has_cta": True,
+        "metadata": {"industry": "tech"},
+    }
+
+
+@pytest.fixture
+def sample_decision():
+    """Sample decision for testing."""
+    return {
+        "brand_id": "test_brand_1",
+        "recommended_action": "increase_similar_content",
+        "confidence": 0.88,
+        "reason": "High engagement detected",
+        "evidence": {"baseline": 30, "engagement_ratio": 1.5},
+    }
+
+
+@pytest.fixture
+def sample_engine_alert():
+    """Sample engine alert for testing."""
+    return {
+        "engine": "content_engine",
+        "status": "degraded",
+        "message": "High error rate detected",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
