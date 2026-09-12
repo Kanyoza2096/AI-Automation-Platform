@@ -1,0 +1,90 @@
+name: Production Health Check
+
+on:
+  schedule:
+    # Run every 5 minutes during business hours (9 AM - 9 PM UTC)
+    - cron: '*/5 9-21 * * *'
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Check Meta Engine health
+        id: meta-engine
+        continue-on-error: true
+        run: |
+          response=$(curl -s -w "\n%{http_code}" http://prod.api.internal/health/meta-engine)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+          if [ $http_code -eq 200 ]; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "body=$body" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check Content Engine health
+        id: content-engine
+        continue-on-error: true
+        run: |
+          response=$(curl -s -w "\n%{http_code}" http://prod.api.internal/health/content-engine)
+          http_code=$(echo "$response" | tail -n1)
+          if [ $http_code -eq 200 ]; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Check Condition Engine health
+        id: condition-engine
+        continue-on-error: true
+        run: |
+          response=$(curl -s -w "\n%{http_code}" http://prod.api.internal/health/condition-engine)
+          http_code=$(echo "$response" | tail -n1)
+          if [ $http_code -eq 200 ]; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create health report
+        run: |
+          echo "## Production Health Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Meta Engine | ${{ steps.meta-engine.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Content Engine | ${{ steps.content-engine.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Condition Engine | ${{ steps.condition-engine.outputs.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Last checked: $(date)" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Alert if unhealthy
+        if: |
+          steps.meta-engine.outputs.status == 'unhealthy' ||
+          steps.content-engine.outputs.status == 'unhealthy' ||
+          steps.condition-engine.outputs.status == 'unhealthy'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Production Health Alert',
+              body: '⚠️ One or more engines are reporting unhealthy status.\n\nPlease check the health dashboard and investigate.',
+              labels: ['bug', 'production', 'urgent']
+            })
