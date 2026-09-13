@@ -1,5 +1,14 @@
 """
-Kanyoza Systems AI Platform v16.7 — Lifecycle Management (Async-Native).
+Kanyoza Systems AI Platform v16.8 — Lifecycle Management (Async-Native).
+
+v16.8 CHANGES:
+  - FIXED: ShutdownRegistry now fails loud on late registration (was: silent drop)
+  - FIXED: Bounded, purpose-separated executors for health probes and boot work
+  - FIXED: _sanitize_error_message hardened (creds, JWTs, token prefixes, win paths)
+  - FIXED: HealthReport.error_message no longer carries raw exception text
+  - FIXED: check_all has an overall sweep deadline (was: per-service only)
+  - FIXED: boot_infrastructure has an overall boot deadline
+  - FIXED: Meta Engine registration failures now surface as degraded + event
 
 v16.7 CHANGES:
   - ADDED: Auto-registration of ALL services with Meta Engine
@@ -26,6 +35,7 @@ import re
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -36,6 +46,33 @@ from plugins.base import PluginRegistry
 from service_container import ServiceContainer
 
 logger = logging.getLogger("kanyoza.lifecycle")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Executors
+#
+# We deliberately separate health-probe work from boot/shutdown work so that
+# a burst of slow sync health probes can never starve the executor that boot
+# and shutdown hooks depend on. Each pool is bounded and named for stack dumps.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HEALTH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="kanyoza-health",
+)
+
+_BOOT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="kanyoza-boot",
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+BOOT_DEADLINE_SECONDS = 120.0
+HEALTH_SWEEP_DEADLINE_SECONDS = 10.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,18 +87,68 @@ class BootFailure(Exception):
 # Utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sanitize_error_message(exc: Exception, max_len: int = 200) -> str:
-    raw = str(exc)
-    raw = re.sub(r'File "[^"]*"', "File [redacted]", raw)
-    raw = re.sub(r"/[^\s]*\.py", "[path_redacted]", raw)
-    raw = re.sub(r"0x[0-9a-fA-F]+", "[addr]", raw)
+# Patterns for sensitive material that must never reach an external surface.
+# Ordered from most specific to least.
+_REDACTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # URLs with embedded credentials: scheme://user:pass@host
+    (re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@"), r"\g<scheme>[redacted]@"),
+    # JWTs (three base64url segments separated by dots, at least 20 chars each)
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[jwt_redacted]"),
+    # Common API token prefixes
+    (re.compile(r"\b(sk|pk|rk|ghp|gho|ghu|ghs|ghr|xoxb|xoxp|xoxa|AKIA|ASIA)[A-Za-z0-9_\-]{12,}\b"), "[token_redacted]"),
+    # Bearer tokens in headers echoed into error text
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+"), "Bearer [redacted]"),
+    # File paths with line numbers (covers .py, .js, .ts, .yaml, .json, .env, etc.)
+    (re.compile(r'File "[^"]*"'), "File [redacted]"),
+    # POSIX absolute paths ending in a common file extension
+    (re.compile(r"/(?:[^\s/]+/)*[^\s/]+\.[A-Za-z0-9]{1,8}"), "[path_redacted]"),
+    # Windows absolute paths
+    (re.compile(r"[A-Za-z]:\\(?:[^\\\s]+\\)*[^\\\s]+"), "[path_redacted]"),
+    # Hex addresses
+    (re.compile(r"0x[0-9a-fA-F]+"), "[addr]"),
+)
+
+_SANITIZE_MAX_LEN = 200
+
+
+def _sanitize_error_message(exc: BaseException, max_len: int = _SANITIZE_MAX_LEN) -> str:
+    """
+    Best-effort redaction of sensitive material from an exception's string form.
+
+    This is defense-in-depth, NOT a trust boundary. Raw exception text should
+    never reach an external surface in the first place — use the correlation
+    ID mechanism in HealthReport instead.
+    """
+    try:
+        raw = str(exc)
+    except Exception:
+        raw = f"<{type(exc).__name__} (str() raised)>"
+
+    for pattern, replacement in _REDACTION_PATTERNS:
+        raw = pattern.sub(replacement, raw)
+
+    # Collapse whitespace/newlines so multi-line messages don't leak structure.
+    raw = " ".join(raw.split())
+
     return raw[:max_len]
 
 
-async def _run_in_thread(func: Callable, *args, **kwargs) -> Any:
-    """Run a blocking callable in a thread using the current event loop."""
+async def _run_in_thread_boot(func: Callable, *args, **kwargs) -> Any:
+    """Run a blocking callable on the boot executor."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, partial(func, *args, **kwargs) if args or kwargs else func)
+    call = partial(func, *args, **kwargs) if args or kwargs else func
+    return await loop.run_in_executor(_BOOT_EXECUTOR, call)
+
+
+async def _run_in_thread_health(func: Callable, *args, **kwargs) -> Any:
+    """Run a blocking callable on the health-probe executor."""
+    loop = asyncio.get_running_loop()
+    call = partial(func, *args, **kwargs) if args or kwargs else func
+    return await loop.run_in_executor(_HEALTH_EXECUTOR, call)
+
+
+# Back-compat alias — existing call sites that don't care about the pool keep working.
+_run_in_thread = _run_in_thread_boot
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +265,20 @@ class ServiceHealthRegistry:
     def mark_startup_complete(self) -> None:
         self._startup_complete.set()
 
-    async def check_all(self, timeout_per_service: float = 5.0) -> dict[str, HealthReport]:
+    async def check_all(
+        self,
+        timeout_per_service: float = 5.0,
+        sweep_deadline: float = HEALTH_SWEEP_DEADLINE_SECONDS,
+    ) -> dict[str, HealthReport]:
+        """
+        Probe every registered provider concurrently, with:
+          - per-service timeout (`timeout_per_service`)
+          - overall sweep deadline (`sweep_deadline`)
+
+        If the sweep deadline is exceeded, partial results are returned and a
+        warning is logged. Providers that did not complete are reported as
+        DEGRADED with confidence=low.
+        """
         providers = await self.get_all()
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
@@ -194,24 +294,74 @@ class ServiceHealthRegistry:
                     return service_name, HealthReport(
                         status=HealthStatus.DEGRADED,
                         service_name=service_name,
-                        error_message=f"Timeout after {timeout_per_service}s",
-                        metadata={"note": "Health probe timed out", "confidence": "low"},
+                        error_message="probe_timeout",
+                        metadata={
+                            "note": "Health probe timed out",
+                            "confidence": "low",
+                            "timeout_seconds": timeout_per_service,
+                        },
                     )
                 except Exception as exc:
+                    cid = uuid.uuid4().hex
                     logger.debug(
-                        "Unexpected error while probing %s:\n%s",
+                        "Unexpected error while probing %s [cid=%s]:\n%s",
                         service_name,
+                        cid,
                         traceback.format_exc(),
                     )
                     return service_name, HealthReport(
                         status=HealthStatus.DEGRADED,
                         service_name=service_name,
-                        error_message=_sanitize_error_message(exc),
+                        error_message="probe_error",
                         metadata={"note": "Health probe errored", "confidence": "low"},
+                        correlation_id=cid,
                     )
 
-        checked = await asyncio.gather(*(check_provider(p) for p in providers))
-        return dict(checked)
+        tasks = [asyncio.create_task(check_provider(p)) for p in providers]
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=sweep_deadline,
+                return_when=asyncio.ALL_COMPLETED,
+            )
+        except Exception:
+            for t in tasks:
+                t.cancel()
+            raise
+
+        results: dict[str, HealthReport] = {}
+        for task in done:
+            try:
+                name, report = task.result()
+                results[name] = report
+            except Exception as exc:
+                logger.debug("Health task raised unexpectedly: %s", exc)
+
+        if pending:
+            logger.warning(
+                "Health sweep exceeded %.1fs; %d providers did not complete",
+                sweep_deadline,
+                len(pending),
+            )
+            for task in pending:
+                task.cancel()
+            # Fill in placeholders for the providers we couldn't reach.
+            done_names = set(results.keys())
+            for provider in providers:
+                name = getattr(provider, "service_name", "unknown")
+                if name in done_names:
+                    continue
+                results[name] = HealthReport(
+                    status=HealthStatus.DEGRADED,
+                    service_name=name,
+                    error_message="sweep_deadline_exceeded",
+                    metadata={
+                        "note": "Health sweep deadline exceeded",
+                        "confidence": "low",
+                    },
+                )
+
+        return results
 
     async def _check_single_provider(self, provider: Any, timeout: float) -> HealthReport:
         service_name = getattr(provider, "service_name", "unknown")
@@ -246,7 +396,7 @@ class ServiceHealthRegistry:
         return HealthReport(
             HealthStatus.UNKNOWN,
             service_name,
-            error_message="No health check method found",
+            error_message="no_health_check_method",
         )
 
     async def _run_health_check(
@@ -257,15 +407,16 @@ class ServiceHealthRegistry:
         *,
         is_async: bool,
     ) -> HealthReport:
+        correlation_id = uuid.uuid4().hex
         try:
             if is_async:
                 raw = await asyncio.wait_for(method(), timeout=timeout)
             else:
                 # Never invoke synchronous health probes on the event loop.
-                # Run the initial call in a worker thread; some legacy sync
+                # Run the initial call on the health executor; some legacy sync
                 # adapters return an awaitable, which is then awaited here.
                 raw = await asyncio.wait_for(
-                    _run_in_thread(method),
+                    _run_in_thread_health(method),
                     timeout=timeout,
                 )
                 if inspect.isawaitable(raw):
@@ -277,20 +428,30 @@ class ServiceHealthRegistry:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 service_name,
-                error_message=f"Timeout after {timeout}s",
-                metadata={"note": "probe_timeout", "confidence": "low"},
+                error_message="probe_timeout",
+                metadata={
+                    "note": "probe_timeout",
+                    "confidence": "low",
+                    "timeout_seconds": timeout,
+                },
+                correlation_id=correlation_id,
             )
         except Exception as exc:
+            # Full detail goes to logs keyed by correlation id; the report
+            # carries only the id so external surfaces never see raw text.
             logger.debug(
-                "Health probe failed for %s:\n%s",
+                "Health probe failed for %s [cid=%s]: %s\n%s",
                 service_name,
+                correlation_id,
+                _sanitize_error_message(exc),
                 traceback.format_exc(),
             )
             return HealthReport(
                 HealthStatus.DEGRADED,
                 service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="probe_failed",
                 metadata={"note": "probe_failed", "confidence": "low"},
+                correlation_id=correlation_id,
             )
 
     def _normalize_health_result(self, raw: Any, service_name: str) -> HealthReport:
@@ -312,11 +473,11 @@ class ServiceHealthRegistry:
                 metadata={"note": "health check returned None", "confidence": "low"},
             )
 
-        # Unknown return type – treat as degraded with the raw value for debugging
+        # Unknown return type – treat as degraded, keep a *type* hint, not the value.
         return HealthReport(
             HealthStatus.DEGRADED,
             service_name,
-            metadata={"result": str(raw)},
+            metadata={"result_type": type(raw).__name__},
         )
 
 
@@ -328,6 +489,15 @@ health_registry = ServiceHealthRegistry()
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ShutdownRegistry:
+    """
+    LIFO shutdown hook registry.
+
+    Contract: all hooks MUST be registered before `execute_all()` begins. Any
+    registration attempted after that point is rejected loudly (see v16.8 note)
+    rather than silently dropped, because a silently dropped cleanup hook is a
+    resource leak that is invisible in production.
+    """
+
     def __init__(self) -> None:
         self._hooks: list[tuple[str, Callable, float]] = []
         self._lock = asyncio.Lock()
@@ -336,8 +506,14 @@ class ShutdownRegistry:
     async def register(self, name: str, hook: Callable, timeout_seconds: float = 10.0) -> None:
         async with self._lock:
             if self._executing:
-                logger.debug("Ignoring late shutdown registration for '%s'", name)
-                return
+                logger.warning(
+                    "Rejected late shutdown registration for '%s' — shutdown already "
+                    "in progress. Register hooks before calling execute_all().",
+                    name,
+                )
+                raise RuntimeError(
+                    f"ShutdownRegistry already executing; cannot register '{name}'"
+                )
             self._hooks.append((name, hook, timeout_seconds))
 
     async def execute_all(self) -> None:
@@ -371,18 +547,17 @@ shutdown_registry = ShutdownRegistry()
 # Meta Engine Auto-Registration (v16.7)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _register_all_services_with_meta(container: ServiceContainer) -> None:
+async def _register_all_services_with_meta(container: ServiceContainer) -> int:
     """
     Register ALL services with Meta Engine using the centralized service registry.
-    This is the permanent solution introduced in v16.7.
+    Returns the number of services registered.
     """
     from core.service_registry import get_service_registry
     from core.service_definitions import register_all_services
     from services.meta_engine import meta_engine
 
     if meta_engine is None:
-        logger.warning("Meta Engine not available — skipping service registration")
-        return
+        raise RuntimeError("Meta Engine not available — cannot register services")
 
     registry = get_service_registry()
     registry.set_container(container)
@@ -390,6 +565,7 @@ async def _register_all_services_with_meta(container: ServiceContainer) -> None:
 
     registered = register_all_services(container, meta_engine)
     logger.info("✅ Meta Engine now supervising %d services", registered)
+    return registered
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -397,11 +573,34 @@ async def _register_all_services_with_meta(container: ServiceContainer) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def boot_infrastructure(app, container: ServiceContainer) -> None:
+    """
+    Entry point for platform boot. Enforces an overall boot deadline; exceeding
+    it triggers rollback of all completed steps and raises BootFailure.
+    """
     logger.info("=" * 60)
-    logger.info("Kanyoza AI Platform v16.7 — Starting boot sequence")
+    logger.info("Kanyoza AI Platform v16.8 — Starting boot sequence")
     logger.info("=" * 60)
 
     start_time = time.monotonic()
+
+    try:
+        await asyncio.wait_for(
+            _boot_infrastructure_inner(app, container, start_time),
+            timeout=BOOT_DEADLINE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Boot exceeded overall deadline of %.0fs — aborting",
+            BOOT_DEADLINE_SECONDS,
+        )
+        raise BootFailure(f"Boot deadline exceeded ({BOOT_DEADLINE_SECONDS}s)")
+
+
+async def _boot_infrastructure_inner(
+    app,
+    container: ServiceContainer,
+    start_time: float,
+) -> None:
     boot_steps = _build_boot_sequence(app, container)
 
     phases: dict[BootPhase, list[BootStep]] = {}
@@ -439,11 +638,20 @@ async def boot_infrastructure(app, container: ServiceContainer) -> None:
                     raise BootFailure(f"Critical boot step failed: {step.name}") from exc
                 degraded_services.append(step.name)
 
-    # v16.7: Register everything with Meta Engine after all services have booted
+    # v16.7: Register everything with Meta Engine after all services have booted.
+    # v16.8: A failure here is a real degradation — surface it, don't swallow it.
     try:
         await _register_all_services_with_meta(container)
     except Exception as exc:
-        logger.warning("Service registration with Meta Engine failed: %s", exc)
+        logger.error(
+            "Meta Engine service registration failed: %s",
+            _sanitize_error_message(exc),
+        )
+        degraded_services.append("MetaEngineRegistration")
+        await _emit_boot_degraded(
+            reason="meta_registration_failed",
+            error=_sanitize_error_message(exc),
+        )
 
     # Start supervision only after the final service map and health handlers
     # exist. This closes the boot-time false-negative race.
@@ -452,6 +660,11 @@ async def boot_infrastructure(app, container: ServiceContainer) -> None:
         await meta_engine.start(interval_seconds=60)
     except Exception as exc:
         logger.warning("Meta Engine monitor start deferred/failed: %s", _sanitize_error_message(exc))
+        degraded_services.append("MetaEngineMonitor")
+        await _emit_boot_degraded(
+            reason="meta_monitor_start_failed",
+            error=_sanitize_error_message(exc),
+        )
 
     health_registry.mark_startup_complete()
     total_time = time.monotonic() - start_time
@@ -466,6 +679,19 @@ async def boot_infrastructure(app, container: ServiceContainer) -> None:
     if degraded_services:
         logger.warning("Degraded services: %s", ", ".join(degraded_services))
     logger.info("=" * 60)
+
+
+async def _emit_boot_degraded(reason: str, error: str | None = None) -> None:
+    """Emit a structured boot.degraded event. Best-effort; never raises."""
+    try:
+        from core.unified_bus import get_unified_bus
+        bus = await get_unified_bus()
+        await bus.emit(
+            "boot.degraded",
+            {"reason": reason, "error": error or "", "ts": datetime.now(timezone.utc).isoformat()},
+        )
+    except Exception as exc:
+        logger.debug("Could not emit boot.degraded event: %s", exc)
 
 
 async def _execute_boot_step_with_timeout(step: BootStep) -> None:
@@ -629,7 +855,7 @@ async def _rollback(completed_steps: list[BootStep]) -> None:
             if asyncio.iscoroutine(result):
                 await result
         except Exception as exc:
-            logger.error("Rollback failed for %s: %s", step.name, _sanitize_error_message(exc)  )
+            logger.error("Rollback failed for %s: %s", step.name, _sanitize_error_message(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -736,11 +962,10 @@ async def _boot_supabase(container: ServiceContainer) -> None:
     # Prefer the service-role client for server-side infrastructure such as
     # durable event persistence. Fall back to the anon client only when the
     # deployment intentionally has no service-role credential.
-    client = None
     if settings.supabase_admin_enabled:
-        client = await _run_in_thread(get_service_client_from_settings)
+        client = await _run_in_thread_boot(get_service_client_from_settings)
     else:
-        client = await _run_in_thread(get_anon_client_from_settings)
+        client = await _run_in_thread_boot(get_anon_client_from_settings)
 
     if client is None:
         raise RuntimeError("Supabase is configured but no client could be created")
@@ -876,7 +1101,7 @@ async def _boot_job_service(container: ServiceContainer) -> None:
     from services.supabase import get_service_client_from_settings
     from core.unified_bus import UnifiedEventBus
 
-    client = await _run_in_thread(get_service_client_from_settings)
+    client = await _run_in_thread_boot(get_service_client_from_settings)
     job_service = JobService(supabase_client=client)
 
     event_bus = container.try_resolve(UnifiedEventBus)
@@ -893,7 +1118,7 @@ async def _boot_job_stats_service(container: ServiceContainer) -> None:
     from services.supabase import get_service_client_from_settings
     from core.unified_bus import UnifiedEventBus
 
-    client = await _run_in_thread(get_service_client_from_settings)
+    client = await _run_in_thread_boot(get_service_client_from_settings)
     event_bus = container.try_resolve(UnifiedEventBus)
     service = init_job_stats_service(supabase_client=client, event_bus=event_bus)
     if hasattr(service, "shutdown"):
@@ -906,7 +1131,7 @@ async def _boot_job_stats_service(container: ServiceContainer) -> None:
 async def _boot_render_queue(container: ServiceContainer) -> None:
     from core.render_queue import wire_render_queue_container, get_render_queue
 
-    await _run_in_thread(wire_render_queue_container, container)
+    await _run_in_thread_boot(wire_render_queue_container, container)
     rq = get_render_queue()
     await health_registry.register(_RenderQueueHealthProvider(rq))
     logger.info("RenderQueue ready.")
@@ -1001,7 +1226,7 @@ async def _boot_director(container: ServiceContainer) -> None:
     from services.supabase import get_service_client_from_settings
 
     try:
-        supabase_client = await _run_in_thread(get_service_client_from_settings)
+        supabase_client = await _run_in_thread_boot(get_service_client_from_settings)
     except Exception:
         supabase_client = None
 
@@ -1117,7 +1342,7 @@ async def _boot_autonomous_content(container: ServiceContainer) -> None:
         event_bus = container.try_resolve(UnifiedEventBus)
         supabase_client = None
         try:
-            supabase_client = await _run_in_thread(get_service_client_from_settings)
+            supabase_client = await _run_in_thread_boot(get_service_client_from_settings)
         except Exception as exc:
             logger.warning("Supabase client unavailable for Autonomous Content: %s", exc)
 
@@ -1175,11 +1400,12 @@ async def _boot_autonomous_loop(container: ServiceContainer) -> None:
     except Exception as exc:
         logger.error("Autonomous Loop boot failed: %s", exc)
 
+
 async def _boot_industry_plugins(app, container: ServiceContainer) -> None:
     from supabase import Client as SupabaseClient
 
     supabase_client = container.try_resolve(SupabaseClient)
-    plugins = await _run_in_thread(_discover_industry_plugins, supabase_client, None)
+    plugins = await _run_in_thread_boot(_discover_industry_plugins, supabase_client, None)
     container.industry_plugins = plugins
 
     if not plugins:
@@ -1204,7 +1430,7 @@ async def _boot_growthbridge(container: ServiceContainer) -> None:
         from plugins.growthbridge.plugin import GrowthbridgePlugin
         from services.supabase import get_service_client_from_settings
 
-        client = await _run_in_thread(get_service_client_from_settings)
+        client = await _run_in_thread_boot(get_service_client_from_settings)
         plugin = GrowthbridgePlugin(supabase_client=client)
 
         if not hasattr(container, "industry_plugins"):
@@ -1235,7 +1461,7 @@ async def _stop_growthbridge(container: ServiceContainer) -> None:
     plugins = getattr(container, "industry_plugins", {})
     plugin = plugins.get("growthbridge")
     if plugin and hasattr(plugin, "shutdown"):
-        await _run_in_thread(plugin.shutdown)
+        await _run_in_thread_boot(plugin.shutdown)
 
 
 def _discover_industry_plugins(supabase_client=None, redis_client=None) -> dict:
@@ -1373,7 +1599,7 @@ async def _boot_plugin_from_module(
         init_fn = getattr(module, init_function_name)
 
         from services.supabase import get_service_client_from_settings
-        client = await _run_in_thread(get_service_client_from_settings)
+        client = await _run_in_thread_boot(get_service_client_from_settings)
 
         result = init_fn(supabase_client=client)
         if asyncio.iscoroutine(result):
@@ -1390,7 +1616,7 @@ async def _boot_github_connector(container: ServiceContainer) -> None:
         from plugins.github_connector.plugin import init_github_connector_plugin
         from services.supabase import get_service_client_from_settings
 
-        client = await _run_in_thread(get_service_client_from_settings)
+        client = await _run_in_thread_boot(get_service_client_from_settings)
         plugin = init_github_connector_plugin(supabase_client=client)
 
         await health_registry.register(_GitHubConnectorHealthProvider(plugin))
@@ -1399,7 +1625,7 @@ async def _boot_github_connector(container: ServiceContainer) -> None:
     except ImportError:
         logger.debug("GitHubConnector: not available.")
     except Exception as exc:
-        logger.warning("GitHubConnector: could not start: %s", _sanitize_error_message(exc)  )
+        logger.warning("GitHubConnector: could not start: %s", _sanitize_error_message(exc))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1474,7 +1700,7 @@ class _EventBusHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="event_bus_health_failed",
             )
 
 
@@ -1495,7 +1721,7 @@ class _TaskQueueHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="task_queue_health_failed",
             )
 
 
@@ -1526,7 +1752,7 @@ class _JobServiceHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="job_service_health_failed",
             )
 
 
@@ -1546,7 +1772,7 @@ class _RenderQueueHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="render_queue_health_failed",
             )
 
 
@@ -1568,7 +1794,7 @@ class _AIOrchestratorHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="ai_orchestrator_health_failed",
             )
 
 
@@ -1584,7 +1810,7 @@ class _GitHubConnectorHealthProvider:
             return HealthReport(
                 HealthStatus.DEGRADED,
                 self.service_name,
-                error_message=_sanitize_error_message(exc),
+                error_message="github_connector_health_failed",
             )
 
 
@@ -1604,4 +1830,6 @@ __all__ = [
     "BootFailure",
     "_sanitize_error_message",
     "_execute_boot_step_with_timeout",
+    "BOOT_DEADLINE_SECONDS",
+    "HEALTH_SWEEP_DEADLINE_SECONDS",
 ]
