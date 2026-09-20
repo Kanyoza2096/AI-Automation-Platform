@@ -4,6 +4,15 @@ The ledger records intent, attempts and terminal/ambiguous outcomes. It is
 provider-agnostic and deliberately does not claim exactly-once delivery; it
 provides a durable idempotency boundary and evidence trail for at-least-once
 execution.
+
+Worker identity:
+    A ``worker_id`` identifies the PROCESS, not the ledger instance. Multiple
+    ``ExecutionLedger`` objects created within the same process MUST agree on
+    the lease owner. Prior to the fix, ``worker_id`` was suffixed with a random
+    UUID per instance, so a second ledger in the same process looked like a
+    different worker. That caused the executor's lease check to misfire as
+    ``in_progress`` for a nested call from the same process, and the caller
+    then misreported that as a publish failure.
 """
 from __future__ import annotations
 
@@ -19,6 +28,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("kanyoza.execution_ledger")
+
+
+# ── Process-level worker identity ─────────────────────────────────────────
+#
+# Stable for the lifetime of the process, shared by every ledger instance.
+# Two ledgers in the same process are the same worker; two processes are
+# different workers. This is the invariant lease fencing depends on.
+_PROCESS_WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
 
 # ── Workspace → UUID adapter ──────────────────────────────────────────────
@@ -69,7 +86,11 @@ class ExecutionLedger:
         self._db = db
         self._allow_in_memory = allow_in_memory
         self._memory: dict[str, ExecutionRecord] = {}
-        self.worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        # Process-stable worker identity. Every ledger in the same process
+        # shares this value; two ledgers in different processes do not.
+        # This is what makes lease fencing correct for nested calls within
+        # the same process (kernel -> pipeline -> executor).
+        self.worker_id = _PROCESS_WORKER_ID
 
     @staticmethod
     def make_idempotency_key(*parts: str) -> str:
@@ -138,6 +159,9 @@ class ExecutionLedger:
         execute concurrently. An expired in-flight lease becomes UNCERTAIN
         rather than being blindly reclaimed, because the provider may already
         have received the request before the worker died.
+
+        Within the same process, a second ``claim()`` on the same idempotency
+        key succeeds because both ledgers share ``_PROCESS_WORKER_ID``.
         """
         if self._db:
             try:
