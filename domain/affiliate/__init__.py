@@ -1,0 +1,1 @@
+"""Affiliate workload domain primitives."""

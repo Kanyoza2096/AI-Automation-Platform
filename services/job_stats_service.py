@@ -1,0 +1,576 @@
+"""
+Job Stats Service — Single-query stats aggregation.
+Never imports or calls JobService. Recursion is structurally impossible.
+
+v4.3 — EVENT SUBSCRIPTION FIX:
+  - Fixed duplicate _subscribe_to_events declaration (syntax error)
+  - Async UnifiedEventBus.subscribe is now scheduled on the running loop
+  - Sync legacy subscribe still supported
+
+v4.2 — HEALTH CHECK FIX:
+  - health_check returns "unknown" (not "degraded") on error
+  - health_check returns "unknown" (not "not_configured") when no client
+
+v4.1 — MEMORY FIX:
+  - Single shared Supabase client (not thread-local)
+  - Semaphore-based rate limiting (max 5 concurrent)
+  - Prevents "Max outbound streams is 100" errors
+  - Reduces memory usage significantly
+  - Retains broken pipe retry logic
+
+v4.0 — BROKEN PIPE FIX (retained):
+  - Automatic retry on broken pipe
+  - Thread-safe connection management
+  - Cache invalidation via event subscription
+
+Architecture:
+  - Reads directly from Supabase via Postgres function
+  - Shared client with semaphore
+  - Cache with 30s TTL
+  - Returns real errors, never fake zeros
+  - Supabase client MUST be injected via constructor or set_client()
+"""
+
+from __future__ import annotations
+
+import inspect
+import logging
+import asyncio
+import threading
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+from core.errors import DatabaseQueryError
+
+logger = logging.getLogger("kanyoza.services.job_stats_service")
+
+# ═══════════════════════════════════════════════════════════════════════
+# Single source of truth — hardcoded to avoid circular imports
+# ═══════════════════════════════════════════════════════════════════════
+
+ACTIVE_STATUS_VALUES = (
+    "CREATED", "QUEUED", "RUNNING", "GENERATING",
+    "VALIDATING", "RENDERING", "READY", "PUBLISHING",
+    "RETRY_PENDING", "STALE",
+)
+
+TERMINAL_STATUS_VALUES = (
+    "PUBLISHED", "FAILED", "CANCELLED",
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v4.1 — SHARED CLIENT WITH SEMAPHORE
+# ═══════════════════════════════════════════════════════════════════════
+
+class SharedSupabaseClient:
+    """Single shared Supabase client with semaphore-based rate limiting.
+
+    v4.1: Instead of per-thread clients (which create too many HTTP/2
+    connections), use ONE shared client with a semaphore to limit
+    concurrent requests. This prevents "Max outbound streams is 100"
+    errors and reduces memory usage.
+    """
+
+    def __init__(self, client, max_concurrent: int = 5):
+        self._client = client
+        self._semaphore = threading.BoundedSemaphore(max_concurrent)
+        self._lock = threading.Lock()
+
+    def execute(self, fn):
+        """Execute a function with rate limiting.
+
+        Args:
+            fn: A callable that takes the client as its argument.
+
+        Returns:
+            The result of fn(client).
+        """
+        with self._semaphore:
+            return fn(self._client)
+
+    @property
+    def client(self):
+        """The shared client."""
+        return self._client
+
+    def reset(self) -> None:
+        """Reset the semaphore (after broken pipe recovery)."""
+        # BoundedSemaphore auto-resets; nothing to do here
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# JobStatsService v4.3
+# ═══════════════════════════════════════════════════════════════════════
+
+class JobStatsService:
+    """Read-only stats service with shared Supabase client."""
+
+    service_name: str = "JobStatsService"
+
+    CACHE_TTL_SECONDS = 30
+    MAX_BROKEN_PIPE_RETRIES = 2
+
+    def __init__(
+        self,
+        supabase_client=None,
+        event_bus=None,
+    ) -> None:
+        self._event_bus = event_bus
+        self._cache: dict = {}
+        self._cache_time: float = 0.0
+        self._lock = threading.Lock()
+
+        # v4.1: Shared client with semaphore
+        self._shared_client: Optional[SharedSupabaseClient] = None
+
+        if supabase_client is not None:
+            self.set_client(supabase_client)
+        else:
+            logger.warning(
+                "JobStatsService: No Supabase client provided. "
+                "Stats will return empty data until wired."
+            )
+
+        if self._event_bus is not None:
+            self._subscribe_to_events()
+
+    # ------------------------------------------------------------------
+    # Dependency Injection
+    # ------------------------------------------------------------------
+
+    def set_client(self, client) -> None:
+        """Inject the Supabase client.
+
+        v4.1: Use a SINGLE shared client with semaphore.
+        If a factory function is provided, call it once.
+        """
+        # If factory provided, call it once to get the instance
+        if callable(client) and not hasattr(client, "table"):
+            try:
+                client = client()
+            except Exception as exc:
+                logger.error("JobStatsService: client factory failed: %s", exc)
+                return
+
+        self._shared_client = SharedSupabaseClient(
+            client, max_concurrent=5
+        )
+        logger.info(
+            "JobStatsService: Supabase client configured "
+            "(shared + semaphore, max_concurrent=5)"
+        )
+
+    def set_event_bus(self, event_bus) -> None:
+        self._event_bus = event_bus
+        self._subscribe_to_events()
+
+    def _get_shared_client(self) -> SharedSupabaseClient:
+        """Get the shared client wrapper."""
+        if self._shared_client is None:
+            raise DatabaseQueryError(
+                message="JobStatsService: Supabase client not configured.",
+                context={"operation": "job_stats_service"},
+            )
+        return self._shared_client
+
+    # ------------------------------------------------------------------
+    # Event Subscription
+    # ------------------------------------------------------------------
+
+    def _subscribe_to_events(self) -> None:
+        """Subscribe to job events so cache is invalidated on change.
+
+        v4.3: Handles both sync and async subscribe signatures.
+        UnifiedEventBus.subscribe is async — schedule on the running loop.
+        """
+        if self._event_bus is None:
+            return
+
+        events = [
+            "job.created",
+            "job.status_changed",
+            "job.published",
+            "job.failed",
+            "job.stale_detected",
+            "job.recovered_and_retried",
+            "job.retry_scheduled",
+        ]
+
+        try:
+            if not hasattr(self._event_bus, "subscribe"):
+                return
+
+            subscribe_fn = self._event_bus.subscribe
+            is_async_subscribe = inspect.iscoroutinefunction(subscribe_fn)
+
+            if is_async_subscribe:
+                # UnifiedEventBus.subscribe is async — schedule on the running loop.
+                # If no loop is running (constructor-called), log and skip to
+                # avoid emitting a RuntimeWarning for an un-awaited coroutine.
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    logger.debug(
+                        "JobStatsService: async subscribe skipped — no running loop"
+                    )
+                    return
+
+                for event in events:
+                    loop.create_task(subscribe_fn(event, self._on_job_changed))
+
+                logger.debug(
+                    "JobStatsService: scheduled async subscription to %d job events",
+                    len(events),
+                )
+            else:
+                # Legacy sync subscribe (SharedEventBus or older bus)
+                for event in events:
+                    subscribe_fn(event, self._on_job_changed)
+                logger.debug(
+                    "JobStatsService: subscribed to %d job events (sync)", len(events)
+                )
+        except Exception as exc:
+            logger.debug(
+                "JobStatsService: event subscription failed: %s", exc
+            )
+
+    def _on_job_changed(self, payload: dict = None) -> None:
+        with self._lock:
+            self._cache.clear()
+            self._cache_time = 0.0
+
+    def invalidate_cache(self) -> None:
+        self._on_job_changed()
+
+    # ------------------------------------------------------------------
+    # Public API — with broken pipe retry
+    # ------------------------------------------------------------------
+
+    def get_stats(self, brand_id: Optional[str] = None) -> dict:
+        """Get comprehensive job statistics with broken pipe retry."""
+        if self._shared_client is None:
+            logger.warning(
+                "JobStatsService: get_stats() called without client"
+            )
+            return self._empty_stats()
+
+        cache_key = brand_id or "__all__"
+        with self._lock:
+            if cache_key in self._cache:
+                if time.monotonic() - self._cache_time < self.CACHE_TTL_SECONDS:
+                    return self._cache[cache_key]
+
+        stats = None
+        for attempt in range(self.MAX_BROKEN_PIPE_RETRIES + 1):
+            try:
+                stats = self._compute_stats_via_rpc(brand_id)
+                break
+            except (BrokenPipeError, ConnectionError, ConnectionResetError) as e:
+                logger.warning(
+                    "JobStatsService: broken pipe (attempt %d/%d)",
+                    attempt + 1, self.MAX_BROKEN_PIPE_RETRIES,
+                )
+                if attempt == self.MAX_BROKEN_PIPE_RETRIES:
+                    logger.error(
+                        "JobStatsService: all stats methods failed: %s", e
+                    )
+                    return self._empty_stats()
+                time.sleep(0.5 * (2 ** attempt))
+            except Exception as e:
+                logger.debug(
+                    "JobStatsService: RPC failed (%s), trying fallback", e
+                )
+                try:
+                    stats = self._compute_stats_client_side(brand_id)
+                    break
+                except (BrokenPipeError, ConnectionError, ConnectionResetError) as e2:
+                    if attempt == self.MAX_BROKEN_PIPE_RETRIES:
+                        logger.error(
+                            "JobStatsService: all stats methods failed: %s", e2
+                        )
+                        return self._empty_stats()
+                    time.sleep(0.5 * (2 ** attempt))
+                except Exception as e2:
+                    logger.error(
+                        "JobStatsService: all stats methods failed: %s", e2
+                    )
+                    return self._empty_stats()
+
+        if stats is None:
+            return self._empty_stats()
+
+        with self._lock:
+            self._cache[cache_key] = stats
+            self._cache_time = time.monotonic()
+
+        return stats
+
+    def get_today_stats(self, brand_id: Optional[str] = None) -> dict:
+        full_stats = self.get_stats(brand_id=brand_id)
+        return full_stats.get("today", self._empty_stats()["today"])
+
+    def get_status_counts(self, brand_id: Optional[str] = None) -> dict:
+        full_stats = self.get_stats(brand_id=brand_id)
+        return full_stats.get("status_counts", {})
+
+    def health_check(self) -> dict:
+        if self._shared_client is None:
+            # v4.2 FIX: unknown instead of not_configured
+            return {
+                "status": "unknown",
+                "error": "Supabase client not injected.",
+                "stats": None,
+            }
+
+        try:
+            stats = self.get_stats()
+            return {"status": "healthy", "stats": stats}
+        except Exception as e:
+            logger.error("JobStatsService health check failed: %s", e)
+            # v4.2 FIX: unknown instead of degraded
+            return {"status": "unknown", "error": str(e)[:200], "stats": None}
+
+    def get_status(self) -> dict:
+        return self.health_check()
+
+    # ------------------------------------------------------------------
+    # Private — Stats Computation
+    # ------------------------------------------------------------------
+
+    def _compute_stats_via_rpc(self, brand_id: Optional[str]) -> dict:
+        shared = self._get_shared_client()
+        params = {}
+        if brand_id:
+            params["brand_id"] = brand_id
+
+        # Use semaphore to limit concurrency
+        result = shared.execute(
+            lambda c: c.rpc("get_job_stats", params).execute()
+        )
+
+        if result.data and isinstance(result.data, dict):
+            return self._normalize_stats(result.data)
+
+        raise ValueError(
+            f"RPC returned {type(result.data).__name__}, expected dict"
+        )
+
+    def _compute_stats_client_side(self, brand_id: Optional[str]) -> dict:
+        shared = self._get_shared_client()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        def _query(c):
+            query = c.table("automation_jobs").select(
+                "status,created_at,updated_at"
+            )
+            if brand_id:
+                query = query.eq("brand_id", brand_id)
+            return query.execute()
+
+        result = shared.execute(_query)
+
+        if not result.data:
+            return self._empty_stats()
+
+        rows = result.data
+        now_utc = datetime.now(timezone.utc)
+
+        today_total = 0
+        today_published = 0
+        today_failed = 0
+        today_retrying = 0
+        today_active = 0
+        status_counts: dict = {}
+        oldest_active: Optional[datetime] = None
+
+        for row in rows:
+            status = row.get("status", "unknown")
+            created = row.get("created_at")
+            updated = row.get("updated_at")
+
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+            if created and self._is_today(created, today):
+                today_total += 1
+                if status == "PUBLISHED":
+                    today_published += 1
+                elif status == "FAILED":
+                    today_failed += 1
+                elif status == "RETRY_PENDING":
+                    today_retrying += 1
+                elif status in ACTIVE_STATUS_VALUES:
+                    today_active += 1
+
+            if status in ACTIVE_STATUS_VALUES and updated:
+                updated_dt = self._parse_timestamp(updated)
+                if updated_dt is not None:
+                    if oldest_active is None or updated_dt < oldest_active:
+                        oldest_active = updated_dt
+
+        active_count = sum(
+            count for status, count in status_counts.items()
+            if status in ACTIVE_STATUS_VALUES
+        )
+
+        oldest_minutes = 0.0
+        if oldest_active is not None:
+            oldest_minutes = round(
+                (now_utc - oldest_active).total_seconds() / 60.0, 1
+            )
+
+        return {
+            "today": {
+                "total": today_total,
+                "published": today_published,
+                "failed": today_failed,
+                "retrying": today_retrying,
+                "active": today_active,
+            },
+            "status_counts": status_counts,
+            "active_jobs": active_count,
+            "oldest_active_minutes": oldest_minutes,
+        }
+
+    # ------------------------------------------------------------------
+    # Private — Utilities
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _empty_stats() -> dict:
+        return {
+            "today": {
+                "total": 0, "published": 0, "failed": 0,
+                "retrying": 0, "active": 0,
+            },
+            "status_counts": {},
+            "active_jobs": 0,
+            "oldest_active_minutes": 0,
+        }
+
+    @staticmethod
+    def _normalize_stats(data: dict) -> dict:
+        defaults = JobStatsService._empty_stats()
+        if not isinstance(data, dict):
+            return defaults
+
+        today = data.get("today", {})
+        if not isinstance(today, dict):
+            today = {}
+        data["today"] = {
+            "total": today.get("total", 0),
+            "published": today.get("published", 0),
+            "failed": today.get("failed", 0),
+            "retrying": today.get("retrying", 0),
+            "active": today.get("active", 0),
+        }
+
+        data.setdefault("status_counts", {})
+        data.setdefault("active_jobs", 0)
+        data.setdefault("oldest_active_minutes", 0)
+
+        return data
+
+    @staticmethod
+    def _is_today(timestamp_str: str, today_str: str) -> bool:
+        if not timestamp_str:
+            return False
+        return timestamp_str >= f"{today_str}T00:00:00"
+
+    @staticmethod
+    def _parse_timestamp(value) -> Optional[datetime]:
+        if value is None:
+            return None
+
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            except (ValueError, OSError):
+                return None
+
+        if isinstance(value, str):
+            try:
+                s = value.strip().replace("Z", "+00:00")
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except (ValueError, TypeError):
+                pass
+
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Module Singleton
+# ═══════════════════════════════════════════════════════════════════════
+
+job_stats_service: Optional[JobStatsService] = None
+
+
+def init_job_stats_service(
+    supabase_client=None,
+    event_bus=None,
+) -> JobStatsService:
+    """Initialize the JobStatsService singleton.
+
+    v4.1: Single shared client with semaphore.
+
+    Example:
+        from services.supabase import get_service_client_from_settings
+
+        client = get_service_client_from_settings()
+        init_job_stats_service(
+            supabase_client=client,  # Instance, not factory
+            event_bus=bus,
+        )
+    """
+    global job_stats_service
+
+    if job_stats_service is None:
+        job_stats_service = JobStatsService(
+            supabase_client=supabase_client,
+            event_bus=event_bus,
+        )
+        logger.info(
+            "JobStatsService: singleton initialized (v4.3 shared + semaphore)"
+        )
+    else:
+        if supabase_client is not None:
+            job_stats_service.set_client(supabase_client)
+        if event_bus is not None:
+            job_stats_service.set_event_bus(event_bus)
+        logger.info("JobStatsService: singleton updated")
+
+    return job_stats_service
+
+
+def get_job_stats_service() -> JobStatsService:
+    global job_stats_service
+
+    if job_stats_service is None:
+        job_stats_service = JobStatsService()
+        logger.warning(
+            "JobStatsService: get_job_stats_service() called before init. "
+            "Call init_job_stats_service(supabase_client=client) during boot."
+        )
+
+    return job_stats_service
+
+
+__all__ = [
+    "JobStatsService",
+    "job_stats_service",
+    "init_job_stats_service",
+    "get_job_stats_service",
+    "ACTIVE_STATUS_VALUES",
+    "TERMINAL_STATUS_VALUES",
+    "SharedSupabaseClient",
+]

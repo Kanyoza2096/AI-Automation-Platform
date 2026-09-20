@@ -1,0 +1,16 @@
+-- Phase 5: Analytics Multi-Tenant Migration
+
+ALTER TABLE IF EXISTS message_events ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE IF EXISTS message_events ADD COLUMN IF NOT EXISTS brand_id TEXT;
+
+ALTER TABLE IF EXISTS post_events ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE IF EXISTS post_events ADD COLUMN IF NOT EXISTS brand_id TEXT;
+
+ALTER TABLE IF EXISTS engagement_events ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE IF EXISTS engagement_events ADD COLUMN IF NOT EXISTS brand_id TEXT;
+
+ALTER TABLE IF EXISTS error_events ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE IF EXISTS error_events ADD COLUMN IF NOT EXISTS brand_id TEXT;
+
+ALTER TABLE IF EXISTS scan_history ADD COLUMN IF NOT EXISTS workspace_id TEXT;
+ALTER TABLE IF EXISTS scan_history ADD COLUMN IF NOT EXISTS brand_id TEXT;
