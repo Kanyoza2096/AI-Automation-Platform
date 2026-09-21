@@ -24,6 +24,14 @@ v4.1.2 — Async/Sync Bridge for content steps:
   so they work from either context. Previously they called the async
   methods without awaiting, which produced un-awaited coroutines and
   halted the workflow at generate_content.
+
+v4.1.3 — Async/Sync Bridge for validate_content:
+  ContentValidator.validate is async-native (v3.0). ValidateContentStep
+  was still calling it synchronously and reading `.is_rejected` on the
+  returned coroutine, halting the workflow with
+  "'coroutine' object has no attribute 'is_rejected'". This step now
+  provides the same sync `run` + `async_run` bridge used by the other
+  async-native steps.
 """
 
 from __future__ import annotations
@@ -261,14 +269,36 @@ class GenerateContentStep(Step):
 
 # ── 3. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
-    """Validate AI-generated content before proceeding."""
+    """Validate AI-generated content before proceeding.
+
+    v4.1.3 — ContentValidator.validate is async-native (v3.0). This step
+    provides both a sync `run` (via asyncio.run) and an `async_run` so it
+    works from either context. Previously the call returned an un-awaited
+    coroutine and the workflow halted with
+    "'coroutine' object has no attribute 'is_rejected'".
+    """
     name = "validate_content"
 
     def __init__(self, validator: "ContentValidator" = None) -> None:
         from services.content_validator import ContentValidator
         self._validator = validator or ContentValidator()
 
+    # ── Sync bridge ───────────────────────────────────────────────────
+
     def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "ValidateContentStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+    # ── Async implementation ──────────────────────────────────────────
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption", "")
         topic = context.get("topic", "")
         content_result = context.get("content_result", {})
@@ -284,7 +314,7 @@ class ValidateContentStep(Step):
         brand = context.get("brand")
         platform = context.get("platform", "facebook")
 
-        validation_result = self._validator.validate(
+        validation_result = await self._validator.validate(
             content=content,
             brand=brand,
             platform=platform,
