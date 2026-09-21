@@ -73,18 +73,43 @@ class WorkflowResult:
 class Step:
     """A single stage in a Workflow.
 
-    Subclasses can implement either:
+    ── Contract ─────────────────────────────────────────────────────────
 
-    * ``run(context)`` — synchronous execution (classic pattern). Its return
-      value is passed to the next step.
-    * ``async_run(context)`` — async-native execution. Use this if the step
-      needs to await services (ContentEngine, KnowledgeBase, EventBus, etc.).
+    Implement **exactly one** of the following:
 
-    If a subclass overrides ``run`` but accidentally returns a coroutine
-    (because it called an async service without awaiting), the base class's
-    ``execute()`` will detect and await the coroutine automatically. This
-    preserves sync callers (like BrandScheduler) while avoiding the class
-    of bug where a coroutine object is silently returned as a step's output.
+    * ``run(context)`` — synchronous execution. Return a value.
+    * ``async_run(context)`` — async execution. Return an awaitable.
+
+    Steps MUST NOT implement their own sync/async bridge. Do NOT call
+    ``asyncio.run`` from a step. Do NOT raise "cannot run inside a
+    running event loop". Just return the value (for sync steps) or the
+    coroutine (for async steps). The framework handles the dispatch.
+
+    The recommended pattern for an async step is to define ``async_run``
+    and provide a one-line ``run`` that returns the coroutine:
+
+        def run(self, context):
+            return self.async_run(context)
+
+        async def async_run(self, context):
+            return await self._service.do_work(context)
+
+    The framework's ``execute()`` detects the returned coroutine and
+    bridges it. When the caller is inside an event loop, the bridge runs
+    the coroutine on a worker thread with its own loop, avoiding the
+    "asyncio.run() cannot be called from a running event loop" error.
+
+    ── Why this rule exists ─────────────────────────────────────────────
+
+    Prior versions allowed steps to implement their own bridges. This
+    led to a recurring class of bug where a step:
+      (a) called an async service without awaiting, silently returning
+          a coroutine object as the step's output, or
+      (b) refused to run inside a running event loop and halted the
+          workflow with a misleading error.
+
+    Centralising the bridge in the framework eliminates both failure
+    modes and gives every step identical, correct behaviour.
     """
 
     name: str = "unnamed_step"
@@ -93,9 +118,9 @@ class Step:
     def run(self, context: dict[str, Any]) -> Any:
         """Execute the step synchronously. Raise to signal failure.
 
-        Return value is passed as ``context['last_output']`` to the next step.
-        Subclasses that need async work should implement ``async_run``
-        instead; the default ``run`` will not be called in that case.
+        Return value is passed as ``context['last_output']`` to the next
+        step. Async steps should define ``async_run`` instead and provide
+        a one-line ``run`` that returns ``self.async_run(context)``.
         """
         raise NotImplementedError
 
@@ -104,7 +129,8 @@ class Step:
 
         The default implementation calls the sync ``run`` and awaits its
         return value if it is awaitable. Steps that need async-only work
-        should override ``async_run`` and leave ``run`` unimplemented.
+        should override ``async_run`` and leave ``run`` as the one-line
+        coroutine return (see class docstring).
         """
         result = self.run(context)
         if inspect.isawaitable(result):
@@ -118,15 +144,15 @@ class Step:
 
         Behaviour:
 
-        * If the subclass overrides ``run`` directly (classic sync step), it
-          is called. If it returns a coroutine (because it called an async
-          service without awaiting), the coroutine is awaited here so the
-          caller receives the real result rather than a coroutine object.
+        * If the subclass overrides ``run`` directly (classic sync step
+          or the one-line async-return pattern), it is called. If it
+          returns a coroutine, the coroutine is awaited here so the
+          caller receives the real result.
         * If the subclass does NOT override ``run`` but DOES implement
-          ``async_run``, the async implementation is bridged via the same
-          coroutine runner.
-        * If neither is implemented, ``Step.run`` raises ``NotImplementedError``
-          and the step is reported as failed.
+          ``async_run``, the async implementation is bridged via the
+          same coroutine runner.
+        * If neither is implemented, ``Step.run`` raises
+          ``NotImplementedError`` and the step is reported as failed.
         """
         start = time.monotonic()
 
@@ -136,12 +162,8 @@ class Step:
             if overrides_run:
                 output = self.run(context)
                 if inspect.isawaitable(output):
-                    # Subclass returned a coroutine — it called an async
-                    # service without awaiting. Bridge it so the caller
-                    # receives the real value.
                     output = self._bridge_coroutine(output)
             else:
-                # No sync override — use the async hook.
                 output = self._bridge_coroutine(self.async_run(context))
 
             latency = (time.monotonic() - start) * 1000
@@ -166,17 +188,17 @@ class Step:
     def _bridge_coroutine(coro: Any) -> Any:
         """Run a coroutine from a sync context.
 
-        If no event loop is running in this thread, use ``asyncio.run``.
-        If a loop is already running (a nested call from an async context),
-        run the coroutine in a worker thread to avoid the nested-loop error.
+        * No event loop in this thread → ``asyncio.run`` directly.
+        * A loop is running → offload to a worker thread with its own loop.
+
+        This is the ONLY place in the workflow framework that calls
+        ``asyncio.run``. Steps must not duplicate this logic.
         """
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop — safe to asyncio.run.
             return asyncio.run(coro)
 
-        # A loop is running in this thread. Offload to a worker thread.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, coro).result()
@@ -184,6 +206,7 @@ class Step:
     # ── Async execution (native) ──────────────────────────────────────
 
     async def execute_async(self, context: dict[str, Any]) -> StepResult:
+        """Async entry point. Awaits ``async_run`` natively."""
         start = time.monotonic()
         try:
             output = await self.async_run(context)
@@ -212,6 +235,9 @@ class Workflow:
     Usage::
 
         result = PostPublishWorkflow(deps...).run(topic="FastAPI vs Flask")
+
+    Sync callers (worker threads, scheduler) use ``run()``.
+    Async callers (FastAPI handlers, ASGI) use ``await execute_async()``.
     """
 
     name: str = "unnamed_workflow"
@@ -274,18 +300,26 @@ class Workflow:
         })
         return result
 
-
-    async def execute_async(self, initial_context: Optional[dict[str, Any]] = None, **kwargs) -> WorkflowResult:
+    async def execute_async(
+        self,
+        initial_context: Optional[dict[str, Any]] = None,
+        **kwargs,
+    ) -> WorkflowResult:
         """Async-native workflow execution for ASGI and worker runtimes.
 
-        Sync steps keep their existing implementation; steps that implement
-        ``async_run`` can perform real async I/O without nested event loops.
+        Sync steps keep their existing implementation; steps that
+        implement ``async_run`` perform real async I/O without nested
+        event loops.
         """
         context: dict[str, Any] = dict(initial_context or {})
         context.update(kwargs)
         result = WorkflowResult(workflow_name=self.name)
         logger.info("Workflow '%s' async started (%d steps)", self.name, len(self._steps))
-        _emit("workflow_started", {"workflow": self.name, "total_steps": len(self._steps), "steps": [s.name for s in self._steps]})
+        _emit("workflow_started", {
+            "workflow": self.name,
+            "total_steps": len(self._steps),
+            "steps": [s.name for s in self._steps],
+        })
 
         for step in self._steps:
             _emit("workflow_step_started", {"workflow": self.name, "step": step.name})
@@ -293,7 +327,8 @@ class Workflow:
             result.steps.append(step_result)
             _emit("workflow_step_done", {
                 "workflow": self.name, "step": step.name,
-                "status": step_result.status.value, "latency_ms": round(step_result.latency_ms),
+                "status": step_result.status.value,
+                "latency_ms": round(step_result.latency_ms),
                 "error": step_result.error,
             })
             if step_result.ok:
@@ -303,9 +338,17 @@ class Workflow:
                 break
 
         result.finished_at = time.monotonic()
-        logger.info("Workflow '%s' async finished in %.0fms — %s", self.name, result.total_ms, "OK" if result.success else "FAILED")
+        logger.info(
+            "Workflow '%s' async finished in %.0fms — %s",
+            self.name, result.total_ms,
+            "OK" if result.success else "FAILED",
+        )
         _emit("workflow_done", {
-            "workflow": self.name, "success": result.success, "total_ms": round(result.total_ms),
-            "steps": [{"step": s.step_name, "status": s.status.value, "latency_ms": round(s.latency_ms)} for s in result.steps],
+            "workflow": self.name, "success": result.success,
+            "total_ms": round(result.total_ms),
+            "steps": [
+                {"step": s.step_name, "status": s.status.value, "latency_ms": round(s.latency_ms)}
+                for s in result.steps
+            ],
         })
         return result
