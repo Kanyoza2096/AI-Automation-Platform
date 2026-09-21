@@ -1,6 +1,16 @@
 """
-Brand-aware scheduling engine — UNIFIED v4.0
+Brand-aware scheduling engine — UNIFIED v4.1
 Replaces PostScheduler with a multi-tenant BrandSchedulerManager.
+
+v4.1 — CRITICAL FIX:
+  - BrandScheduler.start() is now synchronous.
+  - Previous version declared `async def start()` but the manager called it
+    without awaiting, producing an un-awaited coroutine and never starting
+    the background thread. The scheduler object existed; its thread did not.
+  - Manual triggers may have worked, /bot/status may have shown a scheduler
+    object, but the periodic scheduled-post sweep never ran.
+  - This version makes start() synchronous because nothing inside it awaits.
+    Callers invoke it directly: `scheduler.start()`.
 
 v4.0 — 10/10 PRODUCTION GRADE:
   - Distributed locking (Redis + Thread fallback)
@@ -88,11 +98,11 @@ def _job_call(service, method: str, *args, **kwargs):
 
 class DeadLetterQueue:
     """Stores failed publishes for later retry/manual review.
-    
+
     v4.0: No more lost posts. Failed attempts go to a persistent queue.
     Falls back: Supabase → file → memory.
     """
-    
+
     def __init__(
         self,
         supabase_client: Any = None,
@@ -103,7 +113,7 @@ class DeadLetterQueue:
         self.file_path = file_path
         self._memory_queue: deque = deque(maxlen=max_memory_entries)
         self._lock = threading.RLock()
-    
+
     def push(
         self,
         brand_id: str,
@@ -123,7 +133,7 @@ class DeadLetterQueue:
             ).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        
+
         with self._lock:
             # Try Supabase
             if self.supabase:
@@ -132,7 +142,7 @@ class DeadLetterQueue:
                     return
                 except Exception:
                     pass
-            
+
             # Try file
             try:
                 existing = []
@@ -145,22 +155,22 @@ class DeadLetterQueue:
                 return
             except Exception:
                 pass
-            
+
             # Memory fallback
             self._memory_queue.append(entry)
-    
+
     def pop_retryable(self, limit: int = 10) -> List[dict]:
         """Get entries that are ready for retry."""
         now = datetime.now(timezone.utc)
         retryable = []
-        
+
         with self._lock:
             # Check memory first
             for entry in list(self._memory_queue):
                 next_retry = datetime.fromisoformat(entry["next_retry_at"])
                 if next_retry <= now:
                     retryable.append(entry)
-            
+
             # Check file
             if os.path.exists(self.file_path):
                 try:
@@ -179,7 +189,7 @@ class DeadLetterQueue:
                         json.dump(existing, f, indent=2, default=str)
                 except Exception:
                     pass
-            
+
             # Check Supabase
             if self.supabase and len(retryable) < limit:
                 try:
@@ -194,9 +204,9 @@ class DeadLetterQueue:
                         retryable.append(dict(row))
                 except Exception:
                     pass
-        
+
         return retryable
-    
+
     def ack(self, entry_id: str) -> bool:
         """Remove a retry entry only after downstream execution is accepted."""
         removed = False
@@ -241,7 +251,7 @@ class DeadLetterQueue:
 
 class SupabaseCircuitBreaker:
     """Circuit breaker with proper half-open probing."""
-    
+
     def __init__(
         self,
         failure_threshold: int = 5,
@@ -257,7 +267,7 @@ class SupabaseCircuitBreaker:
         self._half_open_probes = 0
         self._lock = threading.RLock()
         self.state_history: deque = deque(maxlen=100)
-    
+
     @property
     def is_open(self) -> bool:
         with self._lock:
@@ -277,7 +287,7 @@ class SupabaseCircuitBreaker:
                     return False
                 return True
             return False
-    
+
     def record_success(self) -> None:
         with self._lock:
             if self._state == "HALF_OPEN":
@@ -290,7 +300,7 @@ class SupabaseCircuitBreaker:
                     logger.info("Circuit breaker: HALF_OPEN → CLOSED")
             elif self._state == "CLOSED":
                 self._failure_count = 0
-    
+
     def record_failure(self) -> None:
         with self._lock:
             self._failure_count += 1
@@ -303,14 +313,14 @@ class SupabaseCircuitBreaker:
                 self._state = "OPEN"
                 self._record_state_transition("CLOSED", "OPEN")
                 logger.error("Circuit breaker: CLOSED → OPEN (%d failures)", self._failure_count)
-    
+
     def _record_state_transition(self, from_state: str, to_state: str) -> None:
         self.state_history.append({
             "from": from_state,
             "to": to_state,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
-    
+
     @property
     def state(self) -> str:
         with self._lock:
@@ -323,7 +333,7 @@ class SupabaseCircuitBreaker:
 
 class SchedulerMetrics:
     """Prometheus-compatible metrics for the scheduler."""
-    
+
     def __init__(self):
         self._lock = threading.RLock()
         self.posts_published_total = 0
@@ -334,20 +344,20 @@ class SchedulerMetrics:
         self.publish_latency_ms: deque = deque(maxlen=500)
         self.success_rate_5m: deque = deque(maxlen=300)
         self.success_rate_1h: deque = deque(maxlen=3600)
-    
+
     def record_publish_success(self, duration_ms: float) -> None:
         with self._lock:
             self.posts_published_total += 1
             self.publish_latency_ms.append(duration_ms)
             self.success_rate_5m.append((time.monotonic(), True))
             self.success_rate_1h.append((time.monotonic(), True))
-    
+
     def record_publish_failure(self, duration_ms: float = 0) -> None:
         with self._lock:
             self.posts_failed_total += 1
             self.success_rate_5m.append((time.monotonic(), False))
             self.success_rate_1h.append((time.monotonic(), False))
-    
+
     def get_success_rate(self, window_seconds: float = 300) -> float:
         with self._lock:
             now = time.monotonic()
@@ -355,7 +365,7 @@ class SchedulerMetrics:
             if not entries:
                 return 1.0
             return sum(entries) / len(entries)
-    
+
     def get_p95_latency(self) -> float:
         with self._lock:
             if not self.publish_latency_ms:
@@ -363,7 +373,7 @@ class SchedulerMetrics:
             data = sorted(self.publish_latency_ms)
             idx = int(len(data) * 0.95)
             return data[min(idx, len(data) - 1)]
-    
+
     def to_prometheus(self) -> str:
         """Export metrics in Prometheus text format."""
         with self._lock:
@@ -449,7 +459,7 @@ def _emit_dashboard_event(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BRAND SCHEDULER v4.0 — 10/10 PRODUCTION GRADE
+# BRAND SCHEDULER v4.1 — SYNC START FIX
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BrandScheduler:
@@ -478,7 +488,6 @@ class BrandScheduler:
         self._running = False
         self._thread = None
         self._stop_event = threading.Event()
-        self._worker_id = f"scheduler:{brand.id}:{uuid.uuid4().hex}"
 
         # v3.9: Timezone support
         self.timezone_name = getattr(brand, "timezone", None) or "UTC"
@@ -585,7 +594,14 @@ class BrandScheduler:
     # LIFECYCLE
     # ═══════════════════════════════════════════════════════════════
 
-    async def start(self) -> None:
+    def start(self) -> None:
+        """Start the per-brand scheduler thread. SYNCHRONOUS.
+
+        v4.1 — The previous version declared this as `async def` but the
+        manager called it without awaiting, producing an un-awaited coroutine
+        and never starting the background thread. Nothing inside this method
+        awaits, so it does not need to be async.
+        """
         if self._running:
             return
         self._running = True
@@ -593,7 +609,7 @@ class BrandScheduler:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         logger.info(
-            "BrandScheduler v4.0: started for '%s' — %d content slots, %d news slots (tz=%s)",
+            "BrandScheduler v4.1: started for '%s' — %d content slots, %d news slots (tz=%s)",
             self.brand.name, len(self.content_hours), len(self.news_hours),
             self.timezone_name,
         )
@@ -729,6 +745,10 @@ class BrandScheduler:
 
     def _check_scheduled_posts(self) -> None:
         if not self._job_service:
+            logger.warning(
+                "[%s] sweep skipped: no JobService wired to scheduler",
+                self.brand.name,
+            )
             return
 
         if self._supabase_circuit.is_open:
@@ -739,26 +759,40 @@ class BrandScheduler:
             return
 
         try:
-            from services.supabase import supabase_service
-            if not supabase_service or not supabase_service.client:
+            # Scheduled-post operations are backend infrastructure.
+            # They MUST use the service-role client:
+            #   1. `scheduled_posts` is RLS-enabled with no permissive policy
+            #      for anon/authenticated roles.
+            #   2. `claim_scheduled_post` / `recover_scheduled_post_claims`
+            #      are GRANTed to `service_role` only.
+            #   3. `supabase_service.client` prefers the anon client, so using
+            #      it would hit RLS and fail silently.
+            from services.supabase import get_service_client_from_settings
+            db = get_service_client_from_settings()
+            if db is None:
+                logger.error(
+                    "[%s] sweep skipped: service-role Supabase client unavailable",
+                    self.brand.name,
+                )
                 return
 
             now_utc = datetime.now(timezone.utc)
 
-            # Recover only expired scheduler claims. A post already linked to
-            # the publish outbox is never reset to queued: the outbox owns it.
-            try:
-                supabase_service.client.rpc("recover_scheduled_post_claims", {
-                    "p_limit": 100,
-                }).execute()
-            except Exception as recovery_exc:
-                logger.error(
-                    "[%s] Scheduled claim recovery failed: %s",
-                    self.brand.name, recovery_exc,
-                )
+            # Recover claims stranded by worker/process crashes. Only stale
+            # processing rows are reset; active work remains untouched.
+            stale_before = (now_utc - timedelta(minutes=15)).isoformat()
+            retry_with_backoff(
+                lambda: db.table("scheduled_posts")
+                .update({"status": "queued", "started_at": None})
+                .eq("brand_id", self.brand.id)
+                .eq("status", "processing")
+                .lt("started_at", stale_before)
+                .execute(),
+                max_retries=1,
+            )
 
             post_result = retry_with_backoff(
-                lambda: supabase_service.client.table("scheduled_posts")
+                lambda: db.table("scheduled_posts")
                 .select("id,caption,workspace_id,brand_id")
                 .order("scheduled_for")
                 .eq("brand_id", self.brand.id)
@@ -776,13 +810,15 @@ class BrandScheduler:
             post_row = post_result.data[0]
             post_id = post_row["id"]
 
-            worker_id = getattr(self, "_worker_id", None) or f"scheduler:{self.brand.id}:{id(self)}"
             result = retry_with_backoff(
-                lambda: supabase_service.client.rpc("claim_scheduled_post", {
-                    "p_id": post_id,
-                    "p_worker": worker_id,
-                    "p_lease_seconds": 300,
-                }).execute(),
+                lambda: db.table("scheduled_posts")
+                .update({
+                    "status": "processing",
+                    "started_at": now_utc.isoformat(),
+                })
+                .eq("id", post_id)
+                .eq("status", "queued")
+                .execute(),
                 max_retries=2,
             )
 
@@ -801,10 +837,9 @@ class BrandScheduler:
                     # Never leave a claimed post stranded in processing when the
                     # workflow could not be accepted (backpressure/lock/failure).
                     try:
-                        supabase_service.client.table("scheduled_posts").update({
+                        db.table("scheduled_posts").update({
                             "status": "queued", "started_at": None,
-                            "lease_token": None, "lease_owner": None, "lease_expires_at": None,
-                        }).eq("id", post_id).eq("status", "processing").eq("lease_owner", worker_id).execute()
+                        }).eq("id", post_id).eq("status", "processing").execute()
                     except Exception as reset_exc:
                         logger.error(
                             "[%s] Failed to release unaccepted scheduled post %s: %s",
@@ -855,7 +890,7 @@ class BrandScheduler:
                 return None, None
 
         try:
-            automation_job = _job_call(self._job_service, "create_scheduled_job", 
+            automation_job = _job_call(self._job_service, "create_scheduled_job",
                 brand_id=brand_id, workspace_id=workspace_id,
                 slot_date=slot_date, slot_hour=slot_hour, job_id=job_id,
             )
@@ -923,7 +958,7 @@ class BrandScheduler:
                         return False
                     if automation_job:
                         try:
-                            automation_job = _job_call(self._job_service, "transition", 
+                            automation_job = _job_call(self._job_service, "transition",
                                 automation_job, JobStatus.RUNNING,
                             )
                         except Exception as e:
@@ -996,7 +1031,7 @@ class BrandScheduler:
                                     if r.get("ok") and r.get("post_id"):
                                         post_id = r["post_id"]
                                         break
-                        _job_call(self._job_service, "mark_published", 
+                        _job_call(self._job_service, "mark_published",
                             automation_job, post_id=post_id,
                             result={"topic": topic, "platforms": platforms},
                         )
@@ -1008,9 +1043,10 @@ class BrandScheduler:
 
                 if scheduled_post_id:
                     try:
-                        from services.supabase import supabase_service
-                        if supabase_service and supabase_service.client:
-                            supabase_service.client.table("scheduled_posts").update({
+                        from services.supabase import get_service_client_from_settings
+                        db = get_service_client_from_settings()
+                        if db is not None:
+                            db.table("scheduled_posts").update({
                                 "status": "published",
                                 "completed_at": datetime.now(timezone.utc).isoformat(),
                             }).eq("id", scheduled_post_id).execute()
@@ -1052,16 +1088,17 @@ class BrandScheduler:
             elif queued_publish:
                 if scheduled_post_id:
                     try:
-                        from services.supabase import supabase_service
-                        if supabase_service and supabase_service.client:
+                        from services.supabase import get_service_client_from_settings
+                        db = get_service_client_from_settings()
+                        if db is not None:
                             outbox_id = next(
                                 (s.output or {}).get("outbox_id")
                                 for s in result.steps
                                 if s.step_name == "publish" and isinstance(s.output, dict) and (s.output or {}).get("outbox_id")
                             )
-                            supabase_service.client.table("scheduled_posts").update({
+                            db.table("scheduled_posts").update({
                                 "status": "outbox_pending",
-                                "started_at": now_utc.isoformat() if 'now_utc' in locals() else datetime.now(timezone.utc).isoformat(),
+                                "started_at": datetime.now(timezone.utc).isoformat(),
                                 "outbox_id": outbox_id,
                             }).eq("id", scheduled_post_id).eq("status", "processing").execute()
                     except Exception as e:
@@ -1084,7 +1121,7 @@ class BrandScheduler:
                 failed = [s.step_name for s in result.steps if not s.ok]
                 if automation_job and self._job_service:
                     try:
-                        _job_call(self._job_service, "mark_failed", 
+                        _job_call(self._job_service, "mark_failed",
                             automation_job, error=f"Steps failed: {failed}",
                             error_code="WORKFLOW_FAILED", retryable=True,
                         )
@@ -1095,14 +1132,14 @@ class BrandScheduler:
                         )
                 self._posts_failed += 1
                 self._metrics.record_publish_failure(duration_ms)
-                
+
                 # v4.0 — Push to dead letter queue
                 self._dead_letter_queue.push(
                     brand_id=self.brand.id,
                     error=f"Steps failed: {failed}",
                     payload={"source": source, "today": today, "hour": hour},
                 )
-                
+
                 logger.warning(
                     "[%s] job=%s FAILED — steps=%s (queued for retry)",
                     self.brand.name, job_id, failed,
@@ -1114,7 +1151,7 @@ class BrandScheduler:
             if automation_job and self._job_service:
                 try:
                     from core.errors import is_retryable
-                    _job_call(self._job_service, "mark_failed", 
+                    _job_call(self._job_service, "mark_failed",
                         automation_job, error=str(e),
                         error_code="WORKFLOW_EXCEPTION",
                         retryable=is_retryable(e),
@@ -1123,14 +1160,14 @@ class BrandScheduler:
                     pass
             self._posts_failed += 1
             self._metrics.record_publish_failure(duration_ms)
-            
+
             # v4.0 — Push to dead letter queue
             self._dead_letter_queue.push(
                 brand_id=self.brand.id,
                 error=str(e),
                 payload={"source": source, "today": today, "hour": hour},
             )
-            
+
             logger.error(
                 "[%s] job=%s EXCEPTION: %s (queued for retry)",
                 self.brand.name, job_id, e,
@@ -1203,7 +1240,7 @@ class BrandScheduler:
             if self._job_service:
                 try:
                     workspace_id = getattr(self.brand, "workspace_id", "")
-                    automation_job = _job_call(self._job_service, "create_manual_job", 
+                    automation_job = _job_call(self._job_service, "create_manual_job",
                         brand_id=self.brand.id, workspace_id=workspace_id, job_id=job_id,
                     )
                     if automation_job:
@@ -1270,7 +1307,7 @@ class BrandScheduler:
 
             if automation_job and self._job_service:
                 try:
-                    _job_call(self._job_service, "mark_failed", 
+                    _job_call(self._job_service, "mark_failed",
                         automation_job, error="Publish failed",
                         error_code="PUBLISH_FAILED", retryable=True,
                     )
@@ -1317,12 +1354,13 @@ class BrandScheduler:
             "brand_id": self.brand.id,
             "brand_name": self.brand.name,
             "running": self._running,
+            "thread_alive": bool(self._thread and self._thread.is_alive()),
             "timezone": self.timezone_name,
             "posts_today": posts_today,
             "max_posts_per_day": self.max_posts_per_day,
             "content_hours": self.content_hours,
             "news_hours": self.news_hours,
-            "publish_busy": not self._distributed_lock.acquire() if False else self._publish_lock.locked(),
+            "publish_busy": self._publish_lock.locked(),
             "job_stats": job_stats,
             "posts_published": self._posts_published,
             "posts_failed": self._posts_failed,
@@ -1335,7 +1373,7 @@ class BrandScheduler:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BRAND SCHEDULER MANAGER v4.0
+# BRAND SCHEDULER MANAGER v4.1
 # ═══════════════════════════════════════════════════════════════════════════
 
 class BrandSchedulerManager:
@@ -1398,7 +1436,7 @@ class BrandSchedulerManager:
         await self._sync_brands()
         self._manager_thread = threading.Thread(target=self._sync_loop, daemon=True, name="scheduler-manager")
         self._manager_thread.start()
-        logger.info("BrandSchedulerManager v4.0: started")
+        logger.info("BrandSchedulerManager v4.1: started")
 
     def stop(self) -> None:
         self._running = False
@@ -1427,18 +1465,39 @@ class BrandSchedulerManager:
             logger.error("Stale job recovery failed: %s", e)
 
     async def _sync_brands(self) -> None:
+        """Discover active brands and start per-brand schedulers.
+
+        v4.1 — `scheduler.start()` is now synchronous, so the direct call
+        below actually starts the background thread. This method still runs
+        inside an event loop (via asyncio.run from _sync_loop, or from
+        manager.start()), so any remaining awaits are fine.
+        """
         import asyncio
         loop = asyncio.get_running_loop()
         brands = await loop.run_in_executor(None, self.brand_repo.find_all)
+
+        logger.info(
+            "BrandSchedulerManager._sync_brands: find_all returned %d brand(s)",
+            len(brands),
+        )
+
         active_ids = set()
         for brand in brands:
             status = str(getattr(brand, "status", "") or "").lower()
             if status != "active":
+                logger.info(
+                    "[%s] brand skipped: status=%s (only 'active' is scheduled)",
+                    getattr(brand, "name", brand.id), status,
+                )
                 continue
             active_ids.add(brand.id)
             if brand.id not in self._schedulers:
                 ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
                 if not ai_profile:
+                    logger.warning(
+                        "[%s] brand skipped: no AI profile (ai_profile_id=%s)",
+                        getattr(brand, "name", brand.id), brand.ai_profile_id,
+                    )
                     continue
                 scheduler = BrandScheduler(
                     brand, ai_profile, self._container,
@@ -1449,7 +1508,11 @@ class BrandSchedulerManager:
                     redis_client=self._redis_client,
                 )
                 self._schedulers[brand.id] = scheduler
-                scheduler.start()
+                scheduler.start()   # synchronous — starts the thread immediately
+                logger.info(
+                    "[%s] scheduler object created and thread started",
+                    getattr(brand, "name", brand.id),
+                )
 
         try:
             from services.director import director
