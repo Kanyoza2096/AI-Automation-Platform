@@ -21,6 +21,15 @@ Receipt contract (v2):
     parameters before deepcopy / persistence so the kernel can hash the intent
     and store it in action_outbox without attempting to serialize thread locks
     or HTTP clients. They are reattached for handler execution only.
+
+Status vocabulary:
+  Subsystems return various status strings. The kernel normalizes them into
+  its own vocabulary before persisting or finalizing:
+      "ok"        -> "succeeded"
+      "completed" -> "succeeded"
+      "success"   -> "succeeded"
+  Unrecognized values pass through unchanged; the finalizer will reject them
+  safely rather than silently mark a non-success as succeeded.
 """
 from __future__ import annotations
 
@@ -40,6 +49,31 @@ from services.external_action_executor import ExternalActionExecutor
 logger = logging.getLogger("kanyoza.action_kernel")
 
 RISKS = {"low", "medium", "high", "critical"}
+
+# Subsystem status vocabulary -> kernel status vocabulary.
+# Kept narrow on purpose: only unambiguous success synonyms are mapped.
+# Unknown values pass through unchanged so the finalizer fails closed.
+_STATUS_ALIASES: dict[str, str] = {
+    "ok": "succeeded",
+    "completed": "succeeded",
+    "success": "succeeded",
+    "succeed": "succeeded",
+}
+
+
+def _normalize_status(raw: Any, default: str = "uncertain") -> str:
+    """Map a subsystem status string into the kernel's own vocabulary.
+
+    Only success synonyms are normalized. Failure and uncertainty values are
+    left alone so the finalizer's whitelist acts as a fail-closed gate for
+    anything unexpected.
+    """
+    if raw is None:
+        return default
+    s = str(raw).strip().lower()
+    if not s:
+        return default
+    return _STATUS_ALIASES.get(s, s)
 
 
 @dataclass(frozen=True)
@@ -344,7 +378,8 @@ class ActionKernel:
             metadata={"intent_id": intent_id, "decision_id": intent.decision_id,
                       "correlation_id": intent.correlation_id, "source": intent.source},
         )
-        status = str(result.get("status") or "uncertain")
+        # Normalize the executor's status vocabulary into the kernel's own.
+        status = _normalize_status(result.get("status"), default="uncertain")
         output = result.get("output") if isinstance(result.get("output"), dict) else {}
         if not output and isinstance(result.get("result"), dict):
             output = copy.deepcopy(result["result"])
@@ -456,7 +491,8 @@ class ActionKernel:
             self._update_intent(intent_id, intent.workspace_id, status="failed", error=str(exc)[:1000])
             raise
 
-        status = str(result.get("status") or "uncertain")
+        # Normalize the executor's status vocabulary into the kernel's own.
+        status = _normalize_status(result.get("status"), default="uncertain")
         output = result.get("output") if isinstance(result.get("output"), dict) else {}
         if not output and isinstance(result.get("result"), dict):
             output = copy.deepcopy(result.get("result"))
