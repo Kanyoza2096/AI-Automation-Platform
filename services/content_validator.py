@@ -1,469 +1,610 @@
 """
-Content Validator v3.0 — Architecture §21-22 (Async-Native).
+Post Publish Workflow — Architecture §22.
 
-Validates AI-generated content before it reaches the renderer or publisher.
+Simplified 7-stage workflow for post creation and publishing.
+Used by manual triggers and simpler automation paths.
 
-v3.0 CHANGES:
-  - FULLY ASYNC-NATIVE (async validate, async EventBus)
-  - HealthProvider protocol support
-  - UnifiedEventBus integration
-  - All v2.0 features preserved (semantic quality scoring,
-    near-duplicate detection, brand voice consistency,
-    configurable content policies, statistics)
+Architecture §5 — MediaArtifact Integration:
+  Media flows as typed MediaArtifact through all stages.
+  Never None. Never ambiguous.
 
-v2.0 UPGRADES (preserved):
-  - Semantic quality scoring (readability, engagement potential)
-  - Near-duplicate detection (fuzzy match against recent posts)
-  - Brand voice consistency (compare against knowledge base)
-  - Configurable content policies per brand
-  - EventBus integration for validation events
-  - Health check & statistics
+Architecture §6 — Synchronous Rendering:
+  ContentEngine._render_image() blocks until rendering completes.
+  MediaArtifact is always MEDIA_READY or RENDER_FAILED by stage 4.
+  No async gaps. No duplicate posts from RenderQueue workers.
+
+Architecture §21 — AI Pipeline Hardening:
+  Content validated before rendering.
+  Raw AI output never flows directly to publishing.
+
+v4.1.2 — Async/Sync Bridge for content steps:
+  ContentEngine.generate_post and KnowledgeBase.search are async-native.
+  The workflow runner calls Step.run() synchronously from worker threads.
+  Both steps now provide a sync `run` (via asyncio.run) and an `async_run`
+  so they work from either context. Previously they called the async
+  methods without awaiting, which produced un-awaited coroutines and
+  halted the workflow at generate_content.
+
+v4.1.3 — Async/Sync Bridge for validate_content:
+  ContentValidator.validate is async-native (v3.0). ValidateContentStep
+  was still calling it synchronously and reading `.is_rejected` on the
+  returned coroutine, halting the workflow with
+  "'coroutine' object has no attribute 'is_rejected'". This step now
+  provides the same sync `run` + `async_run` bridge used by the other
+  async-native steps.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import re
-from collections import Counter
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, TYPE_CHECKING
 
-logger = logging.getLogger("kanyoza.services.content_validator")
+from workflows.base import Step, Workflow
+from models.media_artifact import MediaArtifact, MediaStatus
+from core.errors import (
+    AIValidationError,
+    RenderFailedError,
+    KanyozaError,
+)
 
+if TYPE_CHECKING:
+    from services.content_engine import ContentEngine
+    from services.content_validator import ContentValidator
+    from plugins.base import PluginRegistry
+    from core.event_bus import EventBus
+    from repositories.analytics_repository import AnalyticsRepository
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ENUMS & DATA CLASSES (Preserved)
-# ═══════════════════════════════════════════════════════════════════════════
-
-class ValidationStatus(str, Enum):
-    APPROVED = "approved"
-    APPROVED_WITH_WARNINGS = "approved_with_warnings"
-    REJECTED = "rejected"
-    NEEDS_REVIEW = "needs_review"
-
-
-class ViolationSeverity(str, Enum):
-    ERROR = "error"
-    WARNING = "warning"
-    INFO = "info"
+logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ValidationViolation:
-    field: str
-    severity: ViolationSeverity
-    message: str
-    rule: str = ""
+# ── 1. Select Topic ───────────────────────────────────────────────────
+class SelectTopicStep(Step):
+    """Pick a topic from the brand's Knowledge Base (or custom_topics)."""
+    name = "select_topic"
 
-    @property
-    def is_fatal(self) -> bool:
-        return self.severity == ViolationSeverity.ERROR
-
-
-@dataclass
-class ValidationResult:
-    status: ValidationStatus
-    violations: list[ValidationViolation] = field(default_factory=list)
-    warnings_count: int = 0
-    errors_count: int = 0
-    quality_score: float = 0.0
-
-    @property
-    def is_approved(self) -> bool:
-        return self.status in (ValidationStatus.APPROVED, ValidationStatus.APPROVED_WITH_WARNINGS)
-
-    @property
-    def is_rejected(self) -> bool:
-        return self.status == ValidationStatus.REJECTED
-
-    def to_dict(self) -> dict:
-        return {
-            "status": self.status.value,
-            "approved": self.is_approved,
-            "errors_count": self.errors_count,
-            "warnings_count": self.warnings_count,
-            "quality_score": self.quality_score,
-            "violations": [
-                {"field": v.field, "severity": v.severity.value, "message": v.message, "rule": v.rule}
-                for v in self.violations
-            ],
-        }
-
-    @classmethod
-    def approved(cls) -> "ValidationResult":
-        return cls(status=ValidationStatus.APPROVED, quality_score=1.0)
-
-    @classmethod
-    def rejected(cls, violations: list[ValidationViolation]) -> "ValidationResult":
-        errors = sum(1 for v in violations if v.severity == ViolationSeverity.ERROR)
-        warnings = sum(1 for v in violations if v.severity == ViolationSeverity.WARNING)
-        return cls(status=ValidationStatus.REJECTED, violations=violations, errors_count=errors, warnings_count=warnings)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PLATFORM LIMITS (Preserved)
-# ═══════════════════════════════════════════════════════════════════════════
-
-PLATFORM_LIMITS: dict[str, dict[str, int]] = {
-    "facebook": {"max_caption_length": 63206, "max_hashtags": 30, "max_title_length": 200, "min_caption_length": 1},
-    "instagram": {"max_caption_length": 2200, "max_hashtags": 30, "max_title_length": 100, "min_caption_length": 1},
-    "linkedin": {"max_caption_length": 3000, "max_hashtags": 5, "max_title_length": 200, "min_caption_length": 1},
-    "twitter": {"max_caption_length": 280, "max_hashtags": 10, "max_title_length": 100, "min_caption_length": 1},
-}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# LOW QUALITY PATTERNS (Preserved)
-# ═══════════════════════════════════════════════════════════════════════════
-
-LOW_QUALITY_PATTERNS = [
-    (r"in\s+today'?s?\s+(digital|fast-paced|ever-changing|modern)\s+\w+", "Generic opening phrase — lacks specificity"),
-    (r"(delve|dive\s+deep|explore|uncover|discover)\s+the\s+\w+\s+of", "Generic AI-generated verb pattern"),
-    (r"it\s+is\s+important\s+to\s+(note|remember|understand|consider)", "Weak filler phrase"),
-    (r"in\s+conclusion|to\s+sum\s+up|in\s+summary", "Generic conclusion — content should end naturally"),
-    (r"whether\s+you('re|\s+are)\s+a\s+(beginner|expert|professional)", "Overused audience address"),
-    (r"revolutionize|game-changer|disruptive|cutting-edge|state-of-the-art", "Hype words — use specific benefits instead"),
-    (r"unleash\s+(your|the)\s+(power|potential|magic)", "Clickbait pattern"),
-]
-
-MIN_CONTENT_WORDS = 20
-MAX_EMOJIS = 8
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CONTENT VALIDATOR v3.0 — FULLY ASYNC
-# ═══════════════════════════════════════════════════════════════════════════
-
-class ContentValidator:
-    """Validates AI-generated structured content before publishing — ASYNC-NATIVE."""
-
-    def __init__(self, event_bus=None) -> None:
-        self._limits = PLATFORM_LIMITS
-        self._event_bus = event_bus
-        self._recent_captions: List[str] = []
-        self._max_recent = 100
-        self._validated_count = 0
-        self._rejected_count = 0
-        self._lock = asyncio.Lock()
-
-    # ═══════════════════════════════════════════════════════════════
-    # HEALTH PROVIDER PROTOCOL (v3.0)
-    # ═══════════════════════════════════════════════════════════════
-
-    @property
-    def service_name(self) -> str:
-        return "content_validator"
-
-    async def check_health_async(self) -> dict:
-        stats = self.get_stats()
-        status = "healthy"
-        if stats["rejection_rate"] > 50 and stats["validated_count"] > 10:
-            status = "degraded"
-        return {"status": status, "stats": stats}
-
-    def set_event_bus(self, event_bus) -> None:
-        self._event_bus = event_bus
-
-    async def _emit(self, event_name: str, payload: dict) -> None:
-        if not self._event_bus:
-            return
-        try:
-            result = self._event_bus.publish(event_name, payload, source="content_validator")
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception:
-            pass
-
-    # ═══════════════════════════════════════════════════════════════
-    # PUBLIC API (ASYNC)
-    # ═══════════════════════════════════════════════════════════════
-
-    async def validate(
+    def __init__(
         self,
-        content: dict[str, Any],
-        brand: Optional[Any] = None,
-        platform: str = "facebook",
-        require_media: bool = False,
-        recent_posts: Optional[List[str]] = None,
-    ) -> ValidationResult:
-        """Validate structured content against all applicable rules (async)."""
-        violations: list[ValidationViolation] = []
-        limits = self._limits.get(platform, self._limits["facebook"])
+        brand: "Brand",
+        category: str | None = None,
+        knowledge_repo=None,
+    ) -> None:
+        self._brand = brand
+        self._category = category
+        self._knowledge_repo = knowledge_repo
 
-        # All validation checks (sync — CPU-bound, fast)
-        self._check_required_fields(content, violations)
-        self._validate_caption(content, limits, violations)
-        self._validate_title(content, limits, violations)
-        self._validate_hashtags(content, limits, violations)
-        self._validate_content_type(content, violations)
+    def run(self, context: dict[str, Any]) -> Any:
+        from domain.content.topic_selector import TopicSelector
 
-        if require_media:
-            self._validate_media_required(content, violations)
-
-        self._validate_platform_constraints(content, platform, violations)
-
-        if brand:
-            self._validate_brand_constraints(content, brand, violations)
-
-        quality_score = self._score_quality(content, violations)
-        self._check_duplicates(content, violations, recent_posts)
-
-        if brand:
-            self._check_brand_voice(content, brand, violations)
-
-        errors = [v for v in violations if v.severity == ViolationSeverity.ERROR]
-        warnings = [v for v in violations if v.severity == ViolationSeverity.WARNING]
-
-        if errors:
-            status = ValidationStatus.REJECTED
-        elif warnings:
-            status = ValidationStatus.APPROVED_WITH_WARNINGS
-        elif quality_score < 0.3:
-            status = ValidationStatus.NEEDS_REVIEW
-        else:
-            status = ValidationStatus.APPROVED
-
-        result = ValidationResult(
-            status=status,
-            violations=violations,
-            errors_count=len(errors),
-            warnings_count=len(warnings),
-            quality_score=quality_score,
+        selector = TopicSelector(
+            brand=self._brand,
+            knowledge_repo=self._knowledge_repo,
         )
 
-        async with self._lock:
-            self._validated_count += 1
-            if not result.is_approved:
-                self._rejected_count += 1
+        if not selector.has_topics():
+            logger.warning(
+                "PostWorkflow: brand '%s' has no KB entries and no custom_topics. "
+                "Add documents to the Knowledge Base so topics can be picked from it.",
+                self._brand.name,
+            )
 
-        if not result.is_approved:
-            await self._emit("content.validation_failed", {
-                "status": result.status.value,
-                "errors": result.errors_count,
-                "warnings": result.warnings_count,
-                "quality_score": quality_score,
-            })
+        topic, cat = selector.pick(self._category)
+        context["topic"] = topic
+        context["category"] = cat
+        logger.info(
+            "PostWorkflow: topic='%s' category='%s' brand='%s'",
+            topic, cat, self._brand.name,
+        )
+        return {"topic": topic, "category": cat}
 
-        caption = str(content.get("caption", ""))
-        if caption and result.is_approved:
-            async with self._lock:
-                self._recent_captions.append(caption.lower())
-                if len(self._recent_captions) > self._max_recent:
-                    self._recent_captions = self._recent_captions[-self._max_recent:]
 
+# ── 1b. Knowledge Context ─────────────────────────────────────────────
+class KnowledgeContextStep(Step):
+    """Retrieve relevant KB facts for the chosen topic.
+
+    Searches the brand's Knowledge Base using TF-IDF cosine similarity and
+    injects the top matching entries into the context so the prompt builder
+    can ground the LLM in brand-specific knowledge.
+
+    Marked continue_on_failure=True so a missing or empty KB never blocks
+    the pipeline — the content engine will still generate without context.
+
+    v4.1.2 — KnowledgeBase.search is async. This step provides both a sync
+    `run` (via asyncio.run) and an `async_run` so it works from either
+    context. Previously the call returned an un-awaited coroutine and the
+    step logged "KB lookup failed ... 'coroutine' object is not iterable".
+    """
+    name = "knowledge_context"
+    continue_on_failure = True
+
+    def __init__(self, brand: "Brand", knowledge_repo=None) -> None:
+        self._brand = brand
+        self._repo = knowledge_repo
+
+    # ── Sync bridge ───────────────────────────────────────────────────
+
+    def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "KnowledgeContextStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+    # ── Async implementation ──────────────────────────────────────────
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        if not topic or not self._repo:
+            context["knowledge_context"] = ""
+            return []
+
+        try:
+            from services.knowledge_base import KnowledgeBase
+            kb = KnowledgeBase(
+                brand_id=self._brand.id,
+                workspace_id=self._brand.workspace_id,
+                repository=self._repo,
+            )
+            results = await kb.search(topic, top_k=3)
+            facts = [entry.content for entry, _score in results]
+            knowledge_context = "\n".join(facts)
+            context["knowledge_context"] = knowledge_context
+            logger.info(
+                "PostWorkflow: KB retrieved %d entries for topic='%s' brand='%s'",
+                len(facts), topic[:60], self._brand.name,
+            )
+            return facts
+        except Exception as exc:
+            logger.warning(
+                "PostWorkflow: KB lookup failed for brand='%s': %s",
+                self._brand.name, exc,
+            )
+            context["knowledge_context"] = ""
+            return []
+
+
+# ── 2. Generate Content ───────────────────────────────────────────────
+class GenerateContentStep(Step):
+    """Call ContentEngine to produce caption + MediaArtifact.
+
+    Passes the pre-assembled prompt (with KB context) if one was built by
+    KnowledgeContextStep + PromptBuilder; otherwise lets ContentEngine
+    build its own prompt so the step is fully self-contained.
+
+    Architecture §6: ContentEngine now blocks until render completes.
+    MediaArtifact is already MEDIA_READY or RENDER_FAILED when returned.
+
+    v4.1.2 — ContentEngine.generate_post is async-native. This step provides
+    both a sync `run` (via asyncio.run) and an `async_run` so it works from
+    either context. Previously the call returned an un-awaited coroutine and
+    the workflow halted with "'coroutine' object has no attribute 'get'".
+    """
+    name = "generate_content"
+
+    def __init__(
+        self,
+        content_engine: "ContentEngine",
+        brand: "Brand",
+        ai_profile: "AIProfile",
+        prompt_builder=None,
+        container=None,
+    ) -> None:
+        self._engine = content_engine
+        self._brand = brand
+        self._ai_profile = ai_profile
+        self._prompt_builder = prompt_builder
+
+    # ── Sync bridge ───────────────────────────────────────────────────
+
+    def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "GenerateContentStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+    # ── Async implementation ──────────────────────────────────────────
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        knowledge_context = context.get("knowledge_context", "")
+
+        # Build a KB-enriched prompt when we have context and a builder
+        base_prompt: str | None = None
+        if self._prompt_builder and knowledge_context:
+            try:
+                base_prompt = self._prompt_builder.build_post_prompt(
+                    brand=self._brand,
+                    ai_profile=self._ai_profile,
+                    topic=topic,
+                    knowledge_context=knowledge_context,
+                )
+                logger.info(
+                    "PostWorkflow: prompt assembled with KB context (%d chars) for brand='%s'",
+                    len(knowledge_context), self._brand.name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PostWorkflow: prompt assembly failed (%s) — continuing without KB context",
+                    exc,
+                )
+                base_prompt = None
+
+        result = await self._engine.generate_post(
+            brand=self._brand,
+            ai_profile=self._ai_profile,
+            topic=topic,
+            base_prompt=base_prompt,
+        )
+        if not result:
+            raise AIValidationError(
+                message=f"ContentEngine returned no result for '{topic}'",
+                context={"brand": self._brand.name, "topic": topic},
+            )
+
+        context["content_result"] = result
+        supplied_caption = context.get("scheduled_caption")
+        context["caption"] = (
+            str(supplied_caption) if supplied_caption is not None else result.get("caption", "")
+        )
+        context["image_bytes"] = result.get("image_bytes")
+        context["media_artifact"] = result.get(
+            "media_artifact", MediaArtifact.no_media()
+        )
+
+        media_status = context["media_artifact"].status.value
+        logger.info(
+            "PostWorkflow: content generated — brand='%s', caption_len=%d, media=%s",
+            self._brand.name, len(context["caption"]), media_status,
+        )
         return result
 
-    # ═══════════════════════════════════════════════════════════════
-    # v2.0 — SEMANTIC QUALITY SCORING (preserved — all methods below identical)
-    # ═══════════════════════════════════════════════════════════════
 
-    def _score_quality(self, content: dict, violations: list[ValidationViolation]) -> float:
-        caption = str(content.get("caption", ""))
-        title = str(content.get("title", ""))
-        full_text = f"{title} {caption}".strip()
+# ── 3. Validate Content ───────────────────────────────────────────────
+class ValidateContentStep(Step):
+    """Validate AI-generated content before proceeding.
 
-        if not full_text:
-            return 0.0
+    v4.1.3 — ContentValidator.validate is async-native (v3.0). This step
+    provides both a sync `run` (via asyncio.run) and an `async_run` so it
+    works from either context. Previously the call returned an un-awaited
+    coroutine and the workflow halted with
+    "'coroutine' object has no attribute 'is_rejected'".
+    """
+    name = "validate_content"
 
-        scores = []
+    def __init__(self, validator: "ContentValidator" = None) -> None:
+        from services.content_validator import ContentValidator
+        self._validator = validator or ContentValidator()
 
-        generic_count = 0
-        for pattern, description in LOW_QUALITY_PATTERNS:
-            if re.search(pattern, full_text, re.IGNORECASE):
-                generic_count += 1
-                violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.WARNING, message=description, rule="generic_pattern"))
+    # ── Sync bridge ───────────────────────────────────────────────────
 
-        pattern_score = max(0.0, 1.0 - (generic_count * 0.15))
-        scores.append(pattern_score)
-
-        words = full_text.split()
-        word_count = len(words)
-        if word_count < MIN_CONTENT_WORDS:
-            word_score = word_count / MIN_CONTENT_WORDS
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.WARNING, message=f"Content too short: {word_count} words (min {MIN_CONTENT_WORDS})", rule="min_content_words"))
-        else:
-            word_score = min(1.0, word_count / 100)
-        scores.append(word_score)
-
-        emoji_count = len(re.findall(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251✨🔥💯👍👏🎉💪🚀🤖👀📈📉❤️💡🎯⚡🔒🛡️🔍📊🏆🎓🌍💼]", full_text))
-        if emoji_count > MAX_EMOJIS:
-            emoji_score = max(0.0, 1.0 - (emoji_count - MAX_EMOJIS) * 0.1)
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.WARNING, message=f"Excessive emojis: {emoji_count} (max recommended: {MAX_EMOJIS})", rule="max_emojis"))
-        else:
-            emoji_score = 1.0
-        scores.append(emoji_score)
-
-        sentences = [s.strip() for s in re.split(r"[.!?]+", full_text) if s.strip()]
-        if sentences and word_count > 0:
-            avg_words_per_sentence = word_count / len(sentences)
-            if 12 <= avg_words_per_sentence <= 20:
-                readability_score = 1.0
-            elif avg_words_per_sentence < 8:
-                readability_score = 0.5
-            elif avg_words_per_sentence > 30:
-                readability_score = 0.6
-                violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.INFO, message=f"Sentences are long ({avg_words_per_sentence:.0f} words avg) — consider breaking up", rule="readability"))
-            else:
-                readability_score = 0.8
-        else:
-            readability_score = 0.5
-        scores.append(readability_score)
-
-        hashtags = content.get("hashtags", []) or []
-        if hashtags:
-            hashtag_text = " ".join(hashtags).lower()
-            caption_lower = caption.lower()
-            relevant_count = sum(1 for tag in hashtags if tag.lower().lstrip("#") in caption_lower)
-            hashtag_score = relevant_count / len(hashtags)
-        else:
-            hashtag_score = 0.5
-        scores.append(hashtag_score)
-
-        return round(sum(scores) / len(scores), 2)
-
-    def _check_duplicates(self, content: dict, violations: list[ValidationViolation], recent_posts: Optional[List[str]] = None) -> None:
-        caption = str(content.get("caption", "")).lower()
-        if not caption:
-            return
-        posts = recent_posts or self._recent_captions
-        for post in posts:
-            similarity = self._text_similarity(caption, post)
-            if similarity > 0.7:
-                violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.WARNING, message=f"Content is {similarity:.0%} similar to a recent post — possible duplicate", rule="near_duplicate"))
-                break
-
-    def _text_similarity(self, a: str, b: str) -> float:
-        tokens_a = set(a.split())
-        tokens_b = set(b.split())
-        if not tokens_a or not tokens_b:
-            return 0.0
-        intersection = tokens_a & tokens_b
-        return len(intersection) / min(len(tokens_a), len(tokens_b))
-
-    def _check_brand_voice(self, content: dict, brand: Any, violations: list[ValidationViolation]) -> None:
+    def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
         try:
-            from services.knowledge_base import KnowledgeBase, tokenize
-            caption = str(content.get("caption", ""))
-            if not caption:
-                return
-            brand_terms = set()
-            kb = getattr(brand, "_knowledge_base", None)
-            if kb:
-                topics = kb.extract_topics(top_n=50)
-                brand_terms = {t for t, _ in topics}
-            if not brand_terms:
-                return
-            content_terms = set(tokenize(caption))
-            overlap = content_terms & brand_terms
-            if len(content_terms) > 0:
-                relevance = len(overlap) / min(len(content_terms), 20)
-                if relevance < 0.1:
-                    violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.INFO, message="Content may not align with brand knowledge base — few relevant terms found", rule="brand_voice"))
-        except Exception:
-            pass
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "ValidateContentStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
 
-    # ═══════════════════════════════════════════════════════════════
-    # INDIVIDUAL CHECKS (All preserved — identical to v2.0)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Async implementation ──────────────────────────────────────────
 
-    def _check_required_fields(self, content: dict, violations: list[ValidationViolation]) -> None:
-        if not content.get("caption") or not str(content.get("caption", "")).strip():
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.ERROR, message="Caption is empty or missing", rule="required_field"))
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        caption = context.get("caption", "")
+        topic = context.get("topic", "")
+        content_result = context.get("content_result", {})
 
-    def _validate_caption(self, content: dict, limits: dict, violations: list[ValidationViolation]) -> None:
-        caption = str(content.get("caption", ""))
-        max_length = limits.get("max_caption_length", 63206)
-        min_length = limits.get("min_caption_length", 1)
-        if len(caption) > max_length:
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.ERROR, message=f"Caption too long: {len(caption)} chars (max {max_length})", rule="max_length"))
-        elif len(caption) < min_length:
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.ERROR, message=f"Caption too short: {len(caption)} chars (min {min_length})", rule="min_length"))
-        if len(caption) > max_length * 0.9:
-            violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.WARNING, message=f"Caption approaching limit: {len(caption)}/{max_length} chars", rule="approaching_max_length"))
-
-    def _validate_title(self, content: dict, limits: dict, violations: list[ValidationViolation]) -> None:
-        title = str(content.get("title", ""))
-        if not title:
-            return
-        max_title = limits.get("max_title_length", 200)
-        if len(title) > max_title:
-            violations.append(ValidationViolation(field="title", severity=ViolationSeverity.WARNING, message=f"Title exceeds recommended length: {len(title)}/{max_title}", rule="max_title_length"))
-
-    def _validate_hashtags(self, content: dict, limits: dict, violations: list[ValidationViolation]) -> None:
-        hashtags = content.get("hashtags", [])
-        if not hashtags:
-            return
-        if not isinstance(hashtags, list):
-            violations.append(ValidationViolation(field="hashtags", severity=ViolationSeverity.ERROR, message="Hashtags must be a list", rule="hashtags_type"))
-            return
-        max_hashtags = limits.get("max_hashtags", 30)
-        if len(hashtags) > max_hashtags:
-            violations.append(ValidationViolation(field="hashtags", severity=ViolationSeverity.WARNING, message=f"Too many hashtags: {len(hashtags)} (max {max_hashtags})", rule="max_hashtags"))
-
-    def _validate_content_type(self, content: dict, violations: list[ValidationViolation]) -> None:
-        content_type = content.get("content_type", "")
-        if not content_type:
-            return
-        valid_types = {"social_post", "article", "news", "announcement", "poll", "story", "comparison", "tutorial", "guide", "tips", "quote", "pipeline"}
-        if content_type not in valid_types:
-            violations.append(ValidationViolation(field="content_type", severity=ViolationSeverity.WARNING, message=f"Unknown content_type: '{content_type}'", rule="valid_content_type"))
-
-    def _validate_media_required(self, content: dict, violations: list[ValidationViolation]) -> None:
-        if not content.get("media_required", False):
-            violations.append(ValidationViolation(field="media_required", severity=ViolationSeverity.WARNING, message="Media is required by brand config but content doesn't request it", rule="media_required"))
-
-    def _validate_platform_constraints(self, content: dict, platform: str, violations: list[ValidationViolation]) -> None:
-        platforms_field = content.get("platforms", [])
-        if platforms_field and isinstance(platforms_field, list) and platform not in platforms_field:
-            violations.append(ValidationViolation(field="platforms", severity=ViolationSeverity.INFO, message=f"Content not explicitly targeted for '{platform}'", rule="platform_targeting"))
-
-    def _validate_brand_constraints(self, content: dict, brand: Any, violations: list[ValidationViolation]) -> None:
-        prohibited = getattr(brand, "prohibited_topics", []) or []
-        caption = str(content.get("caption", "")).lower()
-        title = str(content.get("title", "")).lower()
-        for topic in prohibited:
-            if topic.lower() in caption or topic.lower() in title:
-                violations.append(ValidationViolation(field="caption", severity=ViolationSeverity.ERROR, message=f"Content contains prohibited topic: '{topic}'", rule="brand_prohibited_topic"))
-        required_hashtags = getattr(brand, "required_hashtags", []) or []
-        content_hashtags = content.get("hashtags", []) or []
-        for tag in required_hashtags:
-            if tag not in content_hashtags:
-                violations.append(ValidationViolation(field="hashtags", severity=ViolationSeverity.WARNING, message=f"Missing required brand hashtag: #{tag}", rule="brand_required_hashtag"))
-
-    # ═══════════════════════════════════════════════════════════════
-    # HEALTH & STATISTICS (preserved)
-    # ═══════════════════════════════════════════════════════════════
-
-    def get_stats(self) -> dict:
-        return {
-            "validated_count": self._validated_count,
-            "rejected_count": self._rejected_count,
-            "rejection_rate": round(self._rejected_count / max(self._validated_count, 1) * 100, 1),
-            "recent_posts_cached": len(self._recent_captions),
+        content = {
+            "title": content_result.get("title", topic),
+            "caption": caption,
+            "content_type": context.get("content_type", "social_post"),
+            "hashtags": content_result.get("hashtags", []),
+            "media_required": True,
         }
 
-    def health_check(self) -> dict:
-        stats = self.get_stats()
-        status = "healthy"
-        if stats["rejection_rate"] > 50 and stats["validated_count"] > 10:
-            status = "degraded"
-        return {"status": status, "stats": stats}
+        brand = context.get("brand")
+        platform = context.get("platform", "facebook")
+
+        validation_result = await self._validator.validate(
+            content=content,
+            brand=brand,
+            platform=platform,
+            require_media=True,
+        )
+
+        context["validation_result"] = validation_result
+
+        if validation_result.is_rejected:
+            errors = validation_result.error_messages
+            logger.error(
+                "PostWorkflow: validation REJECTED — %s",
+                "; ".join(errors),
+            )
+            raise AIValidationError(
+                message=f"Content validation failed: {'; '.join(errors)}",
+                context={"errors": errors, "topic": topic},
+            )
+
+        logger.info(
+            "PostWorkflow: validation passed (warnings=%d)",
+            validation_result.warnings_count,
+        )
+        return validation_result.to_dict()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MODULE SINGLETON
-# ═══════════════════════════════════════════════════════════════════════════
+# ── 4. Render Image ───────────────────────────────────────────────────
+class RenderImageStep(Step):
+    """Check media readiness. Render already happened in ContentEngine.
 
-content_validator = ContentValidator()
+    Architecture §6: ContentEngine blocks until render completes.
+    MediaArtifact is always MEDIA_READY, NO_MEDIA, or RENDER_FAILED.
+    RENDERING status should never appear here.
+    """
+    name = "render_image"
+    continue_on_failure = True
+
+    def __init__(self, content_engine: "ContentEngine") -> None:
+        self._engine = content_engine
+
+    def run(self, context: dict[str, Any]) -> Any:
+        media_artifact: MediaArtifact = context.get("media_artifact")
+
+        if media_artifact is None:
+            logger.warning("PostWorkflow: No MediaArtifact in context — creating NO_MEDIA")
+            media_artifact = MediaArtifact.no_media()
+            context["media_artifact"] = media_artifact
+            context["image_bytes"] = None
+            return media_artifact.to_dict()
+
+        # Media ready
+        if media_artifact.is_valid:
+            context["image_bytes"] = media_artifact.bytes if media_artifact.bytes else None
+            logger.info(
+                "PostWorkflow: media ready — %s, %dKB",
+                media_artifact.source, media_artifact.size_kb,
+            )
+            return media_artifact.to_dict()
+
+        # Text-only
+        if media_artifact.is_text_only:
+            context["image_bytes"] = None
+            logger.info("PostWorkflow: text-only post — no media needed.")
+            return media_artifact.to_dict()
+
+        # Should never happen — ContentEngine blocks until complete
+        if media_artifact.is_pending:
+            logger.error(
+                "PostWorkflow: UNEXPECTED RENDERING status — "
+                "render should have completed synchronously. "
+                "This indicates a bug in ContentEngine._render_image()."
+            )
+            context["image_bytes"] = None
+            return media_artifact.to_dict()
+
+        # Render failed
+        if media_artifact.has_failed:
+            context["image_bytes"] = None
+            logger.error(
+                "PostWorkflow: render FAILED — %s (code=%s)",
+                media_artifact.error, media_artifact.error_code,
+            )
+            return media_artifact.to_dict()
+
+        logger.warning("PostWorkflow: unknown media status: %s", media_artifact.status)
+        return media_artifact.to_dict()
 
 
-__all__ = [
-    "ContentValidator",
-    "ValidationStatus",
-    "ValidationViolation",
-    "ValidationResult",
-    "ViolationSeverity",
-    "content_validator",
-]
+# ── 5. Publish ────────────────────────────────────────────────────────
+class PublishStep(Step):
+    """Publish via the plugin registry with MediaArtifact awareness.
+
+    Architecture §6: No text-only fallback from async gaps.
+    RENDER_FAILED raises immediately. Every published post has its image.
+    """
+
+    name = "publish"
+
+    def __init__(self, registry: "PluginRegistry", brand: "Brand", container=None) -> None:
+        self._registry = registry
+        self._brand = brand
+        self._container = container
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        caption = context.get("caption") or context.get(
+            "content_result", {}
+        ).get("caption", "")
+        image_bytes = context.get("image_bytes")
+        media_artifact: MediaArtifact = context.get("media_artifact")
+
+        if not caption:
+            raise RuntimeError("No caption available — cannot publish")
+
+        # Render failed — raise immediately, no text-only fallback
+        if media_artifact and media_artifact.has_failed:
+            raise RenderFailedError(
+                message=f"Media render failed: {media_artifact.error}",
+                context={
+                    "brand": self._brand.name,
+                    "media_error": media_artifact.error,
+                    "media_error_code": media_artifact.error_code,
+                },
+            )
+
+        # Render still pending — should never happen
+        if media_artifact and media_artifact.is_pending:
+            raise RenderFailedError(
+                message="Media still rendering — should have completed synchronously",
+                context={"brand": self._brand.name},
+            )
+
+        from services.publish_orchestration import execute_governed_publish
+        from core.publish_authorization import issue_internal_publish_decision
+        workspace_id = getattr(self._brand, "workspace_id", "")
+        job_id = context.get("job_id")
+        platform = context.get("platform") or getattr(self._brand, "platform", None) or "facebook"
+        risk_level = context.get("risk_level", "low")
+        source = context.get("source", "workflow")
+        decision_id = context.get("decision_id")
+        if not decision_id:
+            decision = issue_internal_publish_decision(
+                workspace_id=workspace_id, source=source, risk_level=risk_level,
+                brand_id=getattr(self._brand, "id", None), platform=platform,
+            )
+            decision_id = decision.decision_id
+        media_url = getattr(media_artifact, "media_url", None) if media_artifact else None
+        result = await execute_governed_publish(
+            container=getattr(self, "_container", None),
+            workspace_id=workspace_id, brand_id=getattr(self._brand, "id", None),
+            platform=platform, topic=context.get("topic", ""), caption=caption,
+            risk_level=risk_level, decision_id=decision_id, approved=True,
+            automation_job_id=job_id, source=source, image_url=media_url,
+            image_bytes=image_bytes, scheduled_post_id=context.get("scheduled_post_id"),
+            idempotency_key=(
+                f"scheduled:{context.get('scheduled_post_id')}"
+                if context.get("scheduled_post_id") else None
+            ),
+        )
+        output = result.get("output") if isinstance(result.get("output"), dict) else {}
+        publish_result = {**output, "action_status": result.get("status"),
+                          "action_intent_id": result.get("intent_id"),
+                          "action_execution_id": result.get("execution_id"),
+                          "governed": True}
+        context["publish_result"] = publish_result
+        context["publish_results"] = {platform: publish_result} if result.get("status") == "succeeded" and publish_result.get("ok") else {}
+        if result.get("status") != "succeeded" or not publish_result.get("ok"):
+            raise RuntimeError(publish_result.get("error") or "Governed canonical publish rejected")
+        return publish_result
+
+
+    def run(self, context: dict[str, Any]) -> Any:
+        """Synchronous compatibility path for non-ASGI callers."""
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError("PublishStep.run() cannot be called inside a running event loop; use execute_async()/async_run()")
+
+
+# ── 6. Record Analytics + Emit Events ────────────────────────────────
+class RecordAnalyticsStep(Step):
+    """Record publish metrics to analytics repository."""
+    name = "record_analytics"
+    continue_on_failure = True
+
+    def __init__(self, analytics_repo: "AnalyticsRepository") -> None:
+        self._repo = analytics_repo
+
+    def run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        if context.get("publish_result", {}).get("queued"):
+            return {"recorded": 0, "queued": True}
+        publish_results = context.get("publish_results", {})
+        for platform, result in publish_results.items():
+            if result.get("ok"):
+                self._repo.record_post_published(
+                    topic=topic,
+                    platform=platform,
+                    post_id=result.get("post_id", ""),
+                )
+        return {"recorded": len(publish_results)}
+
+
+class EmitEventStep(Step):
+    """Emit PostPublishedEvent to the event bus."""
+    name = "emit_event"
+    continue_on_failure = True
+
+    def __init__(self, bus: "EventBus") -> None:
+        self._bus = bus
+
+    def run(self, context: dict[str, Any]) -> Any:
+        from core.events import PostPublishedEvent
+        topic = context.get("topic", "")
+        if context.get("publish_result", {}).get("queued"):
+            return {"emitted": 0, "queued": True}
+        publish_results = context.get("publish_results", {})
+        content_result = context.get("content_result", {})
+        caption = content_result.get("caption", "")
+
+        for platform, result in publish_results.items():
+            if result.get("ok"):
+                self._bus.publish(
+                    PostPublishedEvent(
+                        post_id=result.get("post_id", ""),
+                        topic=topic,
+                        platform=platform,
+                        caption_preview=caption,
+                    )
+                )
+        return None
+
+
+# ── Full Post Publish Workflow ────────────────────────────────────────
+class PostPublishWorkflow(Workflow):
+    """9-stage workflow: Topic → KB Context → Generate → Validate → Render →
+    Publish → Record → Emit.
+
+    The added KnowledgeContextStep (stage 2) ensures every post is grounded
+    in the brand's Knowledge Base before the LLM prompt is assembled.
+
+    Architecture §6 — Synchronous Rendering:
+      ContentEngine blocks until render completes. Pipeline always has
+      MEDIA_READY or RENDER_FAILED by stage 5. No async gaps.
+
+    Architecture §22 — Workflow Lifecycle:
+      CREATED → AI_GENERATING → CONTENT_VALIDATED →
+      MEDIA_READY → PUBLISHING → PUBLISHED
+
+    Stage contracts:
+      1. Select Topic       → topic, category  (from KB or custom_topics)
+      2. Knowledge Context  → knowledge_context (KB facts for this topic)
+      3. Generate Content   → caption, media_artifact (prompt enriched with KB)
+      4. Validate Content   → validation_result
+      5. Render Image       → media_artifact status check
+      6. Publish            → publish_results (with image, or raises)
+      7. Record             → analytics
+      8. Emit               → events
+    """
+
+    name = "post_publish"
+
+    def __init__(
+        self,
+        content_engine: "ContentEngine",
+        registry: "PluginRegistry",
+        analytics_repo: "AnalyticsRepository",
+        bus: "EventBus",
+        brand: "Brand",
+        ai_profile: "AIProfile",
+        category: str | None = None,
+        content_validator: "ContentValidator" = None,
+        knowledge_repo=None,
+        prompt_builder=None,
+        container=None,
+    ) -> None:
+        self._container = container
+        super().__init__(
+            steps=[
+                SelectTopicStep(brand, category, knowledge_repo=knowledge_repo),
+                KnowledgeContextStep(brand, knowledge_repo=knowledge_repo),
+                GenerateContentStep(
+                    content_engine, brand, ai_profile,
+                    prompt_builder=prompt_builder,
+                ),
+                ValidateContentStep(validator=content_validator),
+                RenderImageStep(content_engine),
+                PublishStep(registry, brand, container=container),
+                RecordAnalyticsStep(analytics_repo),
+                EmitEventStep(bus),
+            ]
+        )
