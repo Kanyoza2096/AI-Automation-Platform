@@ -16,6 +16,14 @@ Architecture §6 — Synchronous Rendering:
 Architecture §21 — AI Pipeline Hardening:
   Content validated before rendering.
   Raw AI output never flows directly to publishing.
+
+v4.1.2 — Async/Sync Bridge for content steps:
+  ContentEngine.generate_post and KnowledgeBase.search are async-native.
+  The workflow runner calls Step.run() synchronously from worker threads.
+  Both steps now provide a sync `run` (via asyncio.run) and an `async_run`
+  so they work from either context. Previously they called the async
+  methods without awaiting, which produced un-awaited coroutines and
+  halted the workflow at generate_content.
 """
 
 from __future__ import annotations
@@ -91,6 +99,11 @@ class KnowledgeContextStep(Step):
 
     Marked continue_on_failure=True so a missing or empty KB never blocks
     the pipeline — the content engine will still generate without context.
+
+    v4.1.2 — KnowledgeBase.search is async. This step provides both a sync
+    `run` (via asyncio.run) and an `async_run` so it works from either
+    context. Previously the call returned an un-awaited coroutine and the
+    step logged "KB lookup failed ... 'coroutine' object is not iterable".
     """
     name = "knowledge_context"
     continue_on_failure = True
@@ -99,7 +112,22 @@ class KnowledgeContextStep(Step):
         self._brand = brand
         self._repo = knowledge_repo
 
+    # ── Sync bridge ───────────────────────────────────────────────────
+
     def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "KnowledgeContextStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+    # ── Async implementation ──────────────────────────────────────────
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         if not topic or not self._repo:
             context["knowledge_context"] = ""
@@ -112,7 +140,7 @@ class KnowledgeContextStep(Step):
                 workspace_id=self._brand.workspace_id,
                 repository=self._repo,
             )
-            results = kb.search(topic, top_k=3)
+            results = await kb.search(topic, top_k=3)
             facts = [entry.content for entry, _score in results]
             knowledge_context = "\n".join(facts)
             context["knowledge_context"] = knowledge_context
@@ -140,6 +168,11 @@ class GenerateContentStep(Step):
 
     Architecture §6: ContentEngine now blocks until render completes.
     MediaArtifact is already MEDIA_READY or RENDER_FAILED when returned.
+
+    v4.1.2 — ContentEngine.generate_post is async-native. This step provides
+    both a sync `run` (via asyncio.run) and an `async_run` so it works from
+    either context. Previously the call returned an un-awaited coroutine and
+    the workflow halted with "'coroutine' object has no attribute 'get'".
     """
     name = "generate_content"
 
@@ -156,7 +189,22 @@ class GenerateContentStep(Step):
         self._ai_profile = ai_profile
         self._prompt_builder = prompt_builder
 
+    # ── Sync bridge ───────────────────────────────────────────────────
+
     def run(self, context: dict[str, Any]) -> Any:
+        import asyncio
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "GenerateContentStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+    # ── Async implementation ──────────────────────────────────────────
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         knowledge_context = context.get("knowledge_context", "")
 
@@ -181,7 +229,7 @@ class GenerateContentStep(Step):
                 )
                 base_prompt = None
 
-        result = self._engine.generate_post(
+        result = await self._engine.generate_post(
             brand=self._brand,
             ai_profile=self._ai_profile,
             topic=topic,
@@ -266,7 +314,7 @@ class ValidateContentStep(Step):
 # ── 4. Render Image ───────────────────────────────────────────────────
 class RenderImageStep(Step):
     """Check media readiness. Render already happened in ContentEngine.
-    
+
     Architecture §6: ContentEngine blocks until render completes.
     MediaArtifact is always MEDIA_READY, NO_MEDIA, or RENDER_FAILED.
     RENDERING status should never appear here.
@@ -328,7 +376,7 @@ class RenderImageStep(Step):
 # ── 5. Publish ────────────────────────────────────────────────────────
 class PublishStep(Step):
     """Publish via the plugin registry with MediaArtifact awareness.
-    
+
     Architecture §6: No text-only fallback from async gaps.
     RENDER_FAILED raises immediately. Every published post has its image.
     """
