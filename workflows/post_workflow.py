@@ -17,21 +17,22 @@ Architecture §21 — AI Pipeline Hardening:
   Content validated before rendering.
   Raw AI output never flows directly to publishing.
 
-v4.1.2 — Async/Sync Bridge for content steps:
-  ContentEngine.generate_post and KnowledgeBase.search are async-native.
-  The workflow runner calls Step.run() synchronously from worker threads.
-  Both steps now provide a sync `run` (via asyncio.run) and an `async_run`
-  so they work from either context. Previously they called the async
-  methods without awaiting, which produced un-awaited coroutines and
-  halted the workflow at generate_content.
+v4.2.0 — Framework-owned async bridge:
+  Steps no longer implement their own sync/async bridges. Any step that
+  needs async work overrides ``async_run`` and leaves ``run`` as a
+  one-line ``return self.async_run(context)``. The framework's
+  ``Step.execute`` detects the returned coroutine and bridges it via
+  ``Step._bridge_coroutine`` — which runs the coroutine on a worker
+  thread when the caller is already inside an event loop.
 
-v4.1.3 — Async/Sync Bridge for validate_content:
-  ContentValidator.validate is async-native (v3.0). ValidateContentStep
-  was still calling it synchronously and reading `.is_rejected` on the
-  returned coroutine, halting the workflow with
-  "'coroutine' object has no attribute 'is_rejected'". This step now
-  provides the same sync `run` + `async_run` bridge used by the other
-  async-native steps.
+  This eliminates the class of bug where a step's own bridge either:
+    (a) called an async service without awaiting (silently returned a
+        coroutine object as the step's output), or
+    (b) refused to run inside a running event loop and halted the
+        workflow with "cannot be called inside a running event loop".
+
+  Affected steps: knowledge_context, generate_content, validate_content,
+  publish. All four now delegate to the framework bridge.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ class SelectTopicStep(Step):
         return {"topic": topic, "category": cat}
 
 
-# ── 1b. Knowledge Context ─────────────────────────────────────────────
+# ── 2. Knowledge Context ──────────────────────────────────────────────
 class KnowledgeContextStep(Step):
     """Retrieve relevant KB facts for the chosen topic.
 
@@ -108,10 +109,8 @@ class KnowledgeContextStep(Step):
     Marked continue_on_failure=True so a missing or empty KB never blocks
     the pipeline — the content engine will still generate without context.
 
-    v4.1.2 — KnowledgeBase.search is async. This step provides both a sync
-    `run` (via asyncio.run) and an `async_run` so it works from either
-    context. Previously the call returned an un-awaited coroutine and the
-    step logged "KB lookup failed ... 'coroutine' object is not iterable".
+    Async-native: implements ``async_run`` only. The framework bridge in
+    ``Step.execute`` handles the sync/async dispatch.
     """
     name = "knowledge_context"
     continue_on_failure = True
@@ -120,20 +119,8 @@ class KnowledgeContextStep(Step):
         self._brand = brand
         self._repo = knowledge_repo
 
-    # ── Sync bridge ───────────────────────────────────────────────────
-
     def run(self, context: dict[str, Any]) -> Any:
-        import asyncio
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.async_run(context))
-        raise RuntimeError(
-            "KnowledgeContextStep.run() cannot be called inside a running event loop; "
-            "use execute_async()/async_run()"
-        )
-
-    # ── Async implementation ──────────────────────────────────────────
+        return self.async_run(context)
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
@@ -166,7 +153,7 @@ class KnowledgeContextStep(Step):
             return []
 
 
-# ── 2. Generate Content ───────────────────────────────────────────────
+# ── 3. Generate Content ───────────────────────────────────────────────
 class GenerateContentStep(Step):
     """Call ContentEngine to produce caption + MediaArtifact.
 
@@ -177,10 +164,7 @@ class GenerateContentStep(Step):
     Architecture §6: ContentEngine now blocks until render completes.
     MediaArtifact is already MEDIA_READY or RENDER_FAILED when returned.
 
-    v4.1.2 — ContentEngine.generate_post is async-native. This step provides
-    both a sync `run` (via asyncio.run) and an `async_run` so it works from
-    either context. Previously the call returned an un-awaited coroutine and
-    the workflow halted with "'coroutine' object has no attribute 'get'".
+    Async-native: implements ``async_run`` only.
     """
     name = "generate_content"
 
@@ -197,26 +181,13 @@ class GenerateContentStep(Step):
         self._ai_profile = ai_profile
         self._prompt_builder = prompt_builder
 
-    # ── Sync bridge ───────────────────────────────────────────────────
-
     def run(self, context: dict[str, Any]) -> Any:
-        import asyncio
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.async_run(context))
-        raise RuntimeError(
-            "GenerateContentStep.run() cannot be called inside a running event loop; "
-            "use execute_async()/async_run()"
-        )
-
-    # ── Async implementation ──────────────────────────────────────────
+        return self.async_run(context)
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         knowledge_context = context.get("knowledge_context", "")
 
-        # Build a KB-enriched prompt when we have context and a builder
         base_prompt: str | None = None
         if self._prompt_builder and knowledge_context:
             try:
@@ -267,15 +238,15 @@ class GenerateContentStep(Step):
         return result
 
 
-# ── 3. Validate Content ───────────────────────────────────────────────
+# ── 4. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
     """Validate AI-generated content before proceeding.
 
-    v4.1.3 — ContentValidator.validate is async-native (v3.0). This step
-    provides both a sync `run` (via asyncio.run) and an `async_run` so it
-    works from either context. Previously the call returned an un-awaited
-    coroutine and the workflow halted with
-    "'coroutine' object has no attribute 'is_rejected'".
+    ContentValidator.validate is async-native (v3.0). This step exposes
+    only ``async_run``; the framework bridges the coroutine.
+
+    continue_on_failure is left False so a rejected caption halts the
+    workflow before any publish attempt.
     """
     name = "validate_content"
 
@@ -283,20 +254,8 @@ class ValidateContentStep(Step):
         from services.content_validator import ContentValidator
         self._validator = validator or ContentValidator()
 
-    # ── Sync bridge ───────────────────────────────────────────────────
-
     def run(self, context: dict[str, Any]) -> Any:
-        import asyncio
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.async_run(context))
-        raise RuntimeError(
-            "ValidateContentStep.run() cannot be called inside a running event loop; "
-            "use execute_async()/async_run()"
-        )
-
-    # ── Async implementation ──────────────────────────────────────────
+        return self.async_run(context)
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption", "")
@@ -341,13 +300,15 @@ class ValidateContentStep(Step):
         return validation_result.to_dict()
 
 
-# ── 4. Render Image ───────────────────────────────────────────────────
+# ── 5. Render Image ───────────────────────────────────────────────────
 class RenderImageStep(Step):
     """Check media readiness. Render already happened in ContentEngine.
 
     Architecture §6: ContentEngine blocks until render completes.
     MediaArtifact is always MEDIA_READY, NO_MEDIA, or RENDER_FAILED.
     RENDERING status should never appear here.
+
+    Purely synchronous — no async work, no bridge needed.
     """
     name = "render_image"
     continue_on_failure = True
@@ -365,7 +326,6 @@ class RenderImageStep(Step):
             context["image_bytes"] = None
             return media_artifact.to_dict()
 
-        # Media ready
         if media_artifact.is_valid:
             context["image_bytes"] = media_artifact.bytes if media_artifact.bytes else None
             logger.info(
@@ -374,13 +334,11 @@ class RenderImageStep(Step):
             )
             return media_artifact.to_dict()
 
-        # Text-only
         if media_artifact.is_text_only:
             context["image_bytes"] = None
             logger.info("PostWorkflow: text-only post — no media needed.")
             return media_artifact.to_dict()
 
-        # Should never happen — ContentEngine blocks until complete
         if media_artifact.is_pending:
             logger.error(
                 "PostWorkflow: UNEXPECTED RENDERING status — "
@@ -390,7 +348,6 @@ class RenderImageStep(Step):
             context["image_bytes"] = None
             return media_artifact.to_dict()
 
-        # Render failed
         if media_artifact.has_failed:
             context["image_bytes"] = None
             logger.error(
@@ -403,20 +360,24 @@ class RenderImageStep(Step):
         return media_artifact.to_dict()
 
 
-# ── 5. Publish ────────────────────────────────────────────────────────
+# ── 6. Publish ────────────────────────────────────────────────────────
 class PublishStep(Step):
-    """Publish via the plugin registry with MediaArtifact awareness.
+    """Publish via the governed canonical path with MediaArtifact awareness.
 
     Architecture §6: No text-only fallback from async gaps.
     RENDER_FAILED raises immediately. Every published post has its image.
-    """
 
+    Async-native: implements ``async_run`` only.
+    """
     name = "publish"
 
     def __init__(self, registry: "PluginRegistry", brand: "Brand", container=None) -> None:
         self._registry = registry
         self._brand = brand
         self._container = container
+
+    def run(self, context: dict[str, Any]) -> Any:
+        return self.async_run(context)
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption") or context.get(
@@ -428,7 +389,6 @@ class PublishStep(Step):
         if not caption:
             raise RuntimeError("No caption available — cannot publish")
 
-        # Render failed — raise immediately, no text-only fallback
         if media_artifact and media_artifact.has_failed:
             raise RenderFailedError(
                 message=f"Media render failed: {media_artifact.error}",
@@ -439,7 +399,6 @@ class PublishStep(Step):
                 },
             )
 
-        # Render still pending — should never happen
         if media_artifact and media_artifact.is_pending:
             raise RenderFailedError(
                 message="Media still rendering — should have completed synchronously",
@@ -448,9 +407,14 @@ class PublishStep(Step):
 
         from services.publish_orchestration import execute_governed_publish
         from core.publish_authorization import issue_internal_publish_decision
+
         workspace_id = getattr(self._brand, "workspace_id", "")
         job_id = context.get("job_id")
-        platform = context.get("platform") or getattr(self._brand, "platform", None) or "facebook"
+        platform = (
+            context.get("platform")
+            or getattr(self._brand, "platform", None)
+            or "facebook"
+        )
         risk_level = context.get("risk_level", "low")
         source = context.get("source", "workflow")
         decision_id = context.get("decision_id")
@@ -474,28 +438,27 @@ class PublishStep(Step):
             ),
         )
         output = result.get("output") if isinstance(result.get("output"), dict) else {}
-        publish_result = {**output, "action_status": result.get("status"),
-                          "action_intent_id": result.get("intent_id"),
-                          "action_execution_id": result.get("execution_id"),
-                          "governed": True}
+        publish_result = {
+            **output,
+            "action_status": result.get("status"),
+            "action_intent_id": result.get("intent_id"),
+            "action_execution_id": result.get("execution_id"),
+            "governed": True,
+        }
         context["publish_result"] = publish_result
-        context["publish_results"] = {platform: publish_result} if result.get("status") == "succeeded" and publish_result.get("ok") else {}
+        context["publish_results"] = (
+            {platform: publish_result}
+            if result.get("status") == "succeeded" and publish_result.get("ok")
+            else {}
+        )
         if result.get("status") != "succeeded" or not publish_result.get("ok"):
-            raise RuntimeError(publish_result.get("error") or "Governed canonical publish rejected")
+            raise RuntimeError(
+                publish_result.get("error") or "Governed canonical publish rejected"
+            )
         return publish_result
 
 
-    def run(self, context: dict[str, Any]) -> Any:
-        """Synchronous compatibility path for non-ASGI callers."""
-        import asyncio
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(self.async_run(context))
-        raise RuntimeError("PublishStep.run() cannot be called inside a running event loop; use execute_async()/async_run()")
-
-
-# ── 6. Record Analytics + Emit Events ────────────────────────────────
+# ── 7. Record Analytics ───────────────────────────────────────────────
 class RecordAnalyticsStep(Step):
     """Record publish metrics to analytics repository."""
     name = "record_analytics"
@@ -519,6 +482,7 @@ class RecordAnalyticsStep(Step):
         return {"recorded": len(publish_results)}
 
 
+# ── 8. Emit Event ─────────────────────────────────────────────────────
 class EmitEventStep(Step):
     """Emit PostPublishedEvent to the event bus."""
     name = "emit_event"
@@ -551,19 +515,8 @@ class EmitEventStep(Step):
 
 # ── Full Post Publish Workflow ────────────────────────────────────────
 class PostPublishWorkflow(Workflow):
-    """9-stage workflow: Topic → KB Context → Generate → Validate → Render →
+    """8-stage workflow: Topic → KB Context → Generate → Validate → Render →
     Publish → Record → Emit.
-
-    The added KnowledgeContextStep (stage 2) ensures every post is grounded
-    in the brand's Knowledge Base before the LLM prompt is assembled.
-
-    Architecture §6 — Synchronous Rendering:
-      ContentEngine blocks until render completes. Pipeline always has
-      MEDIA_READY or RENDER_FAILED by stage 5. No async gaps.
-
-    Architecture §22 — Workflow Lifecycle:
-      CREATED → AI_GENERATING → CONTENT_VALIDATED →
-      MEDIA_READY → PUBLISHING → PUBLISHED
 
     Stage contracts:
       1. Select Topic       → topic, category  (from KB or custom_topics)
@@ -574,6 +527,11 @@ class PostPublishWorkflow(Workflow):
       6. Publish            → publish_results (with image, or raises)
       7. Record             → analytics
       8. Emit               → events
+
+    Async-native steps (knowledge_context, generate_content,
+    validate_content, publish) return coroutines from ``run`` and are
+    bridged by the framework. Sync steps (select_topic, render_image,
+    record_analytics, emit_event) return values directly.
     """
 
     name = "post_publish"
