@@ -28,6 +28,10 @@ from organism.learning import LearningEngine
 # Provider object ID keys we accept as a valid receipt across connector
 # implementations. Adding a key here is cheaper and safer than teaching every
 # caller to inspect connector-specific shapes.
+#
+# The canonical publishing pipeline returns `platform_post_id` for social
+# providers and `platform_message_id` for messaging providers. Website/CMS
+# connectors return `content_id`. All are first-class provider receipts.
 _PROVIDER_OBJECT_ID_KEYS = (
     "post_id",
     "id",
@@ -36,6 +40,9 @@ _PROVIDER_OBJECT_ID_KEYS = (
     "message_id",
     "transaction_id",
     "object_id",
+    "platform_post_id",       # canonical publishing pipeline (Facebook, social)
+    "platform_message_id",    # messaging providers (WhatsApp, Messenger)
+    "content_id",             # website / CMS connectors
 )
 
 
