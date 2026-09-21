@@ -1471,67 +1471,79 @@ class BrandSchedulerManager:
         below actually starts the background thread. This method still runs
         inside an event loop (via asyncio.run from _sync_loop, or from
         manager.start()), so any remaining awaits are fine.
+
+        v4.1.1 — Status comparison now handles BrandStatus enums.
+       `Brand.status` is a BrandStatus enum, not a plain string. Calling
+       `str()` on it yields "BrandStatus.ACTIVE", which lowercases to
+       "brandstatus.active" and never matches "active". The comparison
+        must read `.value` when present.
         """
         import asyncio
         loop = asyncio.get_running_loop()
         brands = await loop.run_in_executor(None, self.brand_repo.find_all)
 
         logger.info(
-            "BrandSchedulerManager._sync_brands: find_all returned %d brand(s)",
-            len(brands),
+        "BrandSchedulerManager._sync_brands: find_all returned %d brand(s)",
+        len(brands),
         )
 
         active_ids = set()
         for brand in brands:
-            status = str(getattr(brand, "status", "") or "").lower()
-            if status != "active":
-                logger.info(
-                    "[%s] brand skipped: status=%s (only 'active' is scheduled)",
-                    getattr(brand, "name", brand.id), status,
+        # Brand.status may be a str, a str-Enum, or a plain Enum.
+        # str(enum) yields "ClassName.MEMBER"; the value we want is `.value`.
+        status_raw = getattr(brand, "status", "")
+        if hasattr(status_raw, "value"):
+            status = str(status_raw.value).lower()
+        else:
+            status = str(status_raw or "").lower()
+
+        if status != "active":
+            logger.info(
+                "[%s] brand skipped: status=%s (only 'active' is scheduled)",
+                getattr(brand, "name", brand.id), status,
+            )
+            continue
+        active_ids.add(brand.id)
+        if brand.id not in self._schedulers:
+            ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
+            if not ai_profile:
+                logger.warning(
+                    "[%s] brand skipped: no AI profile (ai_profile_id=%s)",
+                    getattr(brand, "name", brand.id), brand.ai_profile_id,
                 )
                 continue
-            active_ids.add(brand.id)
-            if brand.id not in self._schedulers:
-                ai_profile = self.ai_repo.find_by_id(brand.ai_profile_id) if brand.ai_profile_id else None
-                if not ai_profile:
-                    logger.warning(
-                        "[%s] brand skipped: no AI profile (ai_profile_id=%s)",
-                        getattr(brand, "name", brand.id), brand.ai_profile_id,
-                    )
-                    continue
-                scheduler = BrandScheduler(
-                    brand, ai_profile, self._container,
-                    job_service=self._job_service,
-                    event_bus=self._event_bus,
-                    event_loop=self._event_loop,
-                    supabase_client=self._supabase_client,
-                    redis_client=self._redis_client,
-                )
-                self._schedulers[brand.id] = scheduler
-                scheduler.start()   # synchronous — starts the thread immediately
-                logger.info(
-                    "[%s] scheduler object created and thread started",
-                    getattr(brand, "name", brand.id),
-                )
+            scheduler = BrandScheduler(
+                brand, ai_profile, self._container,
+                job_service=self._job_service,
+                event_bus=self._event_bus,
+                event_loop=self._event_loop,
+                supabase_client=self._supabase_client,
+                redis_client=self._redis_client,
+            )
+            self._schedulers[brand.id] = scheduler
+            scheduler.start()   # synchronous — starts the thread immediately
+            logger.info(
+                "[%s] scheduler object created and thread started",
+                getattr(brand, "name", brand.id),
+            )
 
-        try:
-            from services.director import director
-            if director and hasattr(director, "enqueue_event"):
-                director.enqueue_event("brand_scheduler_sync", {
-                    "total_brands": len(brands),
-                    "active_brands": len(active_ids),
-                    "schedulers_running": len(self._schedulers),
-                })
-        except Exception:
-            pass
+    try:
+        from services.director import director
+        if director and hasattr(director, "enqueue_event"):
+            director.enqueue_event("brand_scheduler_sync", {
+                "total_brands": len(brands),
+                "active_brands": len(active_ids),
+                "schedulers_running": len(self._schedulers),
+            })
+    except Exception:
+        pass
 
-        for bid in list(self._schedulers.keys()):
-            if bid not in active_ids:
-                self._schedulers[bid].stop()
-                del self._schedulers[bid]
+    for bid in list(self._schedulers.keys()):
+        if bid not in active_ids:
+            self._schedulers[bid].stop()
+            del self._schedulers[bid]
 
-        self._sync_count += 1
-
+    self._sync_count += 1
     def _sync_loop(self) -> None:
         while self._running:
             for _ in range(300):
