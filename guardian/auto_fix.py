@@ -1,0 +1,478 @@
+"""
+Guardian Auto-Fix Engine v1.0
+- Automatically creates GitHub Pull Requests for fixable security issues
+- Uses Gemini to generate the fix code
+- Creates clean, descriptive PRs with before/after comparison
+"""
+
+import logging
+import base64
+from typing import Optional
+
+from config.settings import settings
+from utils.http_client import HttpClient
+
+logger = logging.getLogger("kanyoza.guardian.auto_fix")
+
+# Shared HTTP client for all GitHub API calls in auto-fix
+_http = HttpClient("github_auto_fix", default_timeout=30)
+
+
+class AutoFixEngine:
+    """Automatically fixes security issues and creates GitHub Pull Requests."""
+
+    def __init__(self):
+        self.github_token = getattr(settings, 'github_token', '')
+        self.api_base = "https://api.github.com"
+
+    @property
+    def is_configured(self) -> bool:
+        """Check if GitHub token is available."""
+        return bool(self.github_token)
+
+    def _headers(self) -> dict:
+        """Standard GitHub API headers."""
+        return {
+            "Authorization": f"token {self.github_token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Kanyoza-Guardian",
+        }
+
+    # ------------------------------------------------------------------
+    # DETECTION
+    # ------------------------------------------------------------------
+
+    def can_auto_fix(self, issue: dict) -> bool:
+        """
+        Check if an issue can be automatically fixed.
+        Only certain issue types have reliable auto-fixes.
+        """
+        auto_fixable_patterns = [
+            'Hardcoded API Key',
+            'Hardcoded Password',
+            'Hardcoded Token',
+            'Hardcoded Secret Key',
+            'Hardcoded Access Token',
+            'Bare except clause',
+            'Mutable default argument',
+        ]
+        # Support both 'message' (legacy) and 'description' (v10 scanner field name)
+        message = issue.get('message') or issue.get('description', '')
+        return any(pattern in message for pattern in auto_fixable_patterns)
+
+    # ------------------------------------------------------------------
+    # FIX GENERATION
+    # ------------------------------------------------------------------
+
+    def generate_fix(self, issue: dict, full_file_content: str) -> Optional[str]:
+        """
+        Use Gemini to fix one security issue inside a complete file.
+
+        Receives the FULL file content so Gemini can return the complete
+        corrected file — not just the affected line.  Returning a complete
+        file is required because create_fix_pr() uploads the result as the
+        new file blob; uploading only the snippet would destroy the rest of
+        the file.
+        """
+        try:
+            from services.gemini import gemini
+
+            prompt = (
+                "You are an expert security engineer. Fix the security issue described "
+                "below inside the complete source file provided.\n\n"
+                f"ISSUE TYPE: {issue.get('message', '')}\n"
+                f"FILE: {issue.get('file', '')}\n"
+                f"LINE NUMBER: {issue.get('line', '')}\n"
+                f"SNIPPET (the offending line): {issue.get('snippet', '')}\n"
+                f"RECOMMENDATION: {issue.get('recommendation', '')}\n\n"
+                "COMPLETE FILE CONTENT:\n"
+                f"```\n{full_file_content}\n```\n\n"
+                "Return ONLY the complete fixed file with ALL original lines preserved "
+                "except the one(s) that need changing. "
+                "Do NOT include explanations, markdown, or code fences. "
+                "Do NOT truncate or summarise any part of the file. "
+                "Return the entire file content exactly as it should be saved."
+            )
+
+            fixed_code = gemini._call(
+                prompt=prompt,
+                temperature=0.1,   # Low temperature — we want a precise, minimal edit
+                max_tokens=4000,
+            )
+
+            if fixed_code:
+                fixed_code = fixed_code.strip()
+                # Strip any code fences Gemini might add despite instructions
+                if fixed_code.startswith("```"):
+                    lines = fixed_code.splitlines()
+                    # Remove first and last fence lines
+                    fixed_code = "\n".join(
+                        l for l in lines
+                        if not l.strip().startswith("```")
+                    ).strip()
+                # Sanity check: result must be at least half the original file size
+                # to catch cases where Gemini truncated the output
+                if len(fixed_code) >= len(full_file_content) * 0.5:
+                    return fixed_code
+                logger.warning(
+                    "generate_fix: Gemini output (%d chars) is less than 50%% of "
+                    "original file (%d chars) — discarding to prevent data loss",
+                    len(fixed_code), len(full_file_content),
+                )
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Failed to generate fix: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # LANGUAGE DETECTION
+    # ------------------------------------------------------------------
+
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file extension."""
+        ext = file_path.split('.')[-1].lower() if '.' in file_path else ''
+
+        language_map = {
+            'py': 'python',
+            'js': 'javascript',
+            'ts': 'typescript',
+            'jsx': 'jsx',
+            'tsx': 'tsx',
+            'json': 'json',
+            'yaml': 'yaml',
+            'yml': 'yaml',
+            'sh': 'bash',
+            'bash': 'bash',
+            'sql': 'sql',
+            'html': 'html',
+            'css': 'css',
+            'java': 'java',
+            'go': 'go',
+            'rs': 'rust',
+            'rb': 'ruby',
+            'php': 'php',
+            'swift': 'swift',
+            'kt': 'kotlin',
+        }
+
+        return language_map.get(ext, '')
+
+    # ------------------------------------------------------------------
+    # GITHUB PR CREATION
+    # ------------------------------------------------------------------
+
+    def _fetch_file(
+        self,
+        repo_full_name: str,
+        file_path: str,
+    ) -> tuple[str, str]:
+        """
+        Fetch a file from GitHub and return (decoded_content, blob_sha).
+        Returns ("", "") on failure.
+        """
+        url = f"{self.api_base}/repos/{repo_full_name}/contents/{file_path}"
+        resp = _http.get(url, headers=self._headers(), timeout=15)
+        if resp.status_code != 200:
+            logger.error(
+                "_fetch_file: GitHub returned %s for %s/%s",
+                resp.status_code, repo_full_name, file_path,
+            )
+            return "", ""
+        data = resp.json()
+        encoded = data.get("content", "")
+        sha = data.get("sha", "")
+        if not encoded:
+            return "", sha
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except Exception as exc:
+            logger.error("_fetch_file: base64 decode failed for %s: %s", file_path, exc)
+            return "", sha
+        return decoded, sha
+
+    def create_fix_pr(
+        self,
+        repo_full_name: str,
+        issue: dict,
+        file_path: str,
+        fixed_content: str,
+        file_sha: str = "",
+    ) -> Optional[str]:
+        """
+        Create a GitHub Pull Request with the fix.
+
+        Steps:
+        1. Get the default branch
+        2. Create a new branch
+        3. Commit the fix to the new branch
+        4. Create a Pull Request
+
+        Returns the PR URL or None if it fails.
+        """
+        if not self.is_configured:
+            logger.warning("Auto-fix: GitHub token not configured")
+            return None
+
+        try:
+            # Step 1: Get repository info
+            repo_url = f"{self.api_base}/repos/{repo_full_name}"
+            repo_response = _http.get(repo_url, headers=self._headers(), timeout=10)
+
+            if repo_response.status_code != 200:
+                logger.error(f"Failed to get repo: {repo_response.status_code}")
+                return None
+
+            repo_data = repo_response.json()
+            default_branch = repo_data.get('default_branch', 'main')
+
+            # Step 2: Get the current file SHA (skip full content fetch if caller
+            # already fetched the file via _fetch_file() — re-use supplied sha)
+            if not file_sha:
+                file_url = f"{repo_url}/contents/{file_path}"
+                file_response = _http.get(file_url, headers=self._headers(), timeout=10)
+                if file_response.status_code != 200:
+                    logger.error(f"Failed to get file: {file_response.status_code}")
+                    return None
+                file_sha = file_response.json().get('sha', '')
+
+            # Step 3: Get the latest commit SHA on the default branch
+            ref_url = f"{repo_url}/git/ref/heads/{default_branch}"
+            ref_response = _http.get(ref_url, headers=self._headers(), timeout=10)
+
+            if ref_response.status_code != 200:
+                logger.error(f"Failed to get ref: {ref_response.status_code}")
+                return None
+
+            base_sha = ref_response.json().get('object', {}).get('sha', '')
+
+            # Step 4: Create a new blob with the fixed content
+            blob_url = f"{repo_url}/git/blobs"
+            blob_response = _http.post(
+                blob_url,
+                headers=self._headers(),
+                json={
+                    "content": fixed_content,
+                    "encoding": "utf-8",
+                },
+                timeout=10,
+            )
+
+            if blob_response.status_code != 201:
+                logger.error(f"Failed to create blob: {blob_response.status_code}")
+                return None
+
+            new_blob_sha = blob_response.json().get('sha', '')
+
+            # Step 5: Create a new tree
+            tree_url = f"{repo_url}/git/trees"
+            tree_response = _http.post(
+                tree_url,
+                headers=self._headers(),
+                json={
+                    "base_tree": base_sha,
+                    "tree": [{
+                        "path": file_path,
+                        "mode": "100644",
+                        "type": "blob",
+                        "sha": new_blob_sha,
+                    }],
+                },
+                timeout=10,
+            )
+
+            if tree_response.status_code != 201:
+                logger.error(f"Failed to create tree: {tree_response.status_code}")
+                return None
+
+            new_tree_sha = tree_response.json().get('sha', '')
+
+            # Step 6: Create a new commit
+            commit_message = f"🔒 Security Fix: {issue.get('message', 'Auto-fix')[:70]}"
+            commit_url = f"{repo_url}/git/commits"
+            commit_response = _http.post(
+                commit_url,
+                headers=self._headers(),
+                json={
+                    "message": commit_message,
+                    "tree": new_tree_sha,
+                    "parents": [base_sha],
+                },
+                timeout=10,
+            )
+
+            if commit_response.status_code != 201:
+                logger.error(f"Failed to create commit: {commit_response.status_code}")
+                return None
+
+            new_commit_sha = commit_response.json().get('sha', '')
+
+            # Step 7: Create a new branch
+            branch_name = f"guardian-fix-{file_path.replace('/', '-')[:40]}-line{issue.get('line', '')}"
+            branch_url = f"{repo_url}/git/refs"
+
+            branch_response = _http.post(
+                branch_url,
+                headers=self._headers(),
+                json={
+                    "ref": f"refs/heads/{branch_name}",
+                    "sha": new_commit_sha,
+                },
+                timeout=10,
+            )
+
+            if branch_response.status_code == 422:
+                # 422 means branch already exists — retry once with a unique timestamp suffix
+                import time as _time
+                branch_name = f"{branch_name}-{int(_time.time())}"
+                branch_response = _http.post(
+                    branch_url,
+                    headers=self._headers(),
+                    json={
+                        "ref": f"refs/heads/{branch_name}",
+                        "sha": new_commit_sha,
+                    },
+                    timeout=10,
+                )
+            # After creation or retry, we require HTTP 201 — anything else aborts
+            if branch_response.status_code != 201:
+                logger.error(f"Failed to create branch after retry: {branch_response.status_code}")
+                return None
+
+            # Step 8: Create the Pull Request
+            language = self._detect_language(file_path)
+            pr_title = f"🛡️ Guardian Auto-Fix: {issue.get('message', 'Security Issue')[:80]}"
+            pr_body = (
+                f"## 🔒 Code Guardian Auto-Fix\n\n"
+                f"**Issue:** {issue.get('message', '')}\n"
+                f"**File:** `{file_path}` (line {issue.get('line', '')})\n"
+                f"**Severity:** {issue.get('severity', 'unknown').upper()}\n"
+                f"**Recommendation:** {issue.get('recommendation', '')}\n\n"
+                f"---\n\n"
+                f"### 📝 What Changed\n"
+                f"This Pull Request was automatically generated by "
+                f"[Kanyoza Code Guardian](https://kanyoza-systems-bot.onrender.com).\n\n"
+                f"The fix replaces hardcoded credentials or fixes code anti-patterns "
+                f"with secure alternatives.\n\n"
+                f"### ✅ Checklist\n"
+                f"- [ ] Review the changes\n"
+                f"- [ ] Verify the fix doesn't break anything\n"
+                f"- [ ] Merge when ready\n\n"
+                f"---\n"
+                f"*Generated by Kanyoza Systems Bot v7.0*"
+            )
+
+            pr_url = f"{repo_url}/pulls"
+            pr_response = _http.post(
+                pr_url,
+                headers=self._headers(),
+                json={
+                    "title": pr_title,
+                    "body": pr_body,
+                    "head": branch_name,
+                    "base": default_branch,
+                },
+                timeout=10,
+            )
+
+            if pr_response.status_code == 201:
+                pr_html_url = pr_response.json().get('html_url', '')
+                logger.info(f"✅ Auto-fix PR created: {pr_html_url}")
+                return pr_html_url
+            else:
+                logger.error(f"PR creation failed: {pr_response.status_code} {pr_response.text[:300]}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Auto-fix PR creation error: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # BATCH AUTO-FIX
+    # ------------------------------------------------------------------
+
+    def auto_fix_all(self, repo_full_name: str, issues: list) -> dict:
+        """
+        Attempt to auto-fix all fixable issues in a scan.
+
+        For each fixable issue:
+          1. Fetch the FULL file content from GitHub (required by generate_fix).
+          2. Pass full content to Gemini → get complete corrected file back.
+          3. Create a GitHub PR with the corrected file.
+          The file SHA from step 1 is threaded to create_fix_pr() so the
+          GitHub Contents API GET is not repeated.
+
+        Returns summary dict with keys: total, fixable, fixed, failed, pr_urls.
+        """
+        results: dict = {
+            'total':   len(issues),
+            'fixable': 0,
+            'fixed':   0,
+            'failed':  0,
+            'pr_urls': [],
+        }
+
+        if not self.is_configured:
+            logger.warning("auto_fix_all: GitHub token not configured — skipping")
+            return results
+
+        # Cache fetched file content within one batch to avoid re-fetching
+        # the same file multiple times when several issues hit the same path.
+        _file_cache: dict[str, tuple[str, str]] = {}  # path -> (content, sha)
+
+        for issue in issues:
+            if not self.can_auto_fix(issue):
+                continue
+
+            results['fixable'] += 1
+            file_path = issue.get('file', '')
+            if not file_path:
+                logger.warning("auto_fix_all: issue has no 'file' field — skipping")
+                results['failed'] += 1
+                continue
+
+            # Step 1 — fetch full file (use cache to avoid duplicate API calls)
+            if file_path not in _file_cache:
+                full_content, sha = self._fetch_file(repo_full_name, file_path)
+                _file_cache[file_path] = (full_content, sha)
+            else:
+                full_content, sha = _file_cache[file_path]
+
+            if not full_content:
+                logger.warning(
+                    "auto_fix_all: could not fetch full content for %s — skipping",
+                    file_path,
+                )
+                results['failed'] += 1
+                continue
+
+            # Step 2 — ask Gemini to rewrite the full file with the fix applied
+            fixed_code = self.generate_fix(issue, full_content)
+            if not fixed_code:
+                logger.warning(
+                    "auto_fix_all: generate_fix returned nothing for %s line %s",
+                    file_path, issue.get('line', '?'),
+                )
+                results['failed'] += 1
+                continue
+
+            # Step 3 — open PR (pass sha so create_fix_pr skips the second GET)
+            pr_url = self.create_fix_pr(
+                repo_full_name, issue, file_path, fixed_code, file_sha=sha
+            )
+            if pr_url:
+                results['fixed'] += 1
+                results['pr_urls'].append(pr_url)
+                # Invalidate cache entry — the file has changed on the branch;
+                # future issues on the same file should re-fetch from main.
+                _file_cache.pop(file_path, None)
+            else:
+                results['failed'] += 1
+
+        logger.info("auto_fix_all complete: %s", results)
+        return results
+
+
+# Singleton
+auto_fix = AutoFixEngine()

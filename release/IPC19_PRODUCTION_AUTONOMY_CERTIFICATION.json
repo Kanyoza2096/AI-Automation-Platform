@@ -1,0 +1,136 @@
+{
+  "phase": "IPC-19",
+  "title": "Production Autonomy Certification Gate",
+  "timestamp": "2026-09-26T06:56:08.294468+00:00",
+  "certification": "NOT_PROVEN",
+  "production_gate": "NOT_PROVEN",
+  "supporting_suite": {
+    "returncode": 0,
+    "stdout": "............                                                             [100%]\n12 passed in 10.78s\n",
+    "stderr": ""
+  },
+  "gates": [
+    {
+      "name": "offline_external_reconciliation",
+      "status": "PASS",
+      "evidence": {
+        "version": "V67.12",
+        "status": "passed",
+        "scenarios": [
+          {
+            "name": "lost_response_after_commit",
+            "passed": true,
+            "details": {
+              "first_execution": {
+                "status": "uncertain",
+                "execution_id": "exe_145bb04491fe4c26bd1a1c1bfb523011",
+                "replayed": false,
+                "error": "sandbox response lost after external commit",
+                "reconciliation_required": true
+              },
+              "execution_observation": {
+                "schema_version": "1.0",
+                "observation_id": "obs_b7dd47929d613509b331aa32",
+                "idempotency_key": "outobs_23541e540cf689470b1ada71f483a04dce968e4f819612156fe0031ad0b7a267",
+                "workspace_id": "ws-v67-12",
+                "execution_id": "exe_145bb04491fe4c26bd1a1c1bfb523011",
+                "action": "sandbox_external_side_effect",
+                "observation_type": "execution_receipt",
+                "execution_status": "uncertain",
+                "outcome_state": "unknown",
+                "provider": "kdo-v67.10-sandbox",
+                "provider_object_id": null,
+                "observed_at": "2026-09-26T06:55:55.735005+00:00",
+                "source": "execution_ledger",
+                "source_trust": "execution_ledger",
+                "business_success": null,
+                "business_success_confidence": null,
+                "attribution_status": "not_yet_attributed",
+                "evidence": {
+                  "provider": "kdo-v67.10-sandbox",
+                  "reconcile_required": true,
+                  "exception_type": "TimeoutError"
+                },
+                "authority": "none"
+              },
+              "reconciliation": {
+                "status": "committed",
+                "idempotency_key": "v67_12_lost_response",
+                "provider_object_id": "sbx_obj_3069353e6dbd4ca4",
+                "provider_request_id": "sbx_req_6aaeb44d4e5e4044",
+                "sandbox": true
+              },
+              "second_execution": {
+                "status": "uncertain",
+                "execution_id": "exe_145bb04491fe4c26bd1a1c1bfb523011",
+                "provider_object_id": null,
+                "replayed": true
+              },
+              "provider_call_count": 1,
+              "provider_committed_count": 1
+            }
+          },
+          {
+            "name": "reject_before_commit_then_governed_retry",
+            "passed": true,
+            "details": {
+              "first_execution": {
+                "status": "failed",
+                "execution_id": "exe_9df172fdeb834a3eb3e7061c7e88f7b6",
+                "provider_object_id": null,
+                "replayed": false,
+                "result": {
+                  "ok": false,
+                  "error": "sandbox rejection before commit",
+                  "sandbox": true
+                },
+                "reconciliation_required": false
+              },
+              "retry_execution": {
+                "status": "succeeded",
+                "execution_id": "exe_e92fd8dd02484bee80168309142bf3bc",
+                "provider_object_id": "sbx_obj_230809944e6246c5",
+                "replayed": false,
+                "result": {
+                  "ok": true,
+                  "id": "sbx_obj_230809944e6246c5",
+                  "request_id": "sbx_req_1b5087eb3b9d4daa",
+                  "replayed": false,
+                  "sandbox": true
+                },
+                "reconciliation_required": false
+              },
+              "provider_committed_count": 1
+            }
+          }
+        ],
+        "invariants": {
+          "lost_response_is_uncertain": true,
+          "reconciliation_precedes_unknown_retry": true,
+          "provider_side_effect_not_duplicated": true,
+          "execution_receipt_does_not_claim_business_success": true
+        }
+      }
+    },
+    {
+      "name": "offline_workforce_chaos",
+      "status": "PASS",
+      "evidence": {
+        "passed": 10,
+        "failed": 0,
+        "fingerprint": "51d1d0d09aed7360eaf3981c10226b528b367c793a72074e1f82b62e07008b71"
+      }
+    },
+    {
+      "name": "real_postgresql_concurrency",
+      "status": "NOT_PROVEN",
+      "evidence": {
+        "psql_available": false,
+        "docker_available": false,
+        "psycopg_available": false,
+        "required": "real PostgreSQL instance plus concurrency-capable driver/runtime"
+      }
+    }
+  ],
+  "principle": "Offline evidence never substitutes for real PostgreSQL concurrency certification."
+}

@@ -1,0 +1,65 @@
+"""School MIS Plugin — Kanyoza AI Platform."""
+
+import logging
+from typing import Any
+
+from plugins.industries.base import IndustryPlugin
+
+logger = logging.getLogger("kanyoza.plugins.school_mis")
+
+
+class SchoolMISPlugin(IndustryPlugin):
+    pack_id = "school_mis"
+    pack_version = "1.0"
+    display_name = "School Management Information System"
+    capabilities = ("students", "attendance", "fees", "scheduling", "messaging")
+    resources = ("students", "attendance", "fees", "events")
+    policies = ("school.workspace_access", "school.student_access")
+    workflows = ("student_registration", "attendance", "fee_collection")
+    events = ("student.created", "attendance.recorded", "fee.created")
+
+    """
+    School Management Information System plugin.
+
+    Handles:
+      - Student registration and management
+      - Class attendance tracking
+      - Tuition and fee recording
+      - Event/PTA scheduling
+      - WhatsApp announcements to students/parents
+    """
+
+    def __init__(self, supabase_client=None, redis_client=None):
+        super().__init__(supabase_client, redis_client)
+        # Lazy imports to avoid circular dependencies
+        from .repository import SchoolMISRepository
+        from .commands import SchoolMISCommands
+        
+        self.repo = SchoolMISRepository(supabase_client)
+        self.commands_handler = SchoolMISCommands(self.repo, redis_client)
+
+    def get_commands(self) -> list[dict]:
+        return self.commands_handler.list_all()
+
+    def execute(self, command: str, params: dict, workspace_id: str = "default") -> dict:
+        workspace_id = self.resolve_workspace(workspace_id)
+        safe_params = {k: v for k, v in (params or {}).items() if k != "workspace_id"}
+        return self.commands_handler.handle(command, safe_params, workspace_id)
+
+    def get_webhooks(self) -> list[dict]:
+        return [
+        {
+            "path": "/webhooks/school/student",
+            "method": "POST",
+            "handler": "handle_student_webhook",  # ← String, not function
+            "description": "Student registration from external form",
+        },
+    ]
+
+    def _handle_student_webhook(self, data: dict) -> dict:
+        """Handle incoming student registration webhook."""
+        workspace_id = data.get("workspace_id", "default")
+        result = self.commands_handler.handle("add_student", data, workspace_id)
+        logger.info("School webhook processed: %s", result.get("message"))
+        return result
+

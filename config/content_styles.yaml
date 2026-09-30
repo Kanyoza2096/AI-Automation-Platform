@@ -1,0 +1,326 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Kanyoza Content Style Registry
+#
+# Single source of truth for content style guides used by PromptBuilder.
+#
+# Adding a new vertical = adding a YAML entry. No code change, no deploy.
+#
+# Schema per style:
+#   display_name:    Human-readable name (for UI, logs)
+#   match:           Signals used for style inference when a brand has no
+#                    explicit `style_category`
+#     tones:         Tone words that trigger this style
+#     audience_signals: Substrings matched against brand.audience_description
+#     name_signals:  Substrings matched against brand.name or brand.slug
+#   guide:           The style guide text injected into the LLM prompt
+#
+# Resolution order in PromptBuilder.guide_for_brand():
+#   1. brand.custom_style_guide   (full override)
+#   2. brand.style_category        (explicit key → this registry)
+#   3. inference via match signals (score-based, best match wins)
+#   4. SAFE_FALLBACK_GUIDE         (hardcoded conservative default)
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: 1
+
+styles:
+
+  # ────────────────────────────────────────────────────────────────────────
+  # DEVOTIONAL / FAITH
+  # ────────────────────────────────────────────────────────────────────────
+  devotional:
+    display_name: "Devotional / Faith"
+    match:
+      tones:
+        - spiritual
+        - inspirational
+        - devotional
+        - religious
+        - warm
+        - pastoral
+        - faith
+        - gospel
+        - christian
+        - ministry
+        - encouraging
+        - reverent
+      audience_signals:
+        - christian
+        - believer
+        - faith
+        - church
+        - worship
+        - gospel
+        - scripture
+        - biblical
+        - disciple
+      name_signals:
+        - gospel
+        - church
+        - ministry
+        - faith
+        - word
+        - prayer
+        - blessed
+        - daily
+    guide: |
+      Content Style: DEVOTIONAL / INSPIRATIONAL
+      - Write an uplifting, faith-based post.
+      - DO NOT use comparison format (no "X vs Y").
+      - DO NOT compare technologies, products, or platforms.
+      - DO NOT use metaphors from software engineering, business operations, or systems architecture.
+      - DO NOT use corporate verbs such as "deploy", "leverage", "optimize", "ship", "scale".
+      - DO NOT include phrases like "feedback loop", "system architecture", "pipeline", or "deployment".
+      - Use scripture references where appropriate (quote the verse and reference).
+      - Focus on spiritual growth, encouragement, and biblical wisdom.
+      - End with a prayer or blessing.
+      - Use warm, pastoral language suitable for a Christian audience.
+      - Open with a scripture-anchored theme or reflection.
+      - Close with a call to reflection or prayer.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # PROFESSIONAL / TECHNICAL
+  # ────────────────────────────────────────────────────────────────────────
+  professional:
+    display_name: "Professional / Technical"
+    match:
+      tones:
+        - professional
+        - technical
+        - authoritative
+        - analytical
+        - corporate
+        - formal
+        - enterprise
+      audience_signals:
+        - developer
+        - engineer
+        - cto
+        - professional
+        - enterprise
+        - software
+        - technical
+    guide: |
+      Content Style: PROFESSIONAL ANALYSIS
+      - Write an insightful comparison or analysis post.
+      - You may use "X vs Y" format if it fits the topic.
+      - Back claims with reasoning and evidence.
+      - Maintain authoritative, expert tone.
+      - Include actionable takeaways.
+      - Prefer concrete examples over abstract jargon.
+      - Open with the most important insight.
+      - End with a clear next step or takeaway.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # CASUAL / CONVERSATIONAL
+  # ────────────────────────────────────────────────────────────────────────
+  casual:
+    display_name: "Casual / Conversational"
+    match:
+      tones:
+        - casual
+        - friendly
+        - playful
+        - conversational
+        - approachable
+        - fun
+        - light
+      audience_signals:
+        - everyday
+        - general
+        - community
+    guide: |
+      Content Style: CASUAL / CONVERSATIONAL
+      - Write a friendly, approachable post.
+      - Use conversational language.
+      - Ask questions to engage the audience.
+      - Keep it light and relatable.
+      - Use humor where appropriate.
+      - Short paragraphs. Simple words.
+      - End with an open question or friendly invitation.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # CULINARY / FOOD
+  # ────────────────────────────────────────────────────────────────────────
+  culinary:
+    display_name: "Food / Cooking"
+    match:
+      tones:
+        - cozy
+        - appetizing
+        - homey
+        - savory
+        - sweet
+      audience_signals:
+        - cook
+        - chef
+        - foodie
+        - home cook
+        - baker
+        - kitchen
+      name_signals:
+        - kitchen
+        - recipe
+        - food
+        - cook
+        - bake
+        - cafe
+        - restaurant
+    guide: |
+      Content Style: CULINARY / RECIPE
+      - Evoke sensory details: taste, smell, texture, warmth.
+      - Reference ingredients, technique, and seasonality.
+      - DO NOT use software engineering metaphors.
+      - Short, vivid sentences. Present tense.
+      - End with a tip or variation suggestion.
+      - Warm, inviting tone suitable for home cooks.
+      - If describing a dish, mention one surprising detail.
+      - Include a call to try, save, or share the recipe.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # FITNESS / WELLNESS
+  # ────────────────────────────────────────────────────────────────────────
+  fitness:
+    display_name: "Fitness / Wellness"
+    match:
+      tones:
+        - motivating
+        - energetic
+        - athletic
+        - empowering
+      audience_signals:
+        - athlete
+        - fitness
+        - gym
+        - runner
+        - lifter
+        - wellness
+      name_signals:
+        - fit
+        - gym
+        - run
+        - strength
+        - active
+        - wellness
+    guide: |
+      Content Style: FITNESS / WELLNESS
+      - Energetic, action-oriented language.
+      - Focus on progress, consistency, and mindset.
+      - DO NOT use corporate or software metaphors.
+      - Include a clear call to a specific action.
+      - Encourage without shaming.
+      - End with a motivational statement.
+      - Use concrete, measurable framing where possible.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # NEWS / JOURNALISM
+  # ────────────────────────────────────────────────────────────────────────
+  news:
+    display_name: "News / Journalism"
+    match:
+      tones:
+        - factual
+        - neutral
+        - objective
+        - journalistic
+      audience_signals:
+        - reader
+        - subscriber
+        - public
+        - general
+      name_signals:
+        - news
+        - times
+        - post
+        - journal
+        - report
+        - daily
+    guide: |
+      Content Style: NEWS / JOURNALISM
+      - Lead with the most important fact.
+      - Neutral, factual tone. No editorializing.
+      - Attribute sources where applicable.
+      - DO NOT use hyperbole or marketing language.
+      - Short paragraphs. Plain language.
+      - Include a dateline and brief context.
+      - End with a link or next step.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # EDUCATION / INSTRUCTIONAL
+  # ────────────────────────────────────────────────────────────────────────
+  education:
+    display_name: "Education / Instructional"
+    match:
+      tones:
+        - educational
+        - instructive
+        - patient
+        - explanatory
+      audience_signals:
+        - student
+        - learner
+        - parent
+        - teacher
+        - educator
+      name_signals:
+        - learn
+        - academy
+        - school
+        - course
+        - tutor
+        - edu
+    guide: |
+      Content Style: EDUCATIONAL
+      - Teach one clear concept per post.
+      - Use plain language. Define jargon if used.
+      - Structure: hook → explanation → example → takeaway.
+      - DO NOT use corporate or sales language.
+      - Prefer concrete examples over abstract theory.
+      - End with a mini-quiz, prompt, or reflection question.
+      - Never condescend. Assume the reader is intelligent.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ENTERTAINMENT / LIFESTYLE
+  # ────────────────────────────────────────────────────────────────────────
+  entertainment:
+    display_name: "Entertainment / Lifestyle"
+    match:
+      tones:
+        - entertaining
+        - witty
+        - trendy
+        - lifestyle
+        - glamorous
+      audience_signals:
+        - fan
+        - follower
+        - lifestyle
+        - entertainment
+        - audience
+      name_signals:
+        - entertainment
+        - lifestyle
+        - buzz
+        - vibe
+        - pop
+    guide: |
+      Content Style: ENTERTAINMENT / LIFESTYLE
+      - Lead with the hook. Make the first line unmissable.
+      - Keep the rhythm punchy. Short sentences.
+      - Reference popular culture where relevant.
+      - DO NOT sound corporate or preachy.
+      - Include one shareable detail or quote.
+      - End with a question or hot take invitation.
+      - Emoji density higher than other verticals is fine.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ADDING A NEW VERTICAL
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 1. Copy one of the blocks above.
+# 2. Change the key (e.g., "real_estate:").
+# 3. Fill in display_name, match, guide.
+# 4. Commit + push. Render rebuilds. Done.
+#
+# No Python changes needed. PromptBuilder loads this file at import time.
+# ═══════════════════════════════════════════════════════════════════════════

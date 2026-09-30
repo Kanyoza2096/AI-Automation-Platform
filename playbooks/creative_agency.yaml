@@ -1,0 +1,30 @@
+business_type: creative_agency
+industry: media_services
+default_workers:
+  - role: content_creator
+    purpose: Maintain a consistent social presence from approved brand pillars.
+    capabilities: [content_draft, social_publish]
+  - role: lead_responder
+    purpose: Classify and follow up inbound leads within governed response policies.
+    capabilities: [crm_add_contact, crm_schedule_followup, customer_communication]
+  - role: portfolio_curator
+    purpose: Turn approved portfolio assets into website/social content.
+    capabilities: [website_create_post, social_publish]
+default_connectors: [instagram, linkedin, website, whatsapp]
+default_content_pillars: [portfolio, client_stories, behind_the_scenes, educational_tips]
+default_rules:
+  - id: lead-followup
+    name: New lead follow-up
+    trigger: lead.created
+    action: crm_schedule_followup
+    risk: medium
+  - id: portfolio-publish
+    name: Publish approved portfolio content
+    trigger: content.approved
+    action: social_publish
+    risk: high
+  - id: weekly-report
+    name: Weekly client report
+    trigger: schedule.weekly
+    action: generate_client_report
+    risk: low

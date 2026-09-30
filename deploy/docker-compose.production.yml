@@ -1,0 +1,58 @@
+# Kanyoza production multi-process layout
+# Requires: .env with MASTER_API_TOKEN, ENCRYPTION_KEY, SUPABASE_*, GEMINI_KEY, etc.
+
+x-app: &app
+  build: ..
+  env_file: ../.env
+  environment:
+    ENVIRONMENT: production
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *app
+    command: >-
+      sh -c "gunicorn main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers ${WEB_CONCURRENCY:-2} --timeout 75 --graceful-timeout 30"
+    environment:
+      ENVIRONMENT: production
+      SERVICE_MODE: api
+    # API is internal to the deployment network; publish only the gateway externally.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health/live >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  core:
+    <<: *app
+    command: python -m workers.brain
+    environment:
+      ENVIRONMENT: production
+      SERVICE_MODE: core
+      SLO_ALERT_ENABLED: "true"
+      KDO_HEARTBEAT_FILE: /tmp/kdo-runtime-heartbeat.json
+      # SLO_ALERT_WEBHOOK_URL: set in .env
+    healthcheck:
+      test: ["CMD", "python", "scripts/worker_health.py"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 45s
+
+  workers:
+    <<: *app
+    command: python -m workers.scheduler_worker
+    environment:
+      ENVIRONMENT: production
+      SERVICE_MODE: workers
+      KDO_HEARTBEAT_FILE: /tmp/kdo-runtime-heartbeat.json
+      KDO_WORKER_DRAIN_TIMEOUT_SECONDS: "30"
+    healthcheck:
+      test: ["CMD", "python", "scripts/worker_health.py"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 45s

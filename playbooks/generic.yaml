@@ -1,0 +1,9 @@
+business_type: generic
+industry: general
+default_workers:
+  - role: business_coordinator
+    purpose: Monitor configured business work and surface recommendations.
+    capabilities: [task_recommendation]
+default_connectors: []
+default_content_pillars: [business_updates, education, customer_stories]
+default_rules: []
