@@ -21,55 +21,45 @@ Receipt contract (v2):
     can persist them for audit and reconciliation. The page token is never
     included.
 
+V2.0 CHANGES (2026-09-30):
+  - _connector_execute now handles the execution_managed path correctly.
+    Previously it awaited plugin.publish unconditionally and returned the
+    raw ConnectorResult under "result" with no top-level status or ID,
+    producing a TypeError AFTER the side effect had already occurred.
+    The new code:
+      - Awaits only if the return value is awaitable.
+      - Normalizes ConnectorResult (dataclass) or dict into the shape
+        callers expect: status, platform_post_id, provider_object_id,
+        post_id, error, outcome.
+  - run_canonical_publish signature declares execution_managed: bool = False
+    so the inner _connector_execute check can read it without NameError.
+
 V1.9 CHANGES (2026-09-29):
   - The pipeline's ledger key is namespaced ("pipeline:<key>") so it cannot
-    collide with the ActionKernel's own ledger row. Prior to this change,
-    the kernel opened a row for action="action.publish_content" using the
-    shared idempotency key. When the pipeline then called ledger.begin()
-    with the same key, begin_external_execution returned the kernel's row
-    (already locked by the kernel's worker_id). The executor's subsequent
-    claim() saw a foreign lease and returned status="in_progress". The
-    pipeline's catch-all branch then translated that to the generic
-    "External publish failed" message. Two actions sharing one key means
-    two workloads sharing one lease; namespacing separates them.
+    collide with the ActionKernel's own ledger row.
 
 V1.8 CHANGES (2026-09-29):
   - _connector_execute no longer silently falls back to an in-memory
-    ExecutionLedger when a Supabase client cannot be resolved. Try the
-    container, then the module-level service client; if both fail, return
-    ledger_db_unavailable instead of proceeding with a ledger that writes
-    nothing.
-  - Three temporary logger.error() diagnostics added to _connector_execute
-    (connector.entry, connector.pre_executor, connector.post_executor).
-    These bypass log-level filtering so the exact failure point is visible
-    in production logs without requiring DEBUG. Remove once the connector
-    path is verified end-to-end.
+    ExecutionLedger when a Supabase client cannot be resolved.
+  - Three temporary logger.error() diagnostics added (connector.entry,
+    connector.pre_executor, connector.post_executor).
 
 V1.7 CHANGES (2026-09-29):
   - Council proposal metadata is now populated with the fields personas
-    actually read (topic, has_cta, engagement_ratio, sample_count, hour,
-    day, platform, source). Previously the proposal carried only
-    {workspace_id, content}, which left every content-aware persona with
-    empty inputs.
+    actually read.
 
 V1.6 CHANGES (2026-09-27):
-  - Council is now risk-tiered. Low-risk publishes explicitly skip Council
-    deliberation (fast path). Medium/high/critical risk automatically require
-    Council and honour its quorum rules.
-  - Auto-image: when the caller supplies no image and no image_url, the
-    pipeline generates an image via services.image_engine (Cloudflare
-    Workers AI → HuggingFace FLUX → Kroki → Picsum). Falls back to the
-    branded card renderer if image_engine returns nothing. Failures degrade
-    to text-only publishing; image generation is never a publish blocker.
+  - Council is risk-tiered.
+  - Auto-image via image_engine with card-renderer fallback.
 
 DIAG (temporary):
-  - Down-graded to DEBUG so production logs are not dominated by WARNINGs.
-  - Structured, redacted: no account object, no tokens, no secrets.
-  - Remove once connector path is verified in production.
+  - Structured, redacted diagnostics for the connector path.
+  - Remove once connector path is verified end-to-end.
 """
 from __future__ import annotations
 
 import base64
+import inspect
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -182,9 +172,6 @@ class PipelineBlocked(Exception):
 # Council proposal metadata
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Additive CTA detection for when the caller does not supply has_cta.
-# Conservative by design: only obvious action verbs count. False positives
-# push a persona toward approval, so the bar is set high.
 _CTA_MARKERS = (
     "comment",
     "share",
@@ -215,39 +202,18 @@ def _build_council_metadata(
     workspace_id: str,
     content: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Build the metadata dict that Council personas actually read.
-
-    Personas inspect ``proposal.metadata`` for their decision inputs. The
-    pre-V1.7 pipeline passed only ``{workspace_id, content}``, so any
-    persona reading ``metadata["topic"]``, ``metadata["has_cta"]``,
-    ``metadata["engagement_ratio"]``, or ``metadata["sample_count"]``
-    defaulted to empty/neutral values. That produced deterministic
-    low-confidence abstentions and made quorum unreachable.
-
-    Fields provided here:
-      - workspace_id
-      - topic, platform, source       (from the caller)
-      - has_cta                       (caller override or detected)
-      - hour, day                     (caller override or current UTC)
-      - engagement_ratio, sample_count (caller value or None)
-      - engagement_source             ("no_history" | "caller_supplied")
-      - content                       (raw content for personas that read it)
-    """
+    """Build the metadata dict that Council personas actually read."""
     content_topic = str(content.get("topic") or "").strip()
     content_caption = str(content.get("caption") or "").strip()
     content_platform = str(content.get("platform") or "facebook").strip().lower()
     content_source = str(content.get("source") or "api").strip().lower()
 
-    # has_cta: explicit caller value wins; otherwise detect conservatively.
     has_cta_explicit = content.get("has_cta")
     if has_cta_explicit is None:
         has_cta = _detect_cta(content_topic, content_caption)
     else:
         has_cta = bool(has_cta_explicit)
 
-    # Engagement: pass through whatever the caller supplied. Do not invent
-    # numbers. Mark the source so analyst-style personas can distinguish
-    # "no history" from "history shows zero engagement".
     engagement_ratio = content.get("engagement_ratio")
     sample_count = content.get("sample_count")
     if engagement_ratio is None and sample_count is None:
@@ -495,9 +461,6 @@ async def run_canonical_publish(
         }
 
     # ── Auto-image: image_engine (Cloudflare AI) with card-renderer fallback ──
-    # ✅ V1.6 — Primary: services.image_engine (Cloudflare Workers AI FLUX →
-    # HuggingFace FLUX → Kroki diagrams → Picsum stock). Fallback: branded
-    # card renderer. Both failures degrade to text-only. Never blocks publish.
     if (
         not image_url
         and not image_bytes
@@ -511,14 +474,13 @@ async def run_canonical_publish(
             image_bytes = None
             image_source = None
 
-            # 1) Primary: image_engine (Cloudflare AI)
             try:
                 from services.image_engine import image_engine
                 image_bytes = await _asyncio.get_event_loop().run_in_executor(
                     None,
                     image_engine.generate_image,
-                    image_prompt,   # topic
-                    caption or "",  # post_content
+                    image_prompt,
+                    caption or "",
                 )
                 if image_bytes:
                     image_source = "image_engine"
@@ -532,7 +494,6 @@ async def run_canonical_publish(
             except Exception as exc:
                 logger.warning("image_engine failed: %s", exc)
 
-            # 2) Fallback: branded card renderer
             if not image_bytes:
                 try:
                     from services.rendering.engine import card_renderer as _renderer
@@ -559,7 +520,6 @@ async def run_canonical_publish(
                 except Exception as exc:
                     logger.warning("card_renderer fallback failed: %s", exc)
 
-            # 3) Record the outcome in the trace
             if image_bytes:
                 trace.mark(
                     "render",
@@ -589,7 +549,7 @@ async def run_canonical_publish(
             )
 
     # ── Outbox required when durable and not already from worker ────────
-    if durable and not _from_outbox:
+    if durable and not _from_outbox and not execution_managed:
         try:
             from core.publish_outbox import publish_outbox
             item = publish_outbox.enqueue(
@@ -648,13 +608,13 @@ async def run_canonical_publish(
         topic=topic,
         decision_id=dec_id,
         idempotency_key=idempotency_key,
-        execution_managed=execution_managed,
         allow_simulate=bool(kwargs.get("allow_simulate", False)),
         image_url=image_url,
         image_bytes=image_bytes,
         brand=brand,
         to_number=to_number,
         recipient=recipient,
+        execution_managed=execution_managed,
     )
     trace.mark(
         "connector",
@@ -866,7 +826,6 @@ async def _metabolism_check(
 async def _council_deliberate(
     workspace_id: str, content: Dict[str, Any], container, *, require: bool
 ) -> Dict[str, Any]:
-    # ✅ V1.6 — Fast path: Council not required → don't deliberate.
     if not require:
         return {
             "status": "skipped",
@@ -903,8 +862,6 @@ async def _council_deliberate(
                 or ""
             )[:500]
 
-        # ✅ V1.7 — Populate the fields personas actually read. See
-        # _build_council_metadata for the field list and rationale.
         proposal_metadata = _build_council_metadata(workspace_id, content)
 
         if Proposal is not None:
@@ -917,7 +874,6 @@ async def _council_deliberate(
                     metadata=proposal_metadata,
                 )
             except TypeError:
-                # Legacy Proposal signature fallback.
                 proposal = Proposal(
                     action_name="publish",
                     source_engine="canonical_pipeline",
@@ -1037,27 +993,25 @@ async def _connector_execute(
     topic,
     decision_id,
     idempotency_key: Optional[str] = None,
-    execution_managed: bool = False,
     allow_simulate: bool,
     image_url: Optional[str] = None,
     image_bytes: Optional[bytes] = None,
     brand: Optional[Any] = None,
     to_number: Optional[str] = None,
     recipient: Optional[str] = None,
+    execution_managed: bool = False,
 ) -> Dict[str, Any]:
     """Resolve a live connector, execute the publish, and return a receipt."""
     text = (caption or topic or "").strip() or f"Kanyoza {decision_id[:8]}"
 
-    # ── DIAG (temporary) ────────────────────────────────────────────────
-    # Unconditional entry marker. logger.error bypasses level filtering so
-    # this line is visible in production regardless of LOG_LEVEL.
     logger.error(
-        "connector.entry: ws=%s brand=%s platform=%s container=%s sim=%s",
+        "connector.entry: ws=%s brand=%s platform=%s container=%s sim=%s managed=%s",
         workspace_id,
         brand_id,
         platform,
         "PRESENT" if container is not None else "NONE",
         allow_simulate,
+        execution_managed,
     )
 
     _diag(
@@ -1239,34 +1193,98 @@ async def _connector_execute(
             str(image_url or ""), image_bytes,
         )
 
-    # ── Namespace the pipeline's ledger key (V1.9) ─────────────────────
-    # The ActionKernel opened its own durable row for
-    # action="action.publish_content" using this same idempotency_key. If the
-    # pipeline re-uses it verbatim, begin_external_execution returns the
-    # kernel's row (already locked by the kernel's worker_id), and the
-    # executor's subsequent claim() sees a foreign lease and returns
-    # status="in_progress". The pipeline's catch-all branch then translates
-    # that to the generic "External publish failed" message. Two actions
-    # sharing one key means two workloads sharing one lease. Namespace the
-    # pipeline's own key so its row is distinct from the kernel's.
+    # ── Execution-managed path (V2.0) ──────────────────────────────────
+    # The Action Kernel / ExternalActionExecutor already owns the
+    # authoritative execution ledger, lease, receipt and idempotency
+    # boundary. Do not create a second execution for the same remote side
+    # effect. The publishing domain is responsible only for provider
+    # resolution and provider-specific parameter translation.
+    #
+    # IMPORTANT: connector implementations are predominantly synchronous
+    # (requests-based); some are async. Await only when the return value is
+    # awaitable. An unconditional `await` on a sync method raises TypeError
+    # AFTER the side effect has already occurred, producing a phantom
+    # failure (side effect present + workflow reports failure).
+    if execution_managed:
+        provider_result = plugin.publish(
+            text,
+            image_url=image_url,
+            image_bytes=image_bytes,
+            idempotency_key=idempotency_key,
+            brand=brand,
+            **({"to_number": to_number} if to_number else {}),
+            **({"recipient": recipient} if recipient else {}),
+        )
+        if inspect.isawaitable(provider_result):
+            provider_result = await provider_result
+
+        # Normalize the connector's return shape (ConnectorResult dataclass
+        # or plain dict) into the shape callers expect: status,
+        # platform_post_id, provider_object_id, error. Returning the raw
+        # ConnectorResult under "result" with no top-level status/ID was
+        # the pre-V2.0 behavior and caused the caller to see no receipt
+        # even when the side effect was confirmed.
+        if isinstance(provider_result, dict):
+            _ok = bool(provider_result.get("ok", True))
+            _post_id = (
+                provider_result.get("post_id")
+                or provider_result.get("provider_object_id")
+                or provider_result.get("platform_post_id")
+            )
+            _error = provider_result.get("error")
+            _outcome = str(provider_result.get("outcome") or "").lower()
+        else:
+            _ok = bool(getattr(provider_result, "ok", False))
+            _post_id = (
+                getattr(provider_result, "post_id", None)
+                or getattr(provider_result, "provider_object_id", None)
+                or getattr(provider_result, "platform_post_id", None)
+            )
+            _error = getattr(provider_result, "error", None)
+            _outcome = str(getattr(provider_result, "outcome", "") or "").lower()
+
+        if not _ok:
+            _status = "error"
+        elif not _post_id:
+            _status = "uncertain"
+        else:
+            _status = "ok"
+
+        logger.error(
+            "connector.post_executor: status=%r error=%r object_id=%r "
+            "post_id=%r outcome=%r",
+            _status,
+            _error,
+            _post_id,
+            _post_id,
+            _outcome,
+        )
+
+        return {
+            "status": _status,
+            "platform_post_id": _post_id,
+            "provider_object_id": _post_id,
+            "post_id": _post_id,
+            "error": _error,
+            "outcome": _outcome or (
+                "succeeded" if _status == "ok" else _status
+            ),
+            "page_id": page_id,
+            "account_id": account_id,
+            "mode": "live",
+        }
+
+    # ── Ledger-managed path (default) ──────────────────────────────────
+    # Namespace the pipeline's ledger key so it cannot collide with the
+    # ActionKernel's own row (V1.9).
     pipeline_ledger_key = f"pipeline:{idempotency_key}"
 
     ledger = None
     execution = None
-    if pipeline_ledger_key and not execution_managed:
+    if pipeline_ledger_key:
         try:
             from services.execution_ledger import ExecutionLedger
 
-            # ── Resolve the Supabase client (V1.8) ─────────────────────
-            # The kernel already produced a durable row for
-            # action.publish_content, which proves a working client is
-            # reachable. But the pipeline MUST NOT silently fall back to an
-            # in-memory ledger: an in-memory ledger writes no audit row, so
-            # external_execution_ledger contains only the kernel's outer row
-            # and the connector's real failure is invisible.
-            #
-            # Try the container first. If that fails, fall back to the
-            # module-level service client. If both fail, refuse to proceed.
             db = None
             try:
                 from supabase import Client as SupabaseClient
@@ -1306,32 +1324,21 @@ async def _connector_execute(
                     )
 
             if db is None:
-                try:
-                    from config.settings import settings
-                    production = bool(getattr(settings, "is_production", False))
-                except Exception:
-                    production = False
-                if production:
-                    logger.error(
-                        "canonical_pipeline._connector_execute: no Supabase client "
-                        "available; refusing to proceed with an in-memory ledger"
-                    )
-                    return {
-                        "status": "error",
-                        "error_code": "ledger_db_unavailable",
-                        "error": (
-                            "Durable execution ledger requires a Supabase client; "
-                            "none resolved from the container or the module singleton"
-                        ),
-                        "mode": "blocked",
-                    }
-                logger.warning(
-                    "canonical_pipeline._connector_execute: no Supabase client; "
-                    "using in-memory ledger in non-production"
+                logger.error(
+                    "canonical_pipeline._connector_execute: no Supabase client "
+                    "available; refusing to proceed with an in-memory ledger"
                 )
-                ledger = ExecutionLedger(allow_in_memory=True)
-            else:
-                ledger = ExecutionLedger(db=db)
+                return {
+                    "status": "error",
+                    "error_code": "ledger_db_unavailable",
+                    "error": (
+                        "Durable execution ledger requires a Supabase client; "
+                        "none resolved from the container or the module singleton"
+                    ),
+                    "mode": "blocked",
+                }
+
+            ledger = ExecutionLedger(db=db)
             execution = ledger.begin(
                 workspace_id=str(workspace_id),
                 action="publish",
@@ -1372,28 +1379,6 @@ async def _connector_execute(
                 pass
 
     try:
-        if execution_managed:
-            # The Action Kernel / ExternalActionExecutor already owns the
-            # authoritative execution ledger, lease, receipt and idempotency
-            # boundary. Do not create a second execution for the same remote
-            # side effect. The publishing domain is responsible only for
-            # provider resolution and provider-specific parameter translation.
-            provider_result = await plugin.publish(
-                text,
-                image_url=image_url,
-                image_bytes=image_bytes,
-                idempotency_key=idempotency_key,
-                brand=brand,
-                **({"to_number": to_number} if to_number else {}),
-                **({"recipient": recipient} if recipient else {}),
-            )
-            return {
-                **(provider_result if isinstance(provider_result, dict) else {"result": provider_result}),
-                "page_id": page_id,
-                "account_id": account_id,
-                "mode": "live",
-            }
-
         if ledger and execution:
             from services.external_action_executor import ExternalActionExecutor
             executor = ExternalActionExecutor(ledger)
@@ -1406,8 +1391,6 @@ async def _connector_execute(
                 execution=execution.execution_id if execution else None,
             )
 
-            # ── DIAG (temporary) ────────────────────────────────────────
-            # Unconditional marker immediately before the executor call.
             logger.error(
                 "connector.pre_executor: plugin=%s has_pub=%s "
                 "ledger=%s execution=%s",
@@ -1434,10 +1417,6 @@ async def _connector_execute(
                 metadata={"decision_id": decision_id, "brand_id": brand_id},
             )
 
-            # ── DIAG (temporary) ────────────────────────────────────────
-            # Unconditional marker right after the executor returns, before
-            # the pipeline decides what to do. This line carries the real
-            # error string the executor computed.
             logger.error(
                 "connector.post_executor: status=%r error=%r "
                 "object_id=%r exec_id=%r",
@@ -1466,9 +1445,6 @@ async def _connector_execute(
                     "execution_id": exec_result.get("execution_id"),
                 }
             if status == "in_progress":
-                # A foreign lease holds the row. This is not a terminal
-                # failure; it means another worker (or a previous process)
-                # owns the execution right now. Surface it honestly.
                 return {
                     "status": "uncertain",
                     "error_code": "execution_in_progress",
