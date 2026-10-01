@@ -15,6 +15,12 @@ V1.7 — Added `style_category` and `custom_style_guide` so brands can
        explicitly select or override a content style guide from the
        config/content_styles.yaml registry. When both are None, the
        PromptBuilder falls back to tone/audience/name inference.
+V1.8 — Added `topic_direction` and `topic_axes` for direction-based
+       AI topic generation. When topic_direction is set, the workflow
+       generates topics from it rather than selecting from a fixed
+       bank. Previously these columns existed on the brands table but
+       were stripped by the model on load, so the selector never saw
+       them and fell through to custom_topics.
 """
 from __future__ import annotations
 
@@ -114,6 +120,30 @@ class Brand(KanyozaModel):
         description="Brand-specific topic bank: {category: [topics]}",
     )
 
+    # ✅ V1.8 — Direction-based content generation.
+    #
+    # When topic_direction is set, the workflow uses the AI fabric to
+    # generate topics from it rather than selecting from custom_topics.
+    # topic_axes decomposes the direction into thematic buckets the AI
+    # picks from, keeping generated topics varied and coherent.
+    #
+    # Both are optional. When absent, the topic selector falls back to
+    # custom_topics / KB / brand_config (existing behavior).
+    topic_direction: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Voice and scope brief for AI-generated topics. When set, "
+                    "the workflow generates topics from this direction rather "
+                    "than selecting from custom_topics.",
+    )
+
+    topic_axes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Thematic axes for direction-based generation: "
+                    "{axis_name: one-sentence description}. When empty, the "
+                    "generator uses only topic_direction.",
+    )
+
     # Scheduling
     posting_schedule: Dict[str, Any] = Field(
         default_factory=lambda: {
@@ -193,6 +223,11 @@ class Brand(KanyozaModel):
         return bool(self.style_category) or bool(
             self.custom_style_guide and self.custom_style_guide.strip()
         )
+
+    @property
+    def has_direction(self) -> bool:
+        """True when the brand declares an AI-topic direction."""
+        return bool(self.topic_direction and self.topic_direction.strip())
 
     @classmethod
     def create_default(cls, workspace_id: str, brand_id: str = "default") -> "Brand":
