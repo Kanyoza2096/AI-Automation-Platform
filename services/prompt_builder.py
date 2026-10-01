@@ -2,7 +2,17 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V1.7 (2026-09-28) — PERMANENT DESIGN:
+V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT:
+  - build_post_prompt accepts `structured: bool = False`.
+  - When True, appends POST_SCHEMA_PROMPT_BLOCK to the task.
+  - POST_SCHEMA_REQUIRED_KEYS is the single source of truth for the
+    parser contract; models.content.TechPost.from_gemini_response MUST
+    accept at least these keys.
+  - Structured callers (ContentEngine._generate_structured_content) MUST
+    pass structured=True. Prose callers (chat, unstructured fallback)
+    MUST NOT, or the model emits JSON where prose is expected.
+
+V1.7 (2026-09-28) — PERMANENT DESIGN (preserved):
   - Style guides loaded from config/content_styles.yaml (data, not code).
   - Brand.style_category provides explicit override.
   - Brand.custom_style_guide provides full per-brand override.
@@ -13,7 +23,6 @@ V1.7 (2026-09-28) — PERMANENT DESIGN:
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Mapping
 
@@ -26,12 +35,46 @@ logger = logging.getLogger("kanyoza.services.prompt_builder")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Structured-output contract — SINGLE SOURCE OF TRUTH
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The prompt tells the model what to emit. The parser (models.content)
+# accepts these keys (plus a documented alias set for drift tolerance).
+# The gateway's complete_structured() enforces POST_SCHEMA_REQUIRED_KEYS
+# at the boundary — if the model omits one, the call is rejected before
+# the content engine ever sees it.
+#
+POST_SCHEMA_REQUIRED_KEYS: tuple[str, ...] = ("title", "caption")
+
+POST_SCHEMA_PROMPT_BLOCK = """
+OUTPUT FORMAT — CRITICAL, DO NOT DEVIATE:
+Respond with a SINGLE JSON object. No prose before or after. No markdown fences.
+
+Required keys (both MUST be non-empty strings):
+{
+  "title":   "4-15 word headline of the post",
+  "caption": "the full body of the post, 80-400 words, use \\n for line breaks"
+}
+
+Optional keys (omit if not applicable; do not return empty strings):
+{
+  "hashtags": ["strings", "without", "the", "hash", "prefix"],
+  "theme":    "one of: comparison, tutorial, checklist, architecture, code_tips, ai, security, database, backend, frontend, system_design, cloud"
+}
+
+Hard rules:
+- "title" and "caption" MUST both be present and non-empty.
+- Return raw JSON, not a Markdown code block.
+- Do not add commentary outside the JSON object.
+""".strip()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Style Registry — loads once at import, hot-swappable via reload()
 # ═══════════════════════════════════════════════════════════════════════════
 
 _STYLE_REGISTRY_PATH = Path(__file__).parent.parent / "config" / "content_styles.yaml"
 
-# Conservative fallback used if the YAML is missing or unreadable.
 _SAFE_FALLBACK_GUIDE = """
 Content Style: GENERAL — CONSERVATIVE
 - Write a clear, engaging social media post.
@@ -55,7 +98,6 @@ class StyleRegistry:
         self.reload()
 
     def reload(self) -> None:
-        """Reload styles from disk. Safe to call at runtime."""
         try:
             if not self._path.exists():
                 logger.warning("Style registry not found at %s", self._path)
@@ -71,9 +113,7 @@ class StyleRegistry:
             self._version = int(data.get("version", 0))
             logger.info(
                 "Style registry loaded: %d styles (version=%d) from %s",
-                len(self._styles),
-                self._version,
-                self._path,
+                len(self._styles), self._version, self._path,
             )
         except Exception as exc:
             logger.exception("Style registry reload failed: %s", exc)
@@ -100,20 +140,10 @@ class StyleRegistry:
         return None
 
     def infer_style_for(self, brand: "Brand") -> str:
-        """
-        Infer the best-matching style key from brand signals.
-
-        Preference order:
-          1. brand.style_category (explicit)
-          2. Score-based match against tone + audience + name
-          3. "general" (falls through to SAFE_FALLBACK)
-        """
-        # 1) Explicit category
         explicit = getattr(brand, "style_category", None)
         if explicit and self.get(explicit):
             return explicit.strip().lower()
 
-        # 2) Score-based inference
         tone = (getattr(brand, "tone", "") or "").lower()
         audience = (getattr(brand, "audience_description", "") or "").lower()
         name = (getattr(brand, "name", "") or "").lower()
@@ -127,7 +157,6 @@ class StyleRegistry:
                 continue
             match = entry.get("match") or {}
             score = 0.0
-
             for signal in (match.get("tones") or []):
                 if signal and signal in tone:
                     score += 3.0
@@ -137,38 +166,36 @@ class StyleRegistry:
             for signal in (match.get("name_signals") or []):
                 if signal and (signal in name or signal in slug):
                     score += 2.0
-
             if score > best_score:
                 best_score = score
                 best_key = key
 
         if best_key and best_score > 0:
             return best_key
-
         return "general"
 
-    def guide_for_brand(self, brand: "Brand") -> str:
-        """
-        Resolve the style guide to inject into the prompt.
+    def resolve_for_brand(self, brand: "Brand") -> tuple[str, str]:
+        """Return (guide, source_label).
 
-        Priority:
-          1. brand.custom_style_guide (full per-brand override)
-          2. style registry entry (from style_category or inference)
-          3. SAFE_FALLBACK_GUIDE
+        source_label is one of: 'custom', 'registry:<key>', 'fallback'.
+        Callers log this so the log statement matches what was actually used.
         """
         custom = getattr(brand, "custom_style_guide", None)
         if isinstance(custom, str) and custom.strip():
-            return custom.strip()
+            return custom.strip(), "custom"
 
         key = self.infer_style_for(brand)
         guide = self.guide_for(key)
         if guide:
-            return guide
+            return guide, f"registry:{key}"
+        return _SAFE_FALLBACK_GUIDE.strip(), "fallback"
 
-        return _SAFE_FALLBACK_GUIDE.strip()
+    def guide_for_brand(self, brand: "Brand") -> str:
+        """Backward-compatible: returns just the guide text."""
+        guide, _ = self.resolve_for_brand(brand)
+        return guide
 
 
-# Module singleton
 _style_registry = StyleRegistry()
 
 
@@ -193,7 +220,6 @@ class PromptBuilder:
         self._registry = style_registry or _style_registry
 
     def health_check(self) -> dict:
-        """Health check for Meta Engine monitoring."""
         try:
             test_prompt = self.build_post_prompt(topic="Test topic")
             styles = self._registry.all_names()
@@ -236,28 +262,26 @@ class PromptBuilder:
         brand: Optional["Brand"] = None,
         ai_profile: Optional["AIProfile"] = None,
         topic: Optional[str] = None,
-        knowledge_context: Optional[str] = None
+        knowledge_context: Optional[str] = None,
+        structured: bool = False,
     ) -> str:
-        """Builds a comprehensive prompt for generating a social media post.
+        """Build a post-generation prompt.
 
-        The style guide is resolved via the style registry:
-          - brand.custom_style_guide (full override)
-          - brand.style_category (explicit key)
-          - tone/audience/name inference (fallback)
-          - conservative general fallback (last resort)
+        `structured=True` appends POST_SCHEMA_PROMPT_BLOCK so the model
+        emits a JSON object matching POST_SCHEMA_REQUIRED_KEYS. Callers
+        using the gateway's structured path MUST set this. Callers
+        generating free prose (chat, fallback) MUST NOT.
         """
         if brand is None:
             brand = self._default_brand()
         if ai_profile is None:
             ai_profile = self._default_ai_profile()
 
-        # System persona from AI profile
         system_prompt = ai_profile.build_system_prompt(
             brand_name=brand.name,
             audience=brand.audience_description,
         )
 
-        # Brand context
         brand_context = f"Brand Tone: {brand.tone}\n"
         brand_context += f"Brand Language: {brand.language}\n"
         if getattr(brand, "hashtags", None):
@@ -266,23 +290,21 @@ class PromptBuilder:
         if style_category:
             brand_context += f"Style Category: {style_category}\n"
 
-        # Topic
         topic_str = (
             f"Topic: {topic}"
             if topic
             else "Topic: Please select an engaging and highly relevant topic for the audience."
         )
 
-        # Knowledge
         knowledge_str = (
             f"\nUse the following knowledge base facts if relevant:\n{knowledge_context}\n"
             if knowledge_context
             else ""
         )
 
-        # ✅ Style guide resolved from registry — no if/elif
-        style_guide = self._registry.guide_for_brand(brand)
-        style_name = self._registry.infer_style_for(brand)
+        style_guide, style_source = self._registry.resolve_for_brand(brand)
+
+        schema_instruction = f"\n{POST_SCHEMA_PROMPT_BLOCK}\n" if structured else ""
 
         task = f"""
 Task:
@@ -297,15 +319,13 @@ Guidelines:
 3. Follow the requested emoji density strictly.
 4. Include a clear call to action (CTA) matching the '{ai_profile.cta_style}' style.
 5. End with appropriate hashtags.
-
+{schema_instruction}
 {brand_context}
 {knowledge_str}
 """
         logger.debug(
-            "Built post prompt: brand=%s style=%s registry_version=%s",
-            brand.name,
-            style_name,
-            self._registry.version,
+            "Built post prompt: brand=%s style=%s registry_version=%s structured=%s",
+            brand.name, style_source, self._registry.version, structured,
         )
         return f"{system_prompt}\n\n{task}"
 
@@ -316,7 +336,6 @@ Guidelines:
         user_profile: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
-        """Builds a prompt for conversational chat (Messenger, etc.)."""
         if brand is None:
             brand = self._default_brand()
         if ai_profile is None:
@@ -345,7 +364,6 @@ Guidelines:
         return f"{system_prompt}\n\n{chat_context}"
 
 
-# Singleton
 prompt_builder = PromptBuilder()
 
 
@@ -355,4 +373,6 @@ __all__ = [
     "StyleRegistry",
     "get_style_registry",
     "reload_style_registry",
+    "POST_SCHEMA_REQUIRED_KEYS",
+    "POST_SCHEMA_PROMPT_BLOCK",
 ]
