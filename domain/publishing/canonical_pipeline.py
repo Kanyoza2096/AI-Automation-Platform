@@ -21,40 +21,50 @@ Receipt contract (v2):
     can persist them for audit and reconciliation. The page token is never
     included.
 
-V2.2 CHANGES (2026-10-01):
-  - Council is skipped for manual, scheduled, outbox, and dead_letter_retry
-    sources. These are authorized by their entry point (the scheduler's
-    distributed lock, the operator's session). The contract-level risk of
-    publishing is "high", but that is not the same as requiring Council
-    deliberation for a human-initiated action. Autonomous publishes still
-    go through Council.
-  - Previously every publish was forced through Council because
-    publish_content declares risk_level="high" at the contract. For
-    content outside the gospel/community domain (developer content, for
-    example), every persona abstained and the Council returned
-    NEEDS_REVISION with "All personas abstained — inconclusive", halting
-    a low-risk manual publish.
+V2.3 CHANGES (2026-10-01):
+  - Canonical connector status vocabulary standardized on
+    {"succeeded", "uncertain", "failed", "error"}.
+  - _connector_execute returns "succeeded" from BOTH the ledger-managed
+    and execution-managed paths. Previously the ledger path returned "ok"
+    while the execution-managed path returned "succeeded"; callers written
+    against "ok" misclassified the newer path's status as failure, which
+    caused a live Facebook post to be recorded as outcome=failure and
+    queued for duplicate publishing.
+  - run_canonical_publish classifies connector status through an explicit
+    alias map. Unknown status strings are coerced to "uncertain" (never
+    "failure"), because failure triggers a retry that can duplicate a
+    successful external side effect.
+  - decision_gate.record_outcome is only called with outcome="failure" when
+    the connector returned a terminal failed/error status. Uncertain outcomes
+    are not recorded as failure.
+  - Diagnostics in _connector_execute downgraded from ERROR to DEBUG/INFO.
+    Every successful publish previously emitted 3 ERROR lines, masking real
+    failures and inflating error rates.
 
-V2.1 CHANGES (2026-10-01):
+V2.2 CHANGES (2026-10-01) (preserved):
+  - Council is skipped for manual, scheduled, outbox, and dead_letter_retry
+    sources. Autonomous publishes still go through Council.
+
+V2.1 CHANGES (2026-10-01) (preserved):
   - execution_managed returns status="succeeded" on success, not "ok".
   - outcome is set explicitly on the same branch.
 
-V2.0 CHANGES (2026-09-30):
+V2.0 CHANGES (2026-09-30) (preserved):
   - _connector_execute handles the execution_managed path correctly.
   - run_canonical_publish declares execution_managed: bool = False.
 
-V1.9 CHANGES (2026-09-29):
+V1.9 (2026-09-29) (preserved):
   - Pipeline ledger key is namespaced ("pipeline:<key>").
 
-V1.8 CHANGES (2026-09-29):
+V1.8 (2026-09-29) (preserved):
   - _connector_execute no longer silently falls back to an in-memory
     ExecutionLedger when a Supabase client cannot be resolved.
   - Three logger.error() diagnostics added.
 
-V1.7 CHANGES (2026-09-29):
+V1.7 (2026-09-29) (preserved):
   - Council proposal metadata populated with the fields personas read.
 
-V1.6 CHANGES (2026-09-27):
+V1.6 (2026-09-27) (preserved):
   - Council is risk-tiered.
   - Auto-image via image_engine with card-renderer fallback.
 """
@@ -72,15 +82,65 @@ logger = logging.getLogger("kanyoza.domain.publishing.canonical_pipeline")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Canonical connector status vocabulary
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The connector returns exactly one of these statuses to the pipeline:
+#
+#   "succeeded"   provider accepted and returned a concrete object ID
+#   "uncertain"   provider responded but no confirmation; or state unknown;
+#                 or simulated; or an unrecognized status string was returned.
+#                 NEVER treated as failure — a retry can duplicate a
+#                 successful external side effect.
+#   "failed"      provider rejected terminally; safe to dead-letter
+#   "error"       connector could not run at all (no plugin, no ledger, etc.)
+#
+# The alias map translates any legacy or provider-specific status string into
+# the canonical set. Any status not in the alias map becomes "uncertain".
+#
+CONNECTOR_STATUS_SUCCEEDED = "succeeded"
+CONNECTOR_STATUS_UNCERTAIN = "uncertain"
+CONNECTOR_STATUS_FAILED = "failed"
+CONNECTOR_STATUS_ERROR = "error"
+
+_CONNECTOR_STATUS_ALIASES: Dict[str, str] = {
+    # success
+    "ok": CONNECTOR_STATUS_SUCCEEDED,
+    "success": CONNECTOR_STATUS_SUCCEEDED,
+    "succeeded": CONNECTOR_STATUS_SUCCEEDED,
+    # failure
+    "failed": CONNECTOR_STATUS_FAILED,
+    "failure": CONNECTOR_STATUS_FAILED,
+    "rejected": CONNECTOR_STATUS_FAILED,
+    # connector could not run
+    "error": CONNECTOR_STATUS_ERROR,
+    "blocked": CONNECTOR_STATUS_ERROR,
+    # uncertain
+    "uncertain": CONNECTOR_STATUS_UNCERTAIN,
+    "in_progress": CONNECTOR_STATUS_UNCERTAIN,
+    "pending": CONNECTOR_STATUS_UNCERTAIN,
+    "simulated": CONNECTOR_STATUS_UNCERTAIN,
+    "unknown": CONNECTOR_STATUS_UNCERTAIN,
+}
+
+
+def _canonical_connector_status(raw: Any) -> str:
+    """Translate any connector status string to the canonical set.
+
+    Returns "uncertain" for unrecognized inputs. Never returns "failed"
+    for an unknown string — failure triggers a retry that can duplicate a
+    successful external side effect.
+    """
+    key = str(raw or "").strip().lower()
+    return _CONNECTOR_STATUS_ALIASES.get(key, CONNECTOR_STATUS_UNCERTAIN)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Risk → Council policy
 # ═══════════════════════════════════════════════════════════════════════════
 
 COUNCIL_REQUIRED_RISK_LEVELS = frozenset({"medium", "high", "critical"})
 
-# Sources whose authorization is established at their entry point. For
-# these, Council deliberation is skipped even when the contract-level
-# risk is "high". The scheduler's distributed lock (or the operator's
-# session) is the authorization boundary for these sources.
 MANUAL_AUTHORIZED_SOURCES = frozenset({
     "manual",
     "scheduled",
@@ -186,23 +246,10 @@ class PipelineBlocked(Exception):
 # ═══════════════════════════════════════════════════════════════════════════
 
 _CTA_MARKERS = (
-    "comment",
-    "share",
-    "click",
-    "learn more",
-    "read more",
-    "sign up",
-    "subscribe",
-    "follow",
-    "join us",
-    "dm us",
-    "message us",
-    "link in bio",
-    "swipe up",
-    "tap the link",
-    "register",
-    "book now",
-    "shop now",
+    "comment", "share", "click", "learn more", "read more",
+    "sign up", "subscribe", "follow", "join us", "dm us",
+    "message us", "link in bio", "swipe up", "tap the link",
+    "register", "book now", "shop now",
 )
 
 
@@ -367,13 +414,6 @@ async def run_canonical_publish(
         )
 
     # ── Council requirement decision ────────────────────────────────────
-    # Manual, scheduled, outbox, and dead-letter-retry sources are
-    # authorized by their entry point. The contract-level risk of
-    # publish_content is "high" (publishing is consequential), but that
-    # is a policy statement about the action, not a mandate to run
-    # Council deliberation for every human-initiated publish. Autonomous
-    # publishes (source not in MANUAL_AUTHORIZED_SOURCES) still go
-    # through Council.
     _source_lower = str(source or "").strip().lower()
     _skip_council_for_source = _source_lower in MANUAL_AUTHORIZED_SOURCES
 
@@ -648,38 +688,69 @@ async def run_canonical_publish(
         recipient=recipient,
         execution_managed=execution_managed,
     )
+
+    raw_connector_status = exec_result.get("status")
+    platform_post_id = exec_result.get("platform_post_id")
+    page_id = exec_result.get("page_id")
+    account_id = exec_result.get("account_id")
+
+    # ── Classify connector status into canonical pipeline outcome ───────
+    #
+    # The connector is the only component that knows whether the provider
+    # accepted the publish. This block is the single place where connector
+    # statuses are translated into pipeline outcomes. It must be exhaustive:
+    # any status not explicitly recognized maps to "uncertain", never to
+    # "failure" — failure triggers a retry that can duplicate a successful
+    # external side effect.
+    canonical_status = _canonical_connector_status(raw_connector_status)
+
+    if canonical_status == CONNECTOR_STATUS_UNCERTAIN and \
+            str(raw_connector_status or "").lower() not in _CONNECTOR_STATUS_ALIASES:
+        logger.error(
+            "Pipeline: unrecognized connector status=%r decision=%s mode=%s "
+            "— classifying as uncertain to avoid duplicate publish",
+            raw_connector_status, dec_id, exec_result.get("mode"),
+        )
+        exec_result = {
+            **exec_result,
+            "status": CONNECTOR_STATUS_UNCERTAIN,
+            "error_code": "unrecognized_connector_status",
+            "error": f"Connector returned status={raw_connector_status!r}",
+            "reconciliation_required": True,
+        }
+
+    # A "succeeded" status without a provider object ID is not success —
+    # it is uncertain. Receipt contract: success requires a concrete
+    # provider object ID.
+    if canonical_status == CONNECTOR_STATUS_SUCCEEDED and not platform_post_id:
+        logger.warning(
+            "Pipeline: connector returned succeeded without platform_post_id "
+            "decision=%s mode=%s — downgrading to uncertain",
+            dec_id, exec_result.get("mode"),
+        )
+        exec_result = {
+            **exec_result,
+            "status": CONNECTOR_STATUS_UNCERTAIN,
+            "error_code": "publish_no_receipt",
+            "error": exec_result.get("error")
+                or "Publish reported success without a post ID",
+            "reconciliation_required": True,
+        }
+        canonical_status = CONNECTOR_STATUS_UNCERTAIN
+
     trace.mark(
         "connector",
-        exec_result.get("status", "error"),
+        canonical_status,
         error_code=exec_result.get("error_code"),
+        raw_status=raw_connector_status,
         **{
             k: v for k, v in exec_result.items()
             if k not in ("status", "error_code")
         },
     )
 
-    execution_status = exec_result.get("status")
-    platform_post_id = exec_result.get("platform_post_id")
-    page_id = exec_result.get("page_id")
-    account_id = exec_result.get("account_id")
-
-    if execution_status == "ok" and not platform_post_id:
-        logger.warning(
-            "Pipeline: connector returned ok without platform_post_id "
-            "decision=%s mode=%s — downgrading to uncertain",
-            dec_id, exec_result.get("mode"),
-        )
-        exec_result = {
-            **exec_result,
-            "status": "uncertain",
-            "error_code": "publish_no_receipt",
-            "error": exec_result.get("error")
-            or "Publish reported success without a post ID",
-            "reconciliation_required": True,
-        }
-        execution_status = "uncertain"
-
-    if execution_status == "uncertain":
+    # ── Uncertain is never recorded as failure ──────────────────────────
+    if canonical_status == CONNECTOR_STATUS_UNCERTAIN:
         trace.mark(
             "outcome",
             "uncertain",
@@ -705,7 +776,24 @@ async def run_canonical_publish(
             reconciliation_required=True,
         )
 
-    outcome = "success" if execution_status == "ok" else "failure"
+    # ── Map canonical status to decision_gate outcome ───────────────────
+    if canonical_status == CONNECTOR_STATUS_SUCCEEDED:
+        outcome = "success"
+    elif canonical_status in (CONNECTOR_STATUS_FAILED, CONNECTOR_STATUS_ERROR):
+        outcome = "failure"
+    else:
+        # Unreachable by construction — belt and suspenders.
+        logger.error(
+            "Pipeline: unhandled canonical status=%r decision=%s — treating as uncertain",
+            canonical_status, dec_id,
+        )
+        return _fail(
+            "publish_uncertain",
+            f"Unhandled canonical connector status: {canonical_status}",
+            trace,
+            decision_id=dec_id,
+            reconciliation_required=True,
+        )
 
     try:
         decision_gate.record_outcome(
@@ -714,7 +802,13 @@ async def run_canonical_publish(
             platform_post_id=platform_post_id,
             source="canonical_pipeline",
         )
-        trace.mark("outcome", outcome, platform_post_id=platform_post_id)
+        trace.mark(
+            "outcome",
+            outcome,
+            platform_post_id=platform_post_id,
+            canonical_status=canonical_status,
+            connector_status=raw_connector_status,
+        )
     except Exception as exc:
         trace.mark("outcome", "error", error=str(exc)[:120])
 
@@ -1033,10 +1127,20 @@ async def _connector_execute(
     recipient: Optional[str] = None,
     execution_managed: bool = False,
 ) -> Dict[str, Any]:
-    """Resolve a live connector, execute the publish, and return a receipt."""
+    """Resolve a live connector, execute the publish, and return a receipt.
+
+    Returned `status` is ALWAYS one of the canonical set:
+      "succeeded" | "uncertain" | "failed" | "error"
+
+    Callers MUST NOT assume "ok" as a success status. The alias map in
+    _canonical_connector_status translates legacy strings, but this function
+    is the source of truth and returns canonical values directly.
+    """
     text = (caption or topic or "").strip() or f"Kanyoza {decision_id[:8]}"
 
-    logger.error(
+    # Diagnostics downgraded to DEBUG — these run on every publish and
+    # must not appear at ERROR level, or real errors become invisible.
+    logger.debug(
         "connector.entry: ws=%s brand=%s platform=%s container=%s sim=%s managed=%s",
         workspace_id,
         brand_id,
@@ -1165,7 +1269,7 @@ async def _connector_execute(
                         from config.settings import settings
                         if getattr(settings, "is_production", False):
                             return {
-                                "status": "error",
+                                "status": CONNECTOR_STATUS_ERROR,
                                 "error_code": "social_account_resolution_failed",
                                 "error": (
                                     "Durable social account resolution is "
@@ -1178,7 +1282,7 @@ async def _connector_execute(
     except Exception as exc:
         logger.exception("DIAG _connector_execute: connector resolution raised")
         return {
-            "status": "error",
+            "status": CONNECTOR_STATUS_ERROR,
             "error_code": "connector_resolution_failed",
             "error": str(exc)[:300],
             "mode": "live",
@@ -1199,7 +1303,7 @@ async def _connector_execute(
                 decision_id, platform,
             )
             return {
-                "status": "uncertain",
+                "status": CONNECTOR_STATUS_UNCERTAIN,
                 "error_code": "simulated_publish",
                 "error": (
                     "No live connector bound; simulation must not be "
@@ -1211,7 +1315,7 @@ async def _connector_execute(
             }
         _diag("EXIT connector_unavailable", decision=decision_id)
         return {
-            "status": "error",
+            "status": CONNECTOR_STATUS_ERROR,
             "error_code": "connector_unavailable",
             "error": "No connector bound and simulation disabled",
             "mode": "none",
@@ -1225,7 +1329,7 @@ async def _connector_execute(
             str(image_url or ""), image_bytes,
         )
 
-    # ── Execution-managed path (V2.1) ──────────────────────────────────
+    # ── Execution-managed path ──────────────────────────────────────────
     if execution_managed:
         provider_result = plugin.publish(
             text,
@@ -1260,24 +1364,33 @@ async def _connector_execute(
                 getattr(provider_result, "outcome", "") or ""
             ).lower()
 
+        # Classify: success requires _ok AND a concrete provider object ID.
+        # Anything else is uncertain or failed — never "succeeded" without
+        # a receipt.
         if not _ok:
-            _status = "failed"
-            _outcome = _provider_outcome or "failed"
+            _status = CONNECTOR_STATUS_FAILED
         elif not _post_id:
-            _status = "uncertain"
-            _outcome = _provider_outcome or "uncertain"
+            _status = CONNECTOR_STATUS_UNCERTAIN
         else:
-            _status = "succeeded"
-            _outcome = _provider_outcome or "succeeded"
+            _status = CONNECTOR_STATUS_SUCCEEDED
 
-        logger.error(
-            "connector.post_executor: status=%r error=%r object_id=%r "
-            "post_id=%r outcome=%r",
+        _diag(
+            "execution_managed.result",
+            ok=_ok,
+            post_id=_post_id,
+            error=_error,
+            provider_outcome=_provider_outcome,
+            classified_status=_status,
+        )
+
+        logger.info(
+            "connector.post_executor: status=%s error=%r object_id=%r "
+            "post_id=%r provider_outcome=%r",
             _status,
             _error,
             _post_id,
             _post_id,
-            _outcome,
+            _provider_outcome or None,
         )
 
         return {
@@ -1286,13 +1399,13 @@ async def _connector_execute(
             "provider_object_id": _post_id,
             "post_id": _post_id,
             "error": _error,
-            "outcome": _outcome,
+            "outcome": _provider_outcome or _status,
             "page_id": page_id,
             "account_id": account_id,
             "mode": "live",
         }
 
-    # ── Ledger-managed path (default) ──────────────────────────────────
+    # ── Ledger-managed path (default) ───────────────────────────────────
     pipeline_ledger_key = f"pipeline:{idempotency_key}"
 
     ledger = None
@@ -1345,7 +1458,7 @@ async def _connector_execute(
                     "available; refusing to proceed with an in-memory ledger"
                 )
                 return {
-                    "status": "error",
+                    "status": CONNECTOR_STATUS_ERROR,
                     "error_code": "ledger_db_unavailable",
                     "error": (
                         "Durable execution ledger requires a Supabase client; "
@@ -1369,7 +1482,11 @@ async def _connector_execute(
                     execution=execution.execution_id,
                 )
                 return {
-                    "status": "ok" if execution.status == "succeeded" else "uncertain",
+                    "status": (
+                        CONNECTOR_STATUS_SUCCEEDED
+                        if execution.status == "succeeded"
+                        else CONNECTOR_STATUS_UNCERTAIN
+                    ),
                     "platform_post_id": execution.provider_object_id,
                     "page_id": page_id,
                     "account_id": account_id,
@@ -1383,7 +1500,7 @@ async def _connector_execute(
                 from config.settings import settings
                 if getattr(settings, "is_production", False):
                     return {
-                        "status": "error",
+                        "status": CONNECTOR_STATUS_ERROR,
                         "error_code": "execution_ledger_unavailable",
                         "error": (
                             "Durable execution ledger is required before "
@@ -1407,7 +1524,7 @@ async def _connector_execute(
                 execution=execution.execution_id if execution else None,
             )
 
-            logger.error(
+            logger.debug(
                 "connector.pre_executor: plugin=%s has_pub=%s "
                 "ledger=%s execution=%s",
                 type(plugin).__name__ if plugin else None,
@@ -1433,7 +1550,7 @@ async def _connector_execute(
                 metadata={"decision_id": decision_id, "brand_id": brand_id},
             )
 
-            logger.error(
+            logger.info(
                 "connector.post_executor: status=%r error=%r "
                 "object_id=%r exec_id=%r",
                 exec_result.get("status"),
@@ -1453,7 +1570,7 @@ async def _connector_execute(
             status = exec_result.get("status")
             if status == "succeeded":
                 return {
-                    "status": "ok",
+                    "status": CONNECTOR_STATUS_SUCCEEDED,
                     "platform_post_id": exec_result.get("provider_object_id"),
                     "page_id": page_id,
                     "account_id": account_id,
@@ -1462,7 +1579,7 @@ async def _connector_execute(
                 }
             if status == "in_progress":
                 return {
-                    "status": "uncertain",
+                    "status": CONNECTOR_STATUS_UNCERTAIN,
                     "error_code": "execution_in_progress",
                     "error": exec_result.get(
                         "error",
@@ -1477,7 +1594,7 @@ async def _connector_execute(
                 }
             if status == "uncertain":
                 return {
-                    "status": "uncertain",
+                    "status": CONNECTOR_STATUS_UNCERTAIN,
                     "error_code": "external_side_effect_uncertain",
                     "error": exec_result.get(
                         "error", "Provider result is uncertain"
@@ -1489,7 +1606,7 @@ async def _connector_execute(
                     "reconciliation_required": True,
                 }
             return {
-                "status": "error",
+                "status": CONNECTOR_STATUS_FAILED,
                 "error": exec_result.get("error", "External publish failed"),
                 "page_id": page_id,
                 "account_id": account_id,
@@ -1498,7 +1615,7 @@ async def _connector_execute(
             }
 
         return {
-            "status": "error",
+            "status": CONNECTOR_STATUS_ERROR,
             "error_code": "durable_execution_required",
             "error": (
                 "External publishing requires the durable execution ledger; "
@@ -1531,7 +1648,7 @@ async def _connector_execute(
             except Exception:
                 logger.exception("DIAG _connector_execute: ledger.complete failed")
         return {
-            "status": "uncertain",
+            "status": CONNECTOR_STATUS_UNCERTAIN,
             "error_code": "external_side_effect_uncertain",
             "error": str(exc)[:300],
             "page_id": page_id,
