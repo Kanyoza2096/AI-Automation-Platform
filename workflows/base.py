@@ -32,12 +32,47 @@ class StepStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class StepFailure(Exception):
+    """Structured failure raised from a workflow step.
+
+    Carries a stable `code`, a human-readable message, and a `detail` dict
+    with pipeline-specific context (trace, decision_id, connector status,
+    reconciliation flags). The workflow runner extracts these fields into
+    StepResult.error_code / error_detail so the workflow result envelope
+    (and the API response) can carry them.
+
+    Steps raise this instead of a bare Exception when they have structured
+    failure information. Bare exceptions still work — they are wrapped into
+    a StepResult with code="unexpected_exception" and no detail.
+    """
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "step_failed",
+        detail: Optional[dict] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.detail: dict = detail or {}
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "detail": self.detail,
+        }
+
+
 @dataclass
 class StepResult:
     step_name: str
     status: StepStatus
     output: Any = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_detail: dict = field(default_factory=dict)
     latency_ms: float = 0.0
 
     @property
@@ -67,6 +102,14 @@ class WorkflowResult:
         for s in reversed(self.steps):
             if s.ok and s.output is not None:
                 return s.output
+        return None
+
+    @property
+    def failed_step(self) -> Optional[StepResult]:
+        """Return the first failed StepResult, or None if all succeeded."""
+        for s in self.steps:
+            if s.status == StepStatus.FAILED:
+                return s
         return None
 
 
@@ -100,6 +143,21 @@ class Step:
                 output=output,
                 latency_ms=latency,
             )
+        except StepFailure as exc:
+            latency = (time.monotonic() - start) * 1000
+            logger.error(
+                "Step '%s' failed: code=%s msg=%s detail_keys=%s",
+                self.name, exc.code, exc.message, sorted(exc.detail.keys()),
+                exc_info=True,
+            )
+            return StepResult(
+                step_name=self.name,
+                status=StepStatus.FAILED,
+                error=exc.message,
+                error_code=exc.code,
+                error_detail=exc.detail,
+                latency_ms=latency,
+            )
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000
             logger.error("Step '%s' failed: %s", self.name, exc, exc_info=True)
@@ -107,6 +165,8 @@ class Step:
                 step_name=self.name,
                 status=StepStatus.FAILED,
                 error=str(exc),
+                error_code="unexpected_exception",
+                error_detail={"exception_type": type(exc).__name__},
                 latency_ms=latency,
             )
 
@@ -116,11 +176,38 @@ class Step:
             output = await self.async_run(context)
             latency = (time.monotonic() - start) * 1000
             logger.debug("Step '%s' succeeded in %.0fms", self.name, latency)
-            return StepResult(step_name=self.name, status=StepStatus.SUCCESS, output=output, latency_ms=latency)
+            return StepResult(
+                step_name=self.name,
+                status=StepStatus.SUCCESS,
+                output=output,
+                latency_ms=latency,
+            )
+        except StepFailure as exc:
+            latency = (time.monotonic() - start) * 1000
+            logger.error(
+                "Step '%s' failed: code=%s msg=%s detail_keys=%s",
+                self.name, exc.code, exc.message, sorted(exc.detail.keys()),
+                exc_info=True,
+            )
+            return StepResult(
+                step_name=self.name,
+                status=StepStatus.FAILED,
+                error=exc.message,
+                error_code=exc.code,
+                error_detail=exc.detail,
+                latency_ms=latency,
+            )
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000
             logger.error("Step '%s' failed: %s", self.name, exc, exc_info=True)
-            return StepResult(step_name=self.name, status=StepStatus.FAILED, error=str(exc), latency_ms=latency)
+            return StepResult(
+                step_name=self.name,
+                status=StepStatus.FAILED,
+                error=str(exc),
+                error_code="unexpected_exception",
+                error_detail={"exception_type": type(exc).__name__},
+                latency_ms=latency,
+            )
 
 
 class Workflow:
@@ -162,6 +249,8 @@ class Workflow:
                 "status": step_result.status.value,
                 "latency_ms": round(step_result.latency_ms),
                 "error": step_result.error,
+                "error_code": step_result.error_code,
+                "error_detail": step_result.error_detail,
             })
 
             if step_result.ok:
@@ -191,8 +280,11 @@ class Workflow:
         })
         return result
 
-
-    async def execute_async(self, initial_context: Optional[dict[str, Any]] = None, **kwargs) -> WorkflowResult:
+    async def execute_async(
+        self,
+        initial_context: Optional[dict[str, Any]] = None,
+        **kwargs,
+    ) -> WorkflowResult:
         """Async-native workflow execution for ASGI and worker runtimes.
 
         Sync steps keep their existing implementation; steps that implement
@@ -202,16 +294,24 @@ class Workflow:
         context.update(kwargs)
         result = WorkflowResult(workflow_name=self.name)
         logger.info("Workflow '%s' async started (%d steps)", self.name, len(self._steps))
-        _emit("workflow_started", {"workflow": self.name, "total_steps": len(self._steps), "steps": [s.name for s in self._steps]})
+        _emit("workflow_started", {
+            "workflow": self.name,
+            "total_steps": len(self._steps),
+            "steps": [s.name for s in self._steps],
+        })
 
         for step in self._steps:
             _emit("workflow_step_started", {"workflow": self.name, "step": step.name})
             step_result = await step.execute_async(context)
             result.steps.append(step_result)
             _emit("workflow_step_done", {
-                "workflow": self.name, "step": step.name,
-                "status": step_result.status.value, "latency_ms": round(step_result.latency_ms),
+                "workflow": self.name,
+                "step": step.name,
+                "status": step_result.status.value,
+                "latency_ms": round(step_result.latency_ms),
                 "error": step_result.error,
+                "error_code": step_result.error_code,
+                "error_detail": step_result.error_detail,
             })
             if step_result.ok:
                 context["last_output"] = step_result.output
@@ -220,9 +320,19 @@ class Workflow:
                 break
 
         result.finished_at = time.monotonic()
-        logger.info("Workflow '%s' async finished in %.0fms — %s", self.name, result.total_ms, "OK" if result.success else "FAILED")
+        logger.info(
+            "Workflow '%s' async finished in %.0fms — %s",
+            self.name,
+            result.total_ms,
+            "OK" if result.success else "FAILED",
+        )
         _emit("workflow_done", {
-            "workflow": self.name, "success": result.success, "total_ms": round(result.total_ms),
-            "steps": [{"step": s.step_name, "status": s.status.value, "latency_ms": round(s.latency_ms)} for s in result.steps],
+            "workflow": self.name,
+            "success": result.success,
+            "total_ms": round(result.total_ms),
+            "steps": [
+                {"step": s.step_name, "status": s.status.value, "latency_ms": round(s.latency_ms)}
+                for s in result.steps
+            ],
         })
         return result
