@@ -1,12 +1,28 @@
 """Provider-neutral AI analysis contract.
 
-AI providers produce interpretation evidence. They do not produce ActionIntent
-objects and they have no execution authority.
+AI providers produce interpretation evidence. They do not produce
+ActionIntent objects and they have no execution authority.
+
+This module enforces the first of three boundaries:
+
+  1. (this module) The AIReceipt type has no intent-shaped fields. A
+     provider cannot express "what to do" through this interface.
+
+  2. (services.ai_intent.formulate_action_intent_from_ai) Filters the
+     AI's structured output through a sector allowlist. A provider can
+     recommend an action; the recommendation is validated and its
+     parameters are replaced with KDO-supplied values.
+
+  3. (services.action_kernel) Validates the resulting ActionIntent
+     against an ActionContract and requires a decision_id. Even a
+     well-formed intent is refused without authorization.
+
+The boundary is the composition. None of the three is sufficient alone.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Optional, Protocol
+from typing import Any, Literal, Optional, Protocol
 import hashlib
 import json
 
@@ -42,8 +58,14 @@ class AIReceipt:
             raise ValueError("AIReceipt.correlation_id is required")
         if not self.request_fingerprint.strip():
             raise ValueError("AIReceipt.request_fingerprint is required")
-        if self.status == "succeeded" and not self.raw_output.strip():
-            raise ValueError("succeeded AI receipt requires raw_output")
+        # A succeeded receipt must carry *something* interpretable. Text is
+        # the common case; structured output alone is valid for providers
+        # that return a schema-typed answer (classifiers, embeddings with
+        # labels, tabular extractors).
+        if self.status == "succeeded" and not (self.raw_output.strip() or self.structured_output):
+            raise ValueError(
+                "succeeded AI receipt requires raw_output or structured_output"
+            )
         if self.status == "succeeded" and self.error:
             raise ValueError("succeeded AI receipt cannot contain an error")
         if self.structured_output is not None and not isinstance(self.structured_output, dict):
