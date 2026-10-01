@@ -18,29 +18,23 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.8 (2026-10-01) — DIRECTION-BASED TOPIC GENERATION:
+  SelectTopicStep.run now checks whether the brand declares a
+  topic_direction and, if so, uses the AI fabric to generate a topic
+  from it rather than picking from custom_topics. Falls through to
+  selection on any failure so the workflow never blocks on AI
+  availability. The generated topic is tagged category='generated' so
+  downstream consumers can distinguish it from a curated pick.
+
 V1.7 (2026-09-29) — PUBLISH RESULT CONTRACT NORMALIZATION:
   PublishStep.async_run no longer treats status="ok" as a failure. The
   canonical pipeline emits status="ok"; the ActionKernel's ActionResult
   contract uses status="succeeded". The prior workflow check required
   exactly "succeeded" and raised "Governed canonical publish rejected"
   on every successful publish, hiding the real side effect behind a
-  phantom failure and risking duplicate posts on retry. The step now:
-    - Accepts "ok" | "succeeded" | "success" | "published" as success.
-    - Treats a concrete provider post ID as sufficient proof of success.
-    - Routes "uncertain" / "in_progress" to a returned structured result
-      so reconciliation owns the state instead of a workflow raise.
-    - Mirrors platform_post_id onto post_id for downstream consumers.
+  phantom failure and risking duplicate posts on retry.
 
-V1.6 (2026-09-28) — ASYNC-NATIVE STEPS:
-  - KnowledgeContextStep.async_run() awaits KnowledgeBase.search()
-  - GenerateContentStep.async_run() awaits ContentEngine.generate_post()
-  - ValidateContentStep.async_run() awaits ContentValidator.validate()
-  - EmitEventStep.async_run() awaits EventBus.publish()
-
-  Previously these steps used sync run() to call async methods without
-  await, producing coroutines that failed on attribute access.
-  Sync run() is now intentionally disabled for these steps (raises) so
-  they cannot be accidentally invoked from a sync context.
+V1.6 (2026-09-28) — ASYNC-NATIVE STEPS.
 """
 
 from __future__ import annotations
@@ -68,7 +62,12 @@ logger = logging.getLogger(__name__)
 
 # ── 1. Select Topic ───────────────────────────────────────────────────
 class SelectTopicStep(Step):
-    """Pick a topic from the brand's Knowledge Base (or custom_topics)."""
+    """Pick a topic — either generated from the brand's direction or selected.
+
+    V1.8 — Direction-based generation runs first when the brand declares a
+    topic_direction. Falls through to selection on any failure so the
+    workflow never blocks on AI availability.
+    """
     name = "select_topic"
 
     def __init__(
@@ -89,6 +88,30 @@ class SelectTopicStep(Step):
             knowledge_repo=self._knowledge_repo,
         )
 
+        # ── Direction-based generation (V1.8) ───────────────────────────
+        # When the brand declares a topic_direction, generate a topic from
+        # it using the AI fabric. The selector's generate_from_direction
+        # returns None on any failure (no direction, gateway unavailable,
+        # empty response), in which case we fall through to selection.
+        if getattr(selector, "has_direction", False):
+            recent = context.get("recent_topics") or []
+            generated = selector.generate_from_direction(recent=recent)
+            if generated:
+                context["topic"] = generated
+                context["category"] = "generated"
+                logger.info(
+                    "PostWorkflow: topic='%s' category='generated' brand='%s' "
+                    "(direction)",
+                    generated, self._brand.name,
+                )
+                return {"topic": generated, "category": "generated"}
+            logger.info(
+                "PostWorkflow: direction generation unavailable for brand '%s'; "
+                "falling back to selection",
+                self._brand.name,
+            )
+
+        # ── Selection fallback (existing behavior) ──────────────────────
         if not selector.has_topics():
             logger.warning(
                 "PostWorkflow: brand '%s' has no KB entries and no custom_topics. "
@@ -354,10 +377,6 @@ class PublishStep(Step):
     """Publish via the plugin registry with MediaArtifact awareness."""
     name = "publish"
 
-    # Statuses that indicate the pipeline considered the publish successful.
-    # The canonical pipeline emits "ok"; the ActionKernel's ActionResult
-    # contract emits "succeeded". Accept every reasonable spelling so a
-    # status-vocabulary change in one layer cannot fail the whole workflow.
     _SUCCESS_STATUSES = frozenset({"succeeded", "ok", "success", "published"})
     _UNCERTAIN_STATUSES = frozenset({"uncertain", "in_progress", "pending"})
 
@@ -422,17 +441,6 @@ class PublishStep(Step):
             ),
         )
 
-        # ── Result normalization (V1.7) ─────────────────────────────────
-        # The ActionKernel wraps the canonical pipeline's return into an
-        # ActionResult whose `status` is the pipeline's own status string
-        # ("ok") rather than the ActionResult contract's "succeeded". We
-        # accept any reasonable spelling of success and treat the presence
-        # of a concrete provider post ID as sufficient proof that the side
-        # effect occurred. Uncertain outcomes are returned to the caller
-        # as structured results — they must be owned by the reconciliation
-        # worker, not by a workflow exception, so that a transient lease
-        # collision or provider ambiguity never becomes a false failure
-        # (which could trigger a duplicate publish on retry).
         output = result.get("output") if isinstance(result.get("output"), dict) else {}
         raw_status = str(result.get("status") or "").strip().lower()
 
@@ -463,9 +471,6 @@ class PublishStep(Step):
             "action_execution_id": result.get("execution_id"),
             "governed": True,
         }
-        # Mirror the provider post ID onto the canonical `post_id` key so
-        # RecordAnalyticsStep and EmitEventStep can find it without
-        # inspecting the pipeline's platform-specific naming.
         if provider_post_id and not publish_result.get("post_id"):
             publish_result["post_id"] = provider_post_id
         if provider_post_id and not publish_result.get("platform_post_id"):
@@ -588,7 +593,7 @@ class PostPublishWorkflow(Workflow):
     """8-stage workflow.
 
     Stages:
-      1. Select Topic          — from brand KB or custom_topics
+      1. Select Topic          — from brand KB, custom_topics, or AI-generated
       2. Knowledge Context     — retrieve relevant KB facts
       3. Generate Content      — LLM caption + Cloudflare image
       4. Validate Content      — ContentValidator
@@ -596,9 +601,6 @@ class PostPublishWorkflow(Workflow):
       6. Publish               — governed canonical publish
       7. Record Analytics      — persist metrics
       8. Emit Event            — broadcast PostPublishedEvent
-
-    V1.6 — Steps are async-native where their underlying service methods
-    are async. The workflow is executed via Workflow.execute_async().
     """
 
     name = "post_publish"
