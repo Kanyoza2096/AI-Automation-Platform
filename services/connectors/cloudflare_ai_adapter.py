@@ -14,7 +14,7 @@ from services.ai_provider import AIReceipt, AIUsage, request_fingerprint
 
 class CloudflareAIAdapter:
     provider = "cloudflare_ai"
-    DEFAULT_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+    DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(
