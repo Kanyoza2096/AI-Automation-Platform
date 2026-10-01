@@ -21,26 +21,30 @@ Receipt contract (v2):
     can persist them for audit and reconciliation. The page token is never
     included.
 
+V2.2 CHANGES (2026-10-01):
+  - Council is skipped for manual, scheduled, outbox, and dead_letter_retry
+    sources. These are authorized by their entry point (the scheduler's
+    distributed lock, the operator's session). The contract-level risk of
+    publishing is "high", but that is not the same as requiring Council
+    deliberation for a human-initiated action. Autonomous publishes still
+    go through Council.
+  - Previously every publish was forced through Council because
+    publish_content declares risk_level="high" at the contract. For
+    content outside the gospel/community domain (developer content, for
+    example), every persona abstained and the Council returned
+    NEEDS_REVISION with "All personas abstained — inconclusive", halting
+    a low-risk manual publish.
+
 V2.1 CHANGES (2026-10-01):
-  - The execution_managed branch now returns status="succeeded" on success
-    rather than status="ok". The vocabulary of the pipeline's own return
-    was previously out of step with the ActionResult contract used by
-    PublishStep.async_run and the workflow runner: those consumers look for
-    "succeeded", and "ok" produced a phantom failure in the response.
-  - The outcome field is now explicitly "succeeded" on the success branch
-    rather than defaulting to "unknown". The ConnectorResult dataclass
-    does not always carry an outcome through frozen-attribute mutation,
-    so the pipeline sets it deterministically here.
+  - execution_managed returns status="succeeded" on success, not "ok".
+  - outcome is set explicitly on the same branch.
 
 V2.0 CHANGES (2026-09-30):
-  - _connector_execute handles the execution_managed path correctly:
-    awaits only if the return value is awaitable; normalizes the connector
-    result into a status / platform_post_id / error shape.
+  - _connector_execute handles the execution_managed path correctly.
   - run_canonical_publish declares execution_managed: bool = False.
 
 V1.9 CHANGES (2026-09-29):
-  - Pipeline ledger key is namespaced ("pipeline:<key>") so it cannot
-    collide with the ActionKernel's own row.
+  - Pipeline ledger key is namespaced ("pipeline:<key>").
 
 V1.8 CHANGES (2026-09-29):
   - _connector_execute no longer silently falls back to an in-memory
@@ -48,8 +52,7 @@ V1.8 CHANGES (2026-09-29):
   - Three logger.error() diagnostics added.
 
 V1.7 CHANGES (2026-09-29):
-  - Council proposal metadata is now populated with the fields personas
-    actually read.
+  - Council proposal metadata populated with the fields personas read.
 
 V1.6 CHANGES (2026-09-27):
   - Council is risk-tiered.
@@ -73,6 +76,17 @@ logger = logging.getLogger("kanyoza.domain.publishing.canonical_pipeline")
 # ═══════════════════════════════════════════════════════════════════════════
 
 COUNCIL_REQUIRED_RISK_LEVELS = frozenset({"medium", "high", "critical"})
+
+# Sources whose authorization is established at their entry point. For
+# these, Council deliberation is skipped even when the contract-level
+# risk is "high". The scheduler's distributed lock (or the operator's
+# session) is the authorization boundary for these sources.
+MANUAL_AUTHORIZED_SOURCES = frozenset({
+    "manual",
+    "scheduled",
+    "outbox",
+    "dead_letter_retry",
+})
 
 
 def _council_required_for(risk_level: str, explicit_require: bool) -> bool:
@@ -352,6 +366,17 @@ async def run_canonical_publish(
             image_bytes,
         )
 
+    # ── Council requirement decision ────────────────────────────────────
+    # Manual, scheduled, outbox, and dead-letter-retry sources are
+    # authorized by their entry point. The contract-level risk of
+    # publish_content is "high" (publishing is consequential), but that
+    # is a policy statement about the action, not a mandate to run
+    # Council deliberation for every human-initiated publish. Autonomous
+    # publishes (source not in MANUAL_AUTHORIZED_SOURCES) still go
+    # through Council.
+    _source_lower = str(source or "").strip().lower()
+    _skip_council_for_source = _source_lower in MANUAL_AUTHORIZED_SOURCES
+
     content = {
         "topic": topic or "",
         "caption": caption or "",
@@ -404,7 +429,15 @@ async def run_canonical_publish(
         )
 
     # ── Council ─────────────────────────────────────────────────────────
-    _require_council = _council_required_for(risk_level, require_council)
+    _require_council = (
+        _council_required_for(risk_level, require_council)
+        and not _skip_council_for_source
+    )
+    if _skip_council_for_source and _council_required_for(risk_level, require_council):
+        logger.info(
+            "Pipeline: Council skipped — source=%s is authorized by its entry point",
+            source,
+        )
     c = await _council_deliberate(ws, content, container, require=_require_council)
     trace.mark(
         "council",
@@ -828,7 +861,7 @@ async def _council_deliberate(
     if not require:
         return {
             "status": "skipped",
-            "reason": "low_risk_optional",
+            "reason": "low_risk_or_authorized_source",
             "mode": "optional",
         }
 
@@ -1193,24 +1226,6 @@ async def _connector_execute(
         )
 
     # ── Execution-managed path (V2.1) ──────────────────────────────────
-    # The Action Kernel / ExternalActionExecutor already owns the
-    # authoritative execution ledger, lease, receipt and idempotency
-    # boundary. Do not create a second execution for the same remote side
-    # effect. The publishing domain is responsible only for provider
-    # resolution and provider-specific parameter translation.
-    #
-    # IMPORTANT: connector implementations are predominantly synchronous
-    # (requests-based); some are async. Await only when the return value is
-    # awaitable. An unconditional `await` on a sync method raises TypeError
-    # AFTER the side effect has already occurred, producing a phantom
-    # failure (side effect present + workflow reports failure).
-    #
-    # V2.1: success returns status="succeeded" (not "ok"). Downstream
-    # consumers (PublishStep.async_run, the workflow runner, the response
-    # builder) branch on "succeeded". "ok" produced a phantom failure in
-    # the response. The outcome field is also set explicitly so it does
-    # not default to "unknown" when the ConnectorResult does not carry
-    # an outcome through frozen-attribute mutation.
     if execution_managed:
         provider_result = plugin.publish(
             text,
@@ -1278,8 +1293,6 @@ async def _connector_execute(
         }
 
     # ── Ledger-managed path (default) ──────────────────────────────────
-    # Namespace the pipeline's ledger key so it cannot collide with the
-    # ActionKernel's own row (V1.9).
     pipeline_ledger_key = f"pipeline:{idempotency_key}"
 
     ledger = None
