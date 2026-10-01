@@ -21,28 +21,31 @@ Receipt contract (v2):
     can persist them for audit and reconciliation. The page token is never
     included.
 
+V2.1 CHANGES (2026-10-01):
+  - The execution_managed branch now returns status="succeeded" on success
+    rather than status="ok". The vocabulary of the pipeline's own return
+    was previously out of step with the ActionResult contract used by
+    PublishStep.async_run and the workflow runner: those consumers look for
+    "succeeded", and "ok" produced a phantom failure in the response.
+  - The outcome field is now explicitly "succeeded" on the success branch
+    rather than defaulting to "unknown". The ConnectorResult dataclass
+    does not always carry an outcome through frozen-attribute mutation,
+    so the pipeline sets it deterministically here.
+
 V2.0 CHANGES (2026-09-30):
-  - _connector_execute now handles the execution_managed path correctly.
-    Previously it awaited plugin.publish unconditionally and returned the
-    raw ConnectorResult under "result" with no top-level status or ID,
-    producing a TypeError AFTER the side effect had already occurred.
-    The new code:
-      - Awaits only if the return value is awaitable.
-      - Normalizes ConnectorResult (dataclass) or dict into the shape
-        callers expect: status, platform_post_id, provider_object_id,
-        post_id, error, outcome.
-  - run_canonical_publish signature declares execution_managed: bool = False
-    so the inner _connector_execute check can read it without NameError.
+  - _connector_execute handles the execution_managed path correctly:
+    awaits only if the return value is awaitable; normalizes the connector
+    result into a status / platform_post_id / error shape.
+  - run_canonical_publish declares execution_managed: bool = False.
 
 V1.9 CHANGES (2026-09-29):
-  - The pipeline's ledger key is namespaced ("pipeline:<key>") so it cannot
-    collide with the ActionKernel's own ledger row.
+  - Pipeline ledger key is namespaced ("pipeline:<key>") so it cannot
+    collide with the ActionKernel's own row.
 
 V1.8 CHANGES (2026-09-29):
   - _connector_execute no longer silently falls back to an in-memory
     ExecutionLedger when a Supabase client cannot be resolved.
-  - Three temporary logger.error() diagnostics added (connector.entry,
-    connector.pre_executor, connector.post_executor).
+  - Three logger.error() diagnostics added.
 
 V1.7 CHANGES (2026-09-29):
   - Council proposal metadata is now populated with the fields personas
@@ -51,10 +54,6 @@ V1.7 CHANGES (2026-09-29):
 V1.6 CHANGES (2026-09-27):
   - Council is risk-tiered.
   - Auto-image via image_engine with card-renderer fallback.
-
-DIAG (temporary):
-  - Structured, redacted diagnostics for the connector path.
-  - Remove once connector path is verified end-to-end.
 """
 from __future__ import annotations
 
@@ -1193,7 +1192,7 @@ async def _connector_execute(
             str(image_url or ""), image_bytes,
         )
 
-    # ── Execution-managed path (V2.0) ──────────────────────────────────
+    # ── Execution-managed path (V2.1) ──────────────────────────────────
     # The Action Kernel / ExternalActionExecutor already owns the
     # authoritative execution ledger, lease, receipt and idempotency
     # boundary. Do not create a second execution for the same remote side
@@ -1205,6 +1204,13 @@ async def _connector_execute(
     # awaitable. An unconditional `await` on a sync method raises TypeError
     # AFTER the side effect has already occurred, producing a phantom
     # failure (side effect present + workflow reports failure).
+    #
+    # V2.1: success returns status="succeeded" (not "ok"). Downstream
+    # consumers (PublishStep.async_run, the workflow runner, the response
+    # builder) branch on "succeeded". "ok" produced a phantom failure in
+    # the response. The outcome field is also set explicitly so it does
+    # not default to "unknown" when the ConnectorResult does not carry
+    # an outcome through frozen-attribute mutation.
     if execution_managed:
         provider_result = plugin.publish(
             text,
@@ -1218,12 +1224,6 @@ async def _connector_execute(
         if inspect.isawaitable(provider_result):
             provider_result = await provider_result
 
-        # Normalize the connector's return shape (ConnectorResult dataclass
-        # or plain dict) into the shape callers expect: status,
-        # platform_post_id, provider_object_id, error. Returning the raw
-        # ConnectorResult under "result" with no top-level status/ID was
-        # the pre-V2.0 behavior and caused the caller to see no receipt
-        # even when the side effect was confirmed.
         if isinstance(provider_result, dict):
             _ok = bool(provider_result.get("ok", True))
             _post_id = (
@@ -1232,7 +1232,7 @@ async def _connector_execute(
                 or provider_result.get("platform_post_id")
             )
             _error = provider_result.get("error")
-            _outcome = str(provider_result.get("outcome") or "").lower()
+            _provider_outcome = str(provider_result.get("outcome") or "").lower()
         else:
             _ok = bool(getattr(provider_result, "ok", False))
             _post_id = (
@@ -1241,14 +1241,19 @@ async def _connector_execute(
                 or getattr(provider_result, "platform_post_id", None)
             )
             _error = getattr(provider_result, "error", None)
-            _outcome = str(getattr(provider_result, "outcome", "") or "").lower()
+            _provider_outcome = str(
+                getattr(provider_result, "outcome", "") or ""
+            ).lower()
 
         if not _ok:
-            _status = "error"
+            _status = "failed"
+            _outcome = _provider_outcome or "failed"
         elif not _post_id:
             _status = "uncertain"
+            _outcome = _provider_outcome or "uncertain"
         else:
-            _status = "ok"
+            _status = "succeeded"
+            _outcome = _provider_outcome or "succeeded"
 
         logger.error(
             "connector.post_executor: status=%r error=%r object_id=%r "
@@ -1266,9 +1271,7 @@ async def _connector_execute(
             "provider_object_id": _post_id,
             "post_id": _post_id,
             "error": _error,
-            "outcome": _outcome or (
-                "succeeded" if _status == "ok" else _status
-            ),
+            "outcome": _outcome,
             "page_id": page_id,
             "account_id": account_id,
             "mode": "live",
