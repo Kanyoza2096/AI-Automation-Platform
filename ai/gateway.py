@@ -12,16 +12,21 @@ Modes:
   degraded    — providers configured but all failed / circuit open / budget
   unavailable — no providers configured or gateway disabled
 
-v2.0 (2026-10-01) — ORDERED FALLBACK CHAINS
-  - The AI fabric now walks the ordered route chain returned by
+v2.1 (2026-10-01) — ASYNC-STRUCTURED PATH
+  - complete_async_structured() added. Wraps complete_structured() so
+    callers needing schema_hint + required_keys enforcement have an async
+    entry point. Replaces the pattern of calling complete_async() with
+    capability="structured_json", which does NOT validate payload shape.
+  - complete_async() and complete_async_structured() now use
+    asyncio.get_running_loop() instead of the deprecated get_event_loop().
+
+v2.0 (2026-10-01) — ORDERED FALLBACK CHAINS (preserved)
+  - The AI fabric walks the ordered route chain returned by
     services.ai_policy.select_ai_route(task). Each task declares a tuple of
     (provider, model) routes; the fabric tries them in order and returns the
     first succeeded receipt.
-  - Cloudflare is the primary provider; Gemini is the fallback. This reverses
-    the earlier Gemini-first intent: Cloudflare has been more operationally
-    reliable in production, has a separate quota pool, and does not require
-    the credential that was previously exposed in the logs.
-  - The legacy orchestrator / Gemini-direct paths remain as fallbacks when
+  - Cloudflare is the primary provider; Gemini is the fallback.
+  - Legacy orchestrator / Gemini-direct paths remain as fallbacks when
     the AI fabric is not configured.
 """
 
@@ -77,10 +82,13 @@ class IntelligenceResult:
 
 # ---------------------------------------------------------------------------
 # Caller allowlist — LLM only where intentional
-# Default: intentional production intelligence callers only; governance/cognitive engines remain off unless explicitly enabled.
+# Default: intentional production intelligence callers only.
 # Override: LLM_ALLOWED_CALLERS=content,director,meta,council,trend,news,tool_agent
 # ---------------------------------------------------------------------------
-_DEFAULT_ALLOWED_CALLERS = frozenset({"content", "director", "content_engine", "content_intelligence", "code_intelligence", "ai_chat"})
+_DEFAULT_ALLOWED_CALLERS = frozenset({
+    "content", "director", "content_engine", "content_intelligence",
+    "code_intelligence", "ai_chat",
+})
 
 
 def _allowed_callers() -> frozenset:
@@ -113,7 +121,6 @@ class _Circuit:
             if self._failures < self.failure_threshold:
                 return True
             if time.monotonic() - self._opened_at >= self.open_seconds:
-                # half-open: allow one try
                 return True
             return False
 
@@ -196,7 +203,7 @@ class _Budget:
             try:
                 key = self._key(workspace_id)
                 r.incrby(key, tokens)
-                r.expire(key, 172800)  # 48h
+                r.expire(key, 172800)
                 return
             except Exception as exc:
                 logger.debug("budget redis consume failed: %s", exc)
@@ -229,7 +236,6 @@ def sanitize_prompt(prompt: str, *, max_chars: int = 12000) -> str:
     text = prompt
     text = _EMAIL_RE.sub("[REDACTED_EMAIL]", text)
     text = _PHONE_RE.sub("[REDACTED_PHONE]", text)
-    # Soft injection notice — do not strip content (could be legitimate), flag via prefix
     low = text.lower()
     if any(m in low for m in _INJECTION_MARKERS):
         text = (
@@ -272,8 +278,11 @@ class LLMGateway:
     Capability-oriented gateway over AIOrchestrator / Gemini.
 
     Public API:
-      await gateway.complete(...)
-      await gateway.reason(...)
+      gateway.complete(...)                    — sync chat/structured
+      gateway.complete_structured(...)         — sync, schema_hint + required_keys
+      await gateway.complete_async(...)        — async chat, no shape check
+      await gateway.complete_async_structured(...) — async, shape-checked
+      gateway.reason(...) / await gateway.reason_async(...)
       gateway.health()
       gateway.mode
     """
@@ -299,7 +308,6 @@ class LLMGateway:
     # ------------------------------------------------------------------
 
     def bind_orchestrator(self, orchestrator) -> None:
-        """Inject the canonical orchestrator (from DI) so gateway and container share one instance."""
         with self._lock:
             self._orch = orchestrator
             self._orch_attempted = True
@@ -352,7 +360,6 @@ class LLMGateway:
         }
 
     def _ai_fabric_configured(self) -> bool:
-        """True if any AI fabric provider (Cloudflare or Gemini) is configured."""
         if os.getenv("KDO_AI_FABRIC_DISABLED", "").lower() in ("1", "true", "yes"):
             return False
         if (
@@ -382,18 +389,6 @@ class LLMGateway:
         capability: str,
         workspace_id: str,
     ) -> IntelligenceResult:
-        """Walk the ordered route chain for this capability.
-
-        Each task maps to a tuple of (provider, model) routes via
-        services.ai_policy.select_ai_route. Providers are constructed through
-        services.connectors.ai_registry.create_ai_provider_adapter. The first
-        route that returns a succeeded receipt with non-empty output wins.
-        Providers that cannot be configured (missing credentials) are skipped.
-
-        Returns a degraded IntelligenceResult when every route fails. The
-        reason names the last error observed; intermediate errors are logged
-        at debug level.
-        """
         start = time.monotonic()
         correlation_id = uuid.uuid4().hex[:16]
 
@@ -440,38 +435,28 @@ class LLMGateway:
             selected_model = route.model
             attempted.append(f"{provider_name}:{selected_model}")
 
-            # Build provider-specific kwargs
             if provider_name == "cloudflare_ai":
                 kwargs = self._cf_kwargs(selected_model)
                 if not kwargs["account_id"] or not kwargs["token"]:
                     last_error = f"{provider_name}_not_configured"
-                    logger.debug(
-                        "AI fabric: skipping %s (not configured)", provider_name
-                    )
+                    logger.debug("AI fabric: skipping %s (not configured)", provider_name)
                     continue
             elif provider_name == "gemini":
                 kwargs = self._gemini_kwargs(selected_model)
                 if not kwargs["api_key"]:
                     last_error = f"{provider_name}_not_configured"
-                    logger.debug(
-                        "AI fabric: skipping %s (not configured)", provider_name
-                    )
+                    logger.debug("AI fabric: skipping %s (not configured)", provider_name)
                     continue
             else:
                 last_error = f"unknown_provider:{provider_name}"
-                logger.debug(
-                    "AI fabric: skipping unknown provider %s", provider_name
-                )
+                logger.debug("AI fabric: skipping unknown provider %s", provider_name)
                 continue
 
             try:
                 adapter = create_ai_provider_adapter(provider_name, **kwargs)
             except Exception as exc:
                 last_error = f"{provider_name}_init_failed:{type(exc).__name__}"
-                logger.debug(
-                    "AI fabric: adapter init failed for %s: %s",
-                    provider_name, exc,
-                )
+                logger.debug("AI fabric: adapter init failed for %s: %s", provider_name, exc)
                 continue
 
             try:
@@ -486,10 +471,7 @@ class LLMGateway:
                     adapter.close()
             except Exception as exc:
                 last_error = f"{provider_name}_call_failed:{type(exc).__name__}"
-                logger.debug(
-                    "AI fabric: adapter call failed for %s: %s",
-                    provider_name, exc,
-                )
+                logger.debug("AI fabric: adapter call failed for %s: %s", provider_name, exc)
                 continue
 
             status = getattr(receipt, "status", "failed")
@@ -516,7 +498,6 @@ class LLMGateway:
                     ai_receipt=receipt,
                 )
 
-            # Not succeeded — record reason and try the next route.
             last_error = (
                 getattr(receipt, "error", None)
                 or f"{provider_name}_status:{status}"
@@ -526,7 +507,6 @@ class LLMGateway:
                 provider_name, status, last_error,
             )
 
-        # Every route in the chain failed.
         latency = (time.monotonic() - start) * 1000
         logger.warning(
             "AI fabric: all routes failed capability=%s attempted=%s last_error=%s",
@@ -549,11 +529,6 @@ class LLMGateway:
             return True
         orch = self._get_orchestrator()
         if orch is not None:
-            health = {}
-            try:
-                health = orch.health() if hasattr(orch, "health") else {}
-            except Exception:
-                health = {}
             providers = getattr(orch, "_providers", None) or []
             for p in providers:
                 try:
@@ -561,10 +536,13 @@ class LLMGateway:
                         return True
                 except Exception:
                     continue
-        # Direct Gemini key check
         try:
             from config.settings import settings
-            key = getattr(settings, "gemini_key", None) or os.getenv("GEMINI_KEY") or os.getenv("GOOGLE_API_KEY")
+            key = (
+                getattr(settings, "gemini_key", None)
+                or os.getenv("GEMINI_KEY")
+                or os.getenv("GOOGLE_API_KEY")
+            )
             if key:
                 return True
         except Exception:
@@ -574,7 +552,6 @@ class LLMGateway:
 
     def _budget_ok(self, workspace_id: str, estimate_tokens: int) -> bool:
         limit = self._default_daily_tokens
-        # optional per-workspace override later
         return self._budget.remaining(workspace_id, limit) >= max(1, estimate_tokens // 4)
 
     def _call_orchestrator(
@@ -609,7 +586,6 @@ class LLMGateway:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        # orchestrator may expect .id
         if not hasattr(req, "id"):
             try:
                 object.__setattr__(req, "id", uuid.uuid4().hex[:12])
@@ -620,7 +596,6 @@ class LLMGateway:
 
         start = time.monotonic()
         try:
-            # Prefer non-raising path if available
             if hasattr(orch, "execute"):
                 from ai.orchestrator import NoProviderAvailableError, AllProvidersExhaustedError
                 try:
@@ -814,10 +789,6 @@ class LLMGateway:
                 capability=capability,
             )
 
-        # Prefer the provider-neutral AI Fabric when any AI provider is
-        # configured. The fabric walks the ordered fallback chain declared in
-        # services.ai_policy. Legacy orchestrator / Gemini-direct remain as
-        # further fallbacks and are only used if the fabric is unconfigured.
         if self._ai_fabric_configured():
             result = self._call_ai_fabric(
                 prompt,
@@ -863,9 +834,10 @@ class LLMGateway:
     ) -> IntelligenceResult:
         """
         Request structured JSON. Critical engines should use this, not free prose.
-        Respects LLM_ALLOWED_CALLERS policy (default: content, director only).
+        Respects LLM_ALLOWED_CALLERS policy.
 
         On parse failure → ok=False, mode=degraded (never invent fields).
+        On missing required_keys → ok=False, mode=degraded, reason=missing_keys:...
         """
         if not _caller_allowed(caller):
             self._last_mode = IntelligenceMode.UNAVAILABLE
@@ -926,9 +898,27 @@ class LLMGateway:
         return result
 
     async def complete_async(self, prompt: str, **kwargs) -> IntelligenceResult:
+        """Async wrapper for complete(). Does NOT validate JSON shape.
+
+        For structured payloads use complete_async_structured().
+        """
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
             None, lambda: self.complete(prompt, **kwargs)
+        )
+
+    async def complete_async_structured(self, prompt: str, **kwargs) -> IntelligenceResult:
+        """Async wrapper for complete_structured().
+
+        Use this — NOT complete_async(capability='structured_json') — when
+        the caller needs schema_hint enforcement and required-key validation.
+        complete_async does not check payload shape.
+        """
+        import asyncio
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self.complete_structured(prompt, **kwargs)
         )
 
     def reason(self, prompt: str, **kwargs) -> IntelligenceResult:
@@ -940,7 +930,8 @@ class LLMGateway:
 
     async def reason_async(self, prompt: str, **kwargs) -> IntelligenceResult:
         import asyncio
-        return await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
             None, lambda: self.reason(prompt, **kwargs)
         )
 
@@ -952,7 +943,11 @@ class LLMGateway:
             return IntelligenceMode.UNAVAILABLE
         if not self._circuit.allow():
             return IntelligenceMode.DEGRADED
-        return self._last_mode if self._last_mode != IntelligenceMode.UNAVAILABLE else IntelligenceMode.FULL
+        return (
+            self._last_mode
+            if self._last_mode != IntelligenceMode.UNAVAILABLE
+            else IntelligenceMode.FULL
+        )
 
     def health(self) -> Dict[str, Any]:
         configured = self._providers_configured()
@@ -974,15 +969,23 @@ class LLMGateway:
             "budget_backend": "redis" if self._budget._get_redis() is not None else "memory",
         }
 
-    def evaluate(self, *, prompt: str, expected_keywords: list | None = None, workspace_id: str = "platform") -> Dict[str, Any]:
-        """Lightweight observability/eval helper — does not raise.
-
-        Returns timing, mode, and optional keyword hit-rate for regression checks.
-        """
+    def evaluate(
+        self,
+        *,
+        prompt: str,
+        expected_keywords: list | None = None,
+        workspace_id: str = "platform",
+    ) -> Dict[str, Any]:
+        """Lightweight observability/eval helper — does not raise."""
         expected_keywords = expected_keywords or []
-        result = self.complete(prompt, workspace_id=workspace_id, capability="chat", caller="eval")
+        result = self.complete(
+            prompt, workspace_id=workspace_id, capability="chat", caller="eval"
+        )
         text = (result.text or "").lower()
-        hits = sum(1 for k in expected_keywords if k.lower() in text) if expected_keywords else None
+        hits = (
+            sum(1 for k in expected_keywords if k.lower() in text)
+            if expected_keywords else None
+        )
         return {
             "ok": result.ok,
             "mode": result.mode.value,
@@ -995,7 +998,6 @@ class LLMGateway:
         }
 
 
-# Module singleton
 llm_gateway = LLMGateway()
 
 
