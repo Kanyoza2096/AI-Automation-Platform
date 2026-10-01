@@ -20,6 +20,19 @@ All v3.9 features retained:
   - Brand-specific timezone support
   - Proper error logging (no silent failures)
   - Atomic claim, event loop fix, dashboard events
+
+v1.6 fixes (2026-10-01):
+  - _extract_workflow_outcome handles both the flat pipeline result shape
+    and the legacy per-platform mapping. Prior versions assumed the
+    per-platform shape and crashed with "'bool' object has no attribute
+    'get'" when the canonical pipeline returned its flat result.
+  - The post_id extraction block in _trigger_workflow applies the same
+    flat-shape detection and guards .get() with isinstance(v, dict).
+  - _extract_workflow_outcome now accepts a context_platform kwarg so the
+    extractor can attribute the correct platform when the pipeline's flat
+    result doesn't carry a top-level "platform" field.
+  - Both call sites (in _trigger_workflow and trigger_manual) pass
+    context_platform from wf_kwargs["platform"].
 """
 
 import asyncio
@@ -922,20 +935,72 @@ class BrandScheduler:
         maybe = workflow.execute_async(initial_context=wf_kwargs)
         return _run_awaitable_sync(maybe)
 
-    def _extract_workflow_outcome(self, result) -> tuple[str, bool, List[str], bool]:
-        """Parse workflow result steps into (topic, publish_ok, platforms, queued)."""
+    def _extract_workflow_outcome(
+        self, result, *, context_platform: Optional[str] = None
+    ) -> tuple[str, bool, List[str], bool]:
+        """Parse workflow result steps into (topic, publish_ok, platforms, queued).
+
+        The publish step's output can be either of two shapes:
+
+          Flat pipeline result (canonical pipeline / execution_managed path):
+            {"status": "ok", "ok": True, "post_id": "...", "platform": "facebook", ...}
+
+          Per-platform mapping (legacy, still emitted by the outbox path):
+            {"facebook": {"ok": True, "post_id": "..."}, "twitter": {...}}
+
+        Prior versions assumed the per-platform shape and crashed with
+        "'bool' object has no attribute 'get'" the first time the flat shape
+        reached this method — the top-level `ok`/`queued`/`governed` bools
+        were iterated and `.get()` was called on each value.
+        """
         topic, publish_ok, platforms, queued_publish = "", False, [], False
+
         for step in result.steps:
             if step.step_name == "select_topic" and step.ok:
                 topic = (step.output or {}).get("topic", "")
             elif step.step_name == "publish":
                 publish_ok = step.ok
-                queued_publish = (
-                    bool((step.output or {}).get("queued"))
-                    if isinstance(step.output, dict) else False
+                output = step.output if isinstance(step.output, dict) else {}
+
+                queued_publish = bool(output.get("queued"))
+
+                if not step.ok:
+                    continue
+
+                # Detect the flat pipeline shape first. Its top-level "status"
+                # or a top-level bool at "ok" is unambiguous.
+                status_str = str(output.get("status") or "").strip().lower()
+                is_flat = (
+                    "status" in output
+                    or isinstance(output.get("ok"), bool)
+                    or "post_id" in output
+                    or "platform_post_id" in output
+                    or "provider_object_id" in output
                 )
-                if step.ok and isinstance(step.output, dict):
-                    platforms = [k for k, v in step.output.items() if v.get("ok")]
+
+                if is_flat:
+                    ok_flag = bool(output.get("ok")) or status_str in (
+                        "ok", "succeeded", "success", "published"
+                    )
+                    post_id = (
+                        output.get("post_id")
+                        or output.get("platform_post_id")
+                        or output.get("provider_object_id")
+                    )
+                    if ok_flag and post_id:
+                        _platform = (
+                            output.get("platform")
+                            or context_platform
+                            or "facebook"
+                        )
+                        platforms = [_platform]
+                else:
+                    # Legacy per-platform mapping. Iterate only over dict values.
+                    platforms = [
+                        k for k, v in output.items()
+                        if isinstance(v, dict) and v.get("ok")
+                    ]
+
         return topic, publish_ok, platforms, queued_publish
 
     # ═══════════════════════════════════════════════════════════════
@@ -1044,7 +1109,13 @@ class BrandScheduler:
             )
             result = self._execute_workflow(workflow, wf_kwargs)
 
-            topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(result)
+            context_platform = (
+                wf_kwargs.get("platform")
+                or getattr(self.brand, "platform", "facebook")
+            )
+            topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
+                result, context_platform=context_platform,
+            )
 
             duration_ms = (time.monotonic() - publish_started) * 1000
 
@@ -1057,10 +1128,38 @@ class BrandScheduler:
                         post_id = ""
                         for step in result.steps:
                             if step.step_name == "publish" and step.ok:
-                                for p, r in (step.output or {}).items():
-                                    if r.get("ok") and r.get("post_id"):
-                                        post_id = r["post_id"]
+                                output = step.output if isinstance(step.output, dict) else {}
+                                status_str = str(output.get("status") or "").strip().lower()
+
+                                # Flat pipeline shape: read the top-level post ID directly.
+                                if (
+                                    "status" in output
+                                    or isinstance(output.get("ok"), bool)
+                                    or "post_id" in output
+                                    or "platform_post_id" in output
+                                    or "provider_object_id" in output
+                                ):
+                                    _ok = bool(output.get("ok")) or status_str in (
+                                        "ok", "succeeded", "success", "published"
+                                    )
+                                    if _ok:
+                                        post_id = (
+                                            output.get("post_id")
+                                            or output.get("platform_post_id")
+                                            or output.get("provider_object_id")
+                                            or ""
+                                        )
+                                    break
+
+                                # Legacy per-platform mapping. Only dict values are
+                                # candidates for the post ID.
+                                for _name, _value in output.items():
+                                    if isinstance(_value, dict) and _value.get("ok") and _value.get("post_id"):
+                                        post_id = _value["post_id"]
                                         break
+                                if post_id:
+                                    break
+
                         _job_call(
                             self._job_service, "mark_published",
                             automation_job, post_id=post_id,
@@ -1296,7 +1395,13 @@ class BrandScheduler:
             )
             result = self._execute_workflow(workflow, wf_kwargs)
 
-            topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(result)
+            context_platform = (
+                wf_kwargs.get("platform")
+                or getattr(self.brand, "platform", "facebook")
+            )
+            topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
+                result, context_platform=context_platform,
+            )
 
             duration_ms = (time.monotonic() - publish_started) * 1000
 
@@ -1316,12 +1421,36 @@ class BrandScheduler:
                     try:
                         post_id = ""
                         for step in result.steps:
-                            if step.step_name == "publish" and step.ok and isinstance(step.output, dict):
-                                post_id = (
-                                    step.output.get("platform_post_id")
-                                    or step.output.get("post_id")
-                                    or ""
-                                )
+                            if step.step_name == "publish" and step.ok:
+                                output = step.output if isinstance(step.output, dict) else {}
+                                status_str = str(output.get("status") or "").strip().lower()
+
+                                if (
+                                    "status" in output
+                                    or isinstance(output.get("ok"), bool)
+                                    or "post_id" in output
+                                    or "platform_post_id" in output
+                                    or "provider_object_id" in output
+                                ):
+                                    _ok = bool(output.get("ok")) or status_str in (
+                                        "ok", "succeeded", "success", "published"
+                                    )
+                                    if _ok:
+                                        post_id = (
+                                            output.get("post_id")
+                                            or output.get("platform_post_id")
+                                            or output.get("provider_object_id")
+                                            or ""
+                                        )
+                                    break
+
+                                for _name, _value in output.items():
+                                    if isinstance(_value, dict) and _value.get("ok") and _value.get("post_id"):
+                                        post_id = _value["post_id"]
+                                        break
+                                if post_id:
+                                    break
+
                         _job_call(
                             self._job_service, "mark_published",
                             automation_job, post_id=post_id,
