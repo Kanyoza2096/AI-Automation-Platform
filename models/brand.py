@@ -18,12 +18,19 @@ V1.7 — Added `style_category` and `custom_style_guide` so brands can
 V1.8 — Added `topic_direction` and `topic_axes` for direction-based
        AI topic generation. When topic_direction is set, the workflow
        generates topics from it rather than selecting from a fixed
-       bank. Previously these columns existed on the brands table but
-       were stripped by the model on load, so the selector never saw
-       them and fell through to custom_topics.
+       bank.
+V1.9 — Hardened hydration against legacy NULLs and stringified JSONB.
+       Every nullable-ish column (topic_axes, topic_direction, colors,
+       posting_schedule, custom_topics, topic_categories, hashtags,
+       logo_url, style_category, custom_style_guide) now coerces NULL,
+       empty strings, and JSON-encoded strings to a safe value. This
+       fixes the `find_all` validation error where a single row with
+       topic_axes=NULL caused the entire brand list to be rejected.
 """
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -31,6 +38,79 @@ from typing import Any, Dict, List, Optional
 from pydantic import Field, field_validator
 
 from models.base import KanyozaModel
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Coercion helpers — tolerate legacy row shapes without raising
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Supabase returns JSONB columns either as native dicts/lists or as
+# JSON-encoded strings, depending on driver version and column type
+# inference. Columns added without a DEFAULT can also come back as NULL
+# for pre-migration rows. Every field with a non-primitive type gets a
+# coercer so that `Brand(**row)` never raises on a row that is merely
+# shaped differently than the model expects.
+#
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    """Coerce a value to a dict. Returns {} for None / malformed input."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _coerce_str_dict(value: Any) -> Dict[str, str]:
+    """Coerce a value to Dict[str, str]. Drops None-valued entries."""
+    base = _coerce_dict(value)
+    return {str(k): str(v) for k, v in base.items() if v is not None}
+
+
+def _coerce_list(value: Any) -> List[Any]:
+    """Coerce a value to a list. Returns [] for None / malformed input."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+        except Exception:
+            # Fall back to comma-separated parsing; harmless for
+            # hashtag-like inputs, empty list for anything else.
+            return [p.strip() for p in stripped.split(",") if p.strip()]
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _coerce_str_list(value: Any) -> List[str]:
+    """Coerce a value to List[str]. Drops empty / non-string entries."""
+    return [str(v).strip() for v in _coerce_list(value) if str(v).strip()]
+
+
+def _coerce_optional_str(value: Any) -> Optional[str]:
+    """Coerce a value to Optional[str]. Empty / whitespace → None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        return s or None
+    return str(value)
 
 
 class BrandStatus(str, Enum):
@@ -58,7 +138,6 @@ class Brand(KanyozaModel):
     slug: str = Field(..., min_length=1, max_length=100, description="URL-safe identifier")
 
     # Visual identity
-    # ✅ V1.6 — logo_url is nullable in the DB; accept None explicitly.
     logo_url: Optional[str] = Field(default=None, description="Brand logo URL or path")
     colors: Dict[str, str] = Field(
         default_factory=lambda: {
@@ -77,16 +156,17 @@ class Brand(KanyozaModel):
         description="Content tone: professional, casual, technical, friendly, "
                     "authoritative, playful, warm, devotional, pastoral, etc.",
     )
-    language: str = Field(default="en", max_length=10, description="Primary content language (ISO 639-1)")
+    language: str = Field(
+        default="en",
+        max_length=10,
+        description="Primary content language (ISO 639-1)",
+    )
     audience_description: str = Field(
         default="Software developers and tech enthusiasts",
         description="Target audience for content generation",
     )
 
-    # ✅ V1.7 — Explicit content style guide selection.
-    # When set, this key selects a style guide from
-    # config/content_styles.yaml. Overrides tone/audience inference.
-    # Examples: "devotional", "professional", "casual", "culinary", "fitness"
+    # Explicit content style guide selection
     style_category: Optional[str] = Field(
         default=None,
         max_length=64,
@@ -94,11 +174,7 @@ class Brand(KanyozaModel):
                     "config/content_styles.yaml). Overrides tone/audience inference.",
     )
 
-    # ✅ V1.7 — Full per-brand style guide override.
-    # When set, this text is injected directly into the LLM prompt,
-    # taking precedence over both style_category and any inferred style.
-    # Use this for brands with a very specific voice the registry
-    # cannot capture.
+    # Full per-brand style guide override
     custom_style_guide: Optional[str] = Field(
         default=None,
         max_length=4000,
@@ -120,15 +196,7 @@ class Brand(KanyozaModel):
         description="Brand-specific topic bank: {category: [topics]}",
     )
 
-    # ✅ V1.8 — Direction-based content generation.
-    #
-    # When topic_direction is set, the workflow uses the AI fabric to
-    # generate topics from it rather than selecting from custom_topics.
-    # topic_axes decomposes the direction into thematic buckets the AI
-    # picks from, keeping generated topics varied and coherent.
-    #
-    # Both are optional. When absent, the topic selector falls back to
-    # custom_topics / KB / brand_config (existing behavior).
+    # Direction-based content generation
     topic_direction: Optional[str] = Field(
         default=None,
         max_length=2000,
@@ -169,32 +237,133 @@ class Brand(KanyozaModel):
     # Metadata for extensibility
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Validators — all mode="before" so they run on raw row input
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @field_validator("logo_url", mode="before")
+    @classmethod
+    def _coerce_logo_url(cls, v):
+        return _coerce_optional_str(v)
+
+    @field_validator("style_category", mode="before")
+    @classmethod
+    def _coerce_style_category(cls, v):
+        s = _coerce_optional_str(v)
+        return s.lower() if s else None
+
+    @field_validator("custom_style_guide", mode="before")
+    @classmethod
+    def _coerce_custom_style_guide(cls, v):
+        return _coerce_optional_str(v)
+
+    @field_validator("ai_profile_id", mode="before")
+    @classmethod
+    def _coerce_ai_profile_id(cls, v):
+        return _coerce_optional_str(v)
+
+    @field_validator("topic_direction", mode="before")
+    @classmethod
+    def _coerce_topic_direction(cls, v):
+        """Tolerate NULL, empty string, or non-str from legacy rows."""
+        return _coerce_optional_str(v)
+
+    @field_validator("topic_axes", mode="before")
+    @classmethod
+    def _coerce_topic_axes(cls, v):
+        """Tolerate NULL, empty string, JSON-encoded string, or dict.
+
+        This is the fix for the `find_all` validation error where a row
+        with topic_axes=NULL caused the entire brand list to be rejected
+        by Pydantic. Legacy rows (predating the topic_axes column) hold
+        NULL; the coercer converts them to {} so they hydrate cleanly.
+        """
+        return _coerce_str_dict(v)
+
+    @field_validator("colors", mode="before")
+    @classmethod
+    def _coerce_colors(cls, v):
+        """Tolerate NULL or partial colors dict; defaults fill missing keys."""
+        if v is None:
+            return {
+                "primary": "#6366F1",
+                "secondary": "#8B5CF6",
+                "accent": "#06B6D4",
+                "background": "#0F172A",
+                "text": "#F8FAFC",
+            }
+        coerced = _coerce_str_dict(v)
+        if not coerced:
+            return {
+                "primary": "#6366F1",
+                "secondary": "#8B5CF6",
+                "accent": "#06B6D4",
+                "background": "#0F172A",
+                "text": "#F8FAFC",
+            }
+        return coerced
+
+    @field_validator("posting_schedule", mode="before")
+    @classmethod
+    def _coerce_posting_schedule(cls, v):
+        """Tolerate NULL / malformed posting_schedule; apply defaults."""
+        default = {
+            "timezone": "UTC",
+            "content_hours": [1, 3, 5, 7, 9, 11, 13, 15, 17, 19],
+            "max_posts_per_day": 10,
+            "min_interval_minutes": 90,
+        }
+        if v is None:
+            return default
+        coerced = _coerce_dict(v)
+        if not coerced:
+            return default
+        merged = dict(default)
+        merged.update(coerced)
+        return merged
+
+    @field_validator("custom_topics", mode="before")
+    @classmethod
+    def _coerce_custom_topics(cls, v):
+        """Tolerate NULL / JSON-string; ensure Dict[str, List[str]]."""
+        base = _coerce_dict(v)
+        return {str(k): _coerce_str_list(val) for k, val in base.items()}
+
+    @field_validator("topic_categories", mode="before")
+    @classmethod
+    def _coerce_topic_categories(cls, v):
+        return _coerce_str_list(v)
+
     @field_validator("hashtags", mode="before")
     @classmethod
-    def strip_hash_prefix(cls, tags) -> List[str]:
-        if isinstance(tags, list):
-            return [t.lstrip("#").strip() for t in tags if t.strip()]
-        return tags
+    def _coerce_and_strip_hashtags(cls, tags):
+        """Tolerate NULL / JSON-string; strip leading # from each tag."""
+        coerced = _coerce_str_list(tags)
+        return [t.lstrip("#").strip() for t in coerced if t.lstrip("#").strip()]
 
     @field_validator("slug")
     @classmethod
     def validate_slug(cls, v: str) -> str:
-        import re
-
         cleaned = re.sub(r"[^a-z0-9-]", "", v.lower())
         if not cleaned:
             raise ValueError("slug must contain at least one alphanumeric character")
         return cleaned
 
-    @field_validator("style_category", mode="before")
+    @field_validator("status", mode="before")
     @classmethod
-    def normalize_style_category(cls, v):
+    def _coerce_status(cls, v):
         if v is None:
-            return None
-        if not isinstance(v, str):
+            return BrandStatus.ACTIVE
+        if isinstance(v, BrandStatus):
             return v
-        s = v.strip().lower()
-        return s or None
+        s = str(v).strip().lower()
+        if s in ("active", "paused", "archived"):
+            return s
+        return BrandStatus.ACTIVE
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Properties
+    # ═══════════════════════════════════════════════════════════════════════
 
     @property
     def is_active(self) -> bool:
@@ -211,11 +380,14 @@ class Brand(KanyozaModel):
 
     @property
     def content_hours(self) -> List[int]:
-        return self.posting_schedule.get("content_hours", [])
+        return list(self.posting_schedule.get("content_hours") or [])
 
     @property
     def max_posts_per_day(self) -> int:
-        return self.posting_schedule.get("max_posts_per_day", 10)
+        try:
+            return int(self.posting_schedule.get("max_posts_per_day", 10))
+        except (TypeError, ValueError):
+            return 10
 
     @property
     def has_explicit_style(self) -> bool:
@@ -229,6 +401,10 @@ class Brand(KanyozaModel):
         """True when the brand declares an AI-topic direction."""
         return bool(self.topic_direction and self.topic_direction.strip())
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Factories
+    # ═══════════════════════════════════════════════════════════════════════
+
     @classmethod
     def create_default(cls, workspace_id: str, brand_id: str = "default") -> "Brand":
         """Create a default brand for backwards compatibility."""
@@ -238,3 +414,8 @@ class Brand(KanyozaModel):
             name="Default Brand",
             slug="default",
         )
+
+    @classmethod
+    def default(cls) -> "Brand":
+        """Alias used by ContentEngine.generate_post_legacy and similar callers."""
+        return cls.create_default("default")
