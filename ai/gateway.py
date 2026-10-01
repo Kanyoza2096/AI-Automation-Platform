@@ -11,6 +11,18 @@ Modes:
   full        — at least one provider succeeded
   degraded    — providers configured but all failed / circuit open / budget
   unavailable — no providers configured or gateway disabled
+
+v2.0 (2026-10-01) — ORDERED FALLBACK CHAINS
+  - The AI fabric now walks the ordered route chain returned by
+    services.ai_policy.select_ai_route(task). Each task declares a tuple of
+    (provider, model) routes; the fabric tries them in order and returns the
+    first succeeded receipt.
+  - Cloudflare is the primary provider; Gemini is the fallback. This reverses
+    the earlier Gemini-first intent: Cloudflare has been more operationally
+    reliable in production, has a separate quota pool, and does not require
+    the credential that was previously exposed in the logs.
+  - The legacy orchestrator / Gemini-direct paths remain as fallbacks when
+    the AI fabric is not configured.
 """
 
 from __future__ import annotations
@@ -61,7 +73,6 @@ class IntelligenceResult:
             "workspace_id": self.workspace_id,
             "request_id": self.request_id,
         }
-
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +206,6 @@ class _Budget:
             self._used[key] = self._used.get(key, 0) + tokens
 
 
-
 # ---------------------------------------------------------------------------
 # Prompt safety + structured parse
 # ---------------------------------------------------------------------------
@@ -288,7 +298,6 @@ class LLMGateway:
     # Internals
     # ------------------------------------------------------------------
 
-
     def bind_orchestrator(self, orchestrator) -> None:
         """Inject the canonical orchestrator (from DI) so gateway and container share one instance."""
         with self._lock:
@@ -316,14 +325,55 @@ class LLMGateway:
                 self._orch = None
             return self._orch
 
-    def _cloudflare_configured(self) -> bool:
-        return bool(
+    # ------------------------------------------------------------------
+    # Provider credential resolution (for the AI fabric)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cf_kwargs(model: str) -> Dict[str, Any]:
+        return {
+            "account_id": os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
+            "token": os.getenv("CLOUDFLARE_API_TOKEN", ""),
+            "model": os.getenv("CLOUDFLARE_AI_MODEL", model),
+            "timeout": float(os.getenv("CLOUDFLARE_AI_TIMEOUT", "30")),
+        }
+
+    @staticmethod
+    def _gemini_kwargs(model: str) -> Dict[str, Any]:
+        api_key = (
+            os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("GEMINI_KEY", "").strip()
+            or os.getenv("GOOGLE_API_KEY", "").strip()
+        )
+        return {
+            "api_key": api_key,
+            "model": model,
+            "timeout": float(os.getenv("GEMINI_AI_TIMEOUT", "30")),
+        }
+
+    def _ai_fabric_configured(self) -> bool:
+        """True if any AI fabric provider (Cloudflare or Gemini) is configured."""
+        if os.getenv("KDO_AI_FABRIC_DISABLED", "").lower() in ("1", "true", "yes"):
+            return False
+        if (
             os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
             and os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
             and os.getenv("KDO_AI_CLOUDFLARE_ENABLED", "1").lower() not in ("0", "false", "no")
-        )
+        ):
+            return True
+        if (
+            os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("GEMINI_KEY", "").strip()
+            or os.getenv("GOOGLE_API_KEY", "").strip()
+        ):
+            return True
+        return False
 
-    def _call_cloudflare_fabric(
+    # ------------------------------------------------------------------
+    # AI fabric dispatch — ordered fallback chain
+    # ------------------------------------------------------------------
+
+    def _call_ai_fabric(
         self,
         prompt: str,
         *,
@@ -332,57 +382,171 @@ class LLMGateway:
         capability: str,
         workspace_id: str,
     ) -> IntelligenceResult:
+        """Walk the ordered route chain for this capability.
+
+        Each task maps to a tuple of (provider, model) routes via
+        services.ai_policy.select_ai_route. Providers are constructed through
+        services.connectors.ai_registry.create_ai_provider_adapter. The first
+        route that returns a succeeded receipt with non-empty output wins.
+        Providers that cannot be configured (missing credentials) are skipped.
+
+        Returns a degraded IntelligenceResult when every route fails. The
+        reason names the last error observed; intermediate errors are logged
+        at debug level.
+        """
         start = time.monotonic()
         correlation_id = uuid.uuid4().hex[:16]
+
         try:
             from services.connectors.ai_registry import create_ai_provider_adapter
             from services.ai_policy import select_ai_route
-            task = "structured_json" if capability in ("structured_json", "structured") else (
-                "content_generation" if capability in ("content", "generation", "content_generation") else "chat"
-            )
-            route = select_ai_route(task)
-            adapter = create_ai_provider_adapter(
-                route.provider,
-                account_id=os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
-                token=os.getenv("CLOUDFLARE_API_TOKEN", ""),
-                model=os.getenv("CLOUDFLARE_AI_MODEL", route.model),
-                timeout=float(os.getenv("CLOUDFLARE_AI_TIMEOUT", "30")),
-            )
-            try:
-                receipt = adapter.analyze(
-                    user_prompt=prompt,
-                    correlation_id=correlation_id,
-                    model=os.getenv("CLOUDFLARE_AI_MODEL", route.model),
-                    structured=capability in ("structured_json", "structured"),
-                )
-            finally:
-                adapter.close()
-            latency = (time.monotonic() - start) * 1000
-            mode = IntelligenceMode.FULL if receipt.status == "succeeded" else (
-                IntelligenceMode.DEGRADED if receipt.status == "failed" else IntelligenceMode.DEGRADED
-            )
-            return IntelligenceResult(
-                ok=receipt.status == "succeeded", mode=mode, text=receipt.raw_output,
-                data=receipt.structured_output, reason=receipt.error or "",
-                provider=receipt.provider, model=receipt.model, latency_ms=latency,
-                capability=capability, workspace_id=workspace_id,
-                request_id=correlation_id, ai_receipt=receipt,
-            )
         except Exception as exc:
             return IntelligenceResult(
-                ok=False, mode=IntelligenceMode.DEGRADED,
-                reason=f"cloudflare_fabric_error:{exc}"[:240],
-                capability=capability, workspace_id=workspace_id,
+                ok=False,
+                mode=IntelligenceMode.DEGRADED,
+                reason=f"ai_fabric_import_error:{type(exc).__name__}"[:240],
+                capability=capability,
+                workspace_id=workspace_id,
                 latency_ms=(time.monotonic() - start) * 1000,
                 request_id=correlation_id,
             )
 
+        task = (
+            "structured_json"
+            if capability in ("structured_json", "structured")
+            else "content_generation"
+            if capability in ("content", "generation", "content_generation")
+            else "chat"
+        )
+
+        try:
+            routes = select_ai_route(task)
+        except ValueError as exc:
+            return IntelligenceResult(
+                ok=False,
+                mode=IntelligenceMode.DEGRADED,
+                reason=f"ai_policy_error:{exc}"[:240],
+                capability=capability,
+                workspace_id=workspace_id,
+                latency_ms=(time.monotonic() - start) * 1000,
+                request_id=correlation_id,
+            )
+
+        last_error: Optional[str] = None
+        attempted: list[str] = []
+
+        for route in routes:
+            provider_name = route.provider
+            selected_model = route.model
+            attempted.append(f"{provider_name}:{selected_model}")
+
+            # Build provider-specific kwargs
+            if provider_name == "cloudflare_ai":
+                kwargs = self._cf_kwargs(selected_model)
+                if not kwargs["account_id"] or not kwargs["token"]:
+                    last_error = f"{provider_name}_not_configured"
+                    logger.debug(
+                        "AI fabric: skipping %s (not configured)", provider_name
+                    )
+                    continue
+            elif provider_name == "gemini":
+                kwargs = self._gemini_kwargs(selected_model)
+                if not kwargs["api_key"]:
+                    last_error = f"{provider_name}_not_configured"
+                    logger.debug(
+                        "AI fabric: skipping %s (not configured)", provider_name
+                    )
+                    continue
+            else:
+                last_error = f"unknown_provider:{provider_name}"
+                logger.debug(
+                    "AI fabric: skipping unknown provider %s", provider_name
+                )
+                continue
+
+            try:
+                adapter = create_ai_provider_adapter(provider_name, **kwargs)
+            except Exception as exc:
+                last_error = f"{provider_name}_init_failed:{type(exc).__name__}"
+                logger.debug(
+                    "AI fabric: adapter init failed for %s: %s",
+                    provider_name, exc,
+                )
+                continue
+
+            try:
+                try:
+                    receipt = adapter.analyze(
+                        user_prompt=prompt,
+                        correlation_id=correlation_id,
+                        model=kwargs.get("model", selected_model),
+                        structured=capability in ("structured_json", "structured"),
+                    )
+                finally:
+                    adapter.close()
+            except Exception as exc:
+                last_error = f"{provider_name}_call_failed:{type(exc).__name__}"
+                logger.debug(
+                    "AI fabric: adapter call failed for %s: %s",
+                    provider_name, exc,
+                )
+                continue
+
+            status = getattr(receipt, "status", "failed")
+            raw_output = getattr(receipt, "raw_output", "") or ""
+
+            if status == "succeeded" and raw_output.strip():
+                latency = (time.monotonic() - start) * 1000
+                logger.info(
+                    "AI fabric: %s succeeded model=%s latency_ms=%.0f capability=%s",
+                    receipt.provider, receipt.model, latency, capability,
+                )
+                return IntelligenceResult(
+                    ok=True,
+                    mode=IntelligenceMode.FULL,
+                    text=raw_output,
+                    data=getattr(receipt, "structured_output", None),
+                    reason="",
+                    provider=receipt.provider,
+                    model=receipt.model,
+                    latency_ms=latency,
+                    capability=capability,
+                    workspace_id=workspace_id,
+                    request_id=correlation_id,
+                    ai_receipt=receipt,
+                )
+
+            # Not succeeded — record reason and try the next route.
+            last_error = (
+                getattr(receipt, "error", None)
+                or f"{provider_name}_status:{status}"
+            )
+            logger.debug(
+                "AI fabric: %s did not succeed (status=%s err=%s), trying next route",
+                provider_name, status, last_error,
+            )
+
+        # Every route in the chain failed.
+        latency = (time.monotonic() - start) * 1000
+        logger.warning(
+            "AI fabric: all routes failed capability=%s attempted=%s last_error=%s",
+            capability, attempted, last_error,
+        )
+        return IntelligenceResult(
+            ok=False,
+            mode=IntelligenceMode.DEGRADED,
+            reason=(last_error or "all_providers_failed")[:240],
+            capability=capability,
+            workspace_id=workspace_id,
+            latency_ms=latency,
+            request_id=correlation_id,
+        )
+
     def _providers_configured(self) -> bool:
         if self._disabled:
             return False
-        if self._cloudflare_configured():
+        if self._ai_fabric_configured():
             return True
-            return False
         orch = self._get_orchestrator()
         if orch is not None:
             health = {}
@@ -390,11 +554,6 @@ class LLMGateway:
                 health = orch.health() if hasattr(orch, "health") else {}
             except Exception:
                 health = {}
-            # any available provider?
-            if isinstance(health, dict):
-                for v in health.values() if not any(isinstance(x, dict) for x in health.values()) else []:
-                    pass
-                # orchestrator.health() shape varies — also check providers list
             providers = getattr(orch, "_providers", None) or []
             for p in providers:
                 try:
@@ -655,12 +814,17 @@ class LLMGateway:
                 capability=capability,
             )
 
-        # Prefer the provider-neutral AI Fabric when Cloudflare is configured.
-        # Legacy orchestrator/Gemini remain fallback providers; callers do not change.
-        if self._cloudflare_configured():
-            result = self._call_cloudflare_fabric(
-                prompt, temperature=temperature, max_tokens=max_tokens,
-                capability=capability, workspace_id=workspace_id,
+        # Prefer the provider-neutral AI Fabric when any AI provider is
+        # configured. The fabric walks the ordered fallback chain declared in
+        # services.ai_policy. Legacy orchestrator / Gemini-direct remain as
+        # further fallbacks and are only used if the fabric is unconfigured.
+        if self._ai_fabric_configured():
+            result = self._call_ai_fabric(
+                prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                capability=capability,
+                workspace_id=workspace_id,
             )
         else:
             result = self._call_orchestrator(
@@ -829,8 +993,6 @@ class LLMGateway:
             "keyword_total": len(expected_keywords) if expected_keywords else 0,
             "request_id": result.request_id,
         }
-
-
 
 
 # Module singleton
