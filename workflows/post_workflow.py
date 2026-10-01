@@ -18,21 +18,24 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.9 (2026-10-01) — STRUCTURED STEP FAILURES:
+  PublishStep.async_run raises workflows.base.StepFailure instead of
+  RuntimeError/RenderFailedError. The pipeline's structured failure —
+  code, error, decision_id, pipeline_trace, reconciliation_required —
+  is preserved through the step boundary and appears in the API response.
+  Previously every failure collapsed to a bare RuntimeError("..."), which
+  execute_async reduced to StepResult(error=str), which the API envelope
+  reduced again to "Publish step failed". Four layers of collapse; the
+  operator had no way to diagnose a failure without grepping logs for
+  the job_id.
+
 V1.8 (2026-10-01) — DIRECTION-BASED TOPIC GENERATION:
-  SelectTopicStep.run now checks whether the brand declares a
-  topic_direction and, if so, uses the AI fabric to generate a topic
-  from it rather than picking from custom_topics. Falls through to
-  selection on any failure so the workflow never blocks on AI
-  availability. The generated topic is tagged category='generated' so
-  downstream consumers can distinguish it from a curated pick.
+  SelectTopicStep.run checks whether the brand declares a topic_direction
+  and, if so, uses the AI fabric to generate a topic from it. Falls
+  through to selection on any failure.
 
 V1.7 (2026-09-29) — PUBLISH RESULT CONTRACT NORMALIZATION:
-  PublishStep.async_run no longer treats status="ok" as a failure. The
-  canonical pipeline emits status="ok"; the ActionKernel's ActionResult
-  contract uses status="succeeded". The prior workflow check required
-  exactly "succeeded" and raised "Governed canonical publish rejected"
-  on every successful publish, hiding the real side effect behind a
-  phantom failure and risking duplicate posts on retry.
+  PublishStep.async_run no longer treats status="ok" as a failure.
 
 V1.6 (2026-09-28) — ASYNC-NATIVE STEPS.
 """
@@ -42,7 +45,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from workflows.base import Step, Workflow
+from workflows.base import Step, Workflow, StepFailure
 from models.media_artifact import MediaArtifact, MediaStatus
 from core.errors import (
     AIValidationError,
@@ -89,10 +92,6 @@ class SelectTopicStep(Step):
         )
 
         # ── Direction-based generation (V1.8) ───────────────────────────
-        # When the brand declares a topic_direction, generate a topic from
-        # it using the AI fabric. The selector's generate_from_direction
-        # returns None on any failure (no direction, gateway unavailable,
-        # empty response), in which case we fall through to selection.
         if getattr(selector, "has_direction", False):
             recent = context.get("recent_topics") or []
             generated = selector.generate_from_direction(recent=recent)
@@ -374,7 +373,12 @@ class RenderImageStep(Step):
 
 # ── 5. Publish ────────────────────────────────────────────────────────
 class PublishStep(Step):
-    """Publish via the plugin registry with MediaArtifact awareness."""
+    """Publish via the plugin registry with MediaArtifact awareness.
+
+    V1.9 — Raises workflows.base.StepFailure instead of RuntimeError so the
+    pipeline's structured failure (code, decision_id, trace, reconciliation
+    flag) survives to the API envelope. See module docstring.
+    """
     name = "publish"
 
     _SUCCESS_STATUSES = frozenset({"succeeded", "ok", "success", "published"})
@@ -393,22 +397,36 @@ class PublishStep(Step):
         media_artifact: MediaArtifact = context.get("media_artifact")
 
         if not caption:
-            raise RuntimeError("No caption available — cannot publish")
+            raise StepFailure(
+                message="No caption available — cannot publish",
+                code="publish_no_caption",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
+                    "topic": context.get("topic", ""),
+                },
+            )
 
         if media_artifact and media_artifact.has_failed:
-            raise RenderFailedError(
+            raise StepFailure(
                 message=f"Media render failed: {media_artifact.error}",
-                context={
-                    "brand": self._brand.name,
+                code="publish_media_render_failed",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
                     "media_error": media_artifact.error,
                     "media_error_code": media_artifact.error_code,
                 },
             )
 
         if media_artifact and media_artifact.is_pending:
-            raise RenderFailedError(
+            raise StepFailure(
                 message="Media still rendering — should have completed synchronously",
-                context={"brand": self._brand.name},
+                code="publish_media_pending",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
+                },
             )
 
         from services.publish_orchestration import execute_governed_publish
@@ -495,9 +513,47 @@ class PublishStep(Step):
             )
             return publish_result
 
+        # ── Non-success, non-uncertain: propagate structured failure ────
+        #
+        # The pipeline already computed a rich failure object (code, error,
+        # trace, decision_id, reconciliation_required). Collapsing it to a
+        # bare RuntimeError discards the only signals an operator has to
+        # diagnose the failure from the API response. Raise StepFailure so
+        # the structure survives to the workflow envelope.
         context["publish_results"] = {}
-        raise RuntimeError(
-            publish_result.get("error") or "Governed canonical publish rejected"
+
+        code = (
+            publish_result.get("code")
+            or result.get("code")
+            or "publish_rejected"
+        )
+        message = (
+            publish_result.get("error")
+            or result.get("error")
+            or "Governed canonical publish rejected"
+        )
+
+        logger.error(
+            "PostWorkflow: publish failed for brand='%s' platform=%s "
+            "code=%s reason=%r",
+            self._brand.name, platform, code, message,
+        )
+
+        raise StepFailure(
+            message=message,
+            code=code,
+            detail={
+                "decision_id": decision_id,
+                "platform": platform,
+                "brand_id": getattr(self._brand, "id", None),
+                "brand_name": self._brand.name,
+                "raw_status": raw_status,
+                "pipeline_trace": publish_result.get("trace"),
+                "reconciliation_required": publish_result.get(
+                    "reconciliation_required"
+                ),
+                "platform_post_id": provider_post_id,
+            },
         )
 
     def run(self, context: dict[str, Any]) -> Any:
