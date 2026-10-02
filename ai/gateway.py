@@ -12,22 +12,25 @@ Modes:
   degraded    — providers configured but all failed / circuit open / budget
   unavailable — no providers configured or gateway disabled
 
-v2.1 (2026-10-01) — ASYNC-STRUCTURED PATH
-  - complete_async_structured() added. Wraps complete_structured() so
-    callers needing schema_hint + required_keys enforcement have an async
-    entry point. Replaces the pattern of calling complete_async() with
-    capability="structured_json", which does NOT validate payload shape.
+v2.2 (2026-10-02) — PER-ROUTE OBSERVABILITY
+  - _call_ai_fabric logs each route's outcome at INFO, not DEBUG. The
+    final WARNING only reported the last error, which made dual-provider
+    outages (Gemini failed, Cloudflare returned HTTP 410) undiagnosable.
+  - complete_structured logs the first 600 chars of the raw model output
+    when structured_parse_failed fires. Without the preview, the specific
+    failure mode (fenced JSON, prose, truncated output, wrong shape) is
+    invisible.
+  - Success log includes route_position so the operator can tell whether
+    the primary or fallback provider answered.
+
+v2.1 (2026-10-01) — ASYNC-STRUCTURED PATH (preserved)
+  - complete_async_structured() added.
   - complete_async() and complete_async_structured() now use
     asyncio.get_running_loop() instead of the deprecated get_event_loop().
 
 v2.0 (2026-10-01) — ORDERED FALLBACK CHAINS (preserved)
   - The AI fabric walks the ordered route chain returned by
-    services.ai_policy.select_ai_route(task). Each task declares a tuple of
-    (provider, model) routes; the fabric tries them in order and returns the
-    first succeeded receipt.
-  - Cloudflare is the primary provider; Gemini is the fallback.
-  - Legacy orchestrator / Gemini-direct paths remain as fallbacks when
-    the AI fabric is not configured.
+    services.ai_policy.select_ai_route(task).
 """
 
 from __future__ import annotations
@@ -82,8 +85,6 @@ class IntelligenceResult:
 
 # ---------------------------------------------------------------------------
 # Caller allowlist — LLM only where intentional
-# Default: intentional production intelligence callers only.
-# Override: LLM_ALLOWED_CALLERS=content,director,meta,council,trend,news,tool_agent
 # ---------------------------------------------------------------------------
 _DEFAULT_ALLOWED_CALLERS = frozenset({
     "content", "director", "content_engine", "content_intelligence",
@@ -137,11 +138,7 @@ class _Circuit:
 
 
 class _Budget:
-    """Daily token budget — Redis when available, else in-process.
-
-    Key: llm:budget:{YYYY-MM-DD}:{workspace_id}
-    TTL ~ 48h so daily keys expire.
-    """
+    """Daily token budget — Redis when available, else in-process."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -334,7 +331,7 @@ class LLMGateway:
             return self._orch
 
     # ------------------------------------------------------------------
-    # Provider credential resolution (for the AI fabric)
+    # Provider credential resolution
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -430,7 +427,7 @@ class LLMGateway:
         last_error: Optional[str] = None
         attempted: list[str] = []
 
-        for route in routes:
+        for route_index, route in enumerate(routes, start=1):
             provider_name = route.provider
             selected_model = route.model
             attempted.append(f"{provider_name}:{selected_model}")
@@ -439,24 +436,36 @@ class LLMGateway:
                 kwargs = self._cf_kwargs(selected_model)
                 if not kwargs["account_id"] or not kwargs["token"]:
                     last_error = f"{provider_name}_not_configured"
-                    logger.debug("AI fabric: skipping %s (not configured)", provider_name)
+                    logger.info(
+                        "AI fabric route skipped: provider=%s model=%s reason=not_configured",
+                        provider_name, selected_model,
+                    )
                     continue
             elif provider_name == "gemini":
                 kwargs = self._gemini_kwargs(selected_model)
                 if not kwargs["api_key"]:
                     last_error = f"{provider_name}_not_configured"
-                    logger.debug("AI fabric: skipping %s (not configured)", provider_name)
+                    logger.info(
+                        "AI fabric route skipped: provider=%s model=%s reason=not_configured",
+                        provider_name, selected_model,
+                    )
                     continue
             else:
                 last_error = f"unknown_provider:{provider_name}"
-                logger.debug("AI fabric: skipping unknown provider %s", provider_name)
+                logger.info(
+                    "AI fabric route skipped: provider=%s reason=unknown_provider",
+                    provider_name,
+                )
                 continue
 
             try:
                 adapter = create_ai_provider_adapter(provider_name, **kwargs)
             except Exception as exc:
                 last_error = f"{provider_name}_init_failed:{type(exc).__name__}"
-                logger.debug("AI fabric: adapter init failed for %s: %s", provider_name, exc)
+                logger.info(
+                    "AI fabric route failed: provider=%s model=%s stage=adapter_init error=%r",
+                    provider_name, selected_model, str(exc)[:200],
+                )
                 continue
 
             try:
@@ -471,7 +480,10 @@ class LLMGateway:
                     adapter.close()
             except Exception as exc:
                 last_error = f"{provider_name}_call_failed:{type(exc).__name__}"
-                logger.debug("AI fabric: adapter call failed for %s: %s", provider_name, exc)
+                logger.info(
+                    "AI fabric route failed: provider=%s model=%s stage=adapter_call error=%r",
+                    provider_name, selected_model, str(exc)[:200],
+                )
                 continue
 
             status = getattr(receipt, "status", "failed")
@@ -480,8 +492,9 @@ class LLMGateway:
             if status == "succeeded" and raw_output.strip():
                 latency = (time.monotonic() - start) * 1000
                 logger.info(
-                    "AI fabric: %s succeeded model=%s latency_ms=%.0f capability=%s",
-                    receipt.provider, receipt.model, latency, capability,
+                    "AI fabric: %s succeeded model=%s latency_ms=%.0f capability=%s route_position=%d/%d",
+                    receipt.provider, receipt.model, latency,
+                    capability, route_index, len(routes),
                 )
                 return IntelligenceResult(
                     ok=True,
@@ -498,13 +511,23 @@ class LLMGateway:
                     ai_receipt=receipt,
                 )
 
+            # Route did not succeed — log specific failure. The final
+            # WARNING only reports the last error; this per-route INFO
+            # preserves each route's reason so dual-provider outages
+            # remain diagnosable from logs alone.
             last_error = (
                 getattr(receipt, "error", None)
                 or f"{provider_name}_status:{status}"
             )
-            logger.debug(
-                "AI fabric: %s did not succeed (status=%s err=%s), trying next route",
-                provider_name, status, last_error,
+            logger.info(
+                "AI fabric route failed: provider=%s model=%s status=%s error=%r latency_ms=%.0f route_position=%d/%d",
+                provider_name,
+                selected_model,
+                status,
+                last_error,
+                (time.monotonic() - start) * 1000,
+                route_index,
+                len(routes),
             )
 
         latency = (time.monotonic() - start) * 1000
@@ -865,6 +888,18 @@ class LLMGateway:
             return result
         data = parse_structured_json(result.text)
         if data is None:
+            # Log a bounded preview of the raw model output so the specific
+            # failure mode is diagnosable: fenced JSON, prose, wrong-shape
+            # JSON, truncated output, etc. Without this, structured_parse_failed
+            # is a black box.
+            preview = (result.text or "")[:600]
+            logger.warning(
+                "structured_parse_failed: provider=%s model=%s text_len=%d text_preview=%r",
+                result.provider,
+                result.model,
+                len(result.text or ""),
+                preview,
+            )
             return IntelligenceResult(
                 ok=False,
                 mode=IntelligenceMode.DEGRADED,
@@ -880,6 +915,10 @@ class LLMGateway:
         if required_keys:
             missing = [k for k in required_keys if k not in data]
             if missing:
+                logger.warning(
+                    "structured_missing_keys: provider=%s model=%s missing=%s keys=%s",
+                    result.provider, result.model, missing, sorted(data.keys()),
+                )
                 return IntelligenceResult(
                     ok=False,
                     mode=IntelligenceMode.DEGRADED,
@@ -898,10 +937,7 @@ class LLMGateway:
         return result
 
     async def complete_async(self, prompt: str, **kwargs) -> IntelligenceResult:
-        """Async wrapper for complete(). Does NOT validate JSON shape.
-
-        For structured payloads use complete_async_structured().
-        """
+        """Async wrapper for complete(). Does NOT validate JSON shape."""
         import asyncio
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -909,12 +945,7 @@ class LLMGateway:
         )
 
     async def complete_async_structured(self, prompt: str, **kwargs) -> IntelligenceResult:
-        """Async wrapper for complete_structured().
-
-        Use this — NOT complete_async(capability='structured_json') — when
-        the caller needs schema_hint enforcement and required-key validation.
-        complete_async does not check payload shape.
-        """
+        """Async wrapper for complete_structured()."""
         import asyncio
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
