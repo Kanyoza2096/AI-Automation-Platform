@@ -1,31 +1,30 @@
 """
 Kanyoza Systems
-Content Engine v15.1 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+Content Engine v15.2 — Brand-Aware Multimodal Content Pipeline (Async-Native)
 
-v15.1 CHANGES (2026-10-01):
+v15.2 CHANGES (2026-10-02):
+  - _resolve_visual_strategy routes theme='ai' posts to AI_IMAGE by default.
+    Previously theme='ai' fell through to CARD because 'ai' is not in
+    card_themes and brands have no ai_images_enabled column to opt in.
+    The result was that AI-themed posts were rendered with the branded
+    card template instead of a generated image. The new rule:
+      - If the brand has an explicit visual_strategy override, it wins.
+      - If theme == 'ai' AND the brand has not set ai_images_enabled=False,
+        route to AI_IMAGE.
+      - Otherwise, fall through to the existing theme-based routing.
+    The 'ai_images_enabled=False' escape hatch lets a future brand opt out
+    without requiring a schema change.
+
+v15.1 (2026-10-01) (preserved):
   - Structured generation now routes through gateway.complete_async_structured()
-    with required_keys enforcement. Replaces the previous pattern of calling
-    complete_async(capability="structured_json"), which did not validate the
-    payload shape and silently returned posts with empty required fields.
-  - Prompt construction split into structured (JSON schema block included)
-    and prose (no schema block) variants. Fixes the schema/parser mismatch
-    that caused TechPost.from_gemini_response to reject valid model output.
-  - _theme_enum falls back to PostTheme.AI on unrecognized values, so a bad
-    theme string does not surface as a misleading validation error.
-  - Detailed failure telemetry: keys, mode, and provider logged on
-    structured-generation decline.
+    with required_keys enforcement.
+  - Prompt construction split into structured and prose variants.
+  - _theme_enum falls back to PostTheme.AI on unrecognized values.
 
 v15.0 (preserved):
   - FULLY ASYNC-NATIVE (async generate_post, async rendering)
   - UnifiedEventBus integration
   - HealthProvider protocol support
-
-v14.1 (preserved):
-  - Fixed missing datetime imports
-  - Fixed _emit_dashboard_event to use stored event loop
-  - Fixed _get_supabase_client indentation
-  - Added proper publishable flag when rendering fails
-  - Added Redis fallback when unavailable
 """
 
 from __future__ import annotations
@@ -190,7 +189,7 @@ class ContentEngine:
     async def check_health_async(self) -> dict:
         return {
             "status": "healthy",
-            "version": "15.1.0",
+            "version": "15.2.0",
             "prompt_cache_size": len(self._prompt_cache),
             "redis_available": self._redis is not None,
         }
@@ -419,14 +418,7 @@ class ContentEngine:
 
     @classmethod
     def _theme_enum(cls, raw_theme: Any, *, post_data: Optional[dict] = None, topic: str = ""):
-        """Return a PostTheme. Falls back to PostTheme.AI on unrecognized values.
-
-        Returning a bare string on failure (the previous behavior) risked a
-        ValidationError inside TechPost construction if the string was not a
-        valid PostTheme value — which then surfaced as a misleading
-        'Structured AI response validation failed' log line. PostTheme.AI is
-        always valid and is the documented default in models.content.
-        """
+        """Return a PostTheme. Falls back to PostTheme.AI on unrecognized values."""
         normalized = cls._normalize_theme(raw_theme, post_data=post_data, topic=topic)
         try:
             return PostTheme(normalized)
@@ -455,6 +447,26 @@ class ContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     def _resolve_visual_strategy(self, post: TechPost, brand=None) -> VisualStrategy:
+        """Decide how the image for this post is produced.
+
+        Resolution order:
+          1. Explicit brand override (visual_strategy / image_strategy /
+             render_strategy), if any of those attributes exist and are set.
+          2. theme == 'ai': route to AI_IMAGE unless the brand has
+             explicitly opted out via ai_images_enabled=False.
+          3. Theme in card_themes: CARD.
+          4. Post is a debate (option_a + option_b): CARD.
+          5. brand.ai_images_enabled is True: AI_IMAGE.
+          6. Default: CARD.
+
+        The v15.2 change adds step 2. Previously 'ai' was not in
+        card_themes and fell through to step 6 (CARD), so AI-themed
+        posts rendered with the branded card template instead of a
+        generated image. The brand table has no ai_images_enabled
+        column, so step 5 never fired. The new default treats 'ai'
+        theme as intrinsically suited to generated imagery.
+        """
+        # 1. Explicit brand override wins.
         configured = None
         if brand:
             configured = (
@@ -467,19 +479,34 @@ class ContentEngine:
                 return VisualStrategy(str(configured).lower())
             except ValueError:
                 pass
+
         theme_value = self._theme_value(post)
+
+        # 2. 'ai' theme: default to AI image unless explicitly opted out.
+        if theme_value == "ai":
+            ai_images_enabled = getattr(brand, "ai_images_enabled", None)
+            # None means "not configured" (default on).
+            # False means the brand has explicitly opted out.
+            if ai_images_enabled is not False:
+                return VisualStrategy.AI_IMAGE
+
+        # 3. Card-favouring themes.
         card_themes = {
             "comparison", "tutorial", "checklist", "architecture", "code_tips",
             "security", "database", "backend", "frontend", "system_design", "cloud",
         }
         if theme_value in card_themes:
             return VisualStrategy.CARD
+
+        # 4. Debates are always cards (structured layout required).
         if getattr(post, "option_a", None) and getattr(post, "option_b", None):
             return VisualStrategy.CARD
-        if brand:
-            ai_images_enabled = getattr(brand, "ai_images_enabled", None)
-            if ai_images_enabled is True:
-                return VisualStrategy.AI_IMAGE
+
+        # 5. Other themes: AI image if the brand opted in.
+        if brand and getattr(brand, "ai_images_enabled", None) is True:
+            return VisualStrategy.AI_IMAGE
+
+        # 6. Default.
         return VisualStrategy.CARD
 
     # ═══════════════════════════════════════════════════════════════
