@@ -2,22 +2,35 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT:
+V1.9 (2026-10-02) — PLAIN-TEXT OUTPUT CONTRACT:
+  - POST_SCHEMA_PROMPT_BLOCK now forbids Markdown syntax. Captions are
+    published to platforms (Facebook, Instagram, LinkedIn text) that
+    render plain text; Markdown control characters (**bold**, ## heading,
+    * bullet) leak through as literal characters. The block now
+    instructs the model to use plain text with "•" for lists and
+    sentence structure for emphasis.
+  - The prompt's "structure beautifully" phrasing (which in training
+    data signals Markdown) is replaced with concrete structural
+    guidance that names the forbidden syntax.
+  - Added an anti-truncation directive: the caption must end at a
+    sentence boundary. Without this, models that hit their token
+    ceiling mid-sentence produce visibly truncated posts.
+  - The topic fallback no longer says "please select an engaging topic"
+    (which invited the model to invent one and produce duplicate
+    content); it now says the topic will be supplied by the caller,
+    failing closed if absent.
+  - The prose path (structured=False) also gets a no-Markdown block;
+    the model produces Markdown by default regardless of capability.
+
+V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT (preserved):
   - build_post_prompt accepts `structured: bool = False`.
-  - When True, appends POST_SCHEMA_PROMPT_BLOCK to the task.
   - POST_SCHEMA_REQUIRED_KEYS is the single source of truth for the
-    parser contract; models.content.TechPost.from_gemini_response MUST
-    accept at least these keys.
-  - Structured callers (ContentEngine._generate_structured_content) MUST
-    pass structured=True. Prose callers (chat, unstructured fallback)
-    MUST NOT, or the model emits JSON where prose is expected.
+    parser contract.
 
 V1.7 (2026-09-28) — PERMANENT DESIGN (preserved):
   - Style guides loaded from config/content_styles.yaml (data, not code).
   - Brand.style_category provides explicit override.
   - Brand.custom_style_guide provides full per-brand override.
-  - Tone/audience/name inference against the registry for fallback.
-  - Adding a new vertical = add YAML entry, no code change.
 """
 
 from __future__ import annotations
@@ -44,16 +57,23 @@ logger = logging.getLogger("kanyoza.services.prompt_builder")
 # at the boundary — if the model omits one, the call is rejected before
 # the content engine ever sees it.
 #
+# The caption is published to platforms that render plain text. Any
+# Markdown the model emits (**bold**, ## heading, * bullet, `code`) is
+# shown to readers as literal characters. The block below forbids
+# Markdown explicitly. A companion sanitizer (sanitize_caption_markdown)
+# runs at the publish boundary as defense-in-depth for model drift.
+#
 POST_SCHEMA_REQUIRED_KEYS: tuple[str, ...] = ("title", "caption")
 
 POST_SCHEMA_PROMPT_BLOCK = """
 OUTPUT FORMAT — CRITICAL, DO NOT DEVIATE:
 Respond with a SINGLE JSON object. No prose before or after. No markdown fences.
+Do not explain your reasoning. Return raw JSON and nothing else.
 
 Required keys (both MUST be non-empty strings):
 {
-  "title":   "4-15 word headline of the post",
-  "caption": "the full body of the post, 80-400 words, use \\n for line breaks"
+  "title":   "4-15 word headline of the post, plain text, no Markdown",
+  "caption": "the full body of the post, 150-400 words, plain text, no Markdown"
 }
 
 Optional keys (omit if not applicable; do not return empty strings):
@@ -62,10 +82,52 @@ Optional keys (omit if not applicable; do not return empty strings):
   "theme":    "one of: comparison, tutorial, checklist, architecture, code_tips, ai, security, database, backend, frontend, system_design, cloud"
 }
 
+PLAIN-TEXT RULES — the caption is published to a plain-text platform.
+Any of the following syntax will be shown to readers as literal
+characters, which is ugly and unprofessional:
+- Do NOT use ** or __ for bold.
+- Do NOT use * or _ for italic.
+- Do NOT use ##, ###, or # for headings.
+- Do NOT use backticks ` for code.
+- Do NOT use > for blockquotes.
+- Do NOT use - or * at the start of lines for list items.
+- For a list, use the bullet character "•" followed by a space.
+- For emphasis, use sentence structure, word order, or a leading
+  capital — not asterisks.
+- For line breaks, use "\\n". Blank lines between paragraphs are fine.
+
+COMPLETENESS RULE:
+- The caption MUST end at a sentence boundary (period, question mark,
+  or exclamation point). Do not end mid-sentence, mid-word, or with a
+  trailing ellipsis. If you approach your length budget, finish the
+  current sentence and stop. A shorter complete caption is always
+  better than a longer truncated one.
+
+EDITORIAL RULES:
+- Do NOT begin with "In today's fast-paced...", "In the world of...",
+  or any similar throat-clearing phrase. Start with the substantive
+  claim.
+- Do NOT end with a "Takeaway", "Summary", "TL;DR", or "Key insight"
+  section. Close with a specific observation or a question directed
+  at the reader.
+- Do NOT include any text before or after the JSON object.
+
 Hard rules:
 - "title" and "caption" MUST both be present and non-empty.
 - Return raw JSON, not a Markdown code block.
 - Do not add commentary outside the JSON object.
+""".strip()
+
+
+# Prose path (structured=False) also needs a plain-text directive.
+# Without it, the model produces Markdown by default.
+_PROSE_PLAIN_TEXT_BLOCK = """
+PLAIN-TEXT RULES — the post is published to a plain-text platform:
+- Do NOT use Markdown syntax. No **, __, *, _, ##, `, or >.
+- For lists, use the bullet character "•" followed by a space.
+- For line breaks, use actual line breaks. Blank lines between
+  paragraphs are fine.
+- For emphasis, use sentence structure — not asterisks.
 """.strip()
 
 
@@ -270,7 +332,9 @@ class PromptBuilder:
         `structured=True` appends POST_SCHEMA_PROMPT_BLOCK so the model
         emits a JSON object matching POST_SCHEMA_REQUIRED_KEYS. Callers
         using the gateway's structured path MUST set this. Callers
-        generating free prose (chat, fallback) MUST NOT.
+        generating free prose (chat, fallback) MUST NOT — the prose
+        path uses _PROSE_PLAIN_TEXT_BLOCK instead, which forbids
+        Markdown without requesting a JSON shape.
         """
         if brand is None:
             brand = self._default_brand()
@@ -290,10 +354,13 @@ class PromptBuilder:
         if style_category:
             brand_context += f"Style Category: {style_category}\n"
 
+        # Topic: supplied by the pipeline. If absent, fail loud rather than
+        # inviting the model to invent one (which produced duplicate content
+        # in the previous version).
         topic_str = (
             f"Topic: {topic}"
-            if topic
-            else "Topic: Please select an engaging and highly relevant topic for the audience."
+            if topic and str(topic).strip()
+            else "Topic: (none supplied by the caller — respond with an error marker if you cannot proceed without one)"
         )
 
         knowledge_str = (
@@ -304,7 +371,12 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
-        schema_instruction = f"\n{POST_SCHEMA_PROMPT_BLOCK}\n" if structured else ""
+        # Structured path gets the full schema block (which already forbids
+        # Markdown). Prose path gets the plain-text-only block.
+        if structured:
+            format_instruction = f"\n{POST_SCHEMA_PROMPT_BLOCK}\n"
+        else:
+            format_instruction = f"\n{_PROSE_PLAIN_TEXT_BLOCK}\n"
 
         task = f"""
 Task:
@@ -315,11 +387,13 @@ Write a highly engaging social media post for {brand.name}.
 
 Guidelines:
 1. Write in the exact tone and style of the persona defined above.
-2. Structure the content beautifully (paragraphs, lists if necessary).
-3. Follow the requested emoji density strictly.
+2. Structure the content with short paragraphs and, if a list helps,
+   a bulleted list using the "•" character. Do NOT use Markdown syntax.
+3. Match the emoji density appropriate to the brand persona — use
+   emoji sparingly, as punctuation, not as decoration.
 4. Include a clear call to action (CTA) matching the '{ai_profile.cta_style}' style.
 5. End with appropriate hashtags.
-{schema_instruction}
+{format_instruction}
 {brand_context}
 {knowledge_str}
 """
@@ -360,6 +434,7 @@ Guidelines:
 2. Keep responses brief since this is a chat interface.
 3. Address the user's questions or comments thoughtfully.
 4. Do NOT sound like a generic AI assistant. Maintain the {ai_profile.name} identity.
+5. Do NOT use Markdown formatting. This is a plain-text chat surface.
 """
         return f"{system_prompt}\n\n{chat_context}"
 
