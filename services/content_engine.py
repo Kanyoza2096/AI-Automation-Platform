@@ -578,7 +578,7 @@ class ContentEngine:
         prompt: str,
         *,
         temperature: float = 0.7,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         workspace_id: str = "platform",
     ) -> tuple:
         """Returns (text|None, intelligence_mode). AI Gateway is the sole provider boundary."""
