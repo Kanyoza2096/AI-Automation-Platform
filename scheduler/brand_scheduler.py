@@ -144,6 +144,22 @@ class DeadLetterQueue:
 
     v4.0: No more lost posts. Failed attempts go to a persistent queue.
     Falls back: Supabase → file → memory.
+
+    v4.1 (2026-10-02) — SCHEMA ALIGNMENT:
+      Live dead_letter_queue table columns are:
+        id           bigint      DB-generated
+        kind         text        why this entry exists
+        payload      jsonb       everything the retry needs
+        error        text        human-readable failure reason
+        workspace_id text        tenant scope for queries
+        created_at   timestamptz DB default
+
+      brand_id, retry_count, and next_retry_at have no columns; they
+      live inside payload. The previous version wrote them as top-level
+      keys and every Supabase insert failed silently, forcing all
+      entries into /tmp (ephemeral on Render). This version writes only
+      the columns the table has, and reads back the metadata from
+      payload.
     """
 
     def __init__(
@@ -157,124 +173,253 @@ class DeadLetterQueue:
         self._memory_queue: deque = deque(maxlen=max_memory_entries)
         self._lock = threading.RLock()
 
+    # ────────────────────────────────────────────────────────────────
+    # Internal helpers
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_meta(entry: dict) -> dict:
+        """Pull brand_id / retry_count / next_retry_at out of payload.
+
+        The schema stores these inside payload. Older entries written by
+        the pre-v4.1 code may have them at the top level. Read both so
+        a mixed queue drains correctly.
+        """
+        meta = dict(entry.get("payload") or {})
+        if "retry_count" not in meta and "retry_count" in entry:
+            meta["retry_count"] = entry["retry_count"]
+        if "next_retry_at" not in meta and "next_retry_at" in entry:
+            meta["next_retry_at"] = entry["next_retry_at"]
+        if "brand_id" not in meta and "brand_id" in entry:
+            meta["brand_id"] = entry["brand_id"]
+        return meta
+
+    @staticmethod
+    def _is_ready(entry: dict, now: datetime) -> bool:
+        """True if the entry's next_retry_at has passed (or is absent)."""
+        meta = DeadLetterQueue._extract_meta(entry)
+        raw = meta.get("next_retry_at")
+        if not raw:
+            return True
+        try:
+            return datetime.fromisoformat(str(raw)) <= now
+        except Exception:
+            return True
+
+    # ────────────────────────────────────────────────────────────────
+    # Public API
+    # ────────────────────────────────────────────────────────────────
+
     def push(
         self,
         brand_id: str,
         error: str,
         payload: dict,
         retry_count: int = 0,
+        *,
+        workspace_id: Optional[str] = None,
     ) -> None:
-        """Add a failed publish to the dead letter queue."""
-        entry = {
-            "id": uuid.uuid4().hex,
-            "brand_id": brand_id,
+        """Add a failed publish to the dead letter queue.
+
+        Schema-aligned insert: writes only the columns the table has.
+        brand_id, retry_count, and next_retry_at live inside payload.
+        """
+        next_retry_at = (
+            datetime.now(timezone.utc) + timedelta(hours=6)
+        ).isoformat()
+
+        original_payload = dict(payload or {})
+        payload_with_meta = dict(original_payload)
+        payload_with_meta["brand_id"] = brand_id
+        payload_with_meta["retry_count"] = retry_count
+        payload_with_meta["next_retry_at"] = next_retry_at
+
+        resolved_workspace = (
+            workspace_id
+            or original_payload.get("workspace_id")
+            or payload_with_meta.get("workspace_id")
+            or ""
+        )
+
+        # Shape written to Supabase — matches the live schema exactly.
+        db_entry = {
+            "kind": "publish_failure",
+            "workspace_id": resolved_workspace,
+            "payload": payload_with_meta,
             "error": error,
-            "payload": payload,
-            "retry_count": retry_count,
-            "next_retry_at": (
-                datetime.now(timezone.utc) + timedelta(hours=6)
-            ).isoformat(),
+        }
+
+        # Shape written to file/memory — flat, includes an id and
+        # created_at for parity with what Supabase returns on select.
+        flat_entry = {
+            **db_entry,
+            "id": uuid.uuid4().hex,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
         with self._lock:
-            # Try Supabase
             if self.supabase:
                 try:
-                    self.supabase.table("dead_letter_queue").insert(entry).execute()
+                    self.supabase.table("dead_letter_queue").insert(db_entry).execute()
                     return
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "DLQ supabase insert failed, falling back to file: %s",
+                        exc,
+                    )
 
-            # Try file
             try:
                 existing = []
                 if os.path.exists(self.file_path):
                     with open(self.file_path, "r") as f:
                         existing = json.load(f)
-                existing.append(entry)
+                existing.append(flat_entry)
                 with open(self.file_path, "w") as f:
                     json.dump(existing, f, indent=2, default=str)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("DLQ file write failed, falling back to memory: %s", exc)
 
-            # Memory fallback
-            self._memory_queue.append(entry)
+            self._memory_queue.append(flat_entry)
 
     def pop_retryable(self, limit: int = 10) -> List[dict]:
-        """Get entries that are ready for retry."""
+        """Get entries ready for retry.
+
+        Reads next_retry_at from payload (where the schema stores it).
+        Falls back to top-level for entries written by pre-v4.1 code.
+
+        Entries are not removed here — ack() is the removal path, and
+        it is only called after downstream execution accepts the retry.
+        This preserves durability if the worker crashes mid-retry.
+        """
         now = datetime.now(timezone.utc)
-        retryable = []
+        retryable: List[dict] = []
+        seen_ids: set = set()
+
+        def _try_add(entry: dict) -> None:
+            if len(retryable) >= limit:
+                return
+            entry_id = entry.get("id")
+            if entry_id is not None and entry_id in seen_ids:
+                return
+            if not self._is_ready(entry, now):
+                return
+            if entry_id is not None:
+                seen_ids.add(entry_id)
+            retryable.append(entry)
 
         with self._lock:
-            # Check memory first
-            for entry in list(self._memory_queue):
-                next_retry = datetime.fromisoformat(entry["next_retry_at"])
-                if next_retry <= now:
-                    retryable.append(entry)
-
-            # Check file
-            if os.path.exists(self.file_path):
-                try:
-                    with open(self.file_path, "r") as f:
-                        existing = json.load(f)
-                    for entry in existing:
-                        next_retry = datetime.fromisoformat(entry["next_retry_at"])
-                        if next_retry <= now and len(retryable) < limit:
-                            retryable.append(entry)
-                    # Do not delete retryable entries until execution is accepted.
-                    # Keep the file durable across worker crashes.
-                    with open(self.file_path, "w") as f:
-                        json.dump(existing, f, indent=2, default=str)
-                except Exception:
-                    pass
-
-            # Check Supabase
-            if self.supabase and len(retryable) < limit:
+            # Supabase is authoritative when reachable.
+            if self.supabase:
                 try:
                     result = (
                         self.supabase.table("dead_letter_queue")
                         .select("*")
-                        .lte("next_retry_at", now.isoformat())
-                        .limit(limit - len(retryable))
+                        .eq("kind", "publish_failure")
+                        .limit(limit * 3)  # over-fetch; filter by payload in Python
                         .execute()
                     )
                     for row in (result.data or []):
-                        retryable.append(dict(row))
-                except Exception:
-                    pass
+                        _try_add(dict(row))
+                        if len(retryable) >= limit:
+                            break
+                except Exception as exc:
+                    logger.warning("DLQ supabase read failed: %s", exc)
+
+            # File fallback — only if Supabase didn't fill the batch.
+            if len(retryable) < limit and os.path.exists(self.file_path):
+                try:
+                    with open(self.file_path, "r") as f:
+                        existing = json.load(f)
+                    for entry in existing:
+                        _try_add(entry)
+                        if len(retryable) >= limit:
+                            break
+                except Exception as exc:
+                    logger.warning("DLQ file read failed: %s", exc)
+
+            # Memory fallback — last resort.
+            if len(retryable) < limit:
+                for entry in list(self._memory_queue):
+                    _try_add(entry)
+                    if len(retryable) >= limit:
+                        break
 
         return retryable
 
-    def ack(self, entry_id: str) -> bool:
-        """Remove a retry entry only after downstream execution is accepted."""
+    def ack(self, entry_id) -> bool:
+        """Remove a DLQ entry after downstream execution succeeded.
+
+        entry_id may be an int (Supabase bigint id) or a str (file/memory
+        UUID). Both are compared as strings for the file and memory
+        backends; Supabase receives the value as-is and coerces.
+        """
         removed = False
+        entry_id_str = str(entry_id)
+
         with self._lock:
-            self._memory_queue = deque(
-                (e for e in self._memory_queue if e.get("id") != entry_id),
-                maxlen=self._memory_queue.maxlen,
-            )
+            # Supabase
+            if self.supabase:
+                try:
+                    result = (
+                        self.supabase.table("dead_letter_queue")
+                        .delete()
+                        .eq("id", entry_id)
+                        .execute()
+                    )
+                    if getattr(result, "data", None):
+                        removed = True
+                except Exception as exc:
+                    logger.warning("DLQ supabase delete failed: %s", exc)
+
+            # File
             if os.path.exists(self.file_path):
                 try:
                     with open(self.file_path, "r") as f:
                         existing = json.load(f)
-                    remaining = [e for e in existing if e.get("id") != entry_id]
-                    removed = len(remaining) != len(existing)
-                    with open(self.file_path, "w") as f:
-                        json.dump(remaining, f, indent=2, default=str)
-                except Exception:
-                    pass
-            if self.supabase:
-                try:
-                    result = self.supabase.table("dead_letter_queue").delete().eq("id", entry_id).execute()
-                    removed = removed or bool(getattr(result, "data", None))
-                except Exception:
-                    pass
+                    remaining = [
+                        e for e in existing
+                        if str(e.get("id")) != entry_id_str
+                    ]
+                    if len(remaining) != len(existing):
+                        removed = True
+                        with open(self.file_path, "w") as f:
+                            json.dump(remaining, f, indent=2, default=str)
+                except Exception as exc:
+                    logger.warning("DLQ file ack failed: %s", exc)
+
+            # Memory
+            before = len(self._memory_queue)
+            self._memory_queue = deque(
+                (e for e in self._memory_queue if str(e.get("id")) != entry_id_str),
+                maxlen=self._memory_queue.maxlen,
+            )
+            if len(self._memory_queue) != before:
+                removed = True
+
         return removed
 
     def get_count(self) -> int:
-        """Get total entries in dead letter queue."""
+        """Approximate total entries across all backends.
+
+        Supabase is authoritative when reachable and returns an exact
+        count. File and memory are summed only when Supabase is not
+        available or the query fails.
+        """
+        if self.supabase:
+            try:
+                result = (
+                    self.supabase.table("dead_letter_queue")
+                    .select("id", count="exact")
+                    .eq("kind", "publish_failure")
+                    .execute()
+                )
+                count = getattr(result, "count", None)
+                if count is not None:
+                    return int(count)
+            except Exception as exc:
+                logger.debug("DLQ count via supabase failed: %s", exc)
+
         count = len(self._memory_queue)
         if os.path.exists(self.file_path):
             try:
@@ -284,6 +429,8 @@ class DeadLetterQueue:
                 pass
         return count
 
+
+    
 
 # ═══════════════════════════════════════════════════════════════════════════
 # v4.0 — CIRCUIT BREAKER WITH HALF-OPEN PROBING
