@@ -5,20 +5,22 @@ Each task declares an ordered chain of routes. The AI fabric tries them
 in order; the first that succeeds wins.
 
 Rationale for the ordering:
-  - Cloudflare Workers AI is the default primary provider across all
-    tasks. In production, it has been the more operationally reliable
-    provider (no rate-limit failures observed; a different quota pool
-    from Google; self-hosted open-weight models).
-  - Gemini 2.5 Flash is the fallback. It was originally intended as
-    primary for its quality, but the observed rate limits, occasional
-    5xx, and the recent credential exposure make it a fallback rather
-    than a primary.
+  - Cloudflare Workers AI is the default primary provider for CHAT and
+    classification tasks: it has been operationally reliable and has a
+    separate quota pool from Google.
+  - Gemini 2.5 Flash is primary for structured_json. Cloudflare's
+    Llama 3.3 70B (FP8) has failed the JSON schema contract twice in
+    production with structured_parse_failed — HTTP 200 with content
+    that parse_structured_json cannot extract. Gemini has been
+    reliable on the same prompts. Cloudflare's 8B remains as fallback
+    for cost/speed, but is not assumed to succeed where the 70B failed.
   - Small tasks (classification, chat) use Cloudflare's 8B.
-  - Large tasks (content generation, structured JSON) use Cloudflare's
-    70B, with Gemini as the fallback.
+  - Large tasks (content generation) use Cloudflare's 70B, with Gemini
+    as the fallback.
 
-If Cloudflare becomes unavailable, an operator can flip the ordering
-by editing this file — the gateways read the policy at call time.
+If Cloudflare becomes unavailable for chat, or Gemini becomes
+unreliable for structured output, flip the affected ordering by
+editing this file — the gateways read the policy at call time.
 """
 
 from __future__ import annotations
@@ -52,9 +54,17 @@ DEFAULT_AI_POLICY: Mapping[str, tuple[AIModelRoute, ...]] = {
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
         AIModelRoute("gemini", "gemini-2.5-flash"),
     ),
+    # structured_json: Gemini primary. Cloudflare's Llama 3.3 70B has
+    # failed the schema contract twice in production with
+    # structured_parse_failed. Gemini 2.5 Flash has been reliable on
+    # the same prompts. Cloudflare's 8B is the fallback: cheaper and
+    # faster, but not assumed to be more schema-reliable than the 70B.
+    # The real defense against Cloudflare's structured failures is the
+    # parser-tolerance layer in models/content.py, not the route
+    # ordering.
     "structured_json": (
-        AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
         AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct"),
     ),
     "chat": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct"),
