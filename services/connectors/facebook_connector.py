@@ -11,6 +11,18 @@ Receipt contract (v2):
   - The connector surfaces `page_id` and `account_id` on every result so the
     caller can persist them for reconciliation and audit.
   - Never store or return the page token.
+
+v2.1 (2026-10-02) — PLAIN-TEXT SANITIZATION AT PUBLISH BOUNDARY:
+  - publish() and send_message() run the caption/message through
+    sanitize_caption_markdown() before the provider call. Models
+    occasionally emit Markdown despite prompt rules that forbid it;
+    Facebook renders plain text, so **bold** and ## heading arrive as
+    literal characters. This is defense-in-depth: the prompt is the
+    primary control, the sanitizer catches the drift.
+  - sanitize_caption_markdown is idempotent and preserves line breaks.
+  - edit() is deliberately NOT sanitized — edits are treated as explicit
+    operator overrides where the caller has already chosen the text
+    format. Callers editing programmatically should sanitize upstream.
 """
 
 from __future__ import annotations
@@ -24,6 +36,7 @@ from services.connectors.connector import (
     SocialConnector, ConnectorResult, ConnectorHealth,
     Comment, Message, Platform,
 )
+from services.text_sanitizer import sanitize_caption_markdown
 
 if TYPE_CHECKING:
     from models.social_account import SocialAccount
@@ -113,6 +126,12 @@ class FacebookConnector:
         text = str(message or "").strip()
         if not recipient or not text:
             return self._receipt(False, error="recipient_psid and message are required", outcome="failed")
+
+        # Plain-text sanitization at the outbound boundary. Messenger
+        # renders plain text; Markdown drift from a model would leak
+        # through as literal characters.
+        text = sanitize_caption_markdown(text)
+
         try:
             result = self._svc.send_message_with_credentials(
                 recipient_psid=recipient, message=text, page_token=self._page_token
@@ -133,6 +152,16 @@ class FacebookConnector:
         image_url: Optional[str] = None,
         **kwargs: Any,
     ) -> ConnectorResult:
+        # ── Plain-text sanitization at the outbound boundary ──────────
+        # The prompt forbids Markdown, but models drift. Facebook renders
+        # plain text; any **bold** or ## heading that survives the
+        # generation path arrives on the page as literal characters.
+        # Sanitizing here means every caller — structured pipeline, prose
+        # fallback, scheduler, manual trigger, direct API — gets the
+        # same protection without needing to remember.
+        if content:
+            content = sanitize_caption_markdown(content)
+
         try:
             result = self._svc.post_to_page(
                 message=content,
@@ -246,7 +275,13 @@ class FacebookConnector:
             return self._receipt(ok=False, error=str(exc), outcome="uncertain")
 
     def edit(self, post_id: str, content: str) -> ConnectorResult:
-        """Edit a Facebook post's message."""
+        """Edit a Facebook post's message.
+
+        Deliberately NOT sanitized. Edits are treated as explicit
+        operator overrides — a human choosing the exact text that
+        should appear. If a programmatic caller wants sanitization,
+        it should run sanitize_caption_markdown() before calling.
+        """
         try:
             resp = self._svc._session.post(
                 f"https://graph.facebook.com/v22.0/{post_id}",
