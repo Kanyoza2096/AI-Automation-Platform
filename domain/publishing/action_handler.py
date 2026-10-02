@@ -27,6 +27,38 @@ async def publish_content(parameters: Dict[str, Any], intent: Any) -> Dict[str, 
             "error": "publish requires an explicit decision_id",
         }
 
+    # ── Source resolution ─────────────────────────────────────────────
+    # `source` determines whether the canonical pipeline convenes Council.
+    # Sources in MANUAL_AUTHORIZED_SOURCES (manual, scheduled, outbox,
+    # dead_letter_retry) are authorized by their entry point and skip
+    # Council; any other source triggers Council deliberation.
+    #
+    # Precedence:
+    #   1. parameters["source"] — set by execute_governed_publish from the
+    #      caller's declared source
+    #   2. intent.source        — set by the Action Kernel from the same
+    #      value; present when the caller passes source to kernel.execute()
+    #   3. Raise ValueError     — never default. A missing source is a bug
+    #      in the caller, not a valid state. Silently defaulting to a
+    #      system string (previously "kcpg_action_kernel") reclassifies a
+    #      human-initiated publish as an autonomous kernel action, which
+    #      convenes Council on content it cannot evaluate, which returns
+    #      needs_revision when personas abstain, which halts the pipeline
+    #      on a publish that was already authorized upstream.
+    source = parameters.get("source") or getattr(intent, "source", None)
+    if not source:
+        return {
+            "ok": False,
+            "outcome": "failed",
+            "error": (
+                "publish requires an explicit source; neither "
+                "parameters.source nor intent.source is set"
+            ),
+            "decision_id": decision_id,
+            "workspace_id": getattr(intent, "workspace_id", None),
+            "action_intent_id": getattr(intent, "intent_id", None),
+        }
+
     raw_image = parameters.get("image_bytes_b64")
     image_bytes = None
     if raw_image:
@@ -37,6 +69,7 @@ async def publish_content(parameters: Dict[str, Any], intent: Any) -> Dict[str, 
                 "ok": False,
                 "outcome": "failed",
                 "error": "invalid image_bytes_b64",
+                "decision_id": decision_id,
             }
 
     result = await run_publish(
@@ -46,7 +79,7 @@ async def publish_content(parameters: Dict[str, Any], intent: Any) -> Dict[str, 
         platform=parameters.get("platform"),
         topic=parameters.get("topic", ""),
         caption=parameters.get("caption", ""),
-        source=parameters.get("source") or "kcpg_action_kernel",
+        source=source,
         risk_level=intent.risk_level,
         decision_id=decision_id,
         durable=False,
