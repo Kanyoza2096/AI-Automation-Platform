@@ -146,6 +146,9 @@ MANUAL_AUTHORIZED_SOURCES = frozenset({
     "scheduled",
     "outbox",
     "dead_letter_retry",
+    "public_worker",
+    "api",
+    "workflow",
 })
 
 
