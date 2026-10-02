@@ -125,22 +125,53 @@ async def execute_governed_publish(
         raise RuntimeError("durable action kernel database required")
 
     import base64
+
+    # ── Parameters passed to the kernel handler ────────────────────────
+    #
+    # `source` MUST be present in this dict. The publishing handler
+    # (domain/publishing/action_handler.py :: publish_content) resolves the
+    # source from `parameters["source"]` first, then `intent.source`, and
+    # raises if neither is set. The canonical pipeline uses `source` to
+    # decide whether Council deliberation is required — sources listed in
+    # MANUAL_AUTHORIZED_SOURCES are authorized by their entry point and
+    # skip Council; any other source triggers Council.
+    #
+    # Previously `source` was passed only to `kernel.execute(source=...)`
+    # and omitted here, so the handler's `parameters.get("source") or
+    # "kcpg_action_kernel"` fallback fired. That silently reclassified
+    # human-initiated publishes as autonomous kernel actions, which forced
+    # Council deliberation on content the personas could not evaluate,
+    # which returned needs_revision on abstention, which halted the
+    # pipeline on a publish already authorized upstream.
+    #
+    # This one key is the entire source-propagation fix.
     parameters: Dict[str, Any] = {
         "brand_id": brand_id,
         "platform": platform or "facebook",
         "topic": topic,
         "caption": caption,
+        "source": source,
         "decision_id": str(getattr(decision, "decision_id", None) or decision_id),
         "scheduled_post_id": scheduled_post_id,
         "automation_job_id": automation_job_id,
         "image_url": image_url,
         "dry_run": bool(dry_run),
-        "container": container,  
+        "container": container,
     }
     if image_bytes:
         parameters["image_bytes_b64"] = base64.b64encode(image_bytes).decode("ascii")
 
     kernel = build_default_action_kernel(db=db, allow_in_memory=False)
+
+    # risk_level is hardcoded "high" deliberately: publishing is a
+    # consequential side effect with an external audience, and treating it
+    # as high-risk is correct regardless of what the caller declares. The
+    # `risk_level` parameter above is a hint that this helper does not act
+    # on directly — Council is skipped via source authorization
+    # (MANUAL_AUTHORIZED_SOURCES), not by lowering risk. If the policy
+    # ever changes so that the caller's risk hint matters, replace the
+    # literal with `risk_level=risk_level` and update the canonical
+    # pipeline's COUNCIL_REQUIRED_RISK_LEVELS handling in tandem.
     return await kernel.execute(
         workspace_id=workspace_id,
         action_type="publish_content",
