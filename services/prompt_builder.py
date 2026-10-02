@@ -2,37 +2,31 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
+V2.1 (2026-10-02) — BRAND CHARTER WIRING:
+  - brand.topic_direction is now injected into BOTH the post prompt and
+    the chat prompt as a "Brand voice and direction" block. Previously
+    the direction was only read by TopicSelector.generate_from_direction
+    for topic selection; the post-generation and chat paths never saw it.
+    The result was that a well-written brand charter ("analytical,
+    opinionated, specific; we name tradeoffs; we do not write tutorials,
+    listicles, or hype cycles; first-person plural; short paragraphs")
+    was used for the topic title and then discarded before the model
+    was asked to write the post.
+  - The direction block is explicitly marked as overriding any
+    conflicting guidance below it. When the brand has a charter, the
+    charter wins; the generic rules act as a floor for brands that
+    don't.
+  - Both build_post_prompt and build_chat_prompt include the block so
+    that every generation surface honors the same declared voice.
+
 V2.0 (2026-10-02) — VOICE, SUBSTANCE, AND COMPLETENESS CONTRACT:
-  - POST_SCHEMA_PROMPT_BLOCK now includes:
-      * A plain-text rule (no Markdown — the caption is published to a
-        platform that renders plain text).
-      * A completeness rule (caption must end at a sentence boundary —
-        never mid-sentence, never mid-word).
-      * A voice block that forbids the LLM-influencer tics: "As a
-        seasoned KDO...", "fear not", "let's dive in", "the key is".
-      * A substance block requiring a specific opening claim, a
-        concrete detail, a position where the topic allows, and a
-        closing question that invites reply.
-  - _PROSE_PLAIN_TEXT_BLOCK gets the same voice, substance, and
-    completeness rules so the fallback path produces the same shape.
-  - The "Guidelines" list no longer says "structure beautifully" (which
-    in training data signals Markdown). It names concrete structural
-    guidance and explicitly forbids Markdown syntax.
+  - POST_SCHEMA_PROMPT_BLOCK includes plain-text, completeness, voice,
+    and substance rules.
+  - _PROSE_PLAIN_TEXT_BLOCK mirrors the same rules for the fallback path.
 
-V1.9 (2026-10-02) — PLAIN-TEXT OUTPUT (preserved):
-  - POST_SCHEMA_PROMPT_BLOCK forbids Markdown syntax.
-  - Prose path (structured=False) also gets a plain-text directive.
-  - Topic fallback no longer invites the model to invent a topic.
-
-V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT (preserved):
-  - build_post_prompt accepts `structured: bool = False`.
-  - POST_SCHEMA_REQUIRED_KEYS is the single source of truth for the
-    parser contract.
-
-V1.7 (2026-09-28) — PERMANENT DESIGN (preserved):
-  - Style guides loaded from config/content_styles.yaml (data, not code).
-  - Brand.style_category provides explicit override.
-  - Brand.custom_style_guide provides full per-brand override.
+V1.9 (2026-10-02) — PLAIN-TEXT OUTPUT (preserved).
+V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT (preserved).
+V1.7 (2026-09-28) — PERMANENT DESIGN (preserved).
 """
 
 from __future__ import annotations
@@ -64,10 +58,6 @@ logger = logging.getLogger("kanyoza.services.prompt_builder")
 # characters. The block below forbids Markdown. The companion sanitizer
 # (sanitize_caption_markdown) runs at the publish boundary as a
 # defense-in-depth backstop.
-#
-# The COMPLETENESS RULE and VOICE block prevent the two most common
-# failure modes we saw in production: truncated captions ending mid-word,
-# and LinkedIn-influencer prose ("As a seasoned KDO, I've seen...").
 #
 POST_SCHEMA_REQUIRED_KEYS: tuple[str, ...] = ("title", "caption")
 
@@ -364,6 +354,32 @@ class PromptBuilder:
         from models.ai_profile import AIProfile as _AIProfile
         return _AIProfile.create_default("default")
 
+    # ── Brand charter helper ──────────────────────────────────────────
+
+    @staticmethod
+    def _brand_charter_block(brand: "Brand") -> str:
+        """Return a formatted brand voice/direction block, or "".
+
+        brand.topic_direction is a charter: subject matter, voice, and
+        constraints. It was originally written for topic selection but
+        reads as an editorial brief. Surfacing it in the post and chat
+        prompts means the generation call honors the same declared voice
+        the topic-selection call was already following.
+
+        The block is explicitly marked as overriding any conflicting
+        guidance below it so that a specific charter beats a generic
+        rule. When the brand has no charter, the block is empty and the
+        generic rules act as the floor.
+        """
+        direction = getattr(brand, "topic_direction", None)
+        if not isinstance(direction, str) or not direction.strip():
+            return ""
+        return (
+            "\nBrand voice and direction — this OVERRIDES any conflicting "
+            "guidance below. Follow it exactly:\n"
+            f"{direction.strip()}\n"
+        )
+
     # ── Public API ────────────────────────────────────────────────────
 
     def build_post_prompt(
@@ -419,6 +435,11 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
+        # Brand charter. Sits immediately after the topic and before the
+        # style guide so it has primary weight. The style guide is a
+        # general template; the charter is this brand's specific voice.
+        charter_block = self._brand_charter_block(brand)
+
         # Structured path gets the full schema block (which carries the
         # plain-text, voice, substance, and completeness rules). Prose
         # path gets the equivalent plain-text block.
@@ -431,7 +452,7 @@ class PromptBuilder:
 Task:
 Write a highly engaging social media post for {brand.name}.
 {topic_str}
-
+{charter_block}
 {style_guide}
 
 Guidelines:
@@ -446,8 +467,10 @@ Guidelines:
 {knowledge_str}
 """
         logger.debug(
-            "Built post prompt: brand=%s style=%s registry_version=%s structured=%s",
-            brand.name, style_source, self._registry.version, structured,
+            "Built post prompt: brand=%s style=%s registry_version=%s "
+            "structured=%s charter_present=%s",
+            brand.name, style_source, self._registry.version,
+            structured, bool(charter_block),
         )
         return f"{system_prompt}\n\n{task}"
 
@@ -472,11 +495,16 @@ Guidelines:
 
         user_name = user_profile.get("name", "User")
 
+        # Same charter the post path uses. Chat surfaces should honor the
+        # declared brand voice too — otherwise the DM reply is generic
+        # while the posts are specific.
+        charter_block = self._brand_charter_block(brand)
+
         chat_context = f"""
 Task Context:
 You are conversing directly with {user_name} in a chat interface.
 Brand Language: {brand.language}
-
+{charter_block}
 Guidelines:
 1. Respond naturally, concisely, and consistently with your persona.
 2. Keep responses brief since this is a chat interface.
