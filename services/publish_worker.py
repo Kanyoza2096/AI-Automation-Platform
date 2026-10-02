@@ -17,6 +17,15 @@ async def publish_job_task(job_id: str, container=None) -> Dict[str, Any]:
     Loads job exclusively through JobService (no JobRepository).
     If decision_id is missing, explicitly issues DIRECTOR_AUTO *before*
     calling assert_publish_allowed (strict validation never mints authority).
+
+    Source resolution: the effective publish source is derived once, up
+    front, from the job's workflow_type, and used consistently for both
+    the DecisionGate authorization and the pipeline's authorization
+    decision. Sources in MANUAL_AUTHORIZED_SOURCES skip Council in the
+    canonical pipeline; sources outside it convene Council, which then
+    may abstain on out-of-domain content and halt the pipeline. Deriving
+    the source once prevents the decision record from disagreeing with
+    the pipeline about where the publish originated.
     """
     from core.publish_authorization import assert_publish_allowed
     from core.decision_gate import DecisionGateError, decision_gate, DecisionSource
@@ -29,6 +38,7 @@ async def publish_job_task(job_id: str, container=None) -> Dict[str, Any]:
     topic = ""
     dry_run = False
     platform = "facebook"
+    publish_source = "publish_worker"
 
     # Resolve container if caller omitted it
     if container is None:
@@ -67,6 +77,22 @@ async def publish_job_task(job_id: str, container=None) -> Dict[str, Any]:
             dry_run = bool(result.get("dry_run", False))
             if not decision_id:
                 decision_id = result.get("decision_id")
+
+        # ── Resolve the effective source once ─────────────────────────
+        # The source is used for:
+        #   1. Decision issuance (when the job arrives without a decision)
+        #   2. Authorization bypass (MANUAL_AUTHORIZED_SOURCES) in the pipeline
+        #
+        # It must be identical for both. Deriving it once, here, prevents
+        # the decision record and the pipeline from disagreeing about the
+        # origin of the publish.
+        workflow_type = str(getattr(job, "workflow_type", "") or "").upper()
+        if "SCHEDULE" in workflow_type:
+            publish_source = "scheduled"
+        elif "MANUAL" in workflow_type:
+            publish_source = "manual"
+        else:
+            publish_source = "publish_worker"
     else:
         logger.error(
             "publish_job_task: job %s could not be loaded; refusing to publish",
@@ -86,8 +112,11 @@ async def publish_job_task(job_id: str, container=None) -> Dict[str, Any]:
         try:
             from core.publish_authorization import issue_internal_publish_decision
             decision = issue_internal_publish_decision(
-                workspace_id=workspace_id, source="scheduled" if getattr(job, "workflow_type", None) and "SCHEDULE" in str(getattr(job, "workflow_type", "")).upper() else "manual",
-                risk_level="low", brand_id=brand_id, platform=platform,
+                workspace_id=workspace_id,
+                source=publish_source,
+                risk_level="low",
+                brand_id=brand_id,
+                platform=platform,
             )
             decision_id = decision.decision_id
         except Exception as exc:
@@ -109,7 +138,7 @@ async def publish_job_task(job_id: str, container=None) -> Dict[str, Any]:
         caption=caption,
         topic=topic,
         decision_id=decision_id,
-        source="publish_worker",
+        source=publish_source,
         dry_run=dry_run,
         idempotency_key=getattr(job, "idempotency_key", None) or f"publish-job:{job_id}",
     )
