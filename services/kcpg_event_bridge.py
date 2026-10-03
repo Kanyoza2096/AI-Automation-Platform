@@ -2,6 +2,24 @@
 
 Publishes authoritative UnifiedEventBus events to the gateway's authenticated
 internal event ingress. Browser clients never connect directly to this service.
+
+v1.1 (2026-10-03) — HEALTH PROBE + SIGNATURE ALIGNMENT:
+  - health_check renamed to check_health_async and returns a HealthReport.
+    The lifecycle ServiceHealthRegistry prefers check_health_async over
+    health_check/check_health; naming an async method health_check caused
+    the registry to route it through _run_in_thread, which passes the
+    coroutine function to loop.run_in_executor and raises
+    "coroutines cannot be used with run_in_executor()". The result was
+    that kcpg_event_bridge always reported status=unknown.
+  - _on_event now normalizes whole-number floats in the body before
+    json.dumps. The HMAC digest is computed over the normalized form
+    (via _canonical → _normalize_numbers), but the HTTP payload was
+    being sent un-normalized. Python serializes 1.0 as "1.0"; JavaScript
+    JSON.stringify produces "1". When the gateway recomputed the digest
+    from the parsed JSON, the two byte streams differed and signature
+    verification failed on any event whose payload contained a whole-
+    number float. This was latent — the bridge only sends when
+    KCPG_INTERNAL_EVENTS_URL is configured.
 """
 from __future__ import annotations
 
@@ -52,8 +70,57 @@ class KCPGEventBridge:
             await self._client.aclose()
             self._client = None
 
-    async def health_check(self) -> dict[str, Any]:
-        return {"status": "healthy" if self.url and self._unsubscribe else "offline", "configured": bool(self.url)}
+    async def check_health_async(self):
+        """Health probe for the ServiceHealthRegistry.
+
+        The registry prefers check_health_async and expects a HealthReport
+        (or a dict, which is normalized). Returning a HealthReport directly
+        preserves latency, metadata, and last_success fields.
+
+        States:
+          - HEALTHY: bridge started successfully (url set, subscribed)
+          - UNKNOWN: bridge disabled (url not configured) or not yet started
+          - UNHEALTHY: bridge was configured but subscription was lost
+
+        The bridge reports UNKNOWN when disabled rather than UNHEALTHY:
+        a disabled optional bridge is a valid configuration, not a fault.
+        """
+        from lifecycle import HealthReport, HealthStatus
+
+        configured = bool(self.url)
+        subscribed = self._unsubscribe is not None
+
+        if not configured:
+            return HealthReport(
+                status=HealthStatus.UNKNOWN,
+                service_name=self.service_name,
+                metadata={
+                    "configured": False,
+                    "subscribed": False,
+                    "note": "KCPG_INTERNAL_EVENTS_URL not configured",
+                },
+            )
+
+        if configured and subscribed:
+            return HealthReport(
+                status=HealthStatus.HEALTHY,
+                service_name=self.service_name,
+                metadata={
+                    "configured": True,
+                    "subscribed": True,
+                    "url_host": self.url.split("://", 1)[-1].split("/", 1)[0],
+                },
+            )
+
+        # Configured but no subscription — the bridge tried to start and
+        # either failed mid-way or was stopped without being disabled.
+        # That is a real fault; surface it as unhealthy.
+        return HealthReport(
+            status=HealthStatus.UNHEALTHY,
+            service_name=self.service_name,
+            error_message="Bridge configured but not subscribed",
+            metadata={"configured": True, "subscribed": False},
+        )
 
     async def _on_event(self, event_data: dict[str, Any]) -> None:
         if not self._client or not self.url:
@@ -79,8 +146,16 @@ class KCPGEventBridge:
             "source": "python-core",
         }
 
-        # ✅ CRITICAL: Convert ALL values to JSON-safe format
+        # Convert all values to JSON-safe primitives.
         body = self._json_safe(body)
+
+        # Normalize whole-number floats (1.0 -> 1) so the bytes sent over
+        # the wire match what _canonical hashes. JavaScript's JSON.stringify
+        # produces "1" for 1.0; Python's json.dumps produces "1.0". The
+        # gateway recomputes the digest from the parsed JSON on its side,
+        # so any mismatch breaks the HMAC. This must run before both the
+        # digest computation AND the body serialization.
+        body = self._normalize_numbers(body)
 
         canonical = self._canonical(body)
         signature = hmac.new(self.signing_secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
@@ -88,8 +163,8 @@ class KCPGEventBridge:
         # Send the JSON body with the same encoding used for the digest
         # (ensure_ascii=False, compact separators). httpx's `json=` helper
         # uses Python's default JSON encoder, which escapes non-ASCII as
-        # \uXXXX and would produce a body whose bytes do not match what the
-        # gateway recomputes from the parsed JSON.
+        # \uXXXX and would produce a body whose bytes do not match what
+        # the gateway recomputes from the parsed JSON.
         content = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         try:
@@ -135,7 +210,6 @@ class KCPGEventBridge:
         except (TypeError, ValueError):
             return str(value)
 
-
     @staticmethod
     def _normalize_numbers(value: Any) -> Any:
         """Normalize whole-number floats to integers.
@@ -143,7 +217,8 @@ class KCPGEventBridge:
         JavaScript JSON.stringify(1.0) -> "1"
         Python json.dumps(1.0)       -> "1.0"
 
-        This mismatch causes invalid HMAC signatures.
+        This mismatch causes invalid HMAC signatures. Called before both
+        digest computation and body serialization so the two sides agree.
         """
         if isinstance(value, float):
             if value.is_integer():
@@ -166,6 +241,8 @@ class KCPGEventBridge:
         correlation_id = body.get("correlation_id", "")
         command_id = body.get("command_id", "")
         event_type = body.get("type", "")
+        # Body is already normalized by _on_event before calling _canonical.
+        # _normalize_numbers is idempotent, so calling it again is safe.
         normalized_body = KCPGEventBridge._normalize_numbers(body)
         # ensure_ascii=False matches JavaScript JSON.stringify, which does
         # not escape non-ASCII characters. The gateway recomputes the digest
