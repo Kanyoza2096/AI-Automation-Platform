@@ -58,38 +58,19 @@ class DecisionType(Enum):
     LEARN = "learn"
     ADAPT = "adapt"
 
-
-class HealthStatus(Enum):
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    UNHEALTHY = "unhealthy"
-    PREDICTED_FAILURE = "predicted_failure"
-    HEALING = "healing"
-
-
-class GuidanceMode(Enum):
-    """v4.0 — Boyd's implicit guidance vs explicit deliberation."""
-    IMPLICIT = "implicit"       # High confidence, direct action
-    EXPLICIT = "explicit"       # Low confidence, deliberate
-    OBSERVE_ONLY = "observe"    # Not enough signal, keep observing
-
-
-@dataclass
-class HealthReport:
-    status: HealthStatus
-    service_name: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-    error_message: Optional[str] = None
-    checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.service_name,
-            "status": self.status.value,
-            "checked_at": self.checked_at.isoformat(),
-            "error": self.error_message,
-            **self.metadata,
-        }
+# HealthReport and HealthStatus are canonical in lifecycle.
+#
+# They were previously redefined here as local classes. That made
+# isinstance(report, HealthReport) fail inside
+# ServiceHealthRegistry._normalize_health_result — the loop's reports
+# were classified as "unrecognized health payload" and surfaced as
+# status=unknown in /health/detailed.
+#
+# The two classes MUST be the same objects the registry uses. Importing
+# from lifecycle is safe: lifecycle imports core.autonomous_loop only
+# inside _boot_autonomous_loop (a lazy function-scope import), so no
+# module-load cycle exists.
+from lifecycle import HealthReport, HealthStatus
 
 
 @dataclass
