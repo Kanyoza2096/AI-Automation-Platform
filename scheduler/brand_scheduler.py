@@ -14,6 +14,28 @@ v4.0 — 10/10 PRODUCTION GRADE:
   - Graceful degradation (Supabase → file → memory)
   - Complete observability
 
+v4.2 (2026-10-03) — ASYNC CONTEXT CORRECTNESS:
+  - _recover_all_stale_jobs now awaits JobService methods directly
+    instead of routing through _job_call. _job_call exists for the
+    background _run() thread (a synchronous context); calling it from
+    inside an async method that is itself awaited on the FastAPI event
+    loop creates a coroutine on one loop and awaits it on another. On
+    Python 3.12 that raises RuntimeError; on earlier versions it can
+    silently corrupt loop-bound state (e.g. Supabase async client
+    futures). This was preventing BrandSchedulerManager.start() from
+    completing during boot — the Business-phase step was failing as
+    non-critical, adding BrandSchedulers to degraded_services, and the
+    scheduler never actually ran.
+  - _retry_dead_letter_queue now extracts only the kwargs that
+    _trigger_workflow accepts, and reads retry_count from payload
+    (where the v4.1 DLQ schema stores it) rather than top-level. The
+    previous implementation splatted the entire payload dict into
+    _trigger_workflow(**payload), which raised TypeError for the
+    brand_id / retry_count / next_retry_at keys; the except handler
+    then crashed on entry["retry_count"] (KeyError) because the
+    schema moved that field into payload. Every DLQ retry cycled
+    through push-crash-requeue without ever reaching the workflow.
+
 All v3.9 features retained:
   - Circuit breaker for Supabase operations
   - Retry with exponential backoff on API failures
@@ -77,7 +99,16 @@ from core.distributed_lock import DistributedLock, LockMode  # noqa: E402
 
 
 def _job_call(service, method: str, *args, **kwargs):
-    """Run JobService async API from legacy synchronous scheduler threads."""
+    """Run JobService async API from legacy synchronous scheduler threads.
+
+    IMPORTANT: This is only safe from a synchronous context — specifically
+    the background thread that runs BrandScheduler._run(). Calling this
+    from an async method that is awaited on the main event loop creates
+    a coroutine on one loop and runs it on another thread's loop, which
+    Python 3.12 rejects (RuntimeError: coroutine created in a different
+    loop) and earlier versions handle inconsistently. If you are already
+    inside an async method, use `await` directly.
+    """
     coro = getattr(service, method)(*args, **kwargs)
     if not asyncio.iscoroutine(coro):
         return coro
@@ -85,8 +116,10 @@ def _job_call(service, method: str, *args, **kwargs):
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    # Scheduler should normally be outside an event loop; if embedded, execute
-    # the coroutine on a dedicated thread to avoid nested-loop failures.
+    # Embedded in an event loop — run the coroutine on a dedicated thread.
+    # This path is only correct when the coroutine does NOT depend on the
+    # calling loop (no loop-bound futures, no Supabase async client state
+    # created on the parent loop). Prefer awaiting directly when possible.
     box = {}
 
     def runner():
@@ -429,8 +462,6 @@ class DeadLetterQueue:
                 pass
         return count
 
-
-    
 
 # ═══════════════════════════════════════════════════════════════════════════
 # v4.0 — CIRCUIT BREAKER WITH HALF-OPEN PROBING
@@ -858,37 +889,50 @@ class BrandScheduler:
     # ═══════════════════════════════════════════════════════════════
 
     def _retry_dead_letter_queue(self) -> None:
-        """Retry failed posts from the dead letter queue."""
+        """Retry failed posts from the dead letter queue.
+
+        v4.2: extract only the kwargs that _trigger_workflow accepts, and
+        read retry_count from payload (where v4.1 stores it). The prior
+        implementation splatted the entire payload into the call, which
+        raised TypeError on brand_id / retry_count / next_retry_at; the
+        except handler then crashed on entry["retry_count"] (KeyError),
+        so no DLQ entry was ever actually retried.
+        """
         retryable = self._dead_letter_queue.pop_retryable(limit=3)
         for entry in retryable:
             self._metrics.retry_attempts_total += 1
             logger.info(
                 "[%s] Retrying dead letter entry: %s",
-                self.brand.name, entry["id"],
+                self.brand.name, entry.get("id"),
             )
             try:
-                payload = entry["payload"]
+                meta = self._dead_letter_queue._extract_meta(entry)
                 accepted = self._trigger_workflow(
                     source="dead_letter_retry",
-                    **payload,
+                    today=meta.get("today"),
+                    hour=meta.get("hour"),
+                    scheduled_post_id=meta.get("scheduled_post_id"),
+                    scheduled_caption=meta.get("scheduled_caption"),
                 )
                 if accepted:
-                    self._dead_letter_queue.ack(entry["id"])
+                    self._dead_letter_queue.ack(entry.get("id"))
                 else:
                     logger.warning(
                         "[%s] Dead letter entry %s not accepted; retaining for retry",
-                        self.brand.name, entry["id"],
+                        self.brand.name, entry.get("id"),
                     )
             except Exception as e:
                 logger.error(
                     "[%s] Dead letter retry failed: %s — re-queueing",
                     self.brand.name, e,
                 )
+                meta = self._dead_letter_queue._extract_meta(entry)
                 self._dead_letter_queue.push(
                     brand_id=self.brand.id,
                     error=str(e),
-                    payload=entry["payload"],
-                    retry_count=entry["retry_count"] + 1,
+                    payload=meta,
+                    retry_count=int(meta.get("retry_count", 0)) + 1,
+                    workspace_id=getattr(self.brand, "workspace_id", None),
                 )
 
     # ═══════════════════════════════════════════════════════════════
@@ -1418,6 +1462,7 @@ class BrandScheduler:
                     brand_id=self.brand.id,
                     error=f"Steps failed: {failed}",
                     payload={"source": source, "today": today, "hour": hour},
+                    workspace_id=getattr(self.brand, "workspace_id", None),
                 )
 
                 logger.warning(
@@ -1446,6 +1491,7 @@ class BrandScheduler:
                 brand_id=self.brand.id,
                 error=str(e),
                 payload={"source": source, "today": today, "hour": hour},
+                workspace_id=getattr(self.brand, "workspace_id", None),
             )
 
             logger.error(
@@ -1633,6 +1679,7 @@ class BrandScheduler:
                 brand_id=self.brand.id,
                 error="Publish step failed",
                 payload={"source": "manual"},
+                workspace_id=getattr(self.brand, "workspace_id", None),
             )
 
             return {"ok": False, "error": "Publish step failed", "job_id": job_id}
@@ -1644,6 +1691,7 @@ class BrandScheduler:
                 brand_id=self.brand.id,
                 error=str(e),
                 payload={"source": "manual"},
+                workspace_id=getattr(self.brand, "workspace_id", None),
             )
             return {"ok": False, "error": str(e), "brand": self.brand.name}
         finally:
@@ -1764,23 +1812,30 @@ class BrandSchedulerManager:
             self._manager_thread.join(timeout=5)
 
     async def _recover_all_stale_jobs(self) -> None:
+        """Recover stale jobs.
+
+        v4.2: this method is called from BrandSchedulerManager.start(),
+        which runs on the FastAPI lifespan's event loop. JobService
+        methods are coroutines; they must be awaited on the same loop
+        that called start(). The previous implementation routed through
+        _job_call, which spawns a thread and calls asyncio.run there.
+        That creates the coroutine on one loop and awaits it on another,
+        which Python 3.12 rejects ("coroutine created in a different
+        loop") and which silently corrupts loop-bound state on earlier
+        versions. Awaiting directly is correct.
+        """
         if not self._job_service:
             return
         try:
+            stale_count = 0
             if hasattr(self._job_service, "recover_and_retry"):
-                stale_count = _job_call(
-                    self._job_service, "recover_and_retry", stale_minutes=15,
+                stale_count = await self._job_service.recover_and_retry(
+                    stale_minutes=15
                 )
-                if asyncio.iscoroutine(stale_count):
-                    stale_count = await stale_count
             elif hasattr(self._job_service, "recover_stale_jobs"):
-                stale_count = _job_call(
-                    self._job_service, "recover_stale_jobs", stale_minutes=15,
+                stale_count = await self._job_service.recover_stale_jobs(
+                    stale_minutes=15
                 )
-                if asyncio.iscoroutine(stale_count):
-                    stale_count = await stale_count
-            else:
-                stale_count = 0
             if int(stale_count or 0) > 0:
                 logger.warning("Recovered %d stale jobs", stale_count)
         except Exception as e:
