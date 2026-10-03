@@ -2,6 +2,14 @@
 Job Stats Service — Single-query stats aggregation.
 Never imports or calls JobService. Recursion is structurally impossible.
 
+v4.4 — HEALTH STATUS DERIVATION:
+  health_check now derives status from the stats it computes instead of
+  hardcoding "healthy". The prior implementation reported healthy while
+  52 dead jobs (19 STALE, 33 FAILED, oldest active 11.5 days) sat in the
+  queue — the check verified the DB query succeeded, not that the queue
+  was doing its job. Status is now a function of status_counts and
+  oldest_active_minutes.
+
 v4.3 — EVENT SUBSCRIPTION FIX:
   - Fixed duplicate _subscribe_to_events declaration (syntax error)
   - Async UnifiedEventBus.subscribe is now scheduled on the running loop
@@ -102,7 +110,7 @@ class SharedSupabaseClient:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# JobStatsService v4.3
+# JobStatsService v4.4
 # ═══════════════════════════════════════════════════════════════════════
 
 class JobStatsService:
@@ -112,6 +120,16 @@ class JobStatsService:
 
     CACHE_TTL_SECONDS = 30
     MAX_BROKEN_PIPE_RETRIES = 2
+
+    # v4.4 — Health status thresholds.
+    # Tuned so a working queue stays healthy and a genuinely stuck one
+    # surfaces. A healthy queue can have a handful of in-flight failures;
+    # a stuck queue has dozens.
+    HEALTH_DEGRADED_STALE = 5
+    HEALTH_DEGRADED_FAILED = 10
+    HEALTH_UNHEALTHY_STALE = 20
+    HEALTH_UNHEALTHY_FAILED = 50
+    HEALTH_UNHEALTHY_OLDEST_MINUTES = 24 * 60  # 24 hours
 
     def __init__(
         self,
@@ -317,6 +335,22 @@ class JobStatsService:
         return full_stats.get("status_counts", {})
 
     def health_check(self) -> dict:
+        """Derive status from the stats, not from the query's success alone.
+
+        v4.4 — INTERPRETATION FIX:
+          The previous implementation hardcoded status="healthy" while
+          computing the stats that would reveal a stuck backlog. A queue
+          with 52 dead jobs (19 STALE, 33 FAILED, oldest active 11.5 days)
+          reported healthy for over a week because status was a constant.
+
+        Thresholds (class constants above):
+          - unhealthy: >=20 STALE, >=50 FAILED, or oldest_active > 24h
+          - degraded:  >=5 STALE or >=10 FAILED
+          - healthy:   below both
+
+        The 'reason' field names the specific threshold that tripped,
+        so /health/detailed is self-diagnosing.
+        """
         if self._shared_client is None:
             # v4.2 FIX: unknown instead of not_configured
             return {
@@ -327,11 +361,51 @@ class JobStatsService:
 
         try:
             stats = self.get_stats()
-            return {"status": "healthy", "stats": stats}
         except Exception as e:
             logger.error("JobStatsService health check failed: %s", e)
             # v4.2 FIX: unknown instead of degraded
             return {"status": "unknown", "error": str(e)[:200], "stats": None}
+
+        # v4.4 — Derive status from the numbers we just computed.
+        status_counts = stats.get("status_counts") or {}
+        try:
+            stale = int(status_counts.get("STALE", 0) or 0)
+            failed = int(status_counts.get("FAILED", 0) or 0)
+            active_jobs = int(stats.get("active_jobs", 0) or 0)
+            oldest_minutes = float(stats.get("oldest_active_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            stale = failed = active_jobs = 0
+            oldest_minutes = 0.0
+
+        stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
+
+        if (
+            stale >= self.HEALTH_UNHEALTHY_STALE
+            or failed >= self.HEALTH_UNHEALTHY_FAILED
+            or stuck_too_long
+        ):
+            return {
+                "status": "unhealthy",
+                "stats": stats,
+                "reason": (
+                    f"job backlog: stale={stale} failed={failed} "
+                    f"active={active_jobs} "
+                    f"oldest_active_minutes={oldest_minutes:.0f}"
+                ),
+            }
+
+        if stale >= self.HEALTH_DEGRADED_STALE or failed >= self.HEALTH_DEGRADED_FAILED:
+            return {
+                "status": "degraded",
+                "stats": stats,
+                "reason": (
+                    f"job backlog growing: stale={stale} failed={failed} "
+                    f"active={active_jobs} "
+                    f"oldest_active_minutes={oldest_minutes:.0f}"
+                ),
+            }
+
+        return {"status": "healthy", "stats": stats}
 
     def get_status(self) -> dict:
         return self.health_check()
@@ -540,7 +614,7 @@ def init_job_stats_service(
             event_bus=event_bus,
         )
         logger.info(
-            "JobStatsService: singleton initialized (v4.3 shared + semaphore)"
+            "JobStatsService: singleton initialized (v4.4 shared + semaphore)"
         )
     else:
         if supabase_client is not None:
