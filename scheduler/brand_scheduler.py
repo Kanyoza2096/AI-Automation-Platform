@@ -14,27 +14,21 @@ v4.0 — 10/10 PRODUCTION GRADE:
   - Graceful degradation (Supabase → file → memory)
   - Complete observability
 
-v4.2 (2026-10-03) — ASYNC CONTEXT CORRECTNESS:
-  - _recover_all_stale_jobs now awaits JobService methods directly
-    instead of routing through _job_call. _job_call exists for the
-    background _run() thread (a synchronous context); calling it from
-    inside an async method that is itself awaited on the FastAPI event
-    loop creates a coroutine on one loop and awaits it on another. On
-    Python 3.12 that raises RuntimeError; on earlier versions it can
-    silently corrupt loop-bound state (e.g. Supabase async client
-    futures). This was preventing BrandSchedulerManager.start() from
-    completing during boot — the Business-phase step was failing as
-    non-critical, adding BrandSchedulers to degraded_services, and the
-    scheduler never actually ran.
-  - _retry_dead_letter_queue now extracts only the kwargs that
-    _trigger_workflow accepts, and reads retry_count from payload
-    (where the v4.1 DLQ schema stores it) rather than top-level. The
-    previous implementation splatted the entire payload dict into
-    _trigger_workflow(**payload), which raised TypeError for the
-    brand_id / retry_count / next_retry_at keys; the except handler
-    then crashed on entry["retry_count"] (KeyError) because the
-    schema moved that field into payload. Every DLQ retry cycled
-    through push-crash-requeue without ever reaching the workflow.
+v4.3 (2026-10-04) — ENUM STATUS COMPARISON FIX:
+  _sync_brands read brand.status with str(...).lower() and compared
+  against "active". BrandStatus is a str-subclass enum: str(BrandStatus
+  .ACTIVE) returns 'BrandStatus.ACTIVE', not 'active'. The comparison
+  therefore always failed and every brand was skipped on every boot.
+  The manager logged "started" but no per-brand scheduler was ever
+  created. Since 2026-09-21 the scheduler silently skipped every fire.
+  Fix: read .value for the primitive, matching _check_schedule's
+  existing pattern. Also logs skipped brands at debug level so a future
+  regression is visible.
+
+v4.2 (2026-10-03) — ASYNC CONTEXT CORRECTNESS (preserved):
+  - _recover_all_stale_jobs now awaits JobService methods directly.
+  - _retry_dead_letter_queue extracts only accepted kwargs and reads
+    retry_count from payload.
 
 All v3.9 features retained:
   - Circuit breaker for Supabase operations
@@ -45,16 +39,11 @@ All v3.9 features retained:
 
 v1.6 fixes (2026-10-01):
   - _extract_workflow_outcome handles both the flat pipeline result shape
-    and the legacy per-platform mapping. Prior versions assumed the
-    per-platform shape and crashed with "'bool' object has no attribute
-    'get'" when the canonical pipeline returned its flat result.
+    and the legacy per-platform mapping.
   - The post_id extraction block in _trigger_workflow applies the same
     flat-shape detection and guards .get() with isinstance(v, dict).
-  - _extract_workflow_outcome now accepts a context_platform kwarg so the
-    extractor can attribute the correct platform when the pipeline's flat
-    result doesn't carry a top-level "platform" field.
-  - Both call sites (in _trigger_workflow and trigger_manual) pass
-    context_platform from wf_kwargs["platform"].
+  - _extract_workflow_outcome now accepts a context_platform kwarg.
+  - Both call sites pass context_platform from wf_kwargs["platform"].
 """
 
 import asyncio
@@ -96,6 +85,25 @@ from core.distributed_lock import DistributedLock, LockMode  # noqa: E402
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _brand_status_value(brand: Any) -> str:
+    """Return a brand's status as a lowercase string.
+
+    BrandStatus is a str-subclass enum. `str(BrandStatus.ACTIVE)` returns
+    'BrandStatus.ACTIVE', not 'active', because Enum's __str__ wins over
+    the str subclass's. The only reliable primitive is `.value`.
+
+    Handles:
+      - BrandStatus.ACTIVE         → 'active'
+      - 'active'                   → 'active'
+      - None / missing attribute   → ''
+      - 'ACTIVE'                   → 'active'
+    """
+    raw = getattr(brand, "status", "")
+    if hasattr(raw, "value"):
+        return str(raw.value).lower()
+    return str(raw or "").lower()
 
 
 def _job_call(service, method: str, *args, **kwargs):
@@ -188,11 +196,7 @@ class DeadLetterQueue:
         created_at   timestamptz DB default
 
       brand_id, retry_count, and next_retry_at have no columns; they
-      live inside payload. The previous version wrote them as top-level
-      keys and every Supabase insert failed silently, forcing all
-      entries into /tmp (ephemeral on Render). This version writes only
-      the columns the table has, and reads back the metadata from
-      payload.
+      live inside payload.
     """
 
     def __init__(
@@ -323,7 +327,6 @@ class DeadLetterQueue:
 
         Entries are not removed here — ack() is the removal path, and
         it is only called after downstream execution accepts the retry.
-        This preserves durability if the worker crashes mid-retry.
         """
         now = datetime.now(timezone.utc)
         retryable: List[dict] = []
@@ -940,11 +943,7 @@ class BrandScheduler:
     # ═══════════════════════════════════════════════════════════════
 
     def _check_schedule(self) -> None:
-        status_raw = getattr(self.brand, "status", "")
-        if hasattr(status_raw, "value"):
-            status = str(status_raw.value).lower()
-        else:
-            status = str(status_raw or "").lower()
+        status = _brand_status_value(self.brand)
         if status != "active" or not self.ai_profile:
             return
 
@@ -1820,9 +1819,7 @@ class BrandSchedulerManager:
         that called start(). The previous implementation routed through
         _job_call, which spawns a thread and calls asyncio.run there.
         That creates the coroutine on one loop and awaits it on another,
-        which Python 3.12 rejects ("coroutine created in a different
-        loop") and which silently corrupts loop-bound state on earlier
-        versions. Awaiting directly is correct.
+        which Python 3.12 rejects. Awaiting directly is correct.
         """
         if not self._job_service:
             return
@@ -1842,13 +1839,34 @@ class BrandSchedulerManager:
             logger.error("Stale job recovery failed: %s", e)
 
     async def _sync_brands(self) -> None:
+        """Sync the set of active BrandSchedulers to the set of active brands.
+
+        v4.3 — STATUS ENUM FIX:
+          BrandStatus is a str-subclass enum. str(BrandStatus.ACTIVE)
+          returns 'BrandStatus.ACTIVE', not 'active'. The previous
+          implementation compared the stringified enum against the
+          literal "active", which always failed, so every brand was
+          skipped on every boot. The manager logged "started" but no
+          per-brand scheduler was ever created — silent since 9/21.
+
+          The status read now uses _brand_status_value(), which pulls
+          .value from the enum. Skipped brands are logged at debug so a
+          future regression of this class is visible without a live
+          probe.
+        """
         loop = asyncio.get_running_loop()
         brands = await loop.run_in_executor(None, self.brand_repo.find_all)
         active_ids = set()
         for brand in brands:
-            status = str(getattr(brand, "status", "") or "").lower()
+            status = _brand_status_value(brand)
             if status != "active":
+                logger.debug(
+                    "scheduler.sync skipping brand: name=%s status=%r reason=not_active",
+                    getattr(brand, "name", "?"),
+                    status,
+                )
                 continue
+
             active_ids.add(brand.id)
             if brand.id not in self._schedulers:
                 ai_profile = (
@@ -1856,6 +1874,12 @@ class BrandSchedulerManager:
                     if brand.ai_profile_id else None
                 )
                 if not ai_profile:
+                    logger.warning(
+                        "scheduler.sync skipping brand: name=%s reason=no_ai_profile "
+                        "ai_profile_id=%r",
+                        getattr(brand, "name", "?"),
+                        getattr(brand, "ai_profile_id", None),
+                    )
                     continue
                 scheduler = BrandScheduler(
                     brand, ai_profile, self._container,
