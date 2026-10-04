@@ -1,15 +1,27 @@
 """
-Kanyoza Systems AI Platform v16.2 — Dependency Registry.
+Kanyoza Systems AI Platform v16.3 — Dependency Registry.
 
 THE single source of truth for all DI bindings. Every concrete
 implementation is wired to its interface here.
 
-v16.2 CHANGES:
+v16.3 CHANGES:
+  - Director's `publish_scheduled_content` capability is NO LONGER BOUND.
+    The Director was autonomously calling it on its `review_content_strategy`
+    cadence (~every 30 minutes), producing duplicate `source=manual` publishes
+    on top of the scheduler's own fires. The scheduler is the authoritative
+    publisher; the Director is an advisor. It may still boost/safe-mode
+    content, run health scans, and queue revivals — but it does not trigger
+    publishes.
+  - The `publish_scheduled_content` function remains defined below for
+    backward compatibility with any external callers. It is simply not
+    bound to a Director capability.
+
+v16.2 CHANGES (preserved):
   - ADDED: ServiceRegistry integration for auto-registration
   - ADDED: Service definitions for all platform services
   - All services now auto-register with Meta Engine via service_definitions.py
 
-v16.1 CHANGES:
+v16.1 CHANGES (preserved):
   - Added engine bindings (Director ↔ Content Engine ↔ Condition Engine ↔ Scheduler)
   - All v16.0 bindings preserved (UnifiedEventBus, repositories, AI layer, plugins)
   - FIXED: TaskQueue.start() properly awaited using async-aware factory
@@ -20,11 +32,10 @@ v16.1 CHANGES:
   - ADDED: AutonomousContentEngine registration (from core)
   - ADDED: AutonomousLoop registration (from core)
 
-V1.6 CHANGES:
+V1.6 CHANGES (preserved):
   - ADDED: CouncilOrchestrator registration so the canonical publish
     pipeline (domain.publishing.canonical_pipeline._council_deliberate)
-    can resolve it. Without this, every medium/high-risk publish returned
-    "council: skipped / no_bound_council".
+    can resolve it.
 """
 
 from __future__ import annotations
@@ -292,12 +303,31 @@ def _bind_condition_engine(c: ServiceContainer) -> None:
 
 
 def _bind_director(c: ServiceContainer) -> None:
-    """Bind Director capabilities to pipeline + scheduler + content engine."""
+    """Bind Director capabilities to advisory services.
+
+    v16.3 — The `publish_scheduled_content` capability is NOT bound.
+
+    Previously the Director could autonomously trigger publishes via
+    `publish_scheduled_content`, which called
+    `BrandSchedulerManager.trigger_for_brand`. The Director's
+    `review_content_strategy` decision (issued on its own cadence, roughly
+    every 30 minutes) invoked that capability, producing `source=manual`
+    publishes on top of the scheduler's own scheduled fires. The result
+    was duplicate content and unpredictable timing.
+
+    The scheduler is now the authoritative publisher. The Director remains
+    an advisor: it may boost or safe-mode content, run health scans, and
+    queue brand revivals. It does not trigger publishes.
+    """
     try:
         from services.content_engine import content_engine
         from services.director import get_director
 
         async def publish_scheduled_content(params: dict) -> dict:
+            """Legacy capability — retained for backward compatibility but
+            no longer bound to the Director. Any direct caller still works,
+            but the Director cannot invoke it autonomously.
+            """
             brand_id = params.get("brand_id", "default")
             try:
                 from scheduler.brand_scheduler import BrandSchedulerManager
@@ -370,12 +400,16 @@ def _bind_director(c: ServiceContainer) -> None:
             if not director:
                 logger.warning("Director not initialized — capability bind skipped")
                 return
-            director.bind_capability("publish_scheduled_content", publish_scheduled_content)
+            # v16.3 — 'publish_scheduled_content' deliberately NOT bound.
+            # See the docstring above for the rationale.
             director.bind_capability("optimize_content_schedule", optimize_content_schedule)
             director.bind_capability("calculate_brand_health", calculate_brand_health)
             director.bind_capability("queue_brand_revival", queue_brand_revival)
             director.bind_capability("run_health_scan", run_health_scan)
-            logger.info("✅ Director capabilities bound (pipeline/scheduler/content)")
+            logger.info(
+                "✅ Director capabilities bound (advisory only; "
+                "publish_scheduled_content unbound)"
+            )
 
         # Prefer scheduling on the running loop; never call asyncio.run from here
         try:
@@ -748,9 +782,7 @@ def _register_intelligence_layer(c: ServiceContainer, bindings: list[BindingMeta
     )
 
     # ✅ V1.6 — Register CouncilOrchestrator so the canonical publish pipeline
-    # can resolve it in `_council_deliberate`. Without this registration the
-    # pipeline always returns "council: skipped / no_bound_council" and no
-    # medium/high-risk publish ever triggers real deliberation.
+    # can resolve it in `_council_deliberate`.
     try:
         from council.orchestration.council_orchestrator import CouncilOrchestrator
         _council_orchestrator = CouncilOrchestrator()
@@ -786,9 +818,6 @@ def _register_intelligence_layer(c: ServiceContainer, bindings: list[BindingMeta
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _register_business_services(c: ServiceContainer, bindings: list[BindingMetadata]) -> None:
-    # Canonical event admission (V71.14) resolves this service from the DI
-    # container. Register it here so event-driven ingress never falls back to
-    # an unregistered process-local engine.
     from services.business_automation import BusinessAutomationEngine
 
     def _build_business_automation_engine():
