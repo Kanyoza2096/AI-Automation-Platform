@@ -1890,7 +1890,7 @@ class BrandSchedulerManager:
                     redis_client=self._redis_client,
                 )
                 self._schedulers[brand.id] = scheduler
-                scheduler.start()
+                await scheduler.start()
 
         try:
             from services.director import director
