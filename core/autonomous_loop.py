@@ -1643,11 +1643,9 @@ class AutonomousLoop:
                     else:
                         raise
                 except Exception as exc:
-                    if "has no attribute" in str(exc):
-                        if hasattr(self.shared_bus, "publish"):
-                            await self.shared_bus.publish(event_type, payload)
-                        else:
-                            raise                    else:
+                    if hasattr(self.shared_bus, "publish"):
+                        await self.shared_bus.publish(event_type, payload)
+                    else:
                         raise
 
         try:
