@@ -7,6 +7,20 @@ Lifecycle imports:
         assert_no_unbound_capabilities,
     )
 
+v16.4 (2026-10-05) — PUBLISH FENCE:
+  - 'publish_scheduled_content' is NO LONGER BOUND to the Director. The
+    Director's review_content_strategy decision (issued ~every 30 minutes)
+    was invoking this capability, which called mgr.trigger_all() and
+    published for every brand on each cycle. That produced duplicate
+    publishes on top of the scheduler's own fires, drained the Cloudflare
+    and Gemini daily quotas, and pushed the pipeline into the
+    deterministic-caption fallback path. The scheduler is now the sole
+    authoritative publisher.
+  - The publish_scheduled_content function remains defined below for any
+    non-Director caller (e.g. a future trend bridge), but it now refuses
+    to run unless an explicit `source` is provided. Autonomous Director
+    invocations leave `source` blank; explicit callers set it.
+
 Non-critical capabilities get real service handlers.
 CRITICAL capabilities stay blocked (human approval required).
 """
@@ -77,21 +91,45 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
             return None
 
     async def publish_scheduled_content(params: dict) -> dict:
-        """Publish path for Director / Trend bridge. Delegates brand discovery to BrandScheduler."""
+        """Publish path for explicit callers (trend bridge, operator).
+
+        v16.4 — NOT bound to the Director. This function remains available
+        for non-autonomous callers but refuses to run when `source` is
+        missing, which is the signature of an autonomous Director
+        invocation. Legitimate callers must set `source` to something
+        explicit (e.g. "trend_intelligence", "operator", "content_bridge").
+
+        Delegates to `execute_governed_publish` when content is supplied,
+        or to `BrandSchedulerManager.trigger_all()` for a full-cycle
+        publish. Both paths cross the Action Kernel boundary.
+        """
         dry_run = bool(params.get("dry_run", False))
-        source = (params.get("source") or "").lower()
+        source = (params.get("source") or "").strip().lower()
         topic = params.get("topic") or ""
         content = (params.get("content") or topic or "").strip()
         media_url = params.get("media_url")
         job_id = params.get("job_id") or params.get("idempotency_key")
         brand_id = params.get("brand_id")
 
+        # v16.4 — Fence: refuse autonomous Director invocations.
+        # Autonomous callers leave `source` blank; explicit callers set it.
+        if not source:
+            logger.warning(
+                "publish_scheduled_content refused: no explicit source "
+                "(autonomous Director invocation fenced)"
+            )
+            return _soft_fail(
+                "publish",
+                "explicit source required; autonomous Director publishes are disabled",
+                job_id=job_id,
+            )
+
         if dry_run:
             return _ok(
                 "publish",
                 {
                     "dry_run": True,
-                    "source": source or "scheduler",
+                    "source": source,
                     "topic": topic[:80],
                     "has_content": bool(content),
                     "has_media": bool(media_url),
@@ -99,7 +137,7 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                 },
             )
 
-        # Explicit trend content → canonical publish
+        # Explicit trend content → canonical publish via Action Kernel
         if source in ("trend_intelligence", "trend") or content:
             workspace_id = str(params.get("workspace_id") or "").strip()
             if not workspace_id:
@@ -108,11 +146,6 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                 return _soft_fail("publish", "brand_id is required for automated publishing", job_id=job_id)
 
             try:
-                # Director is a proposer/orchestrator, not an execution authority.
-                # Consequential automated publishing must cross the same Action
-                # Kernel boundary as API, content, and trend-intelligence paths.
-                # The kernel then delegates to the existing canonical publish
-                # pipeline/ExecutionLedger; do not create a second execution plane.
                 from services.publish_orchestration import execute_governed_publish
                 result = await execute_governed_publish(
                     container=container,
@@ -122,7 +155,7 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                     topic=topic,
                     caption=content,
                     decision_id=params.get("decision_id"),
-                    source=source or "trend_intelligence",
+                    source=source,
                     risk_level=str(params.get("risk_level") or "low"),
                     idempotency_key=params.get("idempotency_key") or job_id,
                     correlation_id=params.get("correlation_id") or job_id,
@@ -130,27 +163,45 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                     scheduled_post_id=params.get("scheduled_post_id"),
                     automation_job_id=params.get("automation_job_id") or job_id,
                 )
-                return _ok("action_kernel", result, brand_id=brand_id, workspace_id=workspace_id, job_id=job_id, governed=True)
+                return _ok(
+                    "action_kernel",
+                    result,
+                    brand_id=brand_id,
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    governed=True,
+                )
             except Exception as exc:
                 logger.exception("canonical automated publish failed: %s", exc)
                 return _soft_fail("publish", str(exc)[:200], job_id=job_id)
 
-        # Default: delegate to BrandScheduler for all brands
+        # Full-cycle fallback: delegate to BrandScheduler for all brands.
+        # This path requires an explicit source too, so it is reachable
+        # only when the caller has deliberately set one.
         try:
             from scheduler.brand_scheduler import BrandSchedulerManager
             mgr = _resolve(BrandSchedulerManager)
             if mgr is not None and hasattr(mgr, "trigger_all"):
+                logger.info(
+                    "publish_scheduled_content: explicit source=%r triggering all brands",
+                    source,
+                )
                 scheduler_result = mgr.trigger_all()
                 if inspect.isawaitable(scheduler_result):
                     scheduler_result = await scheduler_result
-                return _ok("brand_scheduler", scheduler_result)
+                return _ok("brand_scheduler", scheduler_result, source=source)
         except Exception as exc:
             logger.warning("publish_scheduled_content scheduler: %s", exc)
 
-        # Fallback: generate content only
+        # Last resort: generate content only (does not publish).
         try:
             from services.content_engine import content_engine
-            return _ok("content_engine", await content_engine.generate_post(topic=topic or None), note="generate_only")
+            return _ok(
+                "content_engine",
+                await content_engine.generate_post(topic=topic or None),
+                note="generate_only",
+                source=source,
+            )
         except Exception as exc:
             return _soft_fail("content_engine", str(exc)[:200])
 
@@ -168,10 +219,17 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                 return _soft_fail("action_kernel", "durable action kernel database required")
             kernel = build_default_action_kernel(db=db, allow_in_memory=False)
             result = await kernel.execute(
-                workspace_id=workspace_id, action_type="content_adjust_mix",
-                parameters={"brand_id": brand_id, "factor": change, "duration_posts": int(params.get("duration_posts", 5))},
-                risk_level="medium", source="director",
-                correlation_id=params.get("correlation_id"), idempotency_key=params.get("idempotency_key"),
+                workspace_id=workspace_id,
+                action_type="content_adjust_mix",
+                parameters={
+                    "brand_id": brand_id,
+                    "factor": change,
+                    "duration_posts": int(params.get("duration_posts", 5)),
+                },
+                risk_level="medium",
+                source="director",
+                correlation_id=params.get("correlation_id"),
+                idempotency_key=params.get("idempotency_key"),
             )
             return _ok("action_kernel", result, governed=True)
         except Exception as exc:
@@ -262,15 +320,32 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
         try:
             from lifecycle import health_registry
             reports = await health_registry.check_all()
-            healthy = sum(1 for r in (reports or {}).values() if str(getattr(r.status, "value", r.status)).lower() in ("healthy", "nominal", "ok"))
-            return _ok("reporting", {"workspace_id": workspace_id, "services_healthy": healthy, "services_total": len(reports or {}), "generated_at": time.time()})
+            healthy = sum(
+                1 for r in (reports or {}).values()
+                if str(getattr(r.status, "value", r.status)).lower() in ("healthy", "nominal", "ok")
+            )
+            return _ok(
+                "reporting",
+                {
+                    "workspace_id": workspace_id,
+                    "services_healthy": healthy,
+                    "services_total": len(reports or {}),
+                    "generated_at": time.time(),
+                },
+            )
         except Exception as exc:
             return _soft_fail("reporting", str(exc)[:200])
 
     async def prepare_client_message(params: dict) -> dict:
         tone = params.get("tone", "professional")
         topic = params.get("topic", "status update")
-        return _ok("messaging", {"draft": f"[{tone}] Regarding {topic}: systems are operating normally.", "requires_human_send": True})
+        return _ok(
+            "messaging",
+            {
+                "draft": f"[{tone}] Regarding {topic}: systems are operating normally.",
+                "requires_human_send": True,
+            },
+        )
 
     async def analyze_growth_opportunity(params: dict) -> dict:
         return _soft_fail("growth", "growth_service_unavailable", brand_id=params.get("brand_id"))
@@ -305,7 +380,14 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
             from services.web_intelligence import get_web_intelligence, init_web_intelligence
             gw = get_web_intelligence() or init_web_intelligence()
             results = await gw.search_async(query, max_results=int(params.get("max_results") or 5))
-            return _ok("web_intelligence", {"query": query, "count": len(results), "results": [r.to_dict() for r in results]})
+            return _ok(
+                "web_intelligence",
+                {
+                    "query": query,
+                    "count": len(results),
+                    "results": [r.to_dict() for r in results],
+                },
+            )
         except Exception as exc:
             return _soft_fail("web_intelligence", str(exc)[:200])
 
@@ -333,7 +415,14 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
             return _soft_fail("tool_agent", str(exc)[:200])
 
     return {
-        "publish_scheduled_content": publish_scheduled_content,
+        # v16.4 — 'publish_scheduled_content' is NOT bound to the Director.
+        # The Director's review_content_strategy decision ran on a ~30-minute
+        # cadence and invoked this capability, calling mgr.trigger_all() and
+        # publishing every brand on each cycle. That duplicated the
+        # scheduler's fires, drained Cloudflare and Gemini daily quotas, and
+        # forced the pipeline into the deterministic-caption fallback. The
+        # scheduler is the sole publisher now. The function above remains
+        # defined for explicit non-Director callers (see its docstring).
         "web_search": web_search,
         "web_fetch": web_fetch,
         "ask_with_tools": ask_with_tools,
@@ -370,7 +459,14 @@ def bind_director_capabilities(director, container=None) -> Dict[str, str]:
                         from services.director import Capability, Sector, Authority, Risk
                         sector = Sector.LEARNING if "web" in name or "ask" in name else Sector.CONTENT
                         director.register_capability(
-                            Capability(name, sector, name.replace("_", " ").title(), handler, Authority.AUTO, Risk.LOW)
+                            Capability(
+                                name,
+                                sector,
+                                name.replace("_", " ").title(),
+                                handler,
+                                Authority.AUTO,
+                                Risk.LOW,
+                            )
                         )
                         status[name] = "bound"
                         continue
