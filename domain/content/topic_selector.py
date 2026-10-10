@@ -10,6 +10,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Sentinel category for the tier-6 fallback
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# When a brand has no direction, no custom_topics, no brand_config, no KB
+# entries, and no platform fallback, TopicSelector returns a topic from the
+# last-resort list. That list is intentionally honest — it says "this brand
+# has not been configured" rather than inventing plausible-sounding topics
+# that the pipeline would happily publish.
+#
+# Callers that want to skip unconfigured brands can check
+# `category == UNCONFIGURED_CATEGORY` and refuse to publish.
+#
+UNCONFIGURED_CATEGORY = "unconfigured"
+
+# Single honest fallback. Not five generic prompts. If a brand reaches this
+# tier, the right behavior is to surface the gap, not to fill it with
+# content the operator never chose.
+_UNCONFIGURED_TOPICS: list[str] = [
+    "This brand has no topic source configured; add topic_direction, "
+    "custom_topics, brand_config.fallback_topics, or Knowledge Base entries.",
+]
+
+
 def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optional[dict[str, list[str]]]:
     """
     Query the brand's Knowledge Base and build topics from it.
@@ -191,11 +215,17 @@ class TopicSelector:
       3. brand_config.fallback_topics + keywords (Supabase)
       4. Brand's Knowledge Base entries (dynamically queried)
       5. Platform fallback topics
-      6. Hardcoded generic list
+      6. Unconfigured sentinel (single honest message; callers may skip)
 
     The direction path is opt-in: it runs when the brand has a
     topic_direction, and returns None on any failure so the caller can fall
     through to selection.
+
+    Tier 6 returns a single message and the sentinel category
+    ``UNCONFIGURED_CATEGORY``. Callers that want to refuse publishing an
+    unconfigured brand can check for that category. The pipeline currently
+    publishes whatever this method returns, so the sentinel is a signal,
+    not an enforcement.
     """
 
     def __init__(
@@ -271,21 +301,18 @@ class TopicSelector:
         except Exception as fb_exc:
             logger.debug("TopicSelector platform fallback failed: %s", fb_exc)
 
-        logger.warning(
-            "TopicSelector: No topics available for brand '%s'. "
-            "Add brand_config.fallback_topics, KB documents, or custom_topics.",
+        # 6. Unconfigured sentinel. This is not a topic list — it is a signal
+        # that the brand has not been set up. Log loudly so it shows up in
+        # fleet diagnostics, and mark the category so callers can skip.
+        logger.error(
+            "TopicSelector: Brand '%s' (id=%s) has no configured topic source. "
+            "Add one of: topic_direction, custom_topics, "
+            "brand_config.fallback_topics, or Knowledge Base entries. "
+            "Returning unconfigured sentinel.",
             getattr(brand, 'name', 'unknown') if brand else 'default',
+            getattr(brand, 'id', None) if brand else None,
         )
-        # Last resort: non-empty so pick() is not stuck on a single canned line only
-        self._categories = {
-            "General": [
-                "Share a practical tip your audience can use today",
-                "Highlight a customer win or lesson learned",
-                "Explain one industry trend in plain language",
-                "Behind the scenes: how we solve a common problem",
-                "A short weekly reflection for the community",
-            ]
-        }
+        self._categories = {UNCONFIGURED_CATEGORY: list(_UNCONFIGURED_TOPICS)}
 
     # ------------------------------------------------------------------
     # Direction-based generation
@@ -401,13 +428,15 @@ class TopicSelector:
     # ------------------------------------------------------------------
 
     def pick(self, category: Optional[str] = None) -> tuple[str, str]:
-        """Return (topic, category). Returns (fallback_message, 'general') if no topics."""
+        """Return (topic, category). Returns the unconfigured sentinel when
+        the brand has no topic source at all."""
         with self._lock:
             if not self._categories:
-                return (
-                    "Share an inspiring message with our community today",
-                    "general",
+                logger.error(
+                    "TopicSelector: pick() called on an empty selector. "
+                    "This indicates the constructor was bypassed."
                 )
+                return (_UNCONFIGURED_TOPICS[0], UNCONFIGURED_CATEGORY)
 
             if category and category in self._categories:
                 cat = category
@@ -416,10 +445,7 @@ class TopicSelector:
 
             topics = self._categories.get(cat, [])
             if not topics:
-                return (
-                    "Share an inspiring message with our community today",
-                    "general",
-                )
+                return (_UNCONFIGURED_TOPICS[0], UNCONFIGURED_CATEGORY)
 
             topic = random.choice(topics)
             return topic, cat
@@ -434,6 +460,13 @@ class TopicSelector:
         """Check if this selector has any topics available."""
         return len(self._categories) > 0
 
+    def is_configured(self) -> bool:
+        """True when the selector has a real topic source, not the sentinel."""
+        return (
+            bool(self._categories)
+            and UNCONFIGURED_CATEGORY not in self._categories
+        )
+
     def all_categories(self) -> list[str]:
         return list(self._categories.keys())
 
@@ -445,3 +478,10 @@ class TopicSelector:
 
 
 topic_selector = TopicSelector()
+
+
+__all__ = [
+    "TopicSelector",
+    "topic_selector",
+    "UNCONFIGURED_CATEGORY",
+]
