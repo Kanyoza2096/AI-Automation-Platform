@@ -1,0 +1,22 @@
+{
+  "phase": "9.5",
+  "name": "Failure / Degradation Policy & Recovery Control",
+  "schema_version": "phase9.failure-policy.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_failure_policy.py",
+    "tests/test_phase9_failure_policy.py",
+    "PHASE9_05_FAILURE_DEGRADATION_RECOVERY_POLICY.md",
+    "PHASE9_05_IMPLEMENTATION_MANIFEST.json"
+  ],
+  "dependencies": {
+    "phase_9_4": "Reliability & Dependency State"
+  },
+  "principles": [
+    "policy decisions do not execute",
+    "UNKNOWN is never assumed healthy",
+    "security hold and quarantine are fail-closed",
+    "degraded operation must be explicitly permitted",
+    "ALLOW from reliability policy is not authorization"
+  ]
+}

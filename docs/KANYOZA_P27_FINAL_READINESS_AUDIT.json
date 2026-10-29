@@ -1,0 +1,283 @@
+{
+  "audit": "Kanyoza P27 Final Readiness and Closure Audit",
+  "checks": {
+    "focused_regression_suite": true,
+    "local_staging_contracts": true,
+    "phase_report_inventory_completed": true,
+    "python_compilation": true
+  },
+  "compilation": {
+    "command": [
+      "/opt/pyvenv/bin/python",
+      "-m",
+      "compileall",
+      "-q",
+      "services/director",
+      "services/director_bindings.py",
+      "scripts/verify_director_staging.py",
+      "scripts/final_readiness_audit.py"
+    ],
+    "passed": true,
+    "returncode": 0,
+    "stderr_tail": "",
+    "stdout_tail": ""
+  },
+  "environment": {
+    "cross_service_delivery_verified": false,
+    "external_adapters_verified": false,
+    "live_redis_verified": false,
+    "live_supabase_verified": false,
+    "production_actions_invoked": false,
+    "supabase_python_package_available": false
+  },
+  "focused_regression": {
+    "command": [
+      "/opt/pyvenv/bin/python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_director_auth_boundary.py",
+      "tests/test_director_capability_catalog.py",
+      "tests/test_director_diagnosis_evidence_gate.py",
+      "tests/test_director_engine_signals.py",
+      "tests/test_director_execution_idempotency.py",
+      "tests/test_director_mission_graph.py",
+      "tests/test_director_observer_contracts.py",
+      "tests/test_director_organism_state.py",
+      "tests/test_director_outcome_verification.py",
+      "tests/test_director_recovery_assessment.py",
+      "tests/test_director_success_criteria.py",
+      "tests/test_engine_truth.py",
+      "tests/test_phase3714_health_truth.py",
+      "tests/test_backend_route_contract.py",
+      "tests/test_phase16_director_signal_publishers.py",
+      "tests/test_phase18_evidence_backed_job_signals.py",
+      "tests/test_phase19_meta_engine_signals.py",
+      "tests/test_phase20_autonomous_content_intelligence.py",
+      "tests/test_phase22_director_runtime_binding.py",
+      "tests/test_phase23_verified_outcome_unknown.py",
+      "tests/test_phase24_evidence_driven_recovery.py",
+      "tests/test_phase25_capability_coverage_audit.py",
+      "tests/test_phase26_staging_workflow.py"
+    ],
+    "passed": true,
+    "returncode": 0,
+    "stderr_tail": "",
+    "stdout_tail": "........................................................................ [ 44%]\n........................................................................ [ 88%]\n...................                                                      [100%]\n163 passed in 2.49s\n"
+  },
+  "generated_at_utc": "2026-10-22T08:44:31.628589+00:00",
+  "known_full_suite_blocker": {
+    "detail": "Full pytest run is not certified: the first failure in pytest -x was tests/pipeline/test_publish_end_to_end_contract.py::test_connector_receives_brand_for_tenant_specific_facebook_credentials. The canonical pipeline fails closed because the Supabase package/client is unavailable. A non-fail-fast full run also exceeded the execution time budget.",
+    "policy": "Do not weaken fail-closed publishing behavior or count missing infrastructure as a passing integration test.",
+    "status": "not_green"
+  },
+  "limitations": [
+    "Passing local tests do not prove deployed service wiring or dependency health.",
+    "No production credentials, live services, external adapters, or side-effecting actions were used.",
+    "A controlled staging environment with required dependencies is needed to certify full end-to-end behavior."
+  ],
+  "local_checks_passed": 4,
+  "local_checks_total": 4,
+  "missing_phase_report_artifacts": [],
+  "phase_report_inventory": [
+    {
+      "phase": "P3",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P3_LIFECYCLE_REGISTRATION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P4",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P4_LIFECYCLE_TOPOLOGY_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P5",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P5_CANONICAL_NAME_ALIGNMENT_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P6",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P6_OWNER_LIFECYCLE_RESOLUTION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P7",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P7_DIRECTOR_ASYNC_OBSERVATION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P8",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P8_DIRECTOR_EVIDENCE_FAILURE_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P9",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P9_DIRECTOR_CONTAINER_INSTANCE_DISCOVERY_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P10",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P10_SUPERVISOR_EVIDENCE_BRIDGE_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P11",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P11_DIRECTOR_TOPOLOGY_PARITY_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P12",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P12_ENGINE_RUNTIME_MAP_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P13",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P13_GOVERNED_DIRECTOR_ACTION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P14",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P14_RUNTIME_HEALTH_RECONCILIATION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P15",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P15_SIGNAL_COVERAGE_HEALTH_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P16",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P16_DIRECTOR_SIGNAL_PUBLISHERS_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P17",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P17_DIRECTOR_SIGNAL_INGESTION_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P18",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P18_EVIDENCE_BACKED_JOB_SIGNALS_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P19",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P19_META_ENGINE_EVIDENCE_SIGNALS_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P20",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P20_AUTONOMOUS_CONTENT_INTELLIGENCE_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P21",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P21_DIRECTOR_CAPABILITY_EXECUTION_READINESS_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P22",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P22_DIRECTOR_RUNTIME_BINDING_AND_EXECUTION_AUDIT_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P23",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P23_VERIFIED_EXECUTION_OUTCOMES_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P24",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P24_EVIDENCE_DRIVEN_RECOVERY_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P25",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P25_CAPABILITY_COVERAGE_AUDIT_REPORT.md"
+      ]
+    },
+    {
+      "phase": "P26",
+      "report_found": true,
+      "reports": [
+        "KANYOZA_P26_END_TO_END_STAGING_VERIFICATION_REPORT.md"
+      ]
+    }
+  ],
+  "production_readiness": "NOT_VERIFIED",
+  "repository_root": "/mnt/data/kanyoza_p26/AI-Automation-Platform-main",
+  "scope": "local repository and in-process contracts only",
+  "staging_smoke_check": {
+    "command": [
+      "/opt/pyvenv/bin/python",
+      "scripts/verify_director_staging.py"
+    ],
+    "passed": true,
+    "returncode": 0,
+    "stderr_tail": "",
+    "stdout_tail": "{\n  \"checks\": {\n    \"capability_catalog_nonempty\": true,\n    \"live_dependencies_verified\": false,\n    \"production_actions_invoked\": false,\n    \"proposal_direct_path_governed\": true,\n    \"safe_diagnostic_executed\": true,\n    \"self_diagnostic_bound\": true\n  },\n  \"failed\": [],\n  \"limitations\": [\n    \"No live service adapters or external dependencies were contacted.\",\n    \"Passing checks do not establish production or end-to-end readiness.\"\n  ],\n  \"passed\": 4,\n  \"phase\": \"P26\",\n  \"scope\": \"local_in_process_staging_smoke_check\"\n}\n"
+  },
+  "staging_smoke_payload": {
+    "checks": {
+      "capability_catalog_nonempty": true,
+      "live_dependencies_verified": false,
+      "production_actions_invoked": false,
+      "proposal_direct_path_governed": true,
+      "safe_diagnostic_executed": true,
+      "self_diagnostic_bound": true
+    },
+    "failed": [],
+    "limitations": [
+      "No live service adapters or external dependencies were contacted.",
+      "Passing checks do not establish production or end-to-end readiness."
+    ],
+    "passed": 4,
+    "phase": "P26",
+    "scope": "local_in_process_staging_smoke_check"
+  }
+}

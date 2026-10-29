@@ -1,0 +1,21 @@
+{
+  "phase": "9.2",
+  "title": "Correlated Metrics & Distributed Trace Context",
+  "status": "implemented",
+  "authority": "none",
+  "new_files": [
+    "services/phase9_correlation.py",
+    "tests/test_phase9_correlation.py",
+    "PHASE9_02_CORRELATED_METRICS_TRACE_CONTEXT.md"
+  ],
+  "primitives": [
+    "OperationalCorrelationContext",
+    "MetricObservation",
+    "TraceObservation"
+  ],
+  "validation": {
+    "phase9_1_plus_9_2_tests": "14/14 PASS",
+    "compileall": "PASS"
+  },
+  "next": "9.3 incident and causal graph model"
+}

@@ -1,0 +1,25 @@
+{
+  "authority": {
+    "authority": "none",
+    "can_authorize": false,
+    "can_call_provider": false,
+    "can_execute": false,
+    "can_invoke_action_kernel": false
+  },
+  "files": [
+    {
+      "path": "services/v71_49_workforce_coordination_recovery.py",
+      "sha256": "eb40b38ecfb284a3bacacb3ef02cbb2b2569cdd211427dbb5f196d966be9819b"
+    }
+  ],
+  "known_limitation": "Docker CI contract expects extracted-root-relative .github workflow path outside work740",
+  "phase": "7.40",
+  "status": "certified_architecture_integrity_scope",
+  "title": "Workforce Coordination Recovery & Reconciliation Hardening",
+  "validation": {
+    "broader": "53/54",
+    "compileall": "PASS",
+    "dedicated": "4/4",
+    "focused_runtime": "25/25"
+  }
+}

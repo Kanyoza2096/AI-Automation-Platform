@@ -1,0 +1,22 @@
+{
+  "phase": "7.23",
+  "name": "Worker Selection Policy Audit & History",
+  "focused_tests": "67/67",
+  "architecture_tests": "597/597",
+  "compile": "PASS",
+  "authority": {
+    "read_only": true,
+    "authority_granted": false,
+    "can_authorize": false,
+    "can_execute": false,
+    "can_call_provider": false,
+    "can_invoke_action_kernel": false
+  },
+  "files": [
+    "services/v71_34_worker_selection_policy_audit.py",
+    "tests/test_phase7_23_policy_audit.py",
+    "tests/architecture/test_phase7_23_policy_audit.py",
+    "PHASE7_23_CERTIFICATION.md"
+  ],
+  "certification": "architecture/integrity only"
+}

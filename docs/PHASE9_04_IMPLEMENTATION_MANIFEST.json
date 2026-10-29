@@ -1,0 +1,17 @@
+{
+  "phase": "9.4",
+  "name": "Reliability & Dependency State",
+  "schema_version": "phase9.reliability-dependency.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_reliability.py",
+    "tests/test_phase9_reliability.py",
+    "PHASE9_04_RELIABILITY_DEPENDENCY_STATE.md",
+    "PHASE9_04_IMPLEMENTATION_MANIFEST.json"
+  ],
+  "dependencies": {
+    "phase_9_1": "Operational Event Model",
+    "phase_9_2": "Correlated Metrics & Distributed Trace Context",
+    "phase_9_3": "Incident & Causal Graph"
+  }
+}

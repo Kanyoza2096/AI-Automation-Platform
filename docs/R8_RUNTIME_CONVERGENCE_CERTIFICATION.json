@@ -1,0 +1,23 @@
+{
+  "release": "R8",
+  "status": "CERTIFICATION_CANDIDATE",
+  "scope": "Business Activation Phase 4 review loop",
+  "baseline": "R7",
+  "canonical_execution_chain": "Governance -> Authorization -> Action Kernel -> Connector -> Provider -> Receipt -> Verification -> Reconciliation",
+  "review_reextract_route": "POST /api/v1/business-activation/review/re-extract",
+  "fact_types": [
+    "business_hours",
+    "refund_policy"
+  ],
+  "confirmation_persists": false,
+  "second_execution_engine_added": false,
+  "knowledge_runtime_write_added": false,
+  "verification": {
+    "business_activation_contract_tests": "7/7 PASS",
+    "cumulative_regression": "19/19 PASS",
+    "python_compile": "PASS",
+    "frontend_changed_file_syntax": "PASS",
+    "frontend_full_build": "NOT_CLAIMED_DEPENDENCIES_ABSENT"
+  },
+  "next_boundary": "Phase 5 Knowledge storage and versioned confirmation write path"
+}

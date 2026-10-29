@@ -1,0 +1,22 @@
+{
+  "phase": "7.25",
+  "name": "Qualification-Aware Worker Selection",
+  "status": "CERTIFIED_ARCHITECTURE_INTEGRITY",
+  "focused_tests": "4/4",
+  "selection_regression_tests": "11/11",
+  "runtime_architecture_selection_tests": "14/14",
+  "previous_architecture_baseline": 605,
+  "compile": "PASS",
+  "authority": {
+    "advisory_only": true,
+    "authority_granted": false,
+    "can_authorize": false,
+    "can_execute": false,
+    "can_call_provider": false,
+    "can_invoke_action_kernel": false
+  },
+  "service": "services/v71_29_reputation_aware_worker_selection.py",
+  "qualification_service": "services/v71_35_worker_capability_qualification.py",
+  "test": "tests/test_v71_36_qualification_aware_selection.py",
+  "environment_note": "One pre-existing architecture contract test resolves .github from the parent extraction directory; targeted product/runtime suites pass."
+}

@@ -1,0 +1,4367 @@
+{
+  "route_count": 407,
+  "router_module_count": 73,
+  "orphan_router_modules": [],
+  "parse_errors": [],
+  "signal_counts": {
+    "service_import": 86,
+    "repository_import": 36,
+    "core_import": 81,
+    "container_or_app_state": 71,
+    "request_state": 28,
+    "database_access": 89
+  },
+  "placeholder_routes": [
+    {
+      "method": "GET",
+      "path": "/e2e/director-hands",
+      "module": "api/e2e_routes.py",
+      "handler": "director_hands",
+      "line": 65,
+      "signals": [
+        "service_import",
+        "container_or_app_state",
+        "request_state"
+      ],
+      "markers": [
+        "placeholder"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/notifications",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_notifications",
+      "line": 543,
+      "signals": [],
+      "markers": [
+        "not implemented"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/notifications/{notif_id}/read",
+      "module": "api/routers/monitoring.py",
+      "handler": "mark_notification_read",
+      "line": 550,
+      "signals": [],
+      "markers": [
+        "not implemented"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/health/unified",
+      "module": "api/health_unified.py",
+      "handler": "unified_health",
+      "line": 9,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/affiliate/actions",
+      "module": "routes/affiliate_routes.py",
+      "handler": "action",
+      "line": 100,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/affiliate/analytics",
+      "module": "routes/affiliate_routes.py",
+      "handler": "analytics",
+      "line": 95,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/affiliate/links",
+      "module": "routes/affiliate_routes.py",
+      "handler": "create_link",
+      "line": 88,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/affiliate/products",
+      "module": "routes/affiliate_routes.py",
+      "handler": "create_product",
+      "line": 83,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/ai-profiles/{profile_id}",
+      "module": "api/routers/ai_profiles.py",
+      "handler": "delete_ai_profile",
+      "line": 106,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/ai-profiles/{profile_id}",
+      "module": "api/routers/ai_profiles.py",
+      "handler": "update_ai_profile",
+      "line": 68,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ai/chat",
+      "module": "api/routers/ai_chat.py",
+      "handler": "ai_chat",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ai/config",
+      "module": "api/routers/ai_config.py",
+      "handler": "get_ai_config",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/ai/config",
+      "module": "api/routers/ai_config.py",
+      "handler": "update_ai_config",
+      "line": 164,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/ai/interpret",
+      "module": "api/routers/ai_config.py",
+      "handler": "ai_interpret",
+      "line": 44,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ai/persona",
+      "module": "api/routers/ai_config.py",
+      "handler": "get_ai_persona",
+      "line": 208,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/ai/persona",
+      "module": "api/routers/ai_config.py",
+      "handler": "update_ai_persona",
+      "line": 227,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/alerts",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "alerts",
+      "line": 31,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics",
+      "module": "api/routers/analytics.py",
+      "handler": "get_analytics",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics/engagement-heatmap",
+      "module": "api/routers/analytics.py",
+      "handler": "analytics_engagement_heatmap",
+      "line": 92,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics/performance",
+      "module": "api/routers/analytics.py",
+      "handler": "analytics_performance",
+      "line": 32,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics/posts-performance",
+      "module": "api/routers/analytics.py",
+      "handler": "analytics_posts_performance",
+      "line": 51,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/analytics/token-usage",
+      "module": "api/routers/analytics.py",
+      "handler": "analytics_token_usage",
+      "line": 75,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/applications",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "applications",
+      "line": 115,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/audit-logs",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_audit_logs",
+      "line": 592,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/exchange",
+      "module": "api/v1.py",
+      "handler": "auth_exchange",
+      "line": 311,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/autonomy/circuit-breakers",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_circuit_breakers",
+      "line": 293,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/autonomy/circuit-breakers/{breaker_id}/reset",
+      "module": "routes/autonomy_routes.py",
+      "handler": "reset_circuit_breaker",
+      "line": 306,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/autonomy/loop",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_loop",
+      "line": 259,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/autonomy/loop/step",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_loop_step",
+      "line": 278,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/autonomy/patterns",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_patterns",
+      "line": 332,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/autonomy/status",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_status",
+      "line": 187,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/admin/health",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "get_health",
+      "line": 414,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/admin/records",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "list_records",
+      "line": 437,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/backup/admin/run",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "run_backup_now",
+      "line": 318,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/backup/admin/run/{target_id}",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "run_backup_for_target",
+      "line": 348,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/admin/stats",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "get_stats",
+      "line": 399,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/admin/targets",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "list_targets",
+      "line": 155,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/backup/admin/targets",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "create_target",
+      "line": 194,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/backup/admin/targets/{target_id}",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "delete_target",
+      "line": 282,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/backup/admin/targets/{target_id}",
+      "module": "plugins/backup/routes/admin.py",
+      "handler": "update_target",
+      "line": 241,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/health",
+      "module": "plugins/backup/routes/public.py",
+      "handler": "health_check",
+      "line": 393,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/quick",
+      "module": "plugins/backup/routes/public.py",
+      "handler": "get_quick_status",
+      "line": 339,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/records",
+      "module": "plugins/backup/routes/public.py",
+      "handler": "get_backup_records",
+      "line": 257,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/backup/status",
+      "module": "plugins/backup/routes/public.py",
+      "handler": "get_backup_status",
+      "line": 174,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/bot/engage",
+      "module": "api/routers/bot_control.py",
+      "handler": "force_engage",
+      "line": 120,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/bot/news",
+      "module": "api/routers/bot_control.py",
+      "handler": "force_news",
+      "line": 105,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/bot/post",
+      "module": "api/routers/bot_control.py",
+      "handler": "force_post",
+      "line": 51,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/bot/status",
+      "module": "api/routers/bot_control.py",
+      "handler": "bot_status",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/brands/{brand_id}",
+      "module": "api/routers/brands.py",
+      "handler": "delete_brand",
+      "line": 129,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/brands/{brand_id}",
+      "module": "api/routers/brands.py",
+      "handler": "get_brand",
+      "line": 70,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/brands/{brand_id}",
+      "module": "api/routers/brands.py",
+      "handler": "update_brand",
+      "line": 91,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/brands/{brand_id}/jobs",
+      "module": "api/routers/jobs.py",
+      "handler": "get_brand_jobs",
+      "line": 47,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/brands/{brand_id}/knowledge",
+      "module": "api/routers/knowledge.py",
+      "handler": "list_knowledge_entries",
+      "line": 53,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/brands/{brand_id}/knowledge",
+      "module": "api/routers/knowledge.py",
+      "handler": "create_knowledge_entry",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/brands/{brand_id}/knowledge/search",
+      "module": "api/routers/knowledge.py",
+      "handler": "search_knowledge_entries",
+      "line": 92,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/business-automation/event-sources",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "list_business_event_sources",
+      "line": 197,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/business-automation/event-sources",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "create_business_event_source",
+      "line": 206,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/business-automation/event-sources/{source_id}",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "update_business_event_source",
+      "line": 233,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/business-automation/history",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "automation_history",
+      "line": 340,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/business-automation/rules",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "list_automation_rules",
+      "line": 122,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/business-automation/rules",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "create_automation_rule",
+      "line": 135,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/business-automation/rules/{rule_id}",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "update_automation_rule",
+      "line": 150,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/business-automation/run",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "run_automation",
+      "line": 170,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/business-automation/templates",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "list_automation_templates",
+      "line": 75,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/business-automation/templates/{template_id}/install",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "install_automation_template",
+      "line": 81,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/circulation/blockages",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_blockages",
+      "line": 80,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/circulation/check",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_check",
+      "line": 102,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/circulation/heal/{blockage_id}",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_heal",
+      "line": 122,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/circulation/history",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_history",
+      "line": 90,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/circulation/snapshot",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_snapshot",
+      "line": 67,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/circulation/status",
+      "module": "routes/circulation_routes.py",
+      "handler": "circulation_status",
+      "line": 57,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/code-intel/issues",
+      "module": "routes/code_intel_routes.py",
+      "handler": "get_issues",
+      "line": 12,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/code-intel/scan",
+      "module": "routes/code_intel_routes.py",
+      "handler": "trigger_scan",
+      "line": 16,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/code-intel/status",
+      "module": "routes/code_intel_routes.py",
+      "handler": "get_status",
+      "line": 8,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/executions/{execution_id}",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_execution_detail",
+      "line": 69,
+      "signals": [
+        "service_import",
+        "core_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/intelligence",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_intelligence",
+      "line": 186,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/intelligence/learning",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_business_learning",
+      "line": 200,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/intelligence/operating-loop",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_operating_loop",
+      "line": 225,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/intelligence/recommendations",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_recommendation_ledger",
+      "line": 174,
+      "signals": [
+        "service_import",
+        "core_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/investigations/executions/{execution_id}",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_operator_investigation",
+      "line": 98,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/platform-control-plane",
+      "module": "routes/command_center_routes.py",
+      "handler": "platform_control_plane_read_model",
+      "line": 154,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/command-center/read-model",
+      "module": "routes/command_center_routes.py",
+      "handler": "command_center_read_model",
+      "line": 45,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/competitors/gaps",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "competitor_gaps",
+      "line": 378,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/competitors/list",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "competitors_list",
+      "line": 368,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/competitors/opportunities",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "competitor_opportunities",
+      "line": 388,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/condition/baselines",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "condition_baselines",
+      "line": 181,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/condition/decisions",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "condition_decisions",
+      "line": 215,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/condition/experiments",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "condition_experiments",
+      "line": 200,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/condition/health",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "condition_health",
+      "line": 47,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/connectors/fabric/",
+      "module": "routes/connector_fabric_routes.py",
+      "handler": "connector_fabric_read_model",
+      "line": 27,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/connectors/fabric/evidence-coverage",
+      "module": "routes/connector_fabric_routes.py",
+      "handler": "connector_fabric_evidence_coverage",
+      "line": 46,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/connectors/fabric/{connector_key}",
+      "module": "routes/connector_fabric_routes.py",
+      "handler": "connector_fabric_detail",
+      "line": 54,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/connectors/fabric/{connector_key}/evidence",
+      "module": "routes/connector_fabric_routes.py",
+      "handler": "connector_fabric_evidence",
+      "line": 34,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content-intelligence/analyze",
+      "module": "api/content_intelligence_automation.py",
+      "handler": "analyze_content_intelligence",
+      "line": 53,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/content/candidates",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "content_candidates",
+      "line": 257,
+      "signals": [
+        "core_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content/candidates",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "generate_topic_candidate",
+      "line": 314,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/content/candidates/{candidate_id}/publish",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "publish_content_topic",
+      "line": 338,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/content/queue",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "content_queue",
+      "line": 288,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/context/me",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_context_me",
+      "line": 283,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/control-plane/action-intents/{intent_id}/evidence",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "action_intent_execution_evidence",
+      "line": 502,
+      "signals": [
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/council/history",
+      "module": "routes/council_routes.py",
+      "handler": "get_council_history",
+      "line": 360,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/council/members",
+      "module": "routes/council_routes.py",
+      "handler": "get_council_members",
+      "line": 295,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/council/statistics",
+      "module": "routes/council_routes.py",
+      "handler": "get_council_statistics",
+      "line": 342,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/council/stats",
+      "module": "routes/council_routes.py",
+      "handler": "get_council_stats_alias",
+      "line": 351,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/council/vote",
+      "module": "routes/council_routes.py",
+      "handler": "run_council_vote",
+      "line": 158,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dashboard/live",
+      "module": "api/routers/system.py",
+      "handler": "dashboard_live",
+      "line": 128,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decisions",
+      "line": 453,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions/{decision_id}",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decision",
+      "line": 464,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions/{decision_id}/dissent",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decision_dissent",
+      "line": 564,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions/{decision_id}/execution-evidence",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decision_execution_evidence",
+      "line": 474,
+      "signals": [
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions/{decision_id}/risk",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decision_risk",
+      "line": 554,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/decisions/{decision_id}/votes",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "decision_votes",
+      "line": 544,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dependency-graph",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "dependency_graph",
+      "line": 124,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/diagnoses",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "diagnoses",
+      "line": 115,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/diagnostics",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "run_diagnostics",
+      "line": 132,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dreams/insights",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "dreams_insights",
+      "line": 370,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/dreams/insights/{insight_id}/apply",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "apply_dream_insight",
+      "line": 403,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dreams/learning-curve",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "dreams_learning_curve",
+      "line": 378,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dreams/patterns",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "dreams_patterns",
+      "line": 391,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/dreams/status",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "dreams_status",
+      "line": 353,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/email/config",
+      "module": "routes/email_routes.py",
+      "handler": "get_config",
+      "line": 115,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/email/logs",
+      "module": "routes/email_routes.py",
+      "handler": "get_logs",
+      "line": 48,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/email/stats",
+      "module": "routes/email_routes.py",
+      "handler": "get_stats",
+      "line": 35,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/email/templates",
+      "module": "routes/email_routes.py",
+      "handler": "list_templates",
+      "line": 76,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/email/templates",
+      "module": "routes/email_routes.py",
+      "handler": "create_template",
+      "line": 86,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/email/templates/{template_id}",
+      "module": "routes/email_routes.py",
+      "handler": "delete_template",
+      "line": 104,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/email/templates/{template_id}",
+      "module": "routes/email_routes.py",
+      "handler": "update_template",
+      "line": 95,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/email/test",
+      "module": "routes/email_routes.py",
+      "handler": "send_test",
+      "line": 55,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/engines",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "engines",
+      "line": 78,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "activity_events",
+      "line": 317,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/events/clear",
+      "module": "routes/event_api.py",
+      "handler": "clear_events",
+      "line": 433,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/health",
+      "module": "routes/event_api.py",
+      "handler": "health_check",
+      "line": 439,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/events/publish",
+      "module": "routes/event_api.py",
+      "handler": "publish_event",
+      "line": 413,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/recent",
+      "module": "routes/event_api.py",
+      "handler": "get_recent_events",
+      "line": 319,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/stats",
+      "module": "routes/event_api.py",
+      "handler": "get_event_stats",
+      "line": 368,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/stream",
+      "module": "routes/event_api.py",
+      "handler": "stream_events",
+      "line": 341,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/subscribers",
+      "module": "routes/event_api.py",
+      "handler": "list_subscribers",
+      "line": 425,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/events/topology",
+      "module": "routes/event_api.py",
+      "handler": "get_event_topology",
+      "line": 386,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/failure-recovery/contract",
+      "module": "routes/failure_recovery_routes.py",
+      "handler": "get_contract",
+      "line": 14,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/failure-recovery/runs",
+      "module": "routes/failure_recovery_routes.py",
+      "handler": "get_runs",
+      "line": 49,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/failure-recovery/runs/{run_id}/recover",
+      "module": "routes/failure_recovery_routes.py",
+      "handler": "recover_run",
+      "line": 67,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/failure-recovery/runs/{run_id}/verify",
+      "module": "routes/failure_recovery_routes.py",
+      "handler": "verify_run",
+      "line": 77,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/failure-recovery/scenarios/{scenario_id}/execute",
+      "module": "routes/failure_recovery_routes.py",
+      "handler": "execute_scenario",
+      "line": 53,
+      "signals": [
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/features",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_features",
+      "line": 319,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/features/toggle",
+      "module": "api/routers/monitoring.py",
+      "handler": "toggle_feature",
+      "line": 363,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/analyze-repo",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "analyze_repo",
+      "line": 242,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/config",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "set_config",
+      "line": 37,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/generate-description",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "generate_description",
+      "line": 216,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/generate-docs",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "generate_docs",
+      "line": 301,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/github/repos",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "list_repos",
+      "line": 48,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/github/repos/{owner}/{repo}/issues",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "list_issues",
+      "line": 149,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/github/repos/{owner}/{repo}/pulls",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "list_pull_requests",
+      "line": 108,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/review-pr",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "review_pr",
+      "line": 186,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/github/status",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "get_status",
+      "line": 29,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/suggest-fix",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "suggest_fix",
+      "line": 268,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/webhook",
+      "module": "plugins/github_connector/routes/public.py",
+      "handler": "webhook",
+      "line": 20,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/github/webhook-test",
+      "module": "plugins/github_connector/routes/admin.py",
+      "handler": "webhook_test",
+      "line": 331,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/admin/stats",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "get_stats",
+      "line": 216,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/admin/users",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "get_admin_user",
+      "line": 123,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/admin/verify-password",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "verify_admin_password",
+      "line": 148,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/admin/{resource}",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "list_resource",
+      "line": 263,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/admin/{resource}",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "create_resource",
+      "line": 299,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/growthbridge/admin/{resource}/{record_id}",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "delete_resource",
+      "line": 349,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/admin/{resource}/{record_id}",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "get_resource",
+      "line": 279,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/growthbridge/admin/{resource}/{record_id}",
+      "module": "plugins/growthbridge/routes/admin.py",
+      "handler": "update_resource",
+      "line": 323,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/applications",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "submit_application",
+      "line": 309,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/blog",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_blog_posts",
+      "line": 111,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/blog/{slug}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_blog_post",
+      "line": 126,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/contact",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "contact",
+      "line": 267,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/health",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "health",
+      "line": 22,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/partners/apply",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "apply_partner",
+      "line": 293,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/partnerships",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "submit_partnership",
+      "line": 313,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/posts",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_posts",
+      "line": 140,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/posts/{slug}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_post",
+      "line": 144,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/projects",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_projects",
+      "line": 82,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/projects/{slug}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_project",
+      "line": 95,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/services",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_services",
+      "line": 53,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/services/{slug}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_service",
+      "line": 66,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/stats",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_public_stats",
+      "line": 248,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/talent/apply",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "apply_talent",
+      "line": 280,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/team",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_team",
+      "line": 153,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/growthbridge/team",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "create_team_member",
+      "line": 193,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/growthbridge/team/id/{id}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "delete_team_member",
+      "line": 218,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/team/id/{id}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_team_member_by_id",
+      "line": 182,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/growthbridge/team/id/{id}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "update_team_member",
+      "line": 206,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/team/{slug}",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_team_member",
+      "line": 171,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/growthbridge/testimonials",
+      "module": "plugins/growthbridge/routes/public.py",
+      "handler": "get_testimonials",
+      "line": 233,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/guardian/blocklist",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "get_blocklist",
+      "line": 85,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/guardian/blocklist",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "add_blocklist_ip",
+      "line": 94,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/guardian/blocklist/{ip}",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "remove_blocklist_ip",
+      "line": 103,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/guardian/issues",
+      "module": "api/routers/guardian.py",
+      "handler": "guardian_issues",
+      "line": 29,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/guardian/scan",
+      "module": "api/routers/guardian.py",
+      "handler": "trigger_scan",
+      "line": 61,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/guardian/status",
+      "module": "api/routers/guardian.py",
+      "handler": "guardian_status",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/healing-history",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "healing_history",
+      "line": 142,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/deep",
+      "module": "api/routers/system.py",
+      "handler": "health_deep",
+      "line": 94,
+      "signals": [
+        "repository_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health/live",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "meta_live",
+      "line": 107,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/heartbeat/history",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "heartbeat_history",
+      "line": 451,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/heartbeat/services",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "heartbeat_services",
+      "line": 438,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/heartbeat/status",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "heartbeat_status",
+      "line": 423,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/image/generate",
+      "module": "api/routers/ai_config.py",
+      "handler": "generate_image_endpoint",
+      "line": 94,
+      "signals": [
+        "service_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/image/status",
+      "module": "api/routers/ai_config.py",
+      "handler": "get_image_status",
+      "line": 133,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/integrations",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_integrations",
+      "line": 560,
+      "signals": [
+        "repository_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/integrations/status",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "integrations_status",
+      "line": 398,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/{job_id}",
+      "module": "api/routers/jobs.py",
+      "handler": "get_job_status",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/keys",
+      "module": "api/routers/api_keys.py",
+      "handler": "list_api_keys",
+      "line": 54,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/keys/generate",
+      "module": "api/routers/api_keys.py",
+      "handler": "generate_api_key",
+      "line": 15,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/keys/{key_id}",
+      "module": "api/routers/api_keys.py",
+      "handler": "revoke_api_key",
+      "line": 69,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge",
+      "module": "api/routers/knowledge.py",
+      "handler": "list_knowledge",
+      "line": 182,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/knowledge",
+      "module": "api/routers/knowledge.py",
+      "handler": "create_knowledge",
+      "line": 213,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/knowledge/{knowledge_id}",
+      "module": "api/routers/knowledge.py",
+      "handler": "delete_knowledge_entry",
+      "line": 72,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/logs/recent",
+      "module": "api/routers/system.py",
+      "handler": "logs_recent",
+      "line": 135,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/logs/stats",
+      "module": "api/routers/monitoring.py",
+      "handler": "logs_stats",
+      "line": 224,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/logs/stream",
+      "module": "api/routers/monitoring.py",
+      "handler": "logs_stream",
+      "line": 245,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/messages",
+      "module": "api/routers/messages.py",
+      "handler": "get_messages",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/messages/reply",
+      "module": "api/routers/messages.py",
+      "handler": "send_message",
+      "line": 30,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/messages/{sender_id}",
+      "module": "api/routers/messages.py",
+      "handler": "get_conversation",
+      "line": 57,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/dependency-graph",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_dependency_graph",
+      "line": 107,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/meta/diagnose",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_diagnose",
+      "line": 191,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/diagnoses",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_diagnoses",
+      "line": 84,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/engines",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_engines",
+      "line": 63,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/meta/heal",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_heal",
+      "line": 228,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/healing-history",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_healing_history",
+      "line": 148,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/incidents",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_incidents",
+      "line": 276,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/meta/resolve/{incident_id}",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_resolve",
+      "line": 288,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/snapshots",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_snapshots",
+      "line": 122,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/meta/status",
+      "module": "routes/meta_routes.py",
+      "handler": "meta_status",
+      "line": 28,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/metabolism/admin/set-plan",
+      "module": "api/metabolism_routes.py",
+      "handler": "admin_set_plan",
+      "line": 123,
+      "signals": [
+        "core_import",
+        "container_or_app_state",
+        "request_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/metabolism/checkout",
+      "module": "api/metabolism_routes.py",
+      "handler": "create_checkout",
+      "line": 83,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metabolism/plans",
+      "module": "api/metabolism_routes.py",
+      "handler": "list_plans",
+      "line": 43,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metabolism/status",
+      "module": "api/metabolism_routes.py",
+      "handler": "metabolism_status",
+      "line": 63,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/metabolism/webhook/stripe",
+      "module": "api/metabolism_routes.py",
+      "handler": "stripe_webhook",
+      "line": 110,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics",
+      "module": "api/routers/metrics.py",
+      "handler": "get_metrics",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics/public",
+      "module": "api/routers/metrics.py",
+      "handler": "get_public_metrics",
+      "line": 26,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics/query",
+      "module": "api/routers/metrics.py",
+      "handler": "metrics_query",
+      "line": 65,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/metrics/resources",
+      "module": "api/routers/metrics.py",
+      "handler": "get_resource_metrics",
+      "line": 44,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/monitor/admin/check-now",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "check_now",
+      "line": 164,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitor/admin/checks",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "get_checks",
+      "line": 173,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitor/admin/health",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "get_health",
+      "line": 156,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitor/admin/stats",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "get_stats",
+      "line": 148,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitor/admin/targets",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "list_targets",
+      "line": 80,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/monitor/admin/targets",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "create_target",
+      "line": 91,
+      "signals": [
+        "core_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/monitor/admin/targets/{target_id}",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "delete_target",
+      "line": 132,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/monitor/admin/targets/{target_id}",
+      "module": "plugins/monitor/routes/admin.py",
+      "handler": "update_target",
+      "line": 107,
+      "signals": [
+        "core_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitoring/stats",
+      "module": "api/routers/monitoring.py",
+      "handler": "monitoring_stats",
+      "line": 189,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/monitoring/stream",
+      "module": "api/routers/monitoring.py",
+      "handler": "monitoring_stream",
+      "line": 58,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/monitoring/stream-token",
+      "module": "api/routers/monitoring.py",
+      "handler": "generate_stream_token",
+      "line": 22,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/notifications",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_notifications",
+      "line": 543,
+      "signals": [],
+      "markers": [
+        "not implemented"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/notifications/{notif_id}/read",
+      "module": "api/routers/monitoring.py",
+      "handler": "mark_notification_read",
+      "line": 550,
+      "signals": [],
+      "markers": [
+        "not implemented"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/observability/health",
+      "module": "api/observability_routes.py",
+      "handler": "observability_health",
+      "line": 60,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/observability/workspace/{workspace_id}",
+      "module": "api/observability_routes.py",
+      "handler": "workspace_observability",
+      "line": 18,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/onboarding/plan",
+      "module": "routes/business_onboarding_routes.py",
+      "handler": "plan",
+      "line": 53,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/onboarding/provision",
+      "module": "routes/business_onboarding_routes.py",
+      "handler": "provision",
+      "line": 63,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/onboarding/understand",
+      "module": "routes/business_onboarding_routes.py",
+      "handler": "understand",
+      "line": 47,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/body",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_body",
+      "line": 318,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/census",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_census",
+      "line": 350,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/hands",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_hands",
+      "line": 262,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/mind",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_mind",
+      "line": 232,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/sleep",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_sleep",
+      "line": 292,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/organism/vitals",
+      "module": "api/organism_body_routes.py",
+      "handler": "organism_vitals",
+      "line": 202,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/outbox/drain",
+      "module": "api/outbox_routes.py",
+      "handler": "drain_outbox",
+      "line": 55,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/outbox/{workspace_id}",
+      "module": "api/outbox_routes.py",
+      "handler": "list_outbox",
+      "line": 17,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/outbox/{workspace_id}/item/{item_id}",
+      "module": "api/outbox_routes.py",
+      "handler": "get_outbox_item",
+      "line": 35,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/outbox/{workspace_id}/item/{item_id}/reconcile",
+      "module": "api/outbox_routes.py",
+      "handler": "reconcile_outbox_item",
+      "line": 69,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/owner/autonomy",
+      "module": "routes/autonomy_routes.py",
+      "handler": "autonomy_status",
+      "line": 187,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/owner/autonomy",
+      "module": "routes/autonomy_routes.py",
+      "handler": "set_autonomy_mode",
+      "line": 213,
+      "signals": [
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/owner/autonomy",
+      "module": "routes/autonomy_routes.py",
+      "handler": "set_autonomy_mode",
+      "line": 213,
+      "signals": [
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/owner/lockdown",
+      "module": "routes/autonomy_routes.py",
+      "handler": "owner_lockdown",
+      "line": 345,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/persona",
+      "module": "api/routers/ai_config.py",
+      "handler": "get_persona",
+      "line": 265,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/persona",
+      "module": "api/routers/ai_config.py",
+      "handler": "update_persona",
+      "line": 284,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/persona/reset",
+      "module": "api/routers/ai_config.py",
+      "handler": "reset_persona",
+      "line": 310,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plugins",
+      "module": "api/routers/file_upload.py",
+      "handler": "list_plugins",
+      "line": 152,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/plugins/pdf_merger/execute",
+      "module": "api/routers/file_upload.py",
+      "handler": "pdf_merger_execute",
+      "line": 117,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/plugins/pdf_merger/upload",
+      "module": "api/routers/file_upload.py",
+      "handler": "upload_pdfs_for_merger",
+      "line": 102,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/plugins/{plugin_name}/execute",
+      "module": "api/routers/file_upload.py",
+      "handler": "execute_plugin_command",
+      "line": 174,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/posts",
+      "module": "api/routers/posts.py",
+      "handler": "get_posts",
+      "line": 17,
+      "signals": [
+        "service_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/posts",
+      "module": "api/routers/posts.py",
+      "handler": "create_post",
+      "line": 129,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/posts/{slug}",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "post_by_slug",
+      "line": 414,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/predictions/confidence",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "prediction_confidence",
+      "line": 343,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/predictions/forecast",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "prediction_forecast",
+      "line": 334,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/predictions/optimal-times",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "optimal_posting_times",
+      "line": 233,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pulse/alerts",
+      "module": "routes/pulse_routes.py",
+      "handler": "pulse_alerts",
+      "line": 56,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pulse/stagnated",
+      "module": "routes/pulse_routes.py",
+      "handler": "pulse_stagnated",
+      "line": 46,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pulse/status",
+      "module": "routes/pulse_routes.py",
+      "handler": "pulse_status",
+      "line": 26,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/pulse/tables",
+      "module": "routes/pulse_routes.py",
+      "handler": "pulse_tables",
+      "line": 36,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/pulse/thresholds",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "update_pulse_thresholds",
+      "line": 59,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/pulse/thresholds",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "update_pulse_thresholds",
+      "line": 59,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/quality/analyze",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "quality_analyze",
+      "line": 97,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/quality/history",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "quality_history",
+      "line": 352,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/quality/posts",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "quality_posts",
+      "line": 90,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rate-limits",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_rate_limits",
+      "line": 415,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/rate-limits/config",
+      "module": "api/routers/monitoring.py",
+      "handler": "update_rate_limit_config",
+      "line": 467,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rate-limits/unblock",
+      "module": "api/routers/monitoring.py",
+      "handler": "unblock_user",
+      "line": 508,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reflexes/triggers",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "reflex_triggers",
+      "line": 141,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/reports/run-weekly",
+      "module": "api/report_routes.py",
+      "handler": "run_weekly",
+      "line": 30,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/reports/workspace/{workspace_id}",
+      "module": "api/report_routes.py",
+      "handler": "workspace_report",
+      "line": 13,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/repos",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "repos",
+      "line": 120,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules",
+      "module": "routes/cp_gap_routes.py",
+      "handler": "rules",
+      "line": 40,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules/",
+      "module": "routes/rule_routes.py",
+      "handler": "list_rules",
+      "line": 131,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/",
+      "module": "routes/rule_routes.py",
+      "handler": "create_rule",
+      "line": 136,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules/events",
+      "module": "routes/rule_routes.py",
+      "handler": "get_events",
+      "line": 196,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules/health",
+      "module": "routes/rule_routes.py",
+      "handler": "get_health",
+      "line": 191,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules/history",
+      "module": "routes/rule_routes.py",
+      "handler": "get_history",
+      "line": 181,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/rules/metrics",
+      "module": "routes/rule_routes.py",
+      "handler": "get_metrics",
+      "line": 186,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/test",
+      "module": "routes/rule_routes.py",
+      "handler": "test_all_rules",
+      "line": 176,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/rules/{rule_id}",
+      "module": "routes/rule_routes.py",
+      "handler": "delete_rule",
+      "line": 151,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/rules/{rule_id}",
+      "module": "routes/rule_routes.py",
+      "handler": "update_rule",
+      "line": 144,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/{rule_id}/test",
+      "module": "routes/rule_routes.py",
+      "handler": "test_rule",
+      "line": 168,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/{rule_id}/toggle",
+      "module": "routes/rule_routes.py",
+      "handler": "toggle_rule",
+      "line": 158,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/autonomous-workforce-bridge",
+      "module": "routes/autonomous_workforce_bridge_routes.py",
+      "handler": "autonomous_workforce_bridge",
+      "line": 7,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/convergence",
+      "module": "routes/production_runtime_routes.py",
+      "handler": "convergence_status",
+      "line": 14,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/convergence/workspace/{workspace_id}",
+      "module": "routes/production_runtime_routes.py",
+      "handler": "workspace_convergence_status",
+      "line": 22,
+      "signals": [
+        "container_or_app_state",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/legacy-authority-fence",
+      "module": "routes/legacy_runtime_fencing_routes.py",
+      "handler": "legacy_authority_fence",
+      "line": 6,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/route-event-wiring",
+      "module": "routes/runtime_wiring_routes.py",
+      "handler": "route_event_wiring",
+      "line": 13,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/runtime/workforce-execution",
+      "module": "routes/workforce_execution_routes.py",
+      "handler": "workforce_execution_status",
+      "line": 7,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/scan",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_scan_status",
+      "line": 626,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/scan",
+      "module": "api/routers/monitoring.py",
+      "handler": "trigger_scan_shortcut",
+      "line": 616,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/schedule",
+      "module": "api/routers/schedule.py",
+      "handler": "get_schedule",
+      "line": 15,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/schedule",
+      "module": "api/routers/schedule.py",
+      "handler": "update_schedule",
+      "line": 30,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "list_sector_packs",
+      "line": 71,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/action-contracts",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_action_contracts",
+      "line": 97,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/control-plane",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_platform_control_plane",
+      "line": 90,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/governance-readiness",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_action_governance_readiness",
+      "line": 103,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/implementation-gates",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_action_implementation_gates",
+      "line": 110,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/it-operations/deployments/{deployment_id}/reconciliation-evidence",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "it_deployment_reconciliation_evidence",
+      "line": 117,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/provider-binding-contracts",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_provider_binding_contracts",
+      "line": 140,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/provider-gap-requirements",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "sector_provider_gap_requirements",
+      "line": 133,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sector-packs/{pack_id}",
+      "module": "routes/sector_pack_routes.py",
+      "handler": "get_sector_pack",
+      "line": 128,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/security/scan",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "security_scan",
+      "line": 111,
+      "signals": [
+        "service_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/sensors/status",
+      "module": "routes/sensor_routes.py",
+      "handler": "sensors_status",
+      "line": 12,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/services",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "service_inventory",
+      "line": 180,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/slo/alert-check",
+      "module": "api/report_routes.py",
+      "handler": "slo_alert_check",
+      "line": 43,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/slo/health",
+      "module": "api/slo_routes.py",
+      "handler": "slo_health_summary",
+      "line": 45,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/slo/platform",
+      "module": "api/slo_routes.py",
+      "handler": "platform_slos",
+      "line": 32,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/slo/workspace/{workspace_id}",
+      "module": "api/slo_routes.py",
+      "handler": "workspace_slos",
+      "line": 15,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/social-accounts/{account_id}",
+      "module": "api/routers/social_accounts.py",
+      "handler": "delete_social_account",
+      "line": 151,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/social-accounts/{account_id}",
+      "module": "api/routers/social_accounts.py",
+      "handler": "update_social_account",
+      "line": 88,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/social-accounts/{account_id}/health-check",
+      "module": "api/routers/social_accounts.py",
+      "handler": "health_check_social_account",
+      "line": 175,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/social-accounts/{account_id}/verify-publish",
+      "module": "api/routers/social_accounts.py",
+      "handler": "verify_publish",
+      "line": 206,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/social/twitter/status",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "twitter_provider_status",
+      "line": 466,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/species/scale",
+      "module": "api/organism_body_routes.py",
+      "handler": "species_scale_status",
+      "line": 370,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/status",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_status",
+      "line": 304,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/system-health",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "system_health",
+      "line": 150,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/system/auth/validate",
+      "module": "api/v1.py",
+      "handler": "validate_service_credential",
+      "line": 365,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/system/connectors",
+      "module": "api/routers/system.py",
+      "handler": "get_system_connectors",
+      "line": 87,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/system/health",
+      "module": "api/routers/system.py",
+      "handler": "get_system_health",
+      "line": 15,
+      "signals": [
+        "core_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tasks",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "tasks",
+      "line": 94,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tenants",
+      "module": "api/routers/monitoring.py",
+      "handler": "get_tenants",
+      "line": 519,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tenants/switch",
+      "module": "api/routers/monitoring.py",
+      "handler": "switch_tenant",
+      "line": 534,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/topology",
+      "module": "routes/backend_contract_routes.py",
+      "handler": "topology",
+      "line": 204,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/traces/recent",
+      "module": "api/routers/tracing.py",
+      "handler": "get_recent_traces",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/admin/rules",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "list_rules",
+      "line": 207,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/trends/admin/rules",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "create_rule",
+      "line": 222,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/trends/admin/scan",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "trigger_scan",
+      "line": 261,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/admin/sources",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "list_sources",
+      "line": 154,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/trends/admin/sources",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "create_source",
+      "line": 169,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/admin/status",
+      "module": "plugins/trend_intelligence/routes/admin.py",
+      "handler": "get_status",
+      "line": 291,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/decisions",
+      "module": "plugins/trend_intelligence/routes/public.py",
+      "handler": "get_decisions",
+      "line": 252,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/health",
+      "module": "plugins/trend_intelligence/routes/public.py",
+      "handler": "health_check",
+      "line": 343,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/trends/live",
+      "module": "plugins/trend_intelligence/routes/public.py",
+      "handler": "get_live_trends",
+      "line": 161,
+      "signals": [
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/upload",
+      "module": "api/routers/file_upload.py",
+      "handler": "upload_file",
+      "line": 17,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/users",
+      "module": "api/routers/users.py",
+      "handler": "list_users",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/users",
+      "module": "api/routers/users.py",
+      "handler": "create_user",
+      "line": 47,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/users/{user_id}",
+      "module": "api/routers/users.py",
+      "handler": "delete_user",
+      "line": 181,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/users/{user_id}",
+      "module": "api/routers/users.py",
+      "handler": "update_user",
+      "line": 113,
+      "signals": [
+        "service_import",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/webhooks/linkedin",
+      "module": "api/routers/webhooks.py",
+      "handler": "linkedin_webhook",
+      "line": 64,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/webhooks/twitter",
+      "module": "api/routers/webhooks.py",
+      "handler": "twitter_webhook",
+      "line": 50,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/website-integrations/",
+      "module": "api/website_integrations.py",
+      "handler": "list_integrations",
+      "line": 30,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/website-integrations/",
+      "module": "api/website_integrations.py",
+      "handler": "register_integration",
+      "line": 35,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/website-integrations/{integration_id}",
+      "module": "api/website_integrations.py",
+      "handler": "get_integration",
+      "line": 42,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/website-integrations/{integration_id}/events",
+      "module": "api/website_integrations.py",
+      "handler": "receive_event",
+      "line": 50,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflow",
+      "module": "api/routers/workflows.py",
+      "handler": "list_workflows",
+      "line": 15,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflow/history",
+      "module": "api/routers/workflows.py",
+      "handler": "workflow_history_endpoint",
+      "line": 87,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/pause",
+      "module": "api/routers/workflows.py",
+      "handler": "workflow_pause",
+      "line": 121,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/run",
+      "module": "api/routers/workflows.py",
+      "handler": "run_workflow",
+      "line": 35,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workflow/status",
+      "module": "api/routers/workflows.py",
+      "handler": "workflow_status",
+      "line": 72,
+      "signals": [
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/trigger",
+      "module": "api/routers/workflows.py",
+      "handler": "workflow_trigger",
+      "line": 132,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/{workflow_id}/cancel",
+      "module": "api/routers/workflows.py",
+      "handler": "cancel_workflow",
+      "line": 187,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/{workflow_id}/rollback",
+      "module": "api/routers/workflows.py",
+      "handler": "rollback_workflow",
+      "line": 213,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces",
+      "module": "api/routers/workspaces.py",
+      "handler": "list_workspaces",
+      "line": 92,
+      "signals": [
+        "repository_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces",
+      "module": "api/routers/workspaces.py",
+      "handler": "create_workspace",
+      "line": 15,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "core_import",
+        "container_or_app_state",
+        "database_access"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "module": "api/routers/workspaces.py",
+      "handler": "delete_workspace",
+      "line": 179,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "module": "api/routers/workspaces.py",
+      "handler": "get_workspace",
+      "line": 119,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/workspaces/{workspace_id}",
+      "module": "api/routers/workspaces.py",
+      "handler": "update_workspace",
+      "line": 140,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces/{workspace_id}/ai-profiles",
+      "module": "api/routers/ai_profiles.py",
+      "handler": "list_ai_profiles",
+      "line": 49,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/ai-profiles",
+      "module": "api/routers/ai_profiles.py",
+      "handler": "create_ai_profile",
+      "line": 15,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces/{workspace_id}/brands",
+      "module": "api/routers/brands.py",
+      "handler": "list_brands",
+      "line": 51,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/brands",
+      "module": "api/routers/brands.py",
+      "handler": "create_brand",
+      "line": 15,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/knowledge/bulk",
+      "module": "api/routers/knowledge.py",
+      "handler": "bulk_create_knowledge",
+      "line": 129,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces/{workspace_id}/social-accounts",
+      "module": "api/routers/social_accounts.py",
+      "handler": "list_social_accounts",
+      "line": 67,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/social-accounts",
+      "module": "api/routers/social_accounts.py",
+      "handler": "create_social_account",
+      "line": 15,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/social-accounts/bulk-health-check",
+      "module": "api/routers/social_accounts.py",
+      "handler": "bulk_health_check",
+      "line": 273,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/workspaces/{workspace_id}/users",
+      "module": "api/routers/users_crud.py",
+      "handler": "list_workspace_users",
+      "line": 15,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workspaces/{workspace_id}/users",
+      "module": "api/routers/users_crud.py",
+      "handler": "add_workspace_user",
+      "line": 49,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/workspaces/{workspace_id}/users/{user_id}",
+      "module": "api/routers/users_crud.py",
+      "handler": "remove_workspace_user",
+      "line": 164,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/workspaces/{workspace_id}/users/{user_id}",
+      "module": "api/routers/users_crud.py",
+      "handler": "update_workspace_user",
+      "line": 102,
+      "signals": [
+        "repository_import",
+        "container_or_app_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/api/web/ask",
+      "module": "api/web_intelligence.py",
+      "handler": "tool_ask",
+      "line": 39,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/web/providers",
+      "module": "api/web_intelligence.py",
+      "handler": "list_providers",
+      "line": 32,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/api/web/search",
+      "module": "api/web_intelligence.py",
+      "handler": "web_search",
+      "line": 14,
+      "signals": [
+        "service_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/control-plane/action-intents",
+      "module": "api/action_intent_routes.py",
+      "handler": "enqueue_action_intent",
+      "line": 40,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/control-plane/action-intents/{intent_id}/approve",
+      "module": "api/action_intent_routes.py",
+      "handler": "approve_action_intent",
+      "line": 70,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/e2e/director-hands",
+      "module": "api/e2e_routes.py",
+      "handler": "director_hands",
+      "line": 65,
+      "signals": [
+        "service_import",
+        "container_or_app_state",
+        "request_state"
+      ],
+      "markers": [
+        "placeholder"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/e2e/publish",
+      "module": "api/e2e_routes.py",
+      "handler": "e2e_publish",
+      "line": 29,
+      "signals": [
+        "service_import",
+        "core_import",
+        "container_or_app_state",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/timeline/correlation/{correlation_id}",
+      "module": "api/timeline_routes.py",
+      "handler": "timeline_by_correlation",
+      "line": 33,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/timeline/decision/{decision_id}",
+      "module": "api/timeline_routes.py",
+      "handler": "timeline_by_decision",
+      "line": 62,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/timeline/outcome",
+      "module": "api/timeline_routes.py",
+      "handler": "post_outcome",
+      "line": 109,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/timeline/workspace/{workspace_id}/decisions",
+      "module": "api/timeline_routes.py",
+      "handler": "list_workspace_decisions",
+      "line": 93,
+      "signals": [
+        "core_import",
+        "request_state"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/webhook",
+      "module": "routes/webhook.py",
+      "handler": "verify_webhook",
+      "line": 396,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/webhook",
+      "module": "routes/webhook.py",
+      "handler": "receive_message",
+      "line": 408,
+      "signals": [
+        "core_import"
+      ],
+      "markers": []
+    },
+    {
+      "method": "GET",
+      "path": "/webhook/whatsapp",
+      "module": "routes/webhook.py",
+      "handler": "verify_whatsapp_webhook",
+      "line": 103,
+      "signals": [],
+      "markers": []
+    },
+    {
+      "method": "POST",
+      "path": "/webhook/whatsapp",
+      "module": "routes/webhook.py",
+      "handler": "receive_whatsapp_webhook",
+      "line": 120,
+      "signals": [
+        "service_import",
+        "repository_import",
+        "core_import"
+      ],
+      "markers": []
+    }
+  ]
+}

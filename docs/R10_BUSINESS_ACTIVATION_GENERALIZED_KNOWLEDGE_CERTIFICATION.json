@@ -1,0 +1,22 @@
+{
+  "release": "R10",
+  "scope": "Business Activation generalized natural-language knowledge",
+  "proof_slice_retained": ["business_hours", "refund_policy"],
+  "broad_mode": "business_knowledge",
+  "confirmation_required": true,
+  "unconfirmed_runtime_read": false,
+  "source_span_required": true,
+  "speculative_statements_promoted": false,
+  "second_knowledge_store": false,
+  "second_execution_engine": false,
+  "live_supabase_certified": false,
+  "tests": {
+    "selected_regression": "28/28 PASS",
+    "python_compileall": "PASS"
+  },
+  "environment_limitations": [
+    "node_modules unavailable; dependency-backed frontend build not claimed",
+    "physical mobile browser validation not claimed",
+    "live PostgreSQL/Supabase deployment not claimed"
+  ]
+}

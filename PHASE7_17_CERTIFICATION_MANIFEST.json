@@ -1,0 +1,19 @@
+{
+  "phase": "7.17",
+  "name": "Worker Reputation & Capability Evidence",
+  "focused_tests": "8/8",
+  "architecture_tests": "532/532",
+  "compile": "PASS",
+  "authority": {
+    "coordination_only": true,
+    "can_authorize": false,
+    "can_execute": false,
+    "can_call_provider": false,
+    "worker_mutable": false
+  },
+  "files": [
+    "services/v71_28_worker_reputation_capability_evidence.py",
+    "tests/test_phase7_17_worker_reputation_capability_evidence.py",
+    "PHASE7_17_CERTIFICATION.md"
+  ]
+}

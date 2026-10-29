@@ -1,0 +1,37 @@
+{
+  "release": "R5",
+  "title": "Notification and Diagnostic Runtime Convergence",
+  "status": "CERTIFICATION_CANDIDATE",
+  "source_baseline": "KDO-Backend-R4-Runtime-Ownership-Convergence-Complete",
+  "authority": {
+    "canonical_execution": "ActionIntent -> Governance -> Authorization -> Action Kernel -> Connector Fabric -> Provider -> Receipt -> Verification -> Reconciliation",
+    "second_executor_added": false,
+    "legacy_direct_http_mutation_reintroduced": false
+  },
+  "closed_gaps": [
+    "GET /api/v1/notifications no longer returns a fake empty or 501 placeholder",
+    "POST /api/v1/notifications/{notif_id}/read now persists workspace-scoped read state"
+  ],
+  "notification_model": {
+    "table": "kanyoza_notifications",
+    "workspace_scoped": true,
+    "unread_filter": true,
+    "bounded_limit": 200,
+    "unavailable_state": "503",
+    "missing_notification_state": "404"
+  },
+  "diagnostic_boundary": {
+    "route": "GET /e2e/director-hands",
+    "classification": "DIAGNOSTIC_ONLY",
+    "production": "DISABLED",
+    "executes_capability_handlers": false,
+    "creates_action_intent": false
+  },
+  "verification": {
+    "focused_route_hardening": "6/6 PASS",
+    "cumulative_runtime_regression": "12/12 PASS",
+    "python_compile": "PASS"
+  },
+  "known_external_requirement": "Migration 134 must be applied to the target PostgreSQL/Supabase environment before durable notification persistence is live there.",
+  "production_certification": false
+}

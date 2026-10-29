@@ -1,0 +1,24 @@
+{
+  "release": "R12",
+  "name": "Business Activation Agent Runtime",
+  "status": "CERTIFICATION_CANDIDATE",
+  "endpoint": "POST /api/v1/business-activation/agent/answer",
+  "states": ["GROUNDED", "MISSING_KNOWLEDGE", "COVERAGE_GAP"],
+  "invariants": {
+    "confirmed_current_knowledge_only": true,
+    "provenance_returned": true,
+    "missing_knowledge_refuses_or_handoffs": true,
+    "ambiguous_scope_does_not_guess": true,
+    "workspace_scoped": true,
+    "read_only": true,
+    "no_second_knowledge_store": true,
+    "no_second_execution_engine": true,
+    "no_new_authorization_authority": true
+  },
+  "focused_regression_passed": 49,
+  "python_compileall": "PASS",
+  "frontend_full_typecheck": "NOT_CLAIMED_NODE_MODULES_MISSING",
+  "frontend_full_build": "NOT_CLAIMED_NODE_MODULES_MISSING",
+  "live_database_deployment": "NOT_CLAIMED",
+  "physical_mobile_validation": "NOT_CLAIMED"
+}

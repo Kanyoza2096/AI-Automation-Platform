@@ -1,0 +1,22 @@
+{
+  "phase": "9.8",
+  "name": "Disaster Recovery & Continuity",
+  "schema_version": "phase9.disaster-recovery.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_disaster_recovery.py",
+    "tests/test_phase9_disaster_recovery.py",
+    "PHASE9_08_DISASTER_RECOVERY_CONTINUITY.md",
+    "PHASE9_08_IMPLEMENTATION_MANIFEST.json",
+    "PHASE9_08_CERTIFICATION_REPORT.md"
+  ],
+  "contract_scope": [
+    "RTO/RPO objectives",
+    "recovery artifact verification",
+    "ordered recovery plans",
+    "recovery readiness assessment",
+    "continuity window checks",
+    "workspace isolation",
+    "authority-free recovery modeling"
+  ]
+}

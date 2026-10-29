@@ -1,0 +1,33 @@
+# Isolated initial staging deployment. Copy .env.staging.example to .env.staging
+# and populate secrets through a secure operator channel; never commit that file.
+services:
+  kdo-staging:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: kdo-ai-platform:staging
+    env_file:
+      - .env.staging
+    environment:
+      ENVIRONMENT: staging
+      PORT: "10000"
+      GUARDIAN_ENABLED: "false"
+      LOG_LEVEL: INFO
+    ports:
+      - "127.0.0.1:10001:10000"
+    volumes:
+      - ../../data/staging:/app/data
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:10000/health/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s

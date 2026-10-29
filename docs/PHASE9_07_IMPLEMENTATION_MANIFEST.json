@@ -1,0 +1,23 @@
+{
+  "phase": "9.7",
+  "name": "Resilience Testing & Failure Injection",
+  "schema_version": "phase9.resilience.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_resilience.py",
+    "tests/test_phase9_resilience.py",
+    "PHASE9_07_RESILIENCE_TESTING_FAILURE_INJECTION.md",
+    "PHASE9_07_IMPLEMENTATION_MANIFEST.json",
+    "PHASE9_07_CERTIFICATION_REPORT.md"
+  ],
+  "failure_modes": [
+    "TIMEOUT",
+    "CONNECTION_FAILURE",
+    "ERROR_RESPONSE",
+    "STALE_DATA",
+    "INCONSISTENT_DATA",
+    "PARTIAL_OUTAGE",
+    "RECOVERY"
+  ],
+  "safety_rule": "test harness produces evidence; it never executes provider actions"
+}

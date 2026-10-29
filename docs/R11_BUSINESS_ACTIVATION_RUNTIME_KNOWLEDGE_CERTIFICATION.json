@@ -1,0 +1,18 @@
+{
+  "release": "R11",
+  "name": "Business Activation Runtime Knowledge Read",
+  "status": "CERTIFICATION_CANDIDATE",
+  "runtime_read_endpoint": "/api/v1/business-activation/knowledge/read",
+  "confirmed_current_only": true,
+  "superseded_excluded": true,
+  "workspace_scoped": true,
+  "provenance_preserved": true,
+  "missing_knowledge_refuses": true,
+  "coverage_gap_distinguished": true,
+  "generalized_business_knowledge_wildcard": true,
+  "second_knowledge_store": false,
+  "second_execution_engine": false,
+  "live_supabase_proof": false,
+  "frontend_full_build_proof": false,
+  "focused_regression_passed": 41
+}

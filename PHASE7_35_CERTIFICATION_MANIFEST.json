@@ -1,0 +1,24 @@
+{
+  "phase": "7.35",
+  "name": "Workforce Coordination Policy & Adaptive Planning",
+  "status": "certified_architecture_integrity_scope",
+  "version": "phase7.35",
+  "authority_invariants": {
+    "advisory_only": true,
+    "authority_granted": false,
+    "execution_requested": false,
+    "provider_called": false,
+    "action_kernel_invoked": false,
+    "plan_mutated": false,
+    "learning_influence_ceiling": 0.10
+  },
+  "validation": {
+    "dedicated_tests": "5/5",
+    "targeted_regression": "64/64",
+    "runtime_architecture_and_contracts": "9/10",
+    "compileall": "PASS",
+    "static_authority_scan": "PASS"
+  },
+  "known_environment_limitation": "Pre-existing Docker CI workflow path contract resolves .github/workflows/docker-build.yml from the extraction parent rather than the extracted project root.",
+  "production_scope": false
+}

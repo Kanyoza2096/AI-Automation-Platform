@@ -1,0 +1,11 @@
+{
+  "phase": "7.27",
+  "title": "Resource & Cost-Aware Workforce Coordination",
+  "status": "certified_architecture_integrity",
+  "focused_tests": "6/6",
+  "combined_regression": "31/31",
+  "compileall": "PASS",
+  "broader_architecture_gate": "28/29",
+  "known_environment_failure": "pre-existing repository-layout docker CI contract path",
+  "authority": {"advisory_only": true, "authority_granted": false, "execution_requested": false, "provider_called": false, "action_kernel_invoked": false}
+}

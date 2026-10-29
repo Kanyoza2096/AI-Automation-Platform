@@ -1,0 +1,942 @@
+"""
+Post Publish Workflow — Architecture §22.
+
+Full lifecycle workflow for post creation and publishing.
+Used by manual triggers, scheduled posts, and durable outbox execution.
+
+Stages (8):
+  1. Select Topic          — from brand KB or custom_topics
+  2. Knowledge Context     — retrieve relevant KB facts
+  3. Generate Content      — LLM caption + Cloudflare image via ContentEngine
+  4. Validate Content      — ContentValidator (reject on policy violations)
+  5. Render Image          — verify MediaArtifact is ready
+  6. Publish               — governed canonical publish via Action Kernel
+  7. Record Analytics      — persist metrics
+  8. Emit Event            — broadcast PostPublishedEvent
+
+Architecture §5  — MediaArtifact Integration
+Architecture §6  — Synchronous Rendering
+Architecture §21 — AI Pipeline Hardening
+
+V1.12 (2026-10-24) — THREE FIXES:
+
+  (1) HASHTAG-TAIL FALSE POSITIVE IN _caption_is_well_formed:
+
+    The V1.10 structural guard checked for terminal punctuation within
+    the last 40 characters. A caption ending with a hashtag block — the
+    canonical LinkedIn/Facebook form — has its last 40 characters
+    entirely composed of hashtags (#kubernetes #cost #sre #infra). None
+    of those characters is terminal punctuation, so the check returned
+    False and the caption was rejected as malformed. Every post ending
+    with hashtags would have failed. The fix strips trailing hashtag
+    tokens before the terminal-punctuation check and widens the tail
+    window to 200 chars so a short post followed by hashtags still
+    passes if it ends its sentence earlier.
+
+  (2) PROMPT BUILDER GATED ON knowledge_context:
+
+    GenerateContentStep only invoked PromptBuilder.build_post_prompt()
+    when knowledge_context was non-empty. For brands with no KB entries
+    this skipped the builder entirely, and ContentEngine.generate_post
+    fell back to its own internal prompt construction — which does not
+    include the brand charter, platform contract, or content quality
+    contract. The V2.2 prompt is now always used when a prompt_builder
+    is present; an empty knowledge_context simply omits the KB block.
+
+  (3) EMIT EVENT PASSED OBJECT TO UNIFIED BUS:
+
+    EmitEventStep called self._bus.publish(PostPublishedEvent(...)) —
+    an event object, not an (event_name, payload) pair. UnifiedEventBus
+    expects (event_name: str, payload: dict). The object failed in
+    _dispatch_event when used as a dict key: "unhashable type:
+    'PostPublishedEvent'". The event now publishes as ("post.published",
+    {...}) so subscribers actually receive it.
+
+V1.11 (2026-10-23) — POST_HISTORY READ-MODEL WRITE:
+  PublishStep writes to post_history on every successful publish. The
+  write is best-effort and never fails the publish.
+
+V1.10 (2026-10-22) — TRUNCATION GUARD IN GENERATE STEP:
+  GenerateContentStep rejects structurally malformed captions.
+
+V1.9 (2026-10-01) — STRUCTURED STEP FAILURES:
+  PublishStep raises StepFailure instead of RuntimeError.
+
+V1.8 (2026-10-01) — DIRECTION-BASED TOPIC GENERATION.
+V1.7 (2026-09-29) — PUBLISH RESULT CONTRACT NORMALIZATION.
+V1.6 (2026-09-28) — ASYNC-NATIVE STEPS.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Any, TYPE_CHECKING
+
+from workflows.base import Step, Workflow, StepFailure
+from models.media_artifact import MediaArtifact, MediaStatus
+from core.errors import (
+    AIValidationError,
+    RenderFailedError,
+    KanyozaError,
+)
+
+if TYPE_CHECKING:
+    from services.content_engine import ContentEngine
+    from services.content_validator import ContentValidator
+    from plugins.base import PluginRegistry
+    from core.event_bus import EventBus
+    from repositories.analytics_repository import AnalyticsRepository
+
+logger = logging.getLogger(__name__)
+
+# Trailing hashtag block — one or more whitespace-separated tokens that
+# begin with #. Stripped before the terminal-punctuation check in
+# _caption_is_well_formed so that a post ending in hashtags is not
+# rejected as truncated.
+_TRAILING_HASHTAGS_RE = re.compile(r"(?:\s*#\w+)+$")
+
+
+# ── 1. Select Topic ───────────────────────────────────────────────────
+class SelectTopicStep(Step):
+    """Pick a topic — either generated from the brand's direction or selected.
+
+    V1.8 — Direction-based generation runs first when the brand declares a
+    topic_direction. Falls through to selection on any failure so the
+    workflow never blocks on AI availability.
+    """
+    name = "select_topic"
+
+    def __init__(
+        self,
+        brand: "Brand",
+        category: str | None = None,
+        knowledge_repo=None,
+    ) -> None:
+        self._brand = brand
+        self._category = category
+        self._knowledge_repo = knowledge_repo
+
+    def run(self, context: dict[str, Any]) -> Any:
+        from domain.content.topic_selector import TopicSelector
+
+        selector = TopicSelector(
+            brand=self._brand,
+            knowledge_repo=self._knowledge_repo,
+        )
+
+        if getattr(selector, "has_direction", False):
+            recent = context.get("recent_topics") or []
+            generated = selector.generate_from_direction(recent=recent)
+            if generated:
+                context["topic"] = generated
+                context["category"] = "generated"
+                logger.info(
+                    "PostWorkflow: topic='%s' category='generated' brand='%s' "
+                    "(direction)",
+                    generated, self._brand.name,
+                )
+                return {"topic": generated, "category": "generated"}
+            logger.info(
+                "PostWorkflow: direction generation unavailable for brand '%s'; "
+                "falling back to selection",
+                self._brand.name,
+            )
+
+        if not selector.has_topics():
+            logger.warning(
+                "PostWorkflow: brand '%s' has no KB entries and no custom_topics. "
+                "Add documents to the Knowledge Base so topics can be picked from it.",
+                self._brand.name,
+            )
+
+        topic, cat = selector.pick(self._category)
+        context["topic"] = topic
+        context["category"] = cat
+        logger.info(
+            "PostWorkflow: topic='%s' category='%s' brand='%s'",
+            topic, cat, self._brand.name,
+        )
+        return {"topic": topic, "category": cat}
+
+
+# ── 1b. Knowledge Context ─────────────────────────────────────────────
+class KnowledgeContextStep(Step):
+    """Retrieve relevant KB facts for the chosen topic.
+
+    V1.6 — Async-native. KnowledgeBase.search() is async.
+    continue_on_failure=True so a missing or empty KB never blocks the
+    pipeline — the content engine will still generate without context.
+    """
+    name = "knowledge_context"
+    continue_on_failure = True
+
+    def __init__(self, brand: "Brand", knowledge_repo=None) -> None:
+        self._brand = brand
+        self._repo = knowledge_repo
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        if not topic or not self._repo:
+            context["knowledge_context"] = ""
+            return []
+
+        try:
+            from services.knowledge_base import KnowledgeBase
+            kb = KnowledgeBase(
+                brand_id=self._brand.id,
+                workspace_id=self._brand.workspace_id,
+                repository=self._repo,
+            )
+            results = await kb.search(topic, top_k=3)
+            facts = [entry.content for entry, _score in (results or [])]
+            knowledge_context = "\n".join(facts)
+            context["knowledge_context"] = knowledge_context
+            logger.info(
+                "PostWorkflow: KB retrieved %d entries for topic='%s' brand='%s'",
+                len(facts), topic[:60], self._brand.name,
+            )
+            return facts
+        except Exception as exc:
+            logger.warning(
+                "PostWorkflow: KB lookup failed for brand='%s': %s",
+                self._brand.name, exc,
+            )
+            context["knowledge_context"] = ""
+            return []
+
+    def run(self, context: dict[str, Any]) -> Any:
+        raise RuntimeError(
+            "KnowledgeContextStep must be executed via Workflow.execute_async()."
+        )
+
+
+# ── 2. Generate Content ───────────────────────────────────────────────
+class GenerateContentStep(Step):
+    """Call ContentEngine to produce caption + MediaArtifact.
+
+    V1.6 — Async-native. ContentEngine.generate_post is async.
+    V1.10 — Rejects malformed/truncated captions before they reach
+      ValidateContentStep and PublishStep. See _caption_is_well_formed.
+    V1.12 — PromptBuilder.build_post_prompt() is now always used when a
+      builder is present, regardless of whether the brand has KB entries.
+      The previous `and knowledge_context` guard meant empty-KB brands
+      bypassed the entire V2.2 prompt — brand charter, platform contract,
+      and quality contract never reached the model.
+    """
+    name = "generate_content"
+
+    def __init__(
+        self,
+        content_engine: "ContentEngine",
+        brand: "Brand",
+        ai_profile: "AIProfile",
+        prompt_builder=None,
+        container=None,
+    ) -> None:
+        self._engine = content_engine
+        self._brand = brand
+        self._ai_profile = ai_profile
+        self._prompt_builder = prompt_builder
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        knowledge_context = context.get("knowledge_context", "")
+
+        base_prompt: str | None = None
+        if self._prompt_builder:
+            try:
+                resolved_platform = (
+                    context.get("platform")
+                    or getattr(self._brand, "platform", None)
+                )
+                base_prompt = self._prompt_builder.build_post_prompt(
+                    brand=self._brand,
+                    ai_profile=self._ai_profile,
+                    topic=topic,
+                    knowledge_context=knowledge_context or None,
+                    platform=resolved_platform,
+                )
+                logger.info(
+                    "PostWorkflow: prompt assembled via PromptBuilder "
+                    "(kb_chars=%d, platform=%s) for brand='%s'",
+                    len(knowledge_context or ""),
+                    resolved_platform or "linkedin",
+                    self._brand.name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "PostWorkflow: prompt assembly failed (%s) — "
+                    "falling back to ContentEngine's internal prompt",
+                    exc,
+                )
+                base_prompt = None
+
+        result = await self._engine.generate_post(
+            brand=self._brand,
+            ai_profile=self._ai_profile,
+            topic=topic,
+            base_prompt=base_prompt,
+        )
+        if not result:
+            raise AIValidationError(
+                message=f"ContentEngine returned no result for '{topic}'",
+                context={"brand": self._brand.name, "topic": topic},
+            )
+
+        supplied_caption = context.get("scheduled_caption")
+        caption_to_check = (
+            str(supplied_caption)
+            if supplied_caption is not None
+            else str(result.get("caption", ""))
+        )
+        if not self._caption_is_well_formed(caption_to_check):
+            logger.warning(
+                "PostWorkflow: rejecting malformed caption for brand='%s' "
+                "topic='%s' len=%d publishable=%s degraded=%s reason=%s",
+                self._brand.name,
+                topic[:80],
+                len(caption_to_check),
+                result.get("publishable"),
+                result.get("degraded"),
+                result.get("degraded_reason"),
+            )
+            raise AIValidationError(
+                message=(
+                    f"Generated caption appears truncated or malformed "
+                    f"(topic={topic!r}, len={len(caption_to_check)})"
+                ),
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "caption_len": len(caption_to_check),
+                    "publishable": result.get("publishable"),
+                    "degraded": result.get("degraded"),
+                    "degraded_reason": result.get("degraded_reason"),
+                    "media_status": result.get("media_status"),
+                },
+            )
+
+        if result.get("publishable") is False:
+            raise AIValidationError(
+                message=(
+                    f"ContentEngine marked result non-publishable "
+                    f"(topic={topic!r}, reason={result.get('degraded_reason')})"
+                ),
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "degraded_reason": result.get("degraded_reason"),
+                    "media_status": result.get("media_status"),
+                },
+            )
+
+        context["content_result"] = result
+        context["caption"] = caption_to_check
+        context["image_bytes"] = result.get("image_bytes")
+        context["media_artifact"] = result.get(
+            "media_artifact", MediaArtifact.no_media()
+        )
+
+        media_status = context["media_artifact"].status.value
+        logger.info(
+            "PostWorkflow: content generated — brand='%s', caption_len=%d, media=%s",
+            self._brand.name, len(context["caption"]), media_status,
+        )
+        return result
+
+    @staticmethod
+    def _caption_is_well_formed(caption: str) -> bool:
+        """Structural integrity check for the caption.
+
+        Policy validation (profanity, brand safety, medical claims) is
+        ContentValidator's job. This is purely structural: it catches the
+        case where the LLM response was truncated mid-markdown or
+        mid-sentence because the provider hit its max_tokens budget.
+
+        V1.12 — Strips trailing hashtags before the terminal-punctuation
+        check. V2.2's prompt requires 3-8 hashtags at the end of every
+        caption; without stripping, the last 40 chars are entirely
+        hashtags and the terminal-punctuation test always fails. Every
+        post that ended with hashtags was rejected as malformed.
+        """
+        if not caption or not caption.strip():
+            return False
+        trimmed = caption.rstrip()
+        if trimmed.count("**") % 2 != 0:
+            return False
+        if trimmed.count("```") % 2 != 0:
+            return False
+
+        # Strip trailing hashtag block before checking terminal
+        # punctuation. A caption like "...worth sharing. #kubernetes
+        # #sre" ends its sentence with '.' but its last 40 chars are
+        # entirely hashtags. The stripped_body ends with the same
+        # terminal punctuation as the original prose.
+        stripped_body = _TRAILING_HASHTAGS_RE.sub("", trimmed).rstrip()
+        if not stripped_body:
+            # Caption was only hashtags — clearly malformed.
+            return False
+
+        # Widened window: 200 chars so a short post plus hashtags still
+        # finds its terminal punctuation.
+        tail = stripped_body[-200:]
+        if stripped_body[-1].isalpha() and not any(c in tail for c in ".!?\"')]"):
+            return False
+        last_line = stripped_body.split("\n")[-1].strip()
+        if (
+            last_line.startswith("**")
+            and not last_line.endswith("**")
+            and len(last_line) > 4
+        ):
+            return False
+        return True
+
+    def run(self, context: dict[str, Any]) -> Any:
+        raise RuntimeError(
+            "GenerateContentStep must be executed via Workflow.execute_async()."
+        )
+
+
+# ── 3. Validate Content ───────────────────────────────────────────────
+class ValidateContentStep(Step):
+    """Validate AI-generated content before proceeding.
+
+    V1.6 — Async-native. ContentValidator.validate is async.
+    """
+    name = "validate_content"
+
+    def __init__(self, validator: "ContentValidator" = None) -> None:
+        from services.content_validator import ContentValidator
+        self._validator = validator or ContentValidator()
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        caption = context.get("caption", "")
+        topic = context.get("topic", "")
+        content_result = context.get("content_result", {})
+
+        content = {
+            "title": content_result.get("title", topic),
+            "caption": caption,
+            "content_type": context.get("content_type", "social_post"),
+            "hashtags": content_result.get("hashtags", []),
+            "media_required": True,
+        }
+
+        brand = context.get("brand")
+        platform = context.get("platform", "facebook")
+
+        validation_result = await self._validator.validate(
+            content=content,
+            brand=brand,
+            platform=platform,
+            require_media=True,
+        )
+
+        context["validation_result"] = validation_result
+
+        if validation_result.is_rejected:
+            errors = validation_result.error_messages
+            logger.error(
+                "PostWorkflow: validation REJECTED — %s",
+                "; ".join(errors),
+            )
+            raise AIValidationError(
+                message=f"Content validation failed: {'; '.join(errors)}",
+                context={"errors": errors, "topic": topic},
+            )
+
+        logger.info(
+            "PostWorkflow: validation passed (warnings=%d)",
+            validation_result.warnings_count,
+        )
+        return validation_result.to_dict()
+
+    def run(self, context: dict[str, Any]) -> Any:
+        raise RuntimeError(
+            "ValidateContentStep must be executed via Workflow.execute_async()."
+        )
+
+
+# ── 4. Render Image ───────────────────────────────────────────────────
+class RenderImageStep(Step):
+    """Check media readiness. Render already happened in ContentEngine."""
+    name = "render_image"
+    continue_on_failure = True
+
+    def __init__(self, content_engine: "ContentEngine") -> None:
+        self._engine = content_engine
+
+    def run(self, context: dict[str, Any]) -> Any:
+        media_artifact: MediaArtifact = context.get("media_artifact")
+
+        if media_artifact is None:
+            logger.warning("PostWorkflow: No MediaArtifact in context — creating NO_MEDIA")
+            media_artifact = MediaArtifact.no_media()
+            context["media_artifact"] = media_artifact
+            context["image_bytes"] = None
+            return media_artifact.to_dict()
+
+        if media_artifact.is_valid:
+            context["image_bytes"] = media_artifact.bytes if media_artifact.bytes else None
+            logger.info(
+                "PostWorkflow: media ready — %s, %dKB",
+                media_artifact.source, media_artifact.size_kb,
+            )
+            return media_artifact.to_dict()
+
+        if media_artifact.is_text_only:
+            context["image_bytes"] = None
+            logger.info("PostWorkflow: text-only post — no media needed.")
+            return media_artifact.to_dict()
+
+        if media_artifact.is_pending:
+            logger.error(
+                "PostWorkflow: UNEXPECTED RENDERING status — "
+                "render should have completed synchronously."
+            )
+            context["image_bytes"] = None
+            return media_artifact.to_dict()
+
+        if media_artifact.has_failed:
+            context["image_bytes"] = None
+            logger.error(
+                "PostWorkflow: render FAILED — %s (code=%s)",
+                media_artifact.error, media_artifact.error_code,
+            )
+            return media_artifact.to_dict()
+
+        logger.warning("PostWorkflow: unknown media status: %s", media_artifact.status)
+        return media_artifact.to_dict()
+
+
+# ── 5. Publish ────────────────────────────────────────────────────────
+class PublishStep(Step):
+    """Publish via the plugin registry with MediaArtifact awareness.
+
+    V1.9 — Raises workflows.base.StepFailure instead of RuntimeError so the
+    pipeline's structured failure survives to the API envelope.
+
+    V1.11 — Writes post_history on success. The write is best-effort and
+    never fails the publish; the post is live and post_history is the
+    read model, not the source of truth.
+    """
+    name = "publish"
+
+    _SUCCESS_STATUSES = frozenset({"succeeded", "ok", "success", "published"})
+    _UNCERTAIN_STATUSES = frozenset({"uncertain", "in_progress", "pending"})
+
+    def __init__(self, registry: "PluginRegistry", brand: "Brand", container=None) -> None:
+        self._registry = registry
+        self._brand = brand
+        self._container = container
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        caption = context.get("caption") or context.get(
+            "content_result", {}
+        ).get("caption", "")
+        image_bytes = context.get("image_bytes")
+        media_artifact: MediaArtifact = context.get("media_artifact")
+
+        if not caption:
+            raise StepFailure(
+                message="No caption available — cannot publish",
+                code="publish_no_caption",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
+                    "topic": context.get("topic", ""),
+                },
+            )
+
+        if media_artifact and media_artifact.has_failed:
+            raise StepFailure(
+                message=f"Media render failed: {media_artifact.error}",
+                code="publish_media_render_failed",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
+                    "media_error": media_artifact.error,
+                    "media_error_code": media_artifact.error_code,
+                },
+            )
+
+        if media_artifact and media_artifact.is_pending:
+            raise StepFailure(
+                message="Media still rendering — should have completed synchronously",
+                code="publish_media_pending",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "brand_name": self._brand.name,
+                },
+            )
+
+        from services.publish_orchestration import execute_governed_publish
+        from core.publish_authorization import issue_internal_publish_decision
+
+        workspace_id = getattr(self._brand, "workspace_id", "")
+        job_id = context.get("job_id")
+        platform = context.get("platform") or getattr(self._brand, "platform", None) or "facebook"
+        risk_level = context.get("risk_level", "low")
+        source = context.get("source", "workflow")
+        decision_id = context.get("decision_id")
+        if not decision_id:
+            decision = issue_internal_publish_decision(
+                workspace_id=workspace_id, source=source, risk_level=risk_level,
+                brand_id=getattr(self._brand, "id", None), platform=platform,
+            )
+            decision_id = decision.decision_id
+        media_url = getattr(media_artifact, "media_url", None) if media_artifact else None
+
+        result = await execute_governed_publish(
+            container=getattr(self, "_container", None),
+            workspace_id=workspace_id, brand_id=getattr(self._brand, "id", None),
+            platform=platform, topic=context.get("topic", ""), caption=caption,
+            risk_level=risk_level, decision_id=decision_id, approved=True,
+            automation_job_id=job_id, source=source, image_url=media_url,
+            image_bytes=image_bytes, scheduled_post_id=context.get("scheduled_post_id"),
+            idempotency_key=(
+                f"scheduled:{context.get('scheduled_post_id')}"
+                if context.get("scheduled_post_id") else None
+            ),
+        )
+
+        output = result.get("output") if isinstance(result.get("output"), dict) else {}
+        raw_status = str(result.get("status") or "").strip().lower()
+
+        provider_post_id = None
+        if isinstance(output, dict):
+            provider_post_id = (
+                output.get("platform_post_id")
+                or output.get("post_id")
+                or output.get("provider_object_id")
+            )
+        provider_post_id = (
+            provider_post_id
+            or result.get("provider_object_id")
+            or result.get("platform_post_id")
+        )
+
+        output_ok = bool(output.get("ok")) if isinstance(output, dict) else False
+        is_success = (
+            raw_status in self._SUCCESS_STATUSES
+            and (output_ok or bool(provider_post_id))
+        )
+        is_uncertain = raw_status in self._UNCERTAIN_STATUSES
+
+        publish_result = {
+            **output,
+            "action_status": result.get("status"),
+            "action_intent_id": result.get("intent_id"),
+            "action_execution_id": result.get("execution_id"),
+            "governed": True,
+        }
+        if provider_post_id and not publish_result.get("post_id"):
+            publish_result["post_id"] = provider_post_id
+        if provider_post_id and not publish_result.get("platform_post_id"):
+            publish_result["platform_post_id"] = provider_post_id
+
+        context["publish_result"] = publish_result
+
+        if is_success:
+            context["publish_results"] = {platform: publish_result}
+            logger.info(
+                "PostWorkflow: publish succeeded for brand='%s' platform=%s post_id=%s",
+                self._brand.name, platform, provider_post_id or "<unknown>",
+            )
+
+            await self._write_post_history(
+                context=context,
+                caption=caption,
+                workspace_id=workspace_id,
+                platform=platform,
+                decision_id=decision_id,
+                provider_post_id=provider_post_id,
+            )
+
+            return publish_result
+
+        if is_uncertain:
+            publish_result.setdefault("reconciliation_required", True)
+            context["publish_results"] = {}
+            logger.warning(
+                "PostWorkflow: publish uncertain for brand='%s' platform=%s err=%r",
+                self._brand.name, platform, publish_result.get("error"),
+            )
+            return publish_result
+
+        context["publish_results"] = {}
+
+        code = (
+            publish_result.get("code")
+            or result.get("code")
+            or "publish_rejected"
+        )
+        message = (
+            publish_result.get("error")
+            or result.get("error")
+            or "Governed canonical publish rejected"
+        )
+
+        logger.error(
+            "PostWorkflow: publish failed for brand='%s' platform=%s "
+            "code=%s reason=%r",
+            self._brand.name, platform, code, message,
+        )
+
+        raise StepFailure(
+            message=message,
+            code=code,
+            detail={
+                "decision_id": decision_id,
+                "platform": platform,
+                "brand_id": getattr(self._brand, "id", None),
+                "brand_name": self._brand.name,
+                "raw_status": raw_status,
+                "pipeline_trace": publish_result.get("trace"),
+                "reconciliation_required": publish_result.get(
+                    "reconciliation_required"
+                ),
+                "platform_post_id": provider_post_id,
+            },
+        )
+
+    async def _write_post_history(
+        self,
+        *,
+        context: dict[str, Any],
+        caption: str,
+        workspace_id: str,
+        platform: str,
+        decision_id: str | None,
+        provider_post_id: str | None,
+    ) -> None:
+        """Write a post_history row for the successful publish.
+
+        Never raises. Failure is logged at WARNING with enough context
+        (decision_id, provider_post_id, workspace_id) to reconcile by hand.
+        """
+        try:
+            from services.supabase import supabase_service
+        except Exception as exc:
+            logger.warning(
+                "PostWorkflow: post_history write skipped — supabase "
+                "service import failed (brand='%s' decision=%s): %s",
+                self._brand.name, decision_id, exc,
+            )
+            return
+
+        if not (supabase_service and supabase_service.client):
+            logger.warning(
+                "PostWorkflow: post_history write skipped — supabase "
+                "client unavailable (brand='%s' decision=%s)",
+                self._brand.name, decision_id,
+            )
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ph_id = (
+            f"ph_{decision_id}"
+            if decision_id
+            else (
+                f"ph_{provider_post_id}"
+                if provider_post_id
+                else f"ph_{uuid.uuid4().hex}"
+            )
+        )
+        word_count = len((caption or "").split())
+        topic = context.get("topic", "") or "Untitled post"
+        category = context.get("category") or "general"
+
+        row = {
+            "id": ph_id,
+            "topic": topic,
+            "category": category,
+            "template_type": platform or "facebook",
+            "content": caption or "",
+            "word_count": word_count,
+            "facebook_post_id": provider_post_id,
+            "published_at": now_iso,
+            "created_at": now_iso,
+            "brand_id": getattr(self._brand, "id", None),
+            "workspace_id": workspace_id,
+        }
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: supabase_service.client.table("post_history").insert(row).execute(),
+            )
+            logger.info(
+                "PostWorkflow: post_history written id=%s post_id=%s "
+                "brand='%s' platform=%s",
+                ph_id, provider_post_id, self._brand.name, platform,
+            )
+        except Exception as exc:
+            logger.warning(
+                "PostWorkflow: post_history write failed (post still live) "
+                "brand='%s' decision=%s post_id=%s err=%s",
+                self._brand.name, decision_id, provider_post_id, exc,
+            )
+
+    def run(self, context: dict[str, Any]) -> Any:
+        """Synchronous compatibility path for non-ASGI callers."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.async_run(context))
+        raise RuntimeError(
+            "PublishStep.run() cannot be called inside a running event loop; "
+            "use execute_async()/async_run()"
+        )
+
+
+# ── 6. Record Analytics + Emit Events ────────────────────────────────
+class RecordAnalyticsStep(Step):
+    """Record publish metrics to analytics repository."""
+    name = "record_analytics"
+    continue_on_failure = True
+
+    def __init__(self, analytics_repo: "AnalyticsRepository") -> None:
+        self._repo = analytics_repo
+
+    def run(self, context: dict[str, Any]) -> Any:
+        topic = context.get("topic", "")
+        if context.get("publish_result", {}).get("queued"):
+            return {"recorded": 0, "queued": True}
+
+        publish_results = context.get("publish_results", {})
+        recorded = 0
+        for platform, result in publish_results.items():
+            if result.get("ok"):
+                self._repo.record_post_published(
+                    topic=topic,
+                    platform=platform,
+                    post_id=result.get("post_id", ""),
+                )
+                recorded += 1
+        return {"recorded": recorded}
+
+
+class EmitEventStep(Step):
+    """Emit PostPublishedEvent to the event bus.
+
+    V1.12 — Publishes via the (event_name, payload) signature that
+    UnifiedEventBus requires. The previous version passed a
+    PostPublishedEvent object as the sole argument; UnifiedEventBus
+    used it as a dict key in _dispatch_event and raised
+    "unhashable type: 'PostPublishedEvent'" — the event never reached
+    any subscriber.
+
+    Derives the event_name and payload from the PostPublishedEvent
+    instance so the dataclass remains the source of truth for what
+    fields the event carries.
+    """
+    name = "emit_event"
+    continue_on_failure = True
+
+    def __init__(self, bus: "EventBus") -> None:
+        self._bus = bus
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        from core.events import PostPublishedEvent
+
+        topic = context.get("topic", "")
+        if context.get("publish_result", {}).get("queued"):
+            return {"emitted": 0, "queued": True}
+
+        publish_results = context.get("publish_results", {})
+        content_result = context.get("content_result", {})
+        caption = content_result.get("caption", "")
+
+        emitted = 0
+        for platform, result in publish_results.items():
+            if not result.get("ok"):
+                continue
+
+            event_obj = PostPublishedEvent(
+                post_id=result.get("post_id", ""),
+                topic=topic,
+                platform=platform,
+                caption_preview=caption,
+            )
+
+            # UnifiedEventBus.publish(event_name: str, payload: dict, ...).
+            # Derive both from the event object so the dataclass stays
+            # the source of truth for what's in the payload.
+            event_name = getattr(event_obj, "event_type", "post.published")
+            if hasattr(event_name, "value"):
+                event_name = event_name.value
+            event_name = str(event_name)
+
+            if hasattr(event_obj, "to_dict"):
+                payload = event_obj.to_dict()
+            else:
+                payload = {
+                    "post_id": result.get("post_id", ""),
+                    "topic": topic,
+                    "platform": platform,
+                    "caption_preview": caption,
+                }
+
+            await self._bus.publish(event_name, payload, source="workflow")
+            emitted += 1
+
+        return {"emitted": emitted}
+
+    def run(self, context: dict[str, Any]) -> Any:
+        raise RuntimeError(
+            "EmitEventStep must be executed via Workflow.execute_async()."
+        )
+
+
+# ── Full Post Publish Workflow ────────────────────────────────────────
+class PostPublishWorkflow(Workflow):
+    """8-stage workflow.
+
+    Stages:
+      1. Select Topic          — from brand KB, custom_topics, or AI-generated
+      2. Knowledge Context     — retrieve relevant KB facts
+      3. Generate Content      — LLM caption + Cloudflare image
+      4. Validate Content      — ContentValidator
+      5. Render Image          — verify MediaArtifact
+      6. Publish               — governed canonical publish
+      7. Record Analytics      — persist metrics
+      8. Emit Event            — broadcast PostPublishedEvent
+    """
+
+    name = "post_publish"
+
+    def __init__(
+        self,
+        content_engine: "ContentEngine",
+        registry: "PluginRegistry",
+        analytics_repo: "AnalyticsRepository",
+        bus: "EventBus",
+        brand: "Brand",
+        ai_profile: "AIProfile",
+        category: str | None = None,
+        content_validator: "ContentValidator" = None,
+        knowledge_repo=None,
+        prompt_builder=None,
+        container=None,
+    ) -> None:
+        self._container = container
+        super().__init__(
+            steps=[
+                SelectTopicStep(brand, category, knowledge_repo=knowledge_repo),
+                KnowledgeContextStep(brand, knowledge_repo=knowledge_repo),
+                GenerateContentStep(
+                    content_engine, brand, ai_profile,
+                    prompt_builder=prompt_builder,
+                ),
+                ValidateContentStep(validator=content_validator),
+                RenderImageStep(content_engine),
+                PublishStep(registry, brand, container=container),
+                RecordAnalyticsStep(analytics_repo),
+                EmitEventStep(bus),
+            ]
+        )

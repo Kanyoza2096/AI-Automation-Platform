@@ -1,0 +1,22 @@
+{
+  "release": "R11",
+  "name": "Business Activation Runtime Knowledge Read",
+  "status": "CERTIFICATION_CANDIDATE",
+  "endpoint": "POST /api/v1/business-activation/knowledge/read",
+  "states": ["COVERED", "MISSING_KNOWLEDGE", "COVERAGE_GAP"],
+  "invariants": {
+    "confirmed_only": true,
+    "current_only_by_default": true,
+    "workspace_scoped": true,
+    "provenance_returned": true,
+    "missing_knowledge_refuses": true,
+    "no_second_knowledge_store": true,
+    "no_execution_authority_added": true
+  },
+  "selected_regression_tests": 41,
+  "selected_regression_passed": 41,
+  "python_compileall": "PASS",
+  "frontend_full_typecheck": "NOT_CLAIMED_NODE_MODULES_MISSING",
+  "live_database_deployment": "NOT_CLAIMED",
+  "physical_mobile_validation": "NOT_CLAIMED"
+}

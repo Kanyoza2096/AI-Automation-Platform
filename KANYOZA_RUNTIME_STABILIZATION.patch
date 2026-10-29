@@ -1,0 +1,182 @@
+--- a/main.py
++++ b/main.py
+@@ -40,6 +40,12 @@
+ from starlette.middleware.base import BaseHTTPMiddleware
+ 
+ from config.settings import settings
++from config.logging_config import setup_logging
++
++# Configure application logging before service/container boot so production logs
++# stay structured and noisy HTTP client loggers do not flood Render stdout.
++setup_logging(settings.log_level)
++
+ from service_container import ServiceContainer
+ from dependency_registry import build_container
+ from lifecycle import (
+@@ -219,7 +225,13 @@
+     @app.get("/health/live")
+     @app.head("/health/live")
+     async def live_check():
+-        return {"status": "alive", "version": PLATFORM_VERSION}
++        return {
++            "status": "alive",
++            "version": PLATFORM_VERSION,
++            "uptime_seconds": round(
++                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
++            ) if _startup_started_at else 0,
++        }
+ 
+     @app.get("/health/ready")
+     @app.head("/health/ready")
+--- a/core/heartbeat.py
++++ b/core/heartbeat.py
+@@ -12,6 +12,7 @@
+ import logging
+ import time
+ import uuid
++import os
+ from datetime import datetime, timezone
+ from typing import Any, Dict, Optional
+ 
+@@ -36,6 +37,9 @@
+         self._beat_count = 0
+         self._last_beat_time: Optional[datetime] = None
+         self._subscribers: Dict[str, datetime] = {}
++        self._last_log_count = 0
++        self._log_interval_seconds = max(30, int(os.getenv("KANYOZA_HEARTBEAT_LOG_INTERVAL", "60")))
++        self._last_log_monotonic = 0.0
+     
+     @property
+     def service_name(self) -> str:
+@@ -100,9 +104,20 @@
+                     source="heartbeat",
+                     workspace_id="platform",
+                 )
+-                logger.debug("💓 Heartbeat #%d", self._beat_count)
+-            except Exception:
+-                pass
++            except Exception as exc:
++                logger.warning("💓 Heartbeat publish degraded: %s", str(exc)[:200])
++
++        # Production liveness signal: one compact INFO record per minute by
++        # default. Individual 10s beats remain internal/event-bus signals.
++        now_mono = time.monotonic()
++        if (now_mono - self._last_log_monotonic) >= self._log_interval_seconds:
++            self._last_log_monotonic = now_mono
++            logger.info(
++                "💓 Organism heartbeat: count=%d running=%s last_beat=%s",
++                self._beat_count,
++                self._running,
++                self._last_beat_time.isoformat() if self._last_beat_time else None,
++            )
+     
+     def get_status(self) -> Dict[str, Any]:
+         """Get heartbeat status."""
+--- a/services/director.py
++++ b/services/director.py
+@@ -483,7 +483,46 @@
+ 
+     def __init__(self, supabase_client):
+         self.supabase = supabase_client
++        self._client_factory: Optional[Callable[[], Any]] = None
++        self._refresh_lock = asyncio.Lock()
++        try:
++            from services.supabase import create_fresh_service_client
++            self._client_factory = create_fresh_service_client
++        except Exception as exc:
++            log.warning("Director DB: fresh Supabase client factory unavailable: %s", str(exc)[:200])
+         self.circuit_breaker = AsyncCircuitBreaker(name="supabase_store")
++
++    @staticmethod
++    def _is_transport_failure(exc: Exception) -> bool:
++        """Identify failures where reusing the HTTP transport is unsafe."""
++        names = {
++            "ConnectError", "ConnectTimeout", "ReadError", "ReadTimeout",
++            "WriteError", "WriteTimeout", "PoolTimeout", "RemoteProtocolError",
++            "LocalProtocolError", "NetworkError", "ConnectionError",
++            "BrokenPipeError", "ConnectionResetError", "ConnectionAbortedError",
++        }
++        if exc.__class__.__name__ in names:
++            return True
++        text = str(exc).lower()
++        return any(token in text for token in (
++            "broken pipe", "connectionterminated", "connection terminated",
++            "remoteprotocolerror", "connection reset", "connection aborted",
++            "connection refused", "connection pool", "transport",
++        ))
++
++    async def _refresh_client(self) -> bool:
++        if not self._client_factory:
++            return False
++        async with self._refresh_lock:
++            try:
++                client = await asyncio.to_thread(self._client_factory)
++                if client is not None:
++                    self.supabase = client
++                    log.info("Director DB: refreshed Supabase transport after connection failure")
++                    return True
++            except Exception as exc:
++                log.warning("Director DB: Supabase transport refresh failed: %s", str(exc)[:200])
++        return False
+ 
+     async def _execute_with_retry(self, operation_name: str, fn: Callable, max_retries: int = 2) -> Optional[Any]:
+         if self.circuit_breaker.is_open:
+@@ -492,26 +531,42 @@
+         last_error = None
+         for attempt in range(max_retries + 1):
+             try:
+-                loop = asyncio.get_event_loop()
+-                result = await loop.run_in_executor(None, fn)
++                # Resolve the callable on every attempt so a refreshed client is used.
++                current_fn = fn
++                loop = asyncio.get_running_loop()
++                result = await loop.run_in_executor(None, current_fn)
+                 await self.circuit_breaker._record_success()
+                 return result
+             except Exception as exc:
+                 last_error = exc
+-                await self.circuit_breaker._record_failure()
+                 status = SupabaseErrorClassifier._extract_status(exc)
+ 
+                 if SupabaseErrorClassifier.is_permanent(exc):
++                    await self.circuit_breaker._record_failure()
+                     log.error("Director DB: '%s' FAILED (HTTP %s, permanent): %s", operation_name, status, SupabaseErrorClassifier.describe(exc))
+                     return None
+ 
+                 if attempt >= max_retries:
+-                    log.error("Director DB: '%s' FAILED after %d retries (HTTP %s)", operation_name, max_retries, status)
++                    # Count one failed operation, not every internal retry attempt.
++                    await self.circuit_breaker._record_failure()
++                    log.error("Director DB: '%s' FAILED after %d retries (HTTP %s): %s", operation_name, max_retries, status, SupabaseErrorClassifier.describe(exc))
+                     return None
++
++                if self._is_transport_failure(exc):
++                    refreshed = await self._refresh_client()
++                    if refreshed:
++                        # Rebuild the operation against the newly refreshed client.
++                        # Lambdas in this class close over self.supabase, so the next
++                        # attempt resolves the new client rather than the dead one.
++                        pass
+ 
+                 delay = min(1.0 * (2 ** attempt), 10.0)
+                 delay *= random.uniform(0.75, 1.25)
+-                log.warning("Director DB: '%s' attempt %d/%d failed. Retrying in %.1fs...", operation_name, attempt + 1, max_retries, delay)
++                log.warning(
++                    "Director DB: '%s' attempt %d/%d failed (%s). Retrying in %.1fs...",
++                    operation_name, attempt + 1, max_retries,
++                    "transport" if self._is_transport_failure(exc) else "retryable", delay,
++                )
+                 await asyncio.sleep(delay)
+         return None
+ 
+--- a/core/render_queue.py
++++ b/core/render_queue.py
+@@ -492,7 +492,7 @@
+                             )
+                         )
+                         if png_bytes:
+-                            logger.info(
++                            logger.debug(
+                                 "RenderQueue: v18 rendered task %s "
+                                 "(%d bytes)",
+                                 task.task_id,

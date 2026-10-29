@@ -1,0 +1,28 @@
+{
+  "authority": {
+    "authority": "none",
+    "can_authorize": false,
+    "can_call_provider": false,
+    "can_execute": false,
+    "can_invoke_action_kernel": false
+  },
+  "files": [
+    {
+      "bytes": 10777,
+      "path": "services/v71_48_workforce_coordination_policy_enforcement.py",
+      "sha256": "9f45bc5444ff01fba373d8868d24f86be9a3c86f8fb1c9ee96e19c08b9ba488a"
+    },
+    {
+      "bytes": 5458,
+      "path": "tests/test_v71_48_workforce_coordination_policy_enforcement.py",
+      "sha256": "b236fa6454e6cdc4b98bdebf95507327a5351c9cba87e80d99b98a6196df2ae7"
+    },
+    {
+      "bytes": 2141,
+      "path": "PHASE7_37_CERTIFICATION.md",
+      "sha256": "1ce74d1a97be69f16da8c7cb0271d005912f537bfc5a357ef5a10b2612baf679"
+    }
+  ],
+  "phase": "7.37",
+  "status": "CERTIFIED_ARCHITECTURE_INTEGRITY"
+}

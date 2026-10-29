@@ -1,0 +1,20 @@
+{
+  "release": "R9",
+  "phase": "Business Activation Phase 5 - Knowledge Storage & Versioning",
+  "status": "CERTIFICATION_CANDIDATE",
+  "authority": "knowledge_plane_backend",
+  "fact_types": ["business_hours", "refund_policy"],
+  "confirmation_persists": true,
+  "versioning": "insert_and_supersede",
+  "idempotent_confirmation": true,
+  "runtime_reads_require_confirmed_current_fact": true,
+  "knowledge_updated_event": "UnifiedEventBus",
+  "browser_write_authority": false,
+  "live_database_deployment": false,
+  "tests": {
+    "business_activation_contracts": "7/7",
+    "phase5_knowledge": "6/6",
+    "selected_cumulative_regression": "24/24",
+    "frontend_changed_file_transpile": "PASS"
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "release": "KDO Backend R4 Runtime Ownership Convergence",
+  "version": "R4",
+  "source": "Backend.zip uploaded 2026-10-07",
+  "canonical_execution": "ActionIntent -> Governance -> Authorization -> Action Kernel -> Connector -> Provider -> Receipt -> Verification -> Reconciliation",
+  "r3_included": true,
+  "runtime_ownership_certification": "services/runtime_ownership_certification.py",
+  "focused_tests": "9/9 PASS",
+  "broader_ownership_tests": "34/34 PASS",
+  "route_audit": {
+    "route_count": 407,
+    "router_module_count": 73,
+    "orphan_router_modules": 0,
+    "parse_errors": 0,
+    "known_incomplete_surfaces": [
+      {
+        "method": "GET",
+        "path": "/e2e/director-hands",
+        "module": "api/e2e_routes.py",
+        "handler": "director_hands",
+        "line": 65,
+        "signals": [
+          "service_import",
+          "container_or_app_state",
+          "request_state"
+        ],
+        "markers": [
+          "placeholder"
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/api/v1/notifications",
+        "module": "api/routers/monitoring.py",
+        "handler": "get_notifications",
+        "line": 543,
+        "signals": [],
+        "markers": [
+          "not implemented"
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/api/v1/notifications/{notif_id}/read",
+        "module": "api/routers/monitoring.py",
+        "handler": "mark_notification_read",
+        "line": 550,
+        "signals": [],
+        "markers": [
+          "not implemented"
+        ]
+      }
+    ]
+  },
+  "authority_boundary": {
+    "legacy_command_executor": "NON_AUTHORITATIVE",
+    "builtin_mutations": "FAIL_CLOSED",
+    "builtin_reads": "COMPATIBILITY_READS_ONLY",
+    "plugin_mutations": "EXPLICIT_ACTION_KERNEL_CONTRACT_REQUIRED"
+  },
+  "claims": [
+    "No direct requests.post mutation transport remains in CommandExecutor.",
+    "CommandExecutor does not create a second execution authority.",
+    "api.routers modules are certified as composed through api.v1.",
+    "Canonical runtime route anchors are present and mounted.",
+    "Three existing placeholder surfaces remain explicitly reported and are not represented as complete."
+  ]
+}

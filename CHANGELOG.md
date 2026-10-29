@@ -1,0 +1,218 @@
+# R4 Runtime Ownership Convergence — 2026-10-07
+
+- Fenced legacy CommandExecutor built-in mutations from direct HTTP execution.
+- Added source-level runtime ownership certification.
+- Corrected route-wiring audit to understand `api.v1` composition of `api/routers/*`.
+- Certified 407 routes / 73 router modules / 0 orphan modules / 0 parse errors.
+- Preserved 3 existing incomplete surfaces as explicit known gaps.
+
+# Platform Changelog & History
+
+> Historical phase documentation, hotfixes, and sprint reports have been archived to reduce root-level noise.
+
+## Archived Documentation
+
+All historical architecture and phase progression documents are now located in `docs/archive/`.
+
+### Document Index
+
+- **[C11.4_CROSS_ENGINE_VERTICAL_SLICE_CERTIFICATION.md](docs/archive/C11.4_CROSS_ENGINE_VERTICAL_SLICE_CERTIFICATION.md)**: C11.4 — Cross-Engine Vertical Slice Certification
+- **[C9.2_OBSERVABILITY_SLO_PROOF.md](docs/archive/C9.2_OBSERVABILITY_SLO_PROOF.md)**: C9.2 — Observability & SLO Proof
+- **[C9.3_BACKUP_RESTORE_CERTIFICATION.md](docs/archive/C9.3_BACKUP_RESTORE_CERTIFICATION.md)**: C9.3 — Backup / Restore Certification
+- **[C9.5_PRODUCTION_READINESS_GATE.md](docs/archive/C9.5_PRODUCTION_READINESS_GATE.md)**: C9.5 Production Readiness Gate
+- **[CAPABILITY_STATUS.md](docs/archive/CAPABILITY_STATUS.md)**: Capability status (honest)
+- **[CONFIG_AND_HEALING.md](docs/archive/CONFIG_AND_HEALING.md)**: Config + healing — no longer decoration-only
+- **[CP_WIRE_ROUTES.md](docs/archive/CP_WIRE_ROUTES.md)**: Control Plane wire routes (gap closure)
+- **[E2E_WIRING.md](docs/archive/E2E_WIRING.md)**: End-to-end wiring (hands are real)
+- **[ENGINEERING_HARDENING_REPORT.md](docs/archive/ENGINEERING_HARDENING_REPORT.md)**: Kanyoza AI Automation Platform — Engineering Hardening Pass
+- **[FINAL_SECURITY_HARDENING.md](docs/archive/FINAL_SECURITY_HARDENING.md)**: KDO Final Security Hardening — Pass 2
+- **[FIXES_2026_08_27_PUBLISH_GATE.md](docs/archive/FIXES_2026_08_27_PUBLISH_GATE.md)**: Fixes applied 2026-08-27 (Render log diagnosis)
+- **[FIXES_2026_08_28_CRITICAL.md](docs/archive/FIXES_2026_08_28_CRITICAL.md)**: Critical fixes applied 2026-08-28
+- **[FIXES_APPLIED.md](docs/archive/FIXES_APPLIED.md)**: Fixes Applied (2026-08-26)
+- **[HARDEN_P0_DIRECTOR_TRUTH.md](docs/archive/HARDEN_P0_DIRECTOR_TRUTH.md)**: HARDEN P0 — Director truthful outcomes (report §7, §40)
+- **[HARDEN_P0_EVENTS_ASYNC_HTTP.md](docs/archive/HARDEN_P0_EVENTS_ASYNC_HTTP.md)**: HARDEN P0 — Events workspace_id + Async/HTTP policy
+- **[HARDEN_P0_HEALTH_TRUTH.md](docs/archive/HARDEN_P0_HEALTH_TRUTH.md)**: HARDEN P0 — Health truthfulness (report §27)
+- **[HARDEN_P0_QUEUE_LOCK_TENANCY.md](docs/archive/HARDEN_P0_QUEUE_LOCK_TENANCY.md)**: HARDEN P0 — Queue / Lock / Workspace (architecture report §§20–22)
+- **[HARDEN_P0_TENANCY_RLS.md](docs/archive/HARDEN_P0_TENANCY_RLS.md)**: HARDEN P0 — Tenancy API + RLS (architecture report §§22–23)
+- **[HARDEN_P0_TENANT_SSRF_ASYNC.md](docs/archive/HARDEN_P0_TENANT_SSRF_ASYNC.md)**: HARDEN P0 — Tenant scope + SSRF + Async HTTP
+- **[HARDEN_P0_WEBHOOKS.md](docs/archive/HARDEN_P0_WEBHOOKS.md)**: HARDEN P0 — Webhooks (architecture report §30)
+- **[HOTFIX_2026-08-27_PUBLISH_TELEGRAM.md](docs/archive/HOTFIX_2026-08-27_PUBLISH_TELEGRAM.md)**: Hotfix — publish gate + Telegram (Render logs ~18:06–18:08 UTC)
+- **[HOTFIX_API_V1_GET_KEY_STORE.md](docs/archive/HOTFIX_API_V1_GET_KEY_STORE.md)**: Hotfix — after deploy: get_key_store + API mount
+- **[HOTFIX_API_V1_MOUNT.md](docs/archive/HOTFIX_API_V1_MOUNT.md)**: Hotfix — API v1 routes not mounting (control plane timeout)
+- **[HOTFIX_AUTH_OPENAPI.md](docs/archive/HOTFIX_AUTH_OPENAPI.md)**: Hotfix — Auth workspace injection + OpenAPI ForwardRef (2026-08-28)
+- **[HOTFIX_CONTROL_PLANE_UPLINK.md](docs/archive/HOTFIX_CONTROL_PLANE_UPLINK.md)**: Hotfix — Control plane uplink (status + CORS)
+- **[HOTFIX_DFMO_DB_OK.md](docs/archive/HOTFIX_DFMO_DB_OK.md)**: Hotfix — DFMO `db_ok` NameError + monitor_checks 400 (2026-08-28)
+- **[HOTFIX_GEMINI_PRIMARY_LLM_POLICY.md](docs/archive/HOTFIX_GEMINI_PRIMARY_LLM_POLICY.md)**: Hotfix — Gemini primary + LLM caller policy
+- **[IPC-14-OBJECTIVE-OUTCOME-CLOSED-LOOP.md](docs/archive/IPC-14-OBJECTIVE-OUTCOME-CLOSED-LOOP.md)**: IPC-14 — Objective-Aware Outcome Verification & Closed-Loop Learning
+- **[IPC-15-OBJECTIVE-REPLANNING.md](docs/archive/IPC-15-OBJECTIVE-REPLANNING.md)**: IPC-15 — Objective-Aware Autonomous Replanning & Lifecycle Convergence
+- **[IPC-16-AUTONOMOUS-OBJECTIVE-EXECUTION.md](docs/archive/IPC-16-AUTONOMOUS-OBJECTIVE-EXECUTION.md)**: IPC-16 — Autonomous Objective Execution
+- **[LLM_GATEWAY.md](docs/archive/LLM_GATEWAY.md)**: LLM Gateway — single intelligence spine
+- **[LLM_PHASE_CONTROLLED_COGNITION.md](docs/archive/LLM_PHASE_CONTROLLED_COGNITION.md)**: LLM phase — controlled cognition (report §5–6, §36–37)
+- **[LLM_PHASE_STRUCTURED_BUDGET_SAFETY.md](docs/archive/LLM_PHASE_STRUCTURED_BUDGET_SAFETY.md)**: LLM phase — structured output, budget, safety
+- **[MERGE_FROM_MAIN6.md](docs/archive/MERGE_FROM_MAIN6.md)**: Merge: main (6) engines → elite converged architecture
+- **[PATCHED_RELEASE_README.md](docs/archive/PATCHED_RELEASE_README.md)**: Kanyoza AI Automation Platform — Full Patched Release
+- **[PHASE0_RUNTIME_AUDIT.md](docs/archive/PHASE0_RUNTIME_AUDIT.md)**: Phase 0 Runtime Audit — 2026-08-29
+- **[PHASE0_STATUS.md](docs/archive/PHASE0_STATUS.md)**: Phase 0 — Runtime Integrity / Stop-the-Line Hardening
+- **[PHASE18_OFFLINE_SECURITY_AUDIT.md](docs/archive/PHASE18_OFFLINE_SECURITY_AUDIT.md)**: KDO Phase 18 — Offline Security & Failure-Path Hardening
+- **[PHASE19_OFFLINE_RELIABILITY_AUDIT.md](docs/archive/PHASE19_OFFLINE_RELIABILITY_AUDIT.md)**: Phase 19 — Offline Reliability & Contract Hardening
+- **[PHASE1_REPORT.md](docs/archive/PHASE1_REPORT.md)**: KDO Phase 1 — Authoritative Execution Spine Report
+- **[PHASE1_STATUS.md](docs/archive/PHASE1_STATUS.md)**: Phase 1 — Authoritative Publish Execution Spine
+- **[PHASE1_STOP_THE_LINE_FIXES.md](docs/archive/PHASE1_STOP_THE_LINE_FIXES.md)**: Phase 1 — Stop-the-line fixes (2026-08-28)
+- **[PHASE20_ENGINE_TRUTH_AND_DATAFLOW_AUDIT.md](docs/archive/PHASE20_ENGINE_TRUTH_AND_DATAFLOW_AUDIT.md)**: KDO Phase 20 — Engine Truth & End-to-End Dataflow Audit
+- **[PHASE21_ENGINE_TRUTH_AUDIT.md](docs/archive/PHASE21_ENGINE_TRUTH_AUDIT.md)**: KDO Phase 21 — Engine Truth & Execution Semantics
+- **[PHASE22_ENGINE_HANDS_AND_GOVERNANCE_AUDIT.md](docs/archive/PHASE22_ENGINE_HANDS_AND_GOVERNANCE_AUDIT.md)**: Phase 22 — Engine Hands & Governance Audit
+- **[PHASE23_ENGINE_HANDS_DATAFLOW_AUDIT.md](docs/archive/PHASE23_ENGINE_HANDS_DATAFLOW_AUDIT.md)**: KDO Phase 23 — Engine Hands, External Effects & Feedback Audit
+- **[PHASE24_DEEP_EXECUTION_DATAFLOW_AUDIT.md](docs/archive/PHASE24_DEEP_EXECUTION_DATAFLOW_AUDIT.md)**: Phase 24 — Deep Execution & Event Dataflow Audit
+- **[PHASE25_CONNECTOR_CAPABILITY_AND_IDENTITY_AUDIT.md](docs/archive/PHASE25_CONNECTOR_CAPABILITY_AND_IDENTITY_AUDIT.md)**: Phase 25 — Connector Capability, Identity & External Effect Audit
+- **[PHASE26_EXECUTION_TRUTH_AUDIT.md](docs/archive/PHASE26_EXECUTION_TRUTH_AUDIT.md)**: KDO Phase 26 — Deep Execution Truth Audit
+- **[PHASE27_LLM_LEARNING_TRUTH_AUDIT.md](docs/archive/PHASE27_LLM_LEARNING_TRUTH_AUDIT.md)**: Phase 27 — LLM → Agent → Director → Council → Learning Truth Audit
+- **[PHASE28_INTELLIGENCE_BOUNDARY_AUDIT.md](docs/archive/PHASE28_INTELLIGENCE_BOUNDARY_AUDIT.md)**: Phase 28 — Intelligence Boundary & Learning Integrity Audit
+- **[PHASE29_LEARNING_AND_DECISION_ISOLATION_AUDIT.md](docs/archive/PHASE29_LEARNING_AND_DECISION_ISOLATION_AUDIT.md)**: Phase 29 — Learning and Decision Isolation Audit
+- **[PHASE2_DISTRIBUTED_AUTHORITY_REPORT.md](docs/archive/PHASE2_DISTRIBUTED_AUTHORITY_REPORT.md)**: KDO Phase 2 — Distributed Authority Hardening
+- **[PHASE2_FIXES.md](docs/archive/PHASE2_FIXES.md)**: Phase 2 fixes (2026-08-28)
+- **[PHASE2_STATUS.md](docs/archive/PHASE2_STATUS.md)**: Phase 2 — Content path E2E — DONE
+- **[PHASE30_BOOT_RUNTIME_CORRECTION_AUDIT.md](docs/archive/PHASE30_BOOT_RUNTIME_CORRECTION_AUDIT.md)**: Phase 30 — Boot Runtime Correction Audit
+- **[PHASE31_END_TO_END_EXECUTION_RECONCILIATION_AUDIT.md](docs/archive/PHASE31_END_TO_END_EXECUTION_RECONCILIATION_AUDIT.md)**: Phase 31 — End-to-End Execution & Reconciliation Audit
+- **[PHASE32_FINAL_PRODUCTION_CERTIFICATION.md](docs/archive/PHASE32_FINAL_PRODUCTION_CERTIFICATION.md)**: KDO Phase 32 — Final Production Certification
+- **[PHASE33_FINAL_REMEDIATION_AUDIT.md](docs/archive/PHASE33_FINAL_REMEDIATION_AUDIT.md)**: KDO Phase 33 — Final Remediation Pass
+- **[PHASE34_FINAL_REMEDIATION_AND_CERTIFICATION_GATE.md](docs/archive/PHASE34_FINAL_REMEDIATION_AND_CERTIFICATION_GATE.md)**: KDO Phase 34 — Final Remediation & Certification Gate
+- **[PHASE36.6_MEMORY_EXPERIENCE.md](docs/archive/PHASE36.6_MEMORY_EXPERIENCE.md)**: Phase 36.6 — Memory + Experience Foundation
+- **[PHASE36.7_LEARNING_EXECUTION_FEEDBACK.md](docs/archive/PHASE36.7_LEARNING_EXECUTION_FEEDBACK.md)**: Phase 36.7 — Learning + Real Execution Feedback
+- **[PHASE36.8_PREDICTIVE_CAUSAL_INTELLIGENCE.md](docs/archive/PHASE36.8_PREDICTIVE_CAUSAL_INTELLIGENCE.md)**: Phase 36.8 — Predictive + Causal Intelligence
+- **[PHASE36.9_DREAMING_SIMULATION.md](docs/archive/PHASE36.9_DREAMING_SIMULATION.md)**: Phase 36.9 — Dreaming & Simulation
+- **[PHASE37.0_GENOME_STRATEGY_EVOLUTION.md](docs/archive/PHASE37.0_GENOME_STRATEGY_EVOLUTION.md)**: Phase 37.0 — Digital Genome & Bounded Strategy Evolution
+- **[PHASE37.10_BACKEND_ROUTE_CONTRACT.md](docs/archive/PHASE37.10_BACKEND_ROUTE_CONTRACT.md)**: Phase 37.10 — Complete Backend Route Contract
+- **[PHASE37.11_ROUTE_WIRING_AUDIT.md](docs/archive/PHASE37.11_ROUTE_WIRING_AUDIT.md)**: Phase 37.11 — Complete Route Wiring Audit
+- **[PHASE37.12_ROUTE_TO_SERVICE_WIRING_AUDIT.md](docs/archive/PHASE37.12_ROUTE_TO_SERVICE_WIRING_AUDIT.md)**: Phase 37.12 — Route-to-Service Wiring Audit
+- **[PHASE37.13_ROUTE_CONTRACT_EXECUTION_AUDIT.md](docs/archive/PHASE37.13_ROUTE_CONTRACT_EXECUTION_AUDIT.md)**: Phase 37.13 — Route Contract / Execution Wiring Audit
+- **[PHASE37.14_HEALTH_LIFECYCLE_TRUTH.md](docs/archive/PHASE37.14_HEALTH_LIFECYCLE_TRUTH.md)**: Phase 37.14 — Health & Organism Lifecycle Truth
+- **[PHASE37.1_SKILL_CAPABILITY_SYSTEM.md](docs/archive/PHASE37.1_SKILL_CAPABILITY_SYSTEM.md)**: Phase 37.1 — Skill & Capability System
+- **[PHASE37.2_ECOSYSTEM_COORDINATION.md](docs/archive/PHASE37.2_ECOSYSTEM_COORDINATION.md)**: Phase 37.2 — Ecosystem / Multi-Organism Coordination
+- **[PHASE37.3-FULL-ORGANISM-INTEGRATION.md](docs/archive/PHASE37.3-FULL-ORGANISM-INTEGRATION.md)**: Phase 37.3 — Full Organism Integration
+- **[PHASE37.4-PRODUCTION-HARDENING-FINAL-VALIDATION.md](docs/archive/PHASE37.4-PRODUCTION-HARDENING-FINAL-VALIDATION.md)**: Phase 37.4 — Production Hardening + Final Validation
+- **[PHASE37.5_CONTROLLED_STAGING_READINESS.md](docs/archive/PHASE37.5_CONTROLLED_STAGING_READINESS.md)**: Phase 37.5 — Controlled Staging Readiness
+- **[PHASE37.6_STAGING_VALIDATION_HARNESS.md](docs/archive/PHASE37.6_STAGING_VALIDATION_HARNESS.md)**: Phase 37.6 — Staging Validation Harness
+- **[PHASE37.7.1_STAGING_EVIDENCE.md](docs/archive/PHASE37.7.1_STAGING_EVIDENCE.md)**: Phase 37.7.1 — Staging Evidence & Observability Plane
+- **[PHASE37.7_END_TO_END_PUBLISH_PLANE.md](docs/archive/PHASE37.7_END_TO_END_PUBLISH_PLANE.md)**: Phase 37.7 — End-to-End Publish Plane
+- **[PHASE37.8_AUTOMATED_TRIGGER_CONVERGENCE.md](docs/archive/PHASE37.8_AUTOMATED_TRIGGER_CONVERGENCE.md)**: Phase 37.8 — Automated Trigger Convergence
+- **[PHASE37.9_STAGING_E2E_CERTIFICATION.md](docs/archive/PHASE37.9_STAGING_E2E_CERTIFICATION.md)**: Phase 37.9 — Real Staging Publish Certification
+- **[PHASE38.5_DURABLE_NOTIFICATION_SIDE_EFFECTS.md](docs/archive/PHASE38.5_DURABLE_NOTIFICATION_SIDE_EFFECTS.md)**: Phase 38.5 — Durable Notification Side Effects
+- **[PHASE39_EVENT_DRIVEN_BUSINESS_AUTOMATION.md](docs/archive/PHASE39_EVENT_DRIVEN_BUSINESS_AUTOMATION.md)**: Phase 39 — Event-Driven Business Automation
+- **[PHASE3_AUTONOMOUS_ORGANISM.md](docs/archive/PHASE3_AUTONOMOUS_ORGANISM.md)**: Phase 3 — Autonomous organism (2026-08-28)
+- **[PHASE3_REPORT.md](docs/archive/PHASE3_REPORT.md)**: KDO Phase 3 — Engine Integration & Async Authority Report
+- **[PHASE3_STATUS.md](docs/archive/PHASE3_STATUS.md)**: Phase 3 — Engine Integration & Async Authority — COMPLETE
+- **[PHASE40_DURABLE_BUSINESS_AUTOMATION_INBOX.md](docs/archive/PHASE40_DURABLE_BUSINESS_AUTOMATION_INBOX.md)**: Phase 40 — Durable Business Automation Event Inbox
+- **[PHASE41_AI_GATEWAY_CONVERGENCE.md](docs/archive/PHASE41_AI_GATEWAY_CONVERGENCE.md)**: Phase 41 — AI Gateway Convergence
+- **[PHASE41_BUSINESS_EVENT_GATEWAY.md](docs/archive/PHASE41_BUSINESS_EVENT_GATEWAY.md)**: Phase 41 — Business Event Gateway
+- **[PHASE42_SALES_OPERATIONS_STARTER_PACK.md](docs/archive/PHASE42_SALES_OPERATIONS_STARTER_PACK.md)**: Phase 42 — Sales Operations Starter Pack
+- **[PHASE43_ADAPTIVE_SALES_ORCHESTRATION.md](docs/archive/PHASE43_ADAPTIVE_SALES_ORCHESTRATION.md)**: Phase 43 — Adaptive Sales Orchestration
+- **[PHASE43_NATIVE_WEBSITE_LEAD_CAPTURE.md](docs/archive/PHASE43_NATIVE_WEBSITE_LEAD_CAPTURE.md)**: Phase 43 — Native Website Lead Capture
+- **[PHASE44_CLOSED_LOOP_CUSTOMER_COMMUNICATION.md](docs/archive/PHASE44_CLOSED_LOOP_CUSTOMER_COMMUNICATION.md)**: Phase 44 — Closed-Loop Customer Communication
+- **[PHASE44_CUSTOMER_RESPONSE_INTERPRETATION.md](docs/archive/PHASE44_CUSTOMER_RESPONSE_INTERPRETATION.md)**: Phase 44 — Customer Response Interpretation
+- **[PHASE44_SALES_LIFECYCLE_AUTOMATION.md](docs/archive/PHASE44_SALES_LIFECYCLE_AUTOMATION.md)**: Phase 44 — First Complete Sales Lifecycle
+- **[PHASE45_AI_BUSINESS_UNDERSTANDING.md](docs/archive/PHASE45_AI_BUSINESS_UNDERSTANDING.md)**: Phase 45 — AI Business Understanding
+- **[PHASE45_UNIFIED_CUSTOMER_COMMUNICATION.md](docs/archive/PHASE45_UNIFIED_CUSTOMER_COMMUNICATION.md)**: Phase 45 — Unified Customer Communication
+- **[PHASE4_LLM_SPINE.md](docs/archive/PHASE4_LLM_SPINE.md)**: Phase 4 — LLM intelligence spine (2026-08-28)
+- **[PHASE4_STATUS.md](docs/archive/PHASE4_STATUS.md)**: Phase 4 — Products & honesty — DONE
+- **[PHASE5_CHAOS_MONKEY_REPORT.md](docs/archive/PHASE5_CHAOS_MONKEY_REPORT.md)**: Phase 5 — Chaos Monkey / Adversarial Production Validation
+- **[PHASE5_EXIT_AUDIT.md](docs/archive/PHASE5_EXIT_AUDIT.md)**: KDO Phase 5 Exit Audit — Domain / Application Boundary
+- **[PHASE5_INTELLIGENCE_ACTION_INTENT_REPLAY.md](docs/archive/PHASE5_INTELLIGENCE_ACTION_INTENT_REPLAY.md)**: Phase 5.13 — Governance → ActionIntent Replay Proof
+- **[PHASE5_INTELLIGENCE_ACTION_INTENT_REPLAY_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_ACTION_INTENT_REPLAY_STATUS.md)**: Phase 5.13 Status
+- **[PHASE5_INTELLIGENCE_ACTION_KERNEL_HANDOFF.md](docs/archive/PHASE5_INTELLIGENCE_ACTION_KERNEL_HANDOFF.md)**: Phase 5 — Intelligence ActionIntent → Canonical Action Kernel Handoff
+- **[PHASE5_INTELLIGENCE_ACTION_KERNEL_HANDOFF_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_ACTION_KERNEL_HANDOFF_STATUS.md)**: Phase 5 Handoff Status
+- **[PHASE5_INTELLIGENCE_AI_CHAIN_RECOVERY.md](docs/archive/PHASE5_INTELLIGENCE_AI_CHAIN_RECOVERY.md)**: Phase 5.9 — Intelligence AI Chain Recovery
+- **[PHASE5_INTELLIGENCE_AI_CHAIN_RECOVERY_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_AI_CHAIN_RECOVERY_STATUS.md)**: Phase 5.9 Status
+- **[PHASE5_INTELLIGENCE_AI_FABRIC.md](docs/archive/PHASE5_INTELLIGENCE_AI_FABRIC.md)**: Phase 5.7 — Intelligence AI Fabric Boundary
+- **[PHASE5_INTELLIGENCE_AI_FABRIC_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_AI_FABRIC_STATUS.md)**: Phase 5.7 Status
+- **[PHASE5_INTELLIGENCE_AI_INTERPRETATION_SEMANTIC_REPLAY.md](docs/archive/PHASE5_INTELLIGENCE_AI_INTERPRETATION_SEMANTIC_REPLAY.md)**: Phase 5.10 — AI Interpretation Semantic Replay
+- **[PHASE5_INTELLIGENCE_AI_INTERPRETATION_SEMANTIC_REPLAY_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_AI_INTERPRETATION_SEMANTIC_REPLAY_STATUS.md)**: Phase 5.10 Status — Complete
+- **[PHASE5_INTELLIGENCE_DECISION_ENGINE.md](docs/archive/PHASE5_INTELLIGENCE_DECISION_ENGINE.md)**: Phase 5.5 — Intelligence Decision Engine / Learning Consumption
+- **[PHASE5_INTELLIGENCE_DECISION_ENGINE_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_DECISION_ENGINE_STATUS.md)**: Phase 5.5 Status — Intelligence Decision Engine / Learning Consumption
+- **[PHASE5_INTELLIGENCE_DECISION_REPLAY.md](docs/archive/PHASE5_INTELLIGENCE_DECISION_REPLAY.md)**: Phase 5.6 — Intelligence Decision Provenance & Replay
+- **[PHASE5_INTELLIGENCE_EXECUTION_EVIDENCE_PROPAGATION.md](docs/archive/PHASE5_INTELLIGENCE_EXECUTION_EVIDENCE_PROPAGATION.md)**: Phase 5 — Intelligence Execution Evidence Propagation
+- **[PHASE5_INTELLIGENCE_GOVERNANCE_REPLAY.md](docs/archive/PHASE5_INTELLIGENCE_GOVERNANCE_REPLAY.md)**: Phase 5.12 — Decision → Governance Replay Proof
+- **[PHASE5_INTELLIGENCE_LEARNING_DECISION_CONTEXT.md](docs/archive/PHASE5_INTELLIGENCE_LEARNING_DECISION_CONTEXT.md)**: Phase 5.4 — Intelligence Learning Decision Context
+- **[PHASE5_INTELLIGENCE_LEARNING_DECISION_CONTEXT_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_LEARNING_DECISION_CONTEXT_STATUS.md)**: Phase 5.4 Status — Intelligence Learning Decision Context
+- **[PHASE5_INTELLIGENCE_LEARNING_FEEDBACK.md](docs/archive/PHASE5_INTELLIGENCE_LEARNING_FEEDBACK.md)**: Phase 5.3 — Intelligence Learning Feedback Boundary
+- **[PHASE5_INTELLIGENCE_LEARNING_FEEDBACK_STATUS.md](docs/archive/PHASE5_INTELLIGENCE_LEARNING_FEEDBACK_STATUS.md)**: Phase 5.3 Status — Intelligence Learning Feedback
+- **[PHASE5_INTELLIGENCE_OUTCOME_ATTRIBUTION.md](docs/archive/PHASE5_INTELLIGENCE_OUTCOME_ATTRIBUTION.md)**: Phase 5.2 — Intelligence Outcome Attribution Gate
+- **[PHASE5_STATUS.md](docs/archive/PHASE5_STATUS.md)**: Phase 5 Status — COMPLETE
+- **[PHASE60_LEGACY_EXECUTION_CONVERGENCE.md](docs/archive/PHASE60_LEGACY_EXECUTION_CONVERGENCE.md)**: Phase 60 — Legacy Execution Convergence
+- **[PHASE6_FAILURE_STORM_REPORT.md](docs/archive/PHASE6_FAILURE_STORM_REPORT.md)**: KDO Phase 6 — Distributed Failure-Storm Hardening
+- **[PHASE6_GATE2_STAGING_EVIDENCE.md](docs/archive/PHASE6_GATE2_STAGING_EVIDENCE.md)**: KDO Phase 6 — Gate 2: Staging Evidence Certification
+- **[PHASE6_GATE3_LIVE_RUNBOOK.md](docs/archive/PHASE6_GATE3_LIVE_RUNBOOK.md)**: Phase 6 — Gate 3 Live Staging Certification Runbook
+- **[PHASE6_GATE3_STATUS.md](docs/archive/PHASE6_GATE3_STATUS.md)**: Phase 6 — Gate 3 Real Staging Evidence Status
+- **[PHASE6_STATUS.md](docs/archive/PHASE6_STATUS.md)**: Phase 6 Status
+- **[PHASE7_14_CERTIFICATION.md](docs/archive/PHASE7_14_CERTIFICATION.md)**: KDO Phase 7.14 — Worker Result Evidence Handoff & Verification Intake
+- **[PHASE7_15_CERTIFICATION.md](docs/archive/PHASE7_15_CERTIFICATION.md)**: KDO Phase 7.15 — Worker Outcome Feedback & Task Closure Boundary
+- **[PHASE7_17_CERTIFICATION.md](docs/archive/PHASE7_17_CERTIFICATION.md)**: KDO Phase 7.17 Certification
+- **[PHASE7_23_CERTIFICATION.md](docs/archive/PHASE7_23_CERTIFICATION.md)**: Phase 7.23 — Worker Selection Policy Audit & History Certification
+- **[PHASE7_25_CERTIFICATION.md](docs/archive/PHASE7_25_CERTIFICATION.md)**: KDO Phase 7.25 — Qualification-Aware Worker Selection Certification
+- **[PHASE7_26_CERTIFICATION.md](docs/archive/PHASE7_26_CERTIFICATION.md)**: KDO Phase 7.26 — Workforce Coordination & Multi-Worker Planning Certification
+- **[PHASE7_27_CERTIFICATION.md](docs/archive/PHASE7_27_CERTIFICATION.md)**: KDO Phase 7.27 — Resource & Cost-Aware Workforce Coordination Certification
+- **[PHASE7_30_CERTIFICATION.md](docs/archive/PHASE7_30_CERTIFICATION.md)**: KDO Phase 7.30 — Coordinated Worker Assignment Lifecycle & Synchronization
+- **[PHASE7_34_CERTIFICATION.md](docs/archive/PHASE7_34_CERTIFICATION.md)**: Phase 7.34 — Workforce Learning & Coordination Feedback
+- **[PHASE7_35_CERTIFICATION.md](docs/archive/PHASE7_35_CERTIFICATION.md)**: KDO Phase 7.35 Certification — Workforce Coordination Policy & Adaptive Planning
+- **[PHASE7_36_CERTIFICATION.md](docs/archive/PHASE7_36_CERTIFICATION.md)**: Phase 7.36 — Workforce Coordination Policy Governance & Activation
+- **[PHASE7_37_CERTIFICATION.md](docs/archive/PHASE7_37_CERTIFICATION.md)**: KDO Phase 7.37 — Workforce Coordination Policy Enforcement & Consumption Binding
+- **[PHASE7_40_CERTIFICATION.md](docs/archive/PHASE7_40_CERTIFICATION.md)**: Phase 7.40 — Workforce Coordination Recovery & Reconciliation Certification
+- **[PHASE7_41_CERTIFICATION.md](docs/archive/PHASE7_41_CERTIFICATION.md)**: Phase 7.41 — End-to-End Workforce Integrity Certification
+- **[PHASE7_5_WORKER_SELECTION_CAPACITY_STATUS.md](docs/archive/PHASE7_5_WORKER_SELECTION_CAPACITY_STATUS.md)**: KDO Phase 7.5 — Worker Selection & Capacity Coordination
+- **[PHASE7_6_WORKER_REGISTRY_LIFECYCLE_STATUS.md](docs/archive/PHASE7_6_WORKER_REGISTRY_LIFECYCLE_STATUS.md)**: KDO Phase 7.6 — Worker Registry & Lifecycle Control
+- **[PHASE7_EXIT_CERTIFICATION.md](docs/archive/PHASE7_EXIT_CERTIFICATION.md)**: KDO Phase 7 — Governed Workforce Exit Certification
+- **[PHASE8_1_CERTIFICATION.md](docs/archive/PHASE8_1_CERTIFICATION.md)**: Phase 8.1 — Security Control Plane Certification
+- **[PHASE8_2_CERTIFICATION.md](docs/archive/PHASE8_2_CERTIFICATION.md)**: KDO Phase 8.2 — Tenant / Workspace Isolation Hardening
+- **[PHASE8_3_CERTIFICATION.md](docs/archive/PHASE8_3_CERTIFICATION.md)**: KDO Phase 8.3 — Identity & Access Hardening
+- **[PHASE8_4_CERTIFICATION.md](docs/archive/PHASE8_4_CERTIFICATION.md)**: KDO Phase 8.4 — Authorization Hardening
+- **[PHASE8_ROADMAP.md](docs/archive/PHASE8_ROADMAP.md)**: KDO Phase 8 — Security, Resilience & Operational Control
+- **[PHASE94_COMMAND_CENTER_TRUTH.md](docs/archive/PHASE94_COMMAND_CENTER_TRUTH.md)**: Phase 94 — Command Center Truth Convergence
+- **[PHASE94_COUNCIL_RUNTIME_CONVERGENCE.md](docs/archive/PHASE94_COUNCIL_RUNTIME_CONVERGENCE.md)**: Phase 94 — Council Runtime Convergence
+- **[PHASE95_DIRECTOR_RUNTIME_ALIGNMENT.md](docs/archive/PHASE95_DIRECTOR_RUNTIME_ALIGNMENT.md)**: Phase 95 — Director Runtime Alignment
+- **[PHASE_A_ELIMINATION.md](docs/archive/PHASE_A_ELIMINATION.md)**: Phase A — Elimination (auth / tokens / audit / workspace authority)
+- **[PHASE_A_STATUS.md](docs/archive/PHASE_A_STATUS.md)**: Phase A — Species Law — COMPLETE (code)
+- **[PHASE_B_LAYOUT.md](docs/archive/PHASE_B_LAYOUT.md)**: Phase B — Directory alignment
+- **[PHASE_B_STATUS.md](docs/archive/PHASE_B_STATUS.md)**: Phase B — One Nerve, One Loop — COMPLETE (code)
+- **[PHASE_C_STATUS.md](docs/archive/PHASE_C_STATUS.md)**: Phase C — Organism per workspace — COMPLETE (code)
+- **[PHASE_D_GAPS_CLOSED.md](docs/archive/PHASE_D_GAPS_CLOSED.md)**: Phase D gaps closed
+- **[PHASE_D_STATUS.md](docs/archive/PHASE_D_STATUS.md)**: Phase D — Metabolism — COMPLETE (code)
+- **[PHASE_E_STATUS.md](docs/archive/PHASE_E_STATUS.md)**: Phase E — Body visible — COMPLETE (code)
+- **[PHASE_F_STATUS.md](docs/archive/PHASE_F_STATUS.md)**: Phase F — Species scale — COMPLETE (code)
+- **[RELEASE_HARDEN_LLM_PHASE.md](docs/archive/RELEASE_HARDEN_LLM_PHASE.md)**: Omnexa / Kanyoza — HARDEN + LLM Phase Closeout
+- **[RENDER_FIX.md](docs/archive/RENDER_FIX.md)**: Render connectivity fix (ENGINE OFFLINE)
+- **[SAAS_PLAN_COMPLETE.md](docs/archive/SAAS_PLAN_COMPLETE.md)**: Kanyoza SaaS organism plan — COMPLETE (backend)
+- **[SPRINT1_CONTRACT.md](docs/archive/SPRINT1_CONTRACT.md)**: Sprint 1 — Single publish path & contract tests
+- **[SPRINT2_OUTCOMES.md](docs/archive/SPRINT2_OUTCOMES.md)**: Sprint 2 — Outcome feedback + correlation timeline
+- **[SPRINT3_ISOLATION_OUTBOX.md](docs/archive/SPRINT3_ISOLATION_OUTBOX.md)**: Sprint 3 — Tenant isolation + durable outbox
+- **[SPRINT4_SLO.md](docs/archive/SPRINT4_SLO.md)**: Sprint 4 — SLOs + isolation contracts
+- **[SPRINT5_DEPLOY.md](docs/archive/SPRINT5_DEPLOY.md)**: Sprint 5 — Production compose, SLO webhooks, weekly reports
+- **[TREND_NO_LLM.md](docs/archive/TREND_NO_LLM.md)**: Trend Intelligence — no LLM by default
+- **[V67.10_STATUS.md](docs/archive/V67.10_STATUS.md)**: V67.10 Status
+- **[V67.13_STATUS.md](docs/archive/V67.13_STATUS.md)**: V67.13 — Reliability Observability Truth Certification
+- **[V67.14_STATUS.md](docs/archive/V67.14_STATUS.md)**: V67.14 Status
+- **[V67.15_STATUS.md](docs/archive/V67.15_STATUS.md)**: V67.15 Status
+- **[V71.11_STATUS.md](docs/archive/V71.11_STATUS.md)**: V71.11 STATUS — Workforce Observability & Control
+- **[V71.12_STATUS.md](docs/archive/V71.12_STATUS.md)**: V71.12 — Governed AI Workforce Certification
+- **[V71.13_PRODUCTION_RUNTIME_CONVERGENCE.md](docs/archive/V71.13_PRODUCTION_RUNTIME_CONVERGENCE.md)**: V71.13 — Production Runtime Convergence
+- **[V71.14_PRODUCTION_ROUTE_EVENT_WIRING.md](docs/archive/V71.14_PRODUCTION_ROUTE_EVENT_WIRING.md)**: V71.14 — Production Route/Event Wiring
+- **[V71.15_LEGACY_RUNTIME_AUTHORITY_FENCING.md](docs/archive/V71.15_LEGACY_RUNTIME_AUTHORITY_FENCING.md)**: V71.15 — Legacy Runtime Fencing & Authority Convergence
+- **[V71.17_DURABLE_WORKFORCE_EXECUTION.md](docs/archive/V71.17_DURABLE_WORKFORCE_EXECUTION.md)**: V71.17 — Durable Workforce Execution Convergence
+- **[V71.18_WORKFORCE_CONTROL_PLANE_PERSISTENCE.md](docs/archive/V71.18_WORKFORCE_CONTROL_PLANE_PERSISTENCE.md)**: V71.18 — Workforce Control-Plane Persistence & Restart Convergence
+- **[V71.19_WORKFORCE_CHAOS_CERTIFICATION.md](docs/archive/V71.19_WORKFORCE_CHAOS_CERTIFICATION.md)**: V71.19 — Workforce Chaos & Recovery Certification
+- **[V71.4_AGENT_PLANNING.md](docs/archive/V71.4_AGENT_PLANNING.md)**: V71.4 — Governed AI Workforce: Agent Planning
+- **[V71.5_AGENT_EVALUATION.md](docs/archive/V71.5_AGENT_EVALUATION.md)**: V71.5 — Governed AI Workforce: Agent Evaluation
+- **[V71.8_AGENT_COORDINATION.md](docs/archive/V71.8_AGENT_COORDINATION.md)**: V71.8 — Multi-Agent Coordination
+- **[V71.8_RELEASE_NOTES.md](docs/archive/V71.8_RELEASE_NOTES.md)**: V71.8 Release Notes
+- **[V71.9_STATUS.md](docs/archive/V71.9_STATUS.md)**: V71.9 Status — Bounded Autonomous Business Operations
+- **[V72.1_COMMAND_CENTER_TRUTH_MODEL.md](docs/archive/V72.1_COMMAND_CENTER_TRUTH_MODEL.md)**: V72.1 — Business Command Center Truth Model & KCPG API Contract
+- **[V72.1_STATUS.md](docs/archive/V72.1_STATUS.md)**: V72.1 Status — Business Command Center Truth Model & KCPG API Contract
+- **[V72.2_COMMAND_CENTER_READ_MODEL.md](docs/archive/V72.2_COMMAND_CENTER_READ_MODEL.md)**: V72.2 — Command Center Backend Read Model & Truth Adapters
+- **[V72.4_BUSINESS_COCKPIT_TRUTH.md](docs/archive/V72.4_BUSINESS_COCKPIT_TRUTH.md)**: V72.4 — Business Cockpit Durable Truth
+- **[V72.5_BUSINESS_INTELLIGENCE_DECISION_SURFACE.md](docs/archive/V72.5_BUSINESS_INTELLIGENCE_DECISION_SURFACE.md)**: V72.5 — Business Intelligence / Decision Surface
+- **[V72.6_RECOMMENDATION_LIFECYCLE_OUTCOME_FEEDBACK.md](docs/archive/V72.6_RECOMMENDATION_LIFECYCLE_OUTCOME_FEEDBACK.md)**: V72.6 — Recommendation Lifecycle + Outcome Feedback
+- **[V72.7_DECISION_INTELLIGENCE_OUTCOME_ATTRIBUTION.md](docs/archive/V72.7_DECISION_INTELLIGENCE_OUTCOME_ATTRIBUTION.md)**: V72.7 — Business Decision Intelligence & Outcome Attribution
+- **[V72.8_BUSINESS_OUTCOME_CLOSED_LOOP_LEARNING.md](docs/archive/V72.8_BUSINESS_OUTCOME_CLOSED_LOOP_LEARNING.md)**: V72.8 — Business Outcome Intelligence & Closed-Loop Learning
+- **[V72.9_BUSINESS_COCKPIT_OPERATING_LOOP.md](docs/archive/V72.9_BUSINESS_COCKPIT_OPERATING_LOOP.md)**: V72.9 — Business Cockpit Operating Loop & Human Decision Workspace
+- **[V73_CONVERGENCE_IMPLEMENTATION.md](docs/archive/V73_CONVERGENCE_IMPLEMENTATION.md)**: V73 Intelligence-to-Execution Convergence — Implementation
+- **[WAVE10_VERTICAL_SLICE_CERTIFICATION.md](docs/archive/WAVE10_VERTICAL_SLICE_CERTIFICATION.md)**: KDO Wave 10 — System Vertical Slice Certification
+- **[WAVE11_OPERATIONAL_CONSISTENCY_CERTIFICATION.md](docs/archive/WAVE11_OPERATIONAL_CONSISTENCY_CERTIFICATION.md)**: KDO Wave 11 — Operational Consistency Certification
+- **[WAVE12_RECOVERY_CERTIFICATION.md](docs/archive/WAVE12_RECOVERY_CERTIFICATION.md)**: KDO Wave 12 — Recovery Orchestration Certification

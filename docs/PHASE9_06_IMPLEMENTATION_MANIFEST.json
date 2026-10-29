@@ -1,0 +1,21 @@
+{
+  "phase": "9.6",
+  "name": "Reconciliation & Drift Control",
+  "schema_version": "phase9.reconciliation-drift.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_reconciliation.py",
+    "tests/test_phase9_reconciliation.py",
+    "PHASE9_06_RECONCILIATION_DRIFT_CONTROL.md",
+    "PHASE9_06_IMPLEMENTATION_MANIFEST.json"
+  ],
+  "certification_scope": [
+    "expected-vs-authoritative comparison",
+    "drift detection",
+    "missing observation safety",
+    "workspace isolation",
+    "evidence preservation",
+    "explicit resolution boundary",
+    "authority-free model"
+  ]
+}

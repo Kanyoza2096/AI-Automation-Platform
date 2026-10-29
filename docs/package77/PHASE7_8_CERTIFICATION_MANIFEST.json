@@ -1,0 +1,12 @@
+{
+  "phase": "7.8",
+  "name": "Workforce Demand Planning",
+  "architecture_tests": 464,
+  "focused_tests": 8,
+  "compileall": true,
+  "authority": "none",
+  "advisory_only": true,
+  "execution_requested": false,
+  "provisioning_authority_granted": false,
+  "status": "CERTIFIED"
+}

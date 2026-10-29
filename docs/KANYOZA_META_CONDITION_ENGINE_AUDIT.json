@@ -1,0 +1,70 @@
+{
+  "audit": "Kanyoza Meta Engine and Condition Engine capability reality audit",
+  "generated_at": "2026-10-22T09:11:45.138318+00:00",
+  "mode": "read-only local/in-process; no external connections; no action execution; no recovery",
+  "checks_passed": 11,
+  "checks_total": 11,
+  "checks": [
+    {
+      "check": "condition_observation_to_decision",
+      "passed": true,
+      "detail": "Isolated in-memory observation produced a decision and baseline result."
+    },
+    {
+      "check": "condition_analysis_methods",
+      "passed": true,
+      "detail": "Core analysis, strategy, outcome-learning, and experiment methods are implemented."
+    },
+    {
+      "check": "condition_default_strategy_catalog",
+      "passed": true,
+      "detail": "Registered strategy count: 5."
+    },
+    {
+      "check": "condition_instance_without_executor_readiness_explicit",
+      "passed": true,
+      "detail": "Analysis remains available while execution readiness is explicitly false without an executor."
+    },
+    {
+      "check": "condition_persistence_is_not_overclaimed",
+      "passed": true,
+      "detail": "Persistence is not declared ready when no client is configured; configured clients remain unverified until a safe durability probe exists."
+    },
+    {
+      "check": "condition_api_executor_is_fail_closed",
+      "passed": true,
+      "detail": "API fallback executor is explicit and returns action_executor_unavailable instead of performing a side effect."
+    },
+    {
+      "check": "condition_singleton_uses_fail_closed_fallback",
+      "passed": true,
+      "detail": "Imported API singleton defaults to a non-executing fallback until lifecycle wiring replaces it."
+    },
+    {
+      "check": "condition_council_approval_is_explicit",
+      "passed": true,
+      "detail": "Governed Condition Engine execution requires an explicit Council approval signal; missing or unknown decisions fail closed."
+    },
+    {
+      "check": "meta_supervisor_health_scan",
+      "passed": true,
+      "detail": "Meta Engine generated a per-engine health record; status=nominal."
+    },
+    {
+      "check": "meta_registration_rejects_factories",
+      "passed": true,
+      "detail": "Registration API is present; existing regression tests cover rejection of factories/callables."
+    },
+    {
+      "check": "meta_status_contract",
+      "passed": true,
+      "detail": "Meta Engine exposes a structured status contract; no live monitor was started by this audit."
+    }
+  ],
+  "conclusion": {
+    "meta_engine": "REAL_IMPLEMENTATION_LOCAL_SUPERVISION_CONTRACTS_PRESENT_LIVE_RUNTIME_UNVERIFIED",
+    "condition_engine": "REAL_ANALYTICS_AND_DECISION_IMPLEMENTATION_EXECUTION_ADAPTER_DEPENDENT",
+    "remediation": "Condition Engine separates analysis, execution, and persistence readiness; API health delegates to core health; lifecycle records governed executor binding outcome; Meta Engine surfaces per-engine readiness; Condition Engine execution now requires explicit Council approval and fails closed on unknown decisions.",
+    "remaining_limitations": "A configured persistence client is not proof of durable writes; live Council binding, durable receipts, external side effects, and authoritative outcomes require isolated staging verification. The in-process audit does not invoke an action executor."
+  }
+}

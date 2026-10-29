@@ -1,0 +1,22 @@
+{
+  "phase": "9.3",
+  "name": "Incident & Causal Graph",
+  "schema_version": "phase9.incident-causal-graph.v1",
+  "authority": "none",
+  "artifacts": [
+    "services/phase9_incident_causal.py",
+    "tests/test_phase9_incident_causal.py",
+    "PHASE9_03_INCIDENT_CAUSAL_GRAPH.md",
+    "PHASE9_03_IMPLEMENTATION_MANIFEST.json"
+  ],
+  "dependencies": {
+    "phase_9_1": "Operational Event Model",
+    "phase_9_2": "Correlated Metrics & Distributed Trace Context"
+  },
+  "principles": [
+    "correlation does not imply causation",
+    "workspace boundaries are mandatory",
+    "incident and causal graph layers have no execution authority",
+    "impact traversal is read-only"
+  ]
+}

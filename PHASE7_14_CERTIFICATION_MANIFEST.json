@@ -1,0 +1,33 @@
+{
+  "phase": "7.14",
+  "title": "Worker Result Evidence Handoff & Verification Intake",
+  "tests_focused": 26,
+  "architecture_tests": 520,
+  "compileall": "passed",
+  "files": [
+    {
+      "path": "services/v71_12_worker_task_handoff.py",
+      "sha256": "9c86462e446738d6d18fde484ef43d8f7b36a53a4aba2370daa6798d1a2c2639"
+    },
+    {
+      "path": "services/v71_13_worker_task_progress.py",
+      "sha256": "9066e5476b37d2bc2cc8c56baca9db7d8ce89dacdedc335f99d7aa7e27291ade"
+    },
+    {
+      "path": "services/v71_14_worker_result_verification_intake.py",
+      "sha256": "699a21a169fd9429ce002d99dc9bd99f0bd26b5bf4ec8d6f07950b932de88823"
+    },
+    {
+      "path": "tests/architecture/test_v71_12_worker_task_handoff.py",
+      "sha256": "60f0b31d145f8f56280f121034891cec2c07551d1fb2026e946c3a16e7b86938"
+    },
+    {
+      "path": "tests/architecture/test_v71_13_worker_task_progress.py",
+      "sha256": "8de5a2f395b80ff7085a5ace70232e9a534d22618db47359c924cf577c706aa8"
+    },
+    {
+      "path": "tests/architecture/test_v71_14_worker_result_verification_intake.py",
+      "sha256": "3308d4a2c6ae3563de002d0402d8527277ec048d012c3affc217688e681e733e"
+    }
+  ]
+}

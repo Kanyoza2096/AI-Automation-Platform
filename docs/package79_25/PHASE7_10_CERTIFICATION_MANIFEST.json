@@ -1,0 +1,16 @@
+{
+  "architecture_tests": "484/484",
+  "authority": "none",
+  "authorization_granted": false,
+  "compileall": "PASS",
+  "coordination_only": true,
+  "execution_requested": false,
+  "files": {
+    "package79_25/PHASE7_10_WORKER_ASSIGNMENT_ADMISSION_CERTIFICATION.md": "8ec298b4fa79726657ec28317884cc4681fa79852eaa7acb0e45928c84656c2f",
+    "services/v71_25_worker_assignment.py": "aaab8e26311a1befb39360b6e93bbcd72855c89c6daacf864a038d60707a2de6",
+    "tests/architecture/test_v71_25_worker_assignment.py": "0be4a29cf8c8e0853a6729e13e9aafbeec296672e5215443ea8ee24d331e40ac"
+  },
+  "focused_tests": "10/10",
+  "phase": "7.10",
+  "title": "Governed Worker Assignment Admission"
+}

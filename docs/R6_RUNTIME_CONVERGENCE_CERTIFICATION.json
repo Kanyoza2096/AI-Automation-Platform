@@ -1,0 +1,34 @@
+{
+  "release": "R6",
+  "status": "CERTIFICATION_CANDIDATE",
+  "title": "E2E Publish Runtime Boundary Convergence",
+  "source_baseline": "KDO-Backend-R5-Notification-Diagnostic-Convergence-Complete.zip",
+  "canonical_execution": "ActionIntent -> Governance -> Authorization -> Action Kernel -> Connector -> Provider -> Receipt -> Verification -> Reconciliation",
+  "changes": [
+    "Disabled E2E publish routes in production.",
+    "Preserved non-consequential dry-run behavior for controlled environments.",
+    "Delegated real E2E publishing to execute_governed_publish.",
+    "Added explicit decision_id input for governed E2E publishing.",
+    "Updated legacy execution convergence assertion to test the current execution boundary invariant rather than a source-text implementation detail."
+  ],
+  "invariants": {
+    "second_executor_added": false,
+    "legacy_command_executor_http_mutation_reintroduced": false,
+    "e2e_production_mutation_surface": false,
+    "real_e2e_publish_uses_governed_helper": true,
+    "dry_run_is_non_consequential": true,
+    "new_provider_capability_claimed": false
+  },
+  "verification": {
+    "targeted_regression": "18/18 PASS",
+    "python_compileall": "PASS",
+    "runtime_ownership_certification": "PASS",
+    "zip_integrity": "PASS"
+  },
+  "external_requirements": [
+    "No live provider credentials were introduced.",
+    "No live production deployment was performed.",
+    "Production certification still requires target-environment evidence."
+  ],
+  "production_certification": false
+}

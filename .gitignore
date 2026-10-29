@@ -1,0 +1,5 @@
+
+# Local staging secrets and state
+.env.staging
+deployment/staging/.env.staging
+data/staging/

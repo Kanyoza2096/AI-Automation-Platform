@@ -1,0 +1,15 @@
+{
+  "files": {
+    "package79/PHASE7_9_WORKFORCE_CAPACITY_ALLOCATION_CERTIFICATION.md": "7e1ddb94c7817748c76fd399760799640604a6a1f293823656a55220e057577c",
+    "services/v71_24_workforce_capacity_allocation.py": "214ce5b686e0c088350933f1934d646c93d057f67e771b90cba76e5f7803729b",
+    "tests/architecture/test_v71_24_workforce_capacity_allocation.py": "df18820882bbfcbb8397a9b7b825ae4d98702078df43de199fc88c184c68ad8d"
+  },
+  "phase": "7.9",
+  "tests": {
+    "architecture": 474,
+    "authority_boundary": "PASS",
+    "compileall": "PASS",
+    "focused": 10
+  },
+  "title": "Governed Workforce Capacity Allocation"
+}

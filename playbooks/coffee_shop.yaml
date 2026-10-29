@@ -1,0 +1,25 @@
+business_type: coffee_shop
+industry: food_and_beverage
+default_workers:
+  - role: content_creator
+    purpose: Maintain a consistent local social presence and promotions.
+    capabilities: [content_draft, social_publish]
+  - role: customer_retention
+    purpose: Identify governed opportunities to bring customers back.
+    capabilities: [crm_update_contact, customer_communication]
+  - role: local_marketer
+    purpose: Coordinate local promotions and campaign tasks.
+    capabilities: [campaign_draft, social_publish]
+default_connectors: [instagram, website, whatsapp]
+default_content_pillars: [products, behind_the_scenes, local_community, promotions]
+default_rules:
+  - id: weekly-promotion
+    name: Weekly promotion draft
+    trigger: schedule.weekly
+    action: generate_promotion_draft
+    risk: low
+  - id: customer-followup
+    name: Customer retention follow-up
+    trigger: customer.retention_due
+    action: customer_communication
+    risk: medium

@@ -1,0 +1,17 @@
+{
+  "phase": "7.6",
+  "title": "Worker Registry & Lifecycle Control",
+  "version": "v71.21",
+  "status": "PASS",
+  "authority_granted": false,
+  "execution_requested": false,
+  "provider_access": false,
+  "action_kernel_access": false,
+  "focused_tests": 38,
+  "architecture_tests": 456,
+  "compileall": "PASS",
+  "full_repository_validation": "TIMED_OUT_BEFORE_COMPLETION",
+  "lifecycle": ["registered", "ready", "active", "draining", "suspended", "retired", "revoked"],
+  "health": ["unknown", "healthy", "degraded", "unavailable"],
+  "worker_kinds": ["deterministic_service", "workflow_worker", "ai_worker", "connector_worker", "scheduled_worker", "event_driven_worker"]
+}

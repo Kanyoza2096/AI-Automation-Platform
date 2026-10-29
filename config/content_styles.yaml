@@ -1,0 +1,468 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Kanyoza Content Style Registry
+#
+# Single source of truth for content style guides used by PromptBuilder.
+#
+# Adding a new vertical = adding a YAML entry. No code change, no deploy.
+#
+# Schema per style:
+#   display_name:    Human-readable name (for UI, logs)
+#   match:           Signals used for style inference when a brand has no
+#                    explicit `style_category`
+#     tones:         Tone words that trigger this style
+#     audience_signals: Substrings matched against brand.audience_description
+#     name_signals:  Substrings matched against brand.name or brand.slug
+#   guide:           The style guide text injected into the LLM prompt.
+#                    MUST end with three fields the universal contract
+#                    defers to (see below).
+#
+# Every guide closes with three labelled fields the PromptBuilder quality
+# contract relies on. They are what make the universal contract adaptive
+# across brands:
+#
+#   Evidence for this brand:
+#     What counts as a fact the reader can verify. Technical brands cite
+#     benchmarks and config values; gospel brands cite scripture with
+#     book/chapter/verse; business brands cite metrics and dates; general
+#     brands cite places, people, and specific situations. Without this
+#     field the universal contract's "rule 4: evidence appropriate to the
+#     brand" has nothing to defer to, and the model defaults to abstract
+#     generalities.
+#
+#   Peer for this brand:
+#     Who the writer is speaking as a peer. Technical: a working engineer.
+#     Gospel: a fellow believer. Business: a fellow operator. General: a
+#     neighbour. Without this field the model defaults to "technology
+#     product builders" — the exact failure mode V1.9 of the prompt
+#     builder is designed to prevent.
+#
+#   Emoji for this brand:
+#     Whether emoji are welcome at all, and what counts as meaningful in
+#     this vertical. A Postgres tuning post with 🚣 signals a model that
+#     is not thinking about the content; a devotional post with 🙏 does
+#     not.
+#
+# Resolution order in PromptBuilder.guide_for_brand():
+#   1. brand.custom_style_guide   (full override)
+#   2. brand.style_category        (explicit key → this registry)
+#   3. inference via match signals (score-based, best match wins)
+#   4. SAFE_FALLBACK_GUIDE         (hardcoded conservative default)
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: 2
+
+styles:
+
+  # ────────────────────────────────────────────────────────────────────────
+  # DEVOTIONAL / FAITH
+  # ────────────────────────────────────────────────────────────────────────
+  devotional:
+    display_name: "Devotional / Faith"
+    match:
+      tones:
+        - spiritual
+        - inspirational
+        - devotional
+        - religious
+        - warm
+        - pastoral
+        - faith
+        - gospel
+        - christian
+        - ministry
+        - encouraging
+        - reverent
+      audience_signals:
+        - christian
+        - believer
+        - faith
+        - church
+        - worship
+        - gospel
+        - scripture
+        - biblical
+        - disciple
+      name_signals:
+        - gospel
+        - church
+        - ministry
+        - faith
+        - word
+        - prayer
+        - blessed
+        - daily
+    guide: |
+      Content Style: DEVOTIONAL / INSPIRATIONAL
+      - Write an uplifting, faith-based post.
+      - DO NOT use comparison format (no "X vs Y").
+      - DO NOT compare technologies, products, or platforms.
+      - DO NOT use metaphors from software engineering, business operations, or systems architecture.
+      - DO NOT use corporate verbs such as "deploy", "leverage", "optimize", "ship", "scale".
+      - DO NOT include phrases like "feedback loop", "system architecture", "pipeline", or "deployment".
+      - Use scripture references where appropriate (quote the verse and reference).
+      - Focus on spiritual growth, encouragement, and biblical wisdom.
+      - End with a prayer or blessing.
+      - Use warm, pastoral language suitable for a Christian audience.
+      - Open with a scripture-anchored theme or reflection.
+      - Close with a call to reflection or prayer.
+
+      Evidence for this brand:
+        Scripture quoted with book, chapter and verse (e.g. "Psalm 23:1",
+        "John 3:16"). A specific pastoral moment or a named life situation.
+        A personal experience the writer has lived through. Never invent
+        scripture. Never paraphrase without marking the paraphrase.
+      Peer for this brand:
+        A fellow believer walking a similar road — not a teacher above
+        the reader and not a stranger. Speak as someone who has been
+        where the reader is today.
+      Emoji for this brand:
+        Appropriate and often expected. Use only emoji that carry meaning
+        in a faith context — 🙏 📖 ✝️ 🕊️ ⛪ are meaningful; decorative
+        sparkles, rockets, and charts are not.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # PROFESSIONAL / TECHNICAL
+  # ────────────────────────────────────────────────────────────────────────
+  professional:
+    display_name: "Professional / Technical"
+    match:
+      tones:
+        - professional
+        - technical
+        - authoritative
+        - analytical
+        - corporate
+        - formal
+        - enterprise
+      audience_signals:
+        - developer
+        - engineer
+        - cto
+        - professional
+        - enterprise
+        - software
+        - technical
+      name_signals: []
+    guide: |
+      Content Style: PROFESSIONAL ANALYSIS
+      - Write an insightful comparison or analysis post.
+      - You may use "X vs Y" format if it fits the topic.
+      - Back claims with reasoning and evidence.
+      - Maintain authoritative, expert tone.
+      - Include actionable takeaways.
+      - Prefer concrete examples over abstract jargon.
+      - Open with the most important insight.
+      - End with a clear next step or takeaway.
+
+      Evidence for this brand:
+        A benchmark number (latency, throughput, memory, cost). A config
+        value or version string. A named tool or library. A specific
+        error message or log line. A before/after comparison. Do not cite
+        "studies" or "research" without naming them. Do not invent numbers.
+      Peer for this brand:
+        A working engineer or operator who has run this kind of system in
+        production for at least a year. Speak as one practitioner to another,
+        not as an expert down to a student.
+      Emoji for this brand:
+        Only if semantically meaningful in the specific post. A database
+        post may use a database emoji; a metaphor emoji picked because it
+        looked nice signals the model is not thinking about the content.
+        Default to no emoji.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # CASUAL / CONVERSATIONAL
+  # ────────────────────────────────────────────────────────────────────────
+  casual:
+    display_name: "Casual / Conversational"
+    match:
+      tones:
+        - casual
+        - friendly
+        - playful
+        - conversational
+        - approachable
+        - fun
+        - light
+      audience_signals:
+        - everyday
+        - general
+        - community
+      name_signals: []
+    guide: |
+      Content Style: CASUAL / CONVERSATIONAL
+      - Write a friendly, approachable post.
+      - Use conversational language.
+      - Ask questions to engage the audience.
+      - Keep it light and relatable.
+      - Use humor where appropriate.
+      - Short paragraphs. Simple words.
+      - End with an open question or friendly invitation.
+
+      Evidence for this brand:
+        A specific everyday moment, a small observation the writer noticed,
+        a named situation the reader will recognise, or a number from
+        real life (a price, a duration, a count). Do not reach for data
+        or statistics — reach for shared experience.
+      Peer for this brand:
+        A friend the writer runs into at the same coffee shop. Equal,
+        relaxed, no authority claimed either way.
+      Emoji for this brand:
+        Fine and often welcome, but each should still mean something.
+        A friendly emoji that matches the moment (🙂 ☕ 🌿) is better
+        than a decorative cluster.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # CULINARY / FOOD
+  # ────────────────────────────────────────────────────────────────────────
+  culinary:
+    display_name: "Food / Cooking"
+    match:
+      tones:
+        - cozy
+        - appetizing
+        - homey
+        - savory
+        - sweet
+      audience_signals:
+        - cook
+        - chef
+        - foodie
+        - home cook
+        - baker
+        - kitchen
+      name_signals:
+        - kitchen
+        - recipe
+        - food
+        - cook
+        - bake
+        - cafe
+        - restaurant
+    guide: |
+      Content Style: CULINARY / RECIPE
+      - Evoke sensory details: taste, smell, texture, warmth.
+      - Reference ingredients, technique, and seasonality.
+      - DO NOT use software engineering metaphors.
+      - Short, vivid sentences. Present tense.
+      - End with a tip or variation suggestion.
+      - Warm, inviting tone suitable for home cooks.
+      - If describing a dish, mention one surprising detail.
+      - Include a call to try, save, or share the recipe.
+
+      Evidence for this brand:
+        A specific ingredient, a measured quantity, a technique with a
+        name (braise, bloom, fold), a cooking time, or a small sensory
+        detail the reader can picture. Avoid "delicious" and "tasty"
+        without a concrete anchor — the reader cannot verify them.
+      Peer for this brand:
+        A fellow home cook, at the same stove. Not a chef instructing
+        a student — someone who burned the garlic last week too.
+      Emoji for this brand:
+        Welcome and often expected. Use emoji that point at the food
+        or the moment (🍋 🍞 🔥 ⏲️) rather than generic sparkles.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # FITNESS / WELLNESS
+  # ────────────────────────────────────────────────────────────────────────
+  fitness:
+    display_name: "Fitness / Wellness"
+    match:
+      tones:
+        - motivating
+        - energetic
+        - athletic
+        - empowering
+      audience_signals:
+        - athlete
+        - fitness
+        - gym
+        - runner
+        - lifter
+        - wellness
+      name_signals:
+        - fit
+        - gym
+        - run
+        - strength
+        - active
+        - wellness
+    guide: |
+      Content Style: FITNESS / WELLNESS
+      - Energetic, action-oriented language.
+      - Focus on progress, consistency, and mindset.
+      - DO NOT use corporate or software metaphors.
+      - Include a clear call to a specific action.
+      - Encourage without shaming.
+      - End with a motivational statement.
+      - Use concrete, measurable framing where possible.
+
+      Evidence for this brand:
+        A specific rep count, distance, duration, heart rate, or training
+        block (e.g. "12 weeks", "4x8", "5km"). A named exercise or method.
+        A personal before/after change the writer observed. Do not invent
+        performance numbers.
+      Peer for this brand:
+        A training partner at the same stage of the journey. Not a coach
+        issuing commands, not a guru claiming transformation.
+      Emoji for this brand:
+        Appropriate when they mark a specific moment — 💪 🏃 🥇 when they
+        point at the actual thing being described. Not as a decorative
+        row at the end of the post.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # NEWS / JOURNALISM
+  # ────────────────────────────────────────────────────────────────────────
+  news:
+    display_name: "News / Journalism"
+    match:
+      tones:
+        - factual
+        - neutral
+        - objective
+        - journalistic
+      audience_signals:
+        - reader
+        - subscriber
+        - public
+        - general
+      name_signals:
+        - news
+        - times
+        - post
+        - journal
+        - report
+        - daily
+    guide: |
+      Content Style: NEWS / JOURNALISM
+      - Lead with the most important fact.
+      - Neutral, factual tone. No editorializing.
+      - Attribute sources where applicable.
+      - DO NOT use hyperbole or marketing language.
+      - Short paragraphs. Plain language.
+      - Include a dateline and brief context.
+      - End with a link or next step.
+
+      Evidence for this brand:
+        Named sources, dates, places, and official statements. A number
+        that has been published (a statistic from a specific institution,
+        a quoted figure from a named official). Attribute everything.
+        Never print a figure without naming where it came from.
+      Peer for this brand:
+        An informed reader who follows the subject. Not a student being
+        introduced to it, not an insider being briefed on it.
+      Emoji for this brand:
+        Do not use emoji in news copy. The style contract forbids it and
+        editorial standards require it — emoji compromise the factual
+        register.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # EDUCATION / INSTRUCTIONAL
+  # ────────────────────────────────────────────────────────────────────────
+  education:
+    display_name: "Education / Instructional"
+    match:
+      tones:
+        - educational
+        - instructive
+        - patient
+        - explanatory
+      audience_signals:
+        - student
+        - learner
+        - parent
+        - teacher
+        - educator
+      name_signals:
+        - learn
+        - academy
+        - school
+        - course
+        - tutor
+        - edu
+    guide: |
+      Content Style: EDUCATIONAL
+      - Teach one clear concept per post.
+      - Use plain language. Define jargon if used.
+      - Structure: hook → explanation → example → takeaway.
+      - DO NOT use corporate or sales language.
+      - Prefer concrete examples over abstract theory.
+      - End with a mini-quiz, prompt, or reflection question.
+      - Never condescend. Assume the reader is intelligent.
+
+      Evidence for this brand:
+        A worked example the reader can follow step by step. A concrete
+        case (a specific problem, a specific solution, the result). A
+        definition with a named source. A number the reader can check.
+        Do not cite "research shows" without naming the research.
+      Peer for this brand:
+        A curious adult learner who is not an expert in this subject but
+        is competent in life and work. Speak to them as equals, not as
+        a teacher above a class.
+      Emoji for this brand:
+        Rare. An occasional emoji to mark a key idea (💡) is fine; a
+        decorative row is not. Learning content reads more credibly
+        with restrained emoji use.
+
+  # ────────────────────────────────────────────────────────────────────────
+  # ENTERTAINMENT / LIFESTYLE
+  # ────────────────────────────────────────────────────────────────────────
+  entertainment:
+    display_name: "Entertainment / Lifestyle"
+    match:
+      tones:
+        - entertaining
+        - witty
+        - trendy
+        - lifestyle
+        - glamorous
+      audience_signals:
+        - fan
+        - follower
+        - lifestyle
+        - entertainment
+        - audience
+      name_signals:
+        - entertainment
+        - lifestyle
+        - buzz
+        - vibe
+        - pop
+    guide: |
+      Content Style: ENTERTAINMENT / LIFESTYLE
+      - Lead with the hook. Make the first line unmissable.
+      - Keep the rhythm punchy. Short sentences.
+      - Reference popular culture where relevant.
+      - DO NOT sound corporate or preachy.
+      - Include one shareable detail or quote.
+      - End with a question or hot take invitation.
+      - Emoji density higher than other verticals is fine.
+
+      Evidence for this brand:
+        A named moment in popular culture, a specific quote with attribution,
+        a dated event, a place the reader recognises, or a direct reference
+        to something the audience is currently talking about. Do not cite
+        vague trends — be specific about what you are referring to.
+      Peer for this brand:
+        A friend with the same taste — someone who shares the writer's
+        enthusiasm for the subject and gets the references.
+      Emoji for this brand:
+        Welcome, and higher density than other verticals is fine. Each
+        emoji should still point at something rather than decorate.
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ADDING A NEW VERTICAL
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 1. Copy one of the blocks above.
+# 2. Change the key (e.g., "real_estate:").
+# 3. Fill in display_name, match, guide.
+# 4. The guide MUST end with the three labelled fields:
+#       Evidence for this brand:
+#       Peer for this brand:
+#       Emoji for this brand:
+#    Without them, the universal quality contract has nothing to defer to
+#    and the model falls back to generic, brand-agnostic output.
+# 5. Commit + push. Render rebuilds. Done.
+#
+# No Python changes needed. PromptBuilder loads this file at import time.
+# ═══════════════════════════════════════════════════════════════════════════
