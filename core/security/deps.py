@@ -4,13 +4,15 @@ FastAPI dependencies for canonical authentication + RequestContext binding.
 
 from __future__ import annotations
 
-from typing import Optional
 import logging
+from typing import Optional
 
 from fastapi import Header, HTTPException, Request
 
 from core.request_context import RequestContext, bind_from_auth_identity, get_request_context
 from core.authorization import at_least
+
+logger = logging.getLogger("kanyoza.security.deps")
 
 
 async def require_auth_context(
@@ -37,13 +39,31 @@ async def require_auth_context(
 
     try:
         from core.species_auth import species_auth
-        container = getattr(request.app.state, "container", None)
-        supabase_client = getattr(getattr(container, "supabase_service", None), "client", None)
+        
+        # v2.1 — SUPABASE CLIENT RESOLUTION FIX:
+        # Read the pooled Supabase client from the module shim, not the container.
+        # The container is a DI registry and does not expose module-level shims.
+        _supabase_client = None
+        try:
+            from services.supabase import supabase_service
+            _supabase_client = (
+                supabase_service.service_client
+                or supabase_service.client
+            )
+        except Exception as exc:
+            logger.debug("Could not resolve supabase_service shim: %s", exc)
+
+        if _supabase_client is None:
+            logger.warning(
+                "require_auth_context: no Supabase client available from "
+                "services.supabase shim — workspace validation may fail"
+            )
+
         key_store = getattr(request.app.state, "key_store", None)
         identity = species_auth.validate(
             bearer_token=bearer,
             api_key_header=api_key,
-            supabase_client=supabase_client,
+            supabase_client=_supabase_client,
             key_store=key_store,
         )
     except HTTPException:
@@ -52,7 +72,6 @@ async def require_auth_context(
         # Authentication failures and infrastructure failures are different
         # operational states. Do not turn a database outage into a misleading
         # 401; callers should retry a 503 instead.
-        logger = logging.getLogger("kanyoza.security.deps")
         logger.exception("Authentication backend failure: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Authentication service unavailable") from exc
 
@@ -60,12 +79,14 @@ async def require_auth_context(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     correlation = x_correlation_id or request.headers.get("X-Correlation-ID") or ""
+    
     if getattr(identity, "is_species", False):
         target = (request.headers.get("X-Workspace-ID") or "").strip()
         if target:
             from core.species_auth import validate_species_workspace
-            if not validate_species_workspace(target, supabase_client):
+            if not validate_species_workspace(target, _supabase_client):
                 raise HTTPException(status_code=403, detail="Selected workspace does not exist or is not active")
+            
             from core.request_context import RequestContext, set_request_context
             ctx = RequestContext(
                 principal_id=str(identity.user_id or "species"),
@@ -79,6 +100,7 @@ async def require_auth_context(
             )
             set_request_context(ctx)
             return ctx
+            
     return bind_from_auth_identity(identity, correlation_id=correlation)
 
 
@@ -136,38 +158,39 @@ async def require_workspace(
 ) -> str:
     """
     Trusted workspace_id for the request (never from X-Workspace-ID alone).
-
-    Uses RequestContext from middleware when present; otherwise authenticates.
     """
     from core.workspace_context import get_workspace_context, require_workspace_context
 
-    # Prefer context already bound by RequestContextMiddleware
+    # 1. Prefer context already bound by RequestContextMiddleware
     existing = getattr(request.state, "request_context", None)
     if existing is not None and getattr(existing, "workspace_id", None):
         return str(existing.workspace_id)
 
+    # 2. Try the existing workspace context variable
     try:
         ctx = require_workspace_context(allow_default=False)
         return str(ctx.workspace_id)
     except PermissionError:
         pass
 
-    # Authenticate and bind
+    # 3. Authenticate and bind
     rc = await require_auth_context(
         request, authorization=authorization, x_correlation_id=x_correlation_id
     )
-    from core.workspace_context import set_workspace_context
-
-    set_workspace_context(
-        workspace_id=rc.workspace_id,
-        is_species=bool(getattr(rc, "species_privileges", False)),
-        auth_method=getattr(rc, "auth_method", "") or "",
-    )
+    
     if not rc.workspace_id:
         raise HTTPException(
             status_code=403,
             detail="No workspace bound to credentials",
         )
+        
+    from core.workspace_context import set_workspace_context
+    set_workspace_context(
+        workspace_id=rc.workspace_id,
+        is_species=bool(getattr(rc, "species_privileges", False)),
+        auth_method=getattr(rc, "auth_method", "") or "",
+    )
+    
     return str(rc.workspace_id)
 
 
