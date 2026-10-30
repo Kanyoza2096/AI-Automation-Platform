@@ -754,16 +754,16 @@ def _mount_director_proxy(app: FastAPI) -> None:
 def _mount_routes(app: FastAPI) -> None:
     """Mount core application routers."""
     route_modules = [
-        ("API v1", "api.v1", "router"),
-        ("KDO Engineering Console", "routes.kdo_engineering_console", "router"),
-        ("Rule Engine", "routes.rule_routes", "router"),
-        ("Meta Engine", "routes.meta_routes", "router"),
-        ("Email Service", "routes.email_routes", "router"),
-        ("Webhook", "routes.webhook", "router"),
-        ("Sensor Status", "routes.sensor_routes", "router"),
-        ("Affiliate Workload", "routes.affiliate_routes", "router"),
+    ("API v1", "api.v1", "router"),
+    ("KDO Engineering Console", "routes.kdo_engineering_console", "router"),
+    ("Rule Engine", "routes.rule_routes", "router"),
+    ("Meta Engine", "routes.meta_routes", "router"),
+    ("Email Service", "routes.email_routes", "router"),
+    ("Webhook", "routes.webhook", "router"),
+    ("Sensor Status", "routes.sensor_routes", "router"),
+    ("Affiliate Workload", "routes.affiliate_routes", "router"),
+    ("Species Control Plane", "routes.species_routes", "router"),
     ]
-
     for name, module_path, attr in route_modules:
         try:
             module = __import__(module_path, fromlist=[attr])
