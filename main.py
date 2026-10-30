@@ -1009,7 +1009,6 @@ async def _draft_cleanup_loop(app) -> None:
 # LIFESPAN
 # ═══════════════════════════════════════════════════════════════════════════
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _startup_started_at, _startup_completed_at, _startup_duration_seconds
@@ -1019,7 +1018,6 @@ async def lifespan(app: FastAPI):
     service_mode = _get_service_mode()
     _boot_warnings.clear()
 
-    # PATCH v15.0: per-boot metadata on app.state (multi-worker safe).
     app.state.boot_id = uuid.uuid4().hex
     app.state.service_mode = service_mode
     app.state.python_version = _get_python_version()
@@ -1039,7 +1037,6 @@ async def lifespan(app: FastAPI):
         },
     )
 
-    # Boot watchdog: exit the process if boot doesn't complete in time.
     _boot_watchdog_seconds = float(os.getenv("BOOT_WATCHDOG_SECONDS", "120"))
 
     async def _boot_watchdog() -> None:
@@ -1063,7 +1060,7 @@ async def lifespan(app: FastAPI):
     app.state.container = container
     redis_client = _resolve_redis(container)
 
-    # V71.13 runtime composition (installer chain preserved verbatim).
+    # V71.13 runtime composition.
     try:
         from services.v71_13_production_runtime_convergence import install_production_runtime
         install_production_runtime(app, container)
@@ -1076,9 +1073,6 @@ async def lifespan(app: FastAPI):
         from services.v71_15_legacy_runtime_authority_fencing import install_legacy_runtime_fencing
         install_legacy_runtime_fencing(app, container)
         logger.info("V71.15 legacy runtime authority fencing installed.")
-
-        # V71.16 workforce bridge install intentionally lives inside
-        # lifecycle._boot_autonomous_loop (see V71.16.1 note in that file).
 
         from services.v71_17_durable_workforce_execution import install_workforce_execution_coordinator
         install_workforce_execution_coordinator(app, container)
@@ -1097,20 +1091,46 @@ async def lifespan(app: FastAPI):
             watchdog_task.cancel()
         raise
 
-    # Phased boot.
+    # ── PHASED BOOT ──
     try:
         await boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
         if service_mode in ("full", "core", "director"):
             _mount_director_routes_directly(app)
             app.openapi_schema = None
+
+        # Start the canonical DreamSystem singleton.
+        try:
+            from core.dreams import dream_system as canonical_dream_system
+            try:
+                from council.personas import get_council
+                council_for_dreams = get_council()
+            except Exception:
+                council_for_dreams = None
+            canonical_dream_system._container = container
+            canonical_dream_system._council = council_for_dreams
+            canonical_dream_system.workspace_id = getattr(
+                settings, "default_workspace_id", "ws-e6eb6528d5b9"
+            )
+            await canonical_dream_system.start()
+            app.state.dream_system = canonical_dream_system
+            logger.info(
+                "DreamSystem started (council=%s, workspace=%s)",
+                "yes" if council_for_dreams else "no",
+                canonical_dream_system.workspace_id,
+            )
+        except ImportError as exc:
+            logger.warning("DreamSystem module not available: %s", exc)
+        except Exception as exc:
+            logger.exception("DreamSystem start failed")
+            _record_boot_warning("dream_system", exc)
+
     except SystemExit:
         raise
     except Exception as exc:
         _record_boot_warning("boot_sequence", exc)
         app.state.boot_completed = False
         app.state.boot_warnings = list(_boot_warnings)
-        # PATCH v15.0: best-effort partial shutdown before re-raise.
         try:
             await asyncio.wait_for(graceful_shutdown(container), timeout=15.0)
         except Exception:
@@ -1185,6 +1205,7 @@ async def lifespan(app: FastAPI):
         for warning in _boot_warnings:
             logger.warning("  ⚠ %s: %s", warning["service"], warning["error"])
 
+    # ── YIELD: hand control to the application ──
     try:
         yield
     finally:
@@ -1193,6 +1214,15 @@ async def lifespan(app: FastAPI):
             extra={"event": "app.shutdown.start", "boot_id": app.state.boot_id},
         )
         shutdown_start = time.monotonic()
+
+        # Stop the dream system first (before graceful_shutdown) so its task
+        # doesn't try to write to a torn-down container.
+        if getattr(app.state, "dream_system", None) is not None:
+            try:
+                await app.state.dream_system.stop()
+                logger.info("DreamSystem stopped")
+            except Exception:
+                logger.exception("DreamSystem shutdown failed")
 
         if cleanup_task and not cleanup_task.done():
             cleanup_task.cancel()
@@ -1225,7 +1255,6 @@ async def lifespan(app: FastAPI):
                 if isinstance(summary, dict) else False,
             },
         )
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # APPLICATION FACTORY
