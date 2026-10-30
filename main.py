@@ -1,69 +1,30 @@
-""""
-Kanyoza Systems AI Platform — FastAPI Entry Point.
+"""
+Kanyoza Systems AI Platform — FastAPI Entry Point
+Refactored v15.4.1 — route integrity, lifecycle hardening, review fixes.
 
-v15.0 (hardening, backward compatible):
-  - API call counter is fire-and-forget; no Redis round-trip on request path.
-  - StartupGate exempts /health/detailed (debug a stuck boot).
-  - Boot watchdog forces exit if boot hangs (BOOT_WATCHDOG_SECONDS, default 120).
-  - /health/ready prefers the lifecycle snapshot cache; falls back to check_all().
-  - Boot failure runs a best-effort partial shutdown before re-raising.
-  - Boot metadata (boot_id, service_mode, python_version) in health responses.
-  - Structured boot/shutdown logs.
-  - _record_boot_warning sanitizes via core.redaction.
+v15.4.1 changes over v15.4:
+- Health auth: 503 when master_api_token is unset; X-API-Key and Bearer are
+  checked independently.
+- Required-route validation runs at the end of _mount_routes (fails during
+  create_app(), with boot warnings populated).
+- CORS: full allow-header list; origins accepts list or comma-separated string.
+- service_mode frozen once in create_app(); lifespan reads app.state.
+- Director proxy client created only when proxy mode is actually mounted, and
+  closed once (via shutdown_registry).
+- Draft cleanup loop runs whenever the draft store exists (previously only
+  api mode, so "full" mode never purged expired drafts).
+- Audit-log seed task is cancelled on shutdown and on boot failure.
+- Optional empty routers recorded as status="empty" (DEBUG log), not skipped.
+- /health/version, skipped_modules, bounded route inventory.
+- Boot warnings carry a `critical` flag; app.state is the single source of
+  truth when an app is supplied.
+- API counter tasks capture the container at dispatch time.
+- Affiliate import-time audit anchor no longer able to kill the process.
 
-v15.3 (log buffer bridge, 2026-10-26):
-  - Added LogBufferHandler attached to the root logger. This bridges every
-    `logger.info(...)` / `logger.warning(...)` / etc. call in the process
-    into `core.log_buffer.LogBuffer`. Without this, the `/logs/recent`
-    endpoint always returned an empty list — the reader existed but nothing
-    ever wrote to the buffer.
-
-v15.3.1 (log buffer API fix, 2026-10-26):
-  - LogBuffer's actual API is `add(level, module, message, correlation_id)`,
-    NOT `append(dict)`. The v15.3 handler called `.append(dict)` and was
-    silently throwing AttributeError inside its bare except — so the buffer
-    still never populated. Fixed to call `.add(...)` positionally.
-  - Added a cheap `record.levelno < logging.INFO` pre-gate to avoid
-    `record.getMessage()` cost on DEBUG spam if root level is lowered.
-  - Passthrough of `correlation_id` from `extra={"correlation_id": ...}`
-    so `/logs/recent` entries are traceable end-to-end.
-  - Dropped the `record.name == "uvicorn.access"` check — uvicorn's
-    access logger has propagate=False, so the root handler never sees it.
-    Feedback-loop prevention now relies on the /logs/recent route not
-    emitting INFO logs on every read (verified separately).
-
-v14.7.2 (unchanged):
-  - Director routes mounted DIRECTLY for full/core/director mode.
-  - Proxy ONLY used when SERVICE_MODE=api.
-
-v14.7.1 (unchanged):
-  - Director proxy DISABLED when Director runs in-process.
-  - Event API mounted.
-  - JobService health DEGRADED not UNHEALTHY.
-
-v14.7.5+ (unchanged):
-  - cp_gap_routes mounted.
-  - No duplicate Timeline/E2E registration.
-
-V71.16.1 (unchanged):
-  - V71.16 workforce bridge install runs inside lifecycle._boot_autonomous_loop.
-
-v15.1 (AI Control Plane):
-  - routes.ai_control_plane_routes mounted — read-only projection over the
-    V71 workforce tables (agent_identities, agent_coordination_requests,
-    agent_capability_permissions, agent_plans, agent_budgets,
-    agent_autonomous_runs, agent_evaluations). No execution authority.
-
-v15.2 (Director mount fix, 2026-10-11):
-  - _mount_director_routes_directly now uses the async accessor
-    get_director() from services.director instead of the module-level
-    `director` variable. The module-level variable is a snapshot captured
-    at import time (before init_director runs), so it is always None at
-    mount time — which caused all 37 Director endpoints to return 404.
+Required route modules: api.v1 and routes.species_routes.
 """
 
 from __future__ import annotations
-from platform_version import PLATFORM_VERSION
 
 import asyncio
 import hmac
@@ -76,83 +37,67 @@ import uuid
 import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from platform_version import PLATFORM_VERSION
 from config.settings import settings
 from config.logging_config import setup_logging
 
-# Configure logging before any service/container boot so production logs stay
-# structured and noisy HTTP client loggers do not flood Render stdout.
 setup_logging(settings.log_level)
 
-# ── v15.3.1: bridge Python logging into LogBuffer ─────────────────────
-# The /logs/recent endpoint reads from core.log_buffer.LogBuffer, but
-# nothing ever appended to it. This handler captures every log record
-# from every module in the process and pushes it into the buffer via the
-# correct API: LogBuffer.add(level, module, message, correlation_id).
+# ---------------------------------------------------------------------------
+# LogBuffer bridge. The handler is installed once per Python process.
+# ---------------------------------------------------------------------------
+
 try:
     from core.log_buffer import LogBuffer
 except Exception:  # pragma: no cover
-    LogBuffer = None  # type: ignore
+    LogBuffer = None  # type: ignore[assignment]
 
 if LogBuffer is not None:
     class _LogBufferHandler(logging.Handler):
-        """Bridge Python logging into the in-memory LogBuffer.
+        """Bridge INFO+ Python log records into the platform LogBuffer."""
 
-        The LogBuffer API is `add(level, module, message, correlation_id)`
-        — NOT `append(dict)`. A previous version called `.append(...)`,
-        which raised AttributeError inside the bare except and left the
-        buffer permanently empty.
+        _kanyoza_log_buffer_handler = True
 
-        Records below INFO are skipped with a cheap `levelno` pre-gate so
-        we do not pay `getMessage()` formatting cost on DEBUG spam if the
-        root logger is ever lowered. The handler never raises — a broken
-        log handler must not crash the application.
-        """
         def emit(self, record: logging.LogRecord) -> None:
             try:
-                # Cheap pre-gate: skip DEBUG and below without formatting.
                 if record.levelno < logging.INFO:
                     return
-
-                msg = record.getMessage()
-
-                # Skip this handler's own bootstrap noise (feedback loop).
-                if record.name == "kanyoza.main" and "LogBuffer" in msg:
+                message = record.getMessage()
+                if record.name == "kanyoza.main" and "LogBuffer" in message:
                     return
 
-                level_name = record.levelname.upper()
-                if level_name in ("CRITICAL", "ERROR"):
-                    level_short = "ERROR"
-                elif level_name in ("WARNING", "WARN"):
-                    level_short = "WARNING"
-                elif level_name == "DEBUG":
-                    level_short = "DEBUG"
+                if record.levelno >= logging.ERROR:
+                    level = "ERROR"
+                elif record.levelno >= logging.WARNING:
+                    level = "WARNING"
                 else:
-                    level_short = "INFO"
+                    level = "INFO"
 
-                # NOTE: `uvicorn.access` records have propagate=False on
-                # their dedicated logger, so they never reach this handler
-                # regardless. The /logs/recent route is responsible for
-                # not emitting INFO logs on every read.
                 LogBuffer.get_instance().add(
-                    level=level_short,
-                    module=record.name,
-                    message=msg[:2000],
-                    correlation_id=getattr(record, "correlation_id", None),
+                    level,
+                    record.name,
+                    message[:2000],
+                    getattr(record, "correlation_id", None),
                 )
             except Exception:
-                # Never let the log handler crash the app.
-                pass
+                # Logging must never become an application failure path.
+                self.handleError(record)
 
-    _log_buffer_handler = _LogBufferHandler()
-    _log_buffer_handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(_log_buffer_handler)
+    _root_logger = logging.getLogger()
+    if not any(
+        getattr(handler, "_kanyoza_log_buffer_handler", False)
+        for handler in _root_logger.handlers
+    ):
+        _handler = _LogBufferHandler()
+        _handler.setLevel(logging.INFO)
+        _root_logger.addHandler(_handler)
 
 from service_container import ServiceContainer
 from dependency_registry import build_container
@@ -164,91 +109,463 @@ from lifecycle import (
     HealthStatus,
 )
 
-# PATCH v15.0: sanitize helper reused for boot warnings.
 try:
     from core.redaction import sanitize_error_message as _sanitize_error_message
 except ImportError:  # pragma: no cover
-    def _sanitize_error_message(exc, max_len: int = 200) -> str:
+    def _sanitize_error_message(exc: Any, max_len: int = 200) -> str:
         return str(exc)[:max_len]
 
+
 from core.socket_server import create_socket_app
-from routes.affiliate_routes import router as _affiliate_router  # route audit anchor
+
+# Import-time audit anchor. Guarded so a failure in the affiliate module cannot
+# take down the whole process; the router is mounted (and failure recorded)
+# through the route registry below.
+try:
+    from routes.affiliate_routes import router as _affiliate_router  # noqa: F401
+except Exception as _affiliate_exc:  # pragma: no cover
+    _affiliate_router = None  # type: ignore[assignment]
+    logging.getLogger("kanyoza.main").warning(
+        "Affiliate router import-time anchor failed: %s", _affiliate_exc
+    )
 
 logger = logging.getLogger("kanyoza.main")
-
-# Suppress known library noise
 logging.getLogger("supabase_auth").setLevel(logging.CRITICAL)
 warnings.filterwarnings("ignore", message=".*_refresh_token_timer.*")
 
-# Director service URL (used only when SERVICE_MODE=api)
 DIRECTOR_SERVICE_URL = os.getenv(
     "DIRECTOR_SERVICE_URL",
     "https://omnexa-director.onrender.com",
 ).strip().rstrip("/")
 
+MAX_INVENTORY = 2000
 
-def _get_service_mode() -> str:
-    """Get SERVICE_MODE from environment or settings."""
-    mode = os.getenv("SERVICE_MODE", "").strip().lower()
-    if not mode:
-        mode = getattr(settings, "service_mode", "full")
-    return mode
+CORS_ALLOW_HEADERS = [
+    "Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID",
+    "X-Request-ID", "X-Workspace-ID", "traceparent", "tracestate",
+]
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-# STARTUP METADATA
-#
-# Kept as module globals for backward compatibility with any external reader.
-# Mirrored onto app.state so multi-worker/multi-app setups see per-app values.
-# ═══════════════════════════════════════════════════════════════════════════
-
+# LEGACY: process-level mirrors kept only for callers that read them without an
+# app in scope. App state is authoritative; these are written to only when
+# _record_boot_warning() is called without an app. Deprecation target: v16.
 _startup_started_at: Optional[datetime] = None
 _startup_completed_at: Optional[datetime] = None
 _startup_duration_seconds: float = 0.0
 _boot_warnings: list[dict[str, Any]] = []
 
 
-def _record_boot_warning(service: str, exc: Exception) -> None:
-    """Record a startup warning for health reporting.
+def _get_python_version() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
 
-    PATCH v15.0: exception text is sanitized before storage.
-    """
+
+def _get_service_mode() -> str:
+    mode = os.getenv("SERVICE_MODE", "").strip().lower()
+    return mode or getattr(settings, "service_mode", "full")
+
+
+def _sanitize(exc: Any, max_len: int = 500) -> str:
+    try:
+        return _sanitize_error_message(exc, max_len=max_len)
+    except TypeError:
+        return str(_sanitize_error_message(exc))[:max_len]
+    except Exception:
+        return "An internal error occurred."
+
+
+def _record_boot_warning(
+    service: str,
+    exc: Exception,
+    app: Optional[FastAPI] = None,
+    *,
+    critical: bool = False,
+) -> None:
+    """Record a sanitized warning. With an app, app.state is the only store."""
     warning = {
         "service": service,
-        "error": _sanitize_error_message(exc, max_len=500),
+        "error": _sanitize(exc, 500),
+        "critical": critical,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    _boot_warnings.append(warning)
+    if app is not None:
+        warnings_list = getattr(app.state, "boot_warnings", None)
+        if warnings_list is None:
+            warnings_list = []
+            app.state.boot_warnings = warnings_list
+        warnings_list.append(warning)
+    else:
+        _boot_warnings.append(warning)  # LEGACY path
     logger.warning("Boot warning [%s]: %s", service, warning["error"])
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MIDDLEWARE
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# ROUTE REGISTRY
+# ===========================================================================
+
+ROUTE_MODULES = [
+    # Required platform contracts.
+    ("API v1", "api.v1", "router", True),
+    ("Species Control Plane", "routes.species_routes", "router", True),
+
+    # Existing application surfaces.
+    ("KDO Engineering Console", "routes.kdo_engineering_console", "router", False),
+    ("Rule Engine", "routes.rule_routes", "router", False),
+    ("Meta Engine", "routes.meta_routes", "router", False),
+    ("Email Service", "routes.email_routes", "router", False),
+    ("Webhook", "routes.webhook", "router", False),
+    ("Sensor Status", "routes.sensor_routes", "router", False),
+    ("Affiliate Workload", "routes.affiliate_routes", "router", False),
+]
+
+CANONICAL_V1_ROUTES = [
+    ("Timeline", "api.timeline_routes", "router"),
+    ("E2E", "api.e2e_routes", "router"),
+    ("KCPG Action Intent Bridge", "api.action_intent_routes", "router"),
+]
+
+CONTROL_PLANE_ROUTES = [
+    ("Metabolism", "api.metabolism_routes", "router"),
+    ("Organism Body", "api.organism_body_routes", "router"),
+    ("Outbox", "api.outbox_routes", "router"),
+    ("Reports", "api.report_routes", "router"),
+    ("SLO", "api.slo_routes", "router"),
+    ("Observability", "api.observability_routes", "router"),
+    ("Web Intelligence", "api.web_intelligence", "router"),
+    ("Content Intelligence & Business Automation", "api.content_intelligence_automation", "router"),
+    ("Unified Health", "api.health_unified", "router"),
+    ("Council", "routes.council_routes", "router"),
+    ("Circulation", "routes.circulation_routes", "router"),
+    ("Pulse", "routes.pulse_routes", "router"),
+    ("Production Runtime Convergence", "routes.production_runtime_routes", "router"),
+    ("Autonomous Workforce Bridge", "routes.autonomous_workforce_bridge_routes", "router"),
+    ("Durable Workforce Execution", "routes.workforce_execution_routes", "router"),
+    ("Production Route/Event Wiring", "routes.runtime_wiring_routes", "router"),
+    ("Legacy Runtime Authority Fence", "routes.legacy_runtime_fencing_routes", "router"),
+    ("Command Center Read Model", "routes.command_center_routes", "router"),
+    ("Failure Recovery", "routes.failure_recovery_routes", "router"),
+    ("Connector Fabric", "routes.connector_fabric_routes", "router"),
+    ("Sector Pack Portfolio", "routes.sector_pack_routes", "router"),
+    ("Business Onboarding", "routes.business_onboarding_routes", "router"),
+    ("Website Integrations", "api.website_integrations", "router"),
+    ("AI Control Plane", "routes.ai_control_plane_routes", "router"),
+]
+
+
+def _route_methods(route: Any) -> list[str]:
+    """Methods excluding HEAD/OPTIONS; falls back to all so HEAD-only routes
+    are not reported with an empty (looks-dead) method list."""
+    all_methods = getattr(route, "methods", None) or []
+    methods = sorted(m for m in all_methods if m not in {"HEAD", "OPTIONS"})
+    return methods or sorted(all_methods)
+
+
+def _describe_routes(routes: Iterable[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "path": getattr(route, "path"),
+            "methods": _route_methods(route),
+            "name": getattr(route, "name", None),
+        }
+        for route in routes
+        if getattr(route, "path", None)
+    ]
+
+
+def _route_inventory(app: FastAPI) -> list[dict[str, Any]]:
+    """Return a stable, JSON-safe inventory of registered HTTP routes."""
+    inventory: list[dict[str, Any]] = []
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if not path:
+            continue
+        inventory.append({
+            "path": path,
+            "methods": _route_methods(route),
+            "name": getattr(route, "name", None),
+            "route_type": type(route).__name__,
+        })
+    return inventory
+
+
+def _record_route_result(
+    app: FastAPI,
+    *,
+    name: str,
+    module: str,
+    required: bool,
+    status: str,
+    imported: bool = False,
+    mounted: bool = False,
+    routes_added: Optional[list[dict[str, Any]]] = None,
+    error: Optional[str] = None,
+) -> None:
+    record = {
+        "name": name,
+        "module": module,
+        "required": required,
+        "status": status,
+        "imported": imported,
+        "mounted": mounted,
+        "route_count": len(routes_added or []),
+        "routes": routes_added or [],
+        "error": error,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    app.state.route_registry.append(record)
+    if status == "failed":
+        app.state.route_registration_failures.append(record)
+
+
+def _mount_module_router(
+    app: FastAPI,
+    name: str,
+    module_path: str,
+    attr: str = "router",
+    *,
+    required: bool = False,
+) -> bool:
+    """Import and mount a router while recording its actual route footprint."""
+    before_ids = {id(route) for route in app.routes}
+    try:
+        module = __import__(module_path, fromlist=[attr])
+        router = getattr(module, attr, None)
+        if router is None:
+            raise AttributeError(f"{module_path} does not export {attr!r}")
+        app.include_router(router)
+        added = [route for route in app.routes if id(route) not in before_ids]
+        route_details = _describe_routes(added)
+
+        if not route_details:
+            if required:
+                raise RuntimeError(
+                    f"Required router {module_path} registered no endpoints"
+                )
+            _record_route_result(
+                app, name=name, module=module_path, required=False,
+                status="empty", imported=True, mounted=True,
+            )
+            logger.debug("%s mounted with 0 inspectable routes", name)
+            return True
+
+        _record_route_result(
+            app, name=name, module=module_path, required=required,
+            status="verified", imported=True, mounted=True,
+            routes_added=route_details,
+        )
+        logger.info(
+            "route.mounted",
+            extra={
+                "event": "route.mounted",
+                "route_name": name,
+                "route_module": module_path,
+                "route_count": len(route_details),
+                "route_prefix": getattr(router, "prefix", ""),
+            },
+        )
+        return True
+    except Exception as exc:
+        status = "failed" if required else "skipped"
+        _record_route_result(
+            app, name=name, module=module_path, required=required,
+            status=status, error=_sanitize(exc, 300),
+        )
+        if required:
+            logger.error("REQUIRED route module %s failed: %s", module_path, _sanitize(exc, 300))
+        elif isinstance(exc, ImportError):
+            logger.debug("%s routes unavailable: %s", name, _sanitize(exc, 200))
+        else:
+            logger.warning("%s routes failed to mount: %s", name, _sanitize(exc, 300))
+        return False
+
+
+def _mount_registration_function(
+    app: FastAPI,
+    name: str,
+    module_path: str,
+    function_name: str,
+    *,
+    required: bool = False,
+) -> bool:
+    before_ids = {id(route) for route in app.routes}
+    try:
+        module = __import__(module_path, fromlist=[function_name])
+        register = getattr(module, function_name, None)
+        if not callable(register):
+            raise AttributeError(f"{module_path} does not export callable {function_name!r}")
+        register(app)
+        added = [route for route in app.routes if id(route) not in before_ids]
+        details = _describe_routes(added)
+        if not details:
+            raise RuntimeError("Registration function added no inspectable HTTP endpoints")
+        _record_route_result(
+            app, name=name, module=module_path, required=required,
+            status="verified", imported=True, mounted=True, routes_added=details,
+        )
+        logger.info("%s registered (%d endpoints).", name, len(details))
+        return True
+    except Exception as exc:
+        _record_route_result(
+            app, name=name, module=module_path, required=required,
+            status="failed" if required else "skipped",
+            error=_sanitize(exc, 300),
+        )
+        if required:
+            logger.error("REQUIRED registration %s failed: %s", name, _sanitize(exc, 300))
+        else:
+            logger.warning("%s registration unavailable: %s", name, _sanitize(exc, 300))
+        return False
+
+
+def _validate_route_manifest(app: FastAPI) -> None:
+    """Fail during create_app() if any required route module is not verified."""
+    failures = [
+        item for item in app.state.route_registry
+        if item.get("required") and item.get("status") != "verified"
+    ]
+    if not failures:
+        return
+    for item in failures:
+        _record_boot_warning(
+            f"route:{item['module']}",
+            RuntimeError(f"Required route failed: {item.get('error') or item['status']}"),
+            app,
+            critical=True,
+        )
+    raise RuntimeError(
+        "Required route registration failed: "
+        + ", ".join(item["name"] for item in failures)
+    )
+
+
+def _mount_routes(app: FastAPI) -> None:
+    """Mount all application routes through the central registry."""
+    for name, module_path, attr, required in ROUTE_MODULES:
+        _mount_module_router(app, name, module_path, attr, required=required)
+
+    # Affiliate public ingress is a distinct router from the private router.
+    try:
+        from routes.affiliate_routes import public_router as affiliate_public_router
+        before = {id(route) for route in app.routes}
+        app.include_router(affiliate_public_router)
+        details = _describe_routes(
+            r for r in app.routes if id(r) not in before
+        )
+        _record_route_result(
+            app, name="Affiliate Public", module="routes.affiliate_routes",
+            required=False, status="verified" if details else "skipped",
+            imported=True, mounted=bool(details), routes_added=details,
+            error=None if details else "No inspectable endpoints registered",
+        )
+    except Exception as exc:
+        _record_route_result(
+            app, name="Affiliate Public", module="routes.affiliate_routes",
+            required=False, status="skipped", error=_sanitize(exc, 300),
+        )
+
+    optional_routers = [
+        ("Trend Intelligence Public", "plugins.trend_intelligence.routes.public", "router"),
+        ("Trend Intelligence Admin", "plugins.trend_intelligence.routes.admin", "router"),
+        ("Backup Public", "plugins.backup.routes.public", "router"),
+        ("Backup Admin", "plugins.backup.routes.admin", "router"),
+    ]
+    for name, module_path, attr in optional_routers:
+        _mount_module_router(app, name, module_path, attr)
+
+    for name, module_path, attr in CANONICAL_V1_ROUTES:
+        _mount_module_router(app, name, module_path, attr)
+
+    for name, module_path, attr in CONTROL_PLANE_ROUTES:
+        mounted = _mount_module_router(app, name, module_path, attr)
+        if mounted and module_path == "api.content_intelligence_automation":
+            try:
+                module = __import__(module_path, fromlist=["public_router"])
+                public_router = getattr(module, "public_router", None)
+                if public_router is not None:
+                    before = {id(r) for r in app.routes}
+                    app.include_router(public_router)
+                    details = _describe_routes(
+                        r for r in app.routes if id(r) not in before
+                    )
+                    _record_route_result(
+                        app, name="Business Automation Public",
+                        module=module_path, required=False,
+                        status="verified" if details else "skipped",
+                        imported=True, mounted=bool(details), routes_added=details,
+                    )
+            except Exception as exc:
+                _record_route_result(
+                    app, name="Business Automation Public", module=module_path,
+                    required=False, status="skipped", error=_sanitize(exc, 300),
+                )
+
+    _mount_registration_function(
+        app, "Backend Contract Routes", "routes.backend_contract_routes",
+        "register_backend_contract_routes",
+    )
+    _mount_registration_function(
+        app, "Autonomy Governance Routes", "routes.autonomy_routes",
+        "register_autonomy_routes",
+    )
+    _mount_registration_function(
+        app, "CP Surface Routes", "routes.cp_surface_routes",
+        "register_cp_surface_routes",
+    )
+    _mount_registration_function(
+        app, "CP Gap Compatibility Routes", "routes.cp_gap_routes",
+        "register_cp_gap_routes",
+    )
+
+    _mount_plugin(app, "growthbridge", "Growthbridge")
+    _mount_plugin(app, "github_connector", "GitHub Connector")
+    _mount_plugin(app, "monitor", "Monitor")
+    _mount_module_router(app, "Code Intelligence", "routes.code_intel_routes")
+
+    _validate_route_manifest(app)
+
+
+def _mount_plugin(app: FastAPI, plugin_name: str, display_name: str) -> None:
+    """Mount public/admin plugin routers independently so one cannot hide the other."""
+    for surface in ("public", "admin"):
+        module_path = f"plugins.{plugin_name}.routes.{surface}"
+        _mount_module_router(
+            app, f"{display_name} {surface.title()}", module_path, "router"
+        )
+
+
+# ===========================================================================
+# MIDDLEWARE AND CORS
+# ===========================================================================
 
 class ApiCallCounterMiddleware(BaseHTTPMiddleware):
-    """Tracks daily API call counts in Redis. Fire-and-forget.
+    """Bounded fire-and-forget API counter; never waits for Redis on request path."""
 
-    PATCH v15.0: dispatch never awaits Redis. A Redis hiccup cannot slow
-    a request down. The counter runs in a detached task.
-    """
+    MAX_PENDING = int(os.getenv("API_COUNTER_MAX_PENDING", "500"))
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/api/"):
-            # Fire-and-forget; errors are logged at debug only.
-            try:
-                asyncio.create_task(self._count(request))
-            except RuntimeError:
-                # No running loop (tests). Skip silently.
-                pass
+            container = getattr(request.app.state, "container", None)
+            if container is not None:
+                pending = getattr(request.app.state, "api_counter_tasks", None)
+                if pending is None:
+                    pending = set()
+                    request.app.state.api_counter_tasks = pending
+                if len(pending) < self.MAX_PENDING:
+                    try:
+                        # The task holds its own container reference so it is
+                        # independent of later app.state.container changes.
+                        task = asyncio.create_task(self._count(container))
+                        pending.add(task)
+                        task.add_done_callback(pending.discard)
+                    except RuntimeError:
+                        pass
+                else:
+                    request.app.state.api_counter_dropped = (
+                        getattr(request.app.state, "api_counter_dropped", 0) + 1
+                    )
         return await call_next(request)
 
     @staticmethod
-    async def _count(request: Request) -> None:
+    async def _count(container: ServiceContainer) -> None:
         try:
-            container = getattr(request.app.state, "container", None)
-            if not container:
-                return
             from core.redis_client import UpstashRedisClient
             redis = container.try_resolve(UpstashRedisClient)
             if not redis or not getattr(redis, "is_available", False):
@@ -257,24 +574,16 @@ class ApiCallCounterMiddleware(BaseHTTPMiddleware):
             key = f"metrics:api_calls:{today}"
             count = await asyncio.to_thread(redis.incr, key)
             if count == 1:
-                await asyncio.to_thread(redis.expire, key, 86400 * 2)
+                await asyncio.to_thread(redis.expire, key, 172800)
         except Exception:
             logger.debug("API call counter failed", exc_info=True)
 
 
 class StartupGateMiddleware(BaseHTTPMiddleware):
-    """Returns 503 until boot has completed.
-
-    PATCH v15.0: /health/detailed is exempt so operators can debug a stuck
-    boot. The route itself is auth-gated in production.
-    """
-
-    _EXEMPT_PATHS = (
-        "/health",
-        "/health/live",
-        "/health/ready",
-        "/health/detailed",
-    )
+    _EXEMPT_PATHS = {
+        "/health", "/health/live", "/health/ready",
+        "/health/detailed", "/health/routes", "/health/version",
+    }
 
     async def dispatch(self, request: Request, call_next):
         if not getattr(request.app.state, "boot_completed", False):
@@ -292,22 +601,7 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CONFIGURATION FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════
-
 def _configure_middleware(app: FastAPI) -> None:
-    """Register application middleware.
-
-    NOTE ON ORDER: FastAPI/Starlette middleware is executed in REVERSE of the
-    order in which add_middleware is called: the LAST added is OUTERMOST.
-
-    The ordering below is preserved from the version you sent me. A future
-    refactor can move CorrelationIDMiddleware to be outermost and SecurityHeaders
-    to be above any middleware that can short-circuit. That change requires
-    verification against the concrete middleware implementations; it is left
-    unchanged here to avoid behavioral surprises.
-    """
     from api.v1 import (
         SecurityHeadersMiddleware,
         RequestSizeLimitMiddleware,
@@ -329,41 +623,49 @@ def _configure_middleware(app: FastAPI) -> None:
         app.add_middleware(TrafficCaptureMiddleware)
         logger.info("Traffic capture middleware registered.")
     except ImportError:
-        logger.debug("Traffic capture middleware not available.")
+        logger.debug("Traffic capture middleware unavailable.")
+
+
+def _parse_origins(raw: Any) -> list[str]:
+    """Accept a list/tuple/set or a comma-separated string of origins."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [str(o).strip() for o in raw if str(o).strip()]
 
 
 def _configure_cors(app: FastAPI) -> None:
-    """Configure CORS according to environment."""
     if settings.is_production:
-        origins = settings.cors_allowed_origins
+        origins = _parse_origins(getattr(settings, "cors_allowed_origins", None))
         if not origins:
             raise RuntimeError(
                 "No CORS origins configured for production. "
                 "Set ALLOWED_ORIGINS environment variable."
             )
-        allow_creds = True
+        allow_credentials = True
     else:
         origins = ["*"]
-        allow_creds = False
+        allow_credentials = False
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=allow_creds,
+        allow_credentials=allow_credentials,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Correlation-ID"],
+        allow_headers=CORS_ALLOW_HEADERS,
+        expose_headers=["X-Correlation-ID"],
         max_age=86400,
     )
     logger.info(
-        "CORS origins: %s",
+        "CORS configured: %s",
         origins if len(origins) < 5 else f"{origins[:3]}... ({len(origins)} total)",
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # HEALTH ENDPOINTS
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ===========================================================================
 
 def _boot_meta(app: FastAPI) -> dict[str, Any]:
     return {
@@ -373,30 +675,78 @@ def _boot_meta(app: FastAPI) -> dict[str, Any]:
     }
 
 
-def _register_health_endpoints(app: FastAPI) -> None:
-    """Register liveness, readiness and detailed health endpoints."""
+def _production_health_auth(request: Request) -> None:
+    if not settings.is_production:
+        return
+    master_token = getattr(settings, "master_api_token", "") or ""
+    if not master_token:
+        # Server misconfiguration, not a client credential problem.
+        raise HTTPException(status_code=503, detail="master_api_token_not_configured")
 
+    api_key = request.headers.get("X-API-Key", "").strip()
+    bearer = ""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        bearer = auth_header[7:].strip()
+
+    # Checked independently so a stale X-API-Key cannot mask a valid Bearer.
+    api_key_ok = bool(api_key) and hmac.compare_digest(api_key, master_token)
+    bearer_ok = bool(bearer) and hmac.compare_digest(bearer, master_token)
+    if not (api_key_ok or bearer_ok):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
+def _register_health_endpoints(app: FastAPI) -> None:
     @app.get("/health")
     @app.head("/health")
     async def liveness_check():
+        started = getattr(app.state, "startup_started_at", None)
+        uptime = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
         return {
             "status": "alive",
             "version": PLATFORM_VERSION,
-            "uptime_seconds": round(
-                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
-            ) if _startup_started_at else 0,
+            "uptime_seconds": round(uptime, 1),
             **_boot_meta(app),
         }
 
     @app.get("/health/live")
     @app.head("/health/live")
     async def live_check():
+        return await liveness_check()
+
+    @app.get("/health/version")
+    async def version_check():
         return {
-            "status": "alive",
             "version": PLATFORM_VERSION,
-            "uptime_seconds": round(
-                (datetime.now(timezone.utc) - _startup_started_at).total_seconds(), 1
-            ) if _startup_started_at else 0,
+            "commit": (os.getenv("RENDER_GIT_COMMIT") or "unknown")[:12],
+            "deployed_at": os.getenv("RENDER_DEPLOY_CREATED_AT"),
+            "boot_id": getattr(app.state, "boot_id", None),
+            "python_version": getattr(app.state, "python_version", None),
+        }
+
+    @app.get("/health/routes")
+    async def route_health(request: Request):
+        _production_health_auth(request)
+        inventory = _route_inventory(app)
+        records = list(app.state.route_registry)
+        required_failures = [
+            item for item in records
+            if item.get("required") and item.get("status") != "verified"
+        ]
+        skipped = [item for item in records if item.get("status") == "skipped"]
+        empty = [item for item in records if item.get("status") == "empty"]
+        return {
+            "status": "healthy" if not required_failures else "unhealthy",
+            "registered_endpoint_count": len(inventory),
+            "route_module_count": len(records),
+            "required_route_failures": required_failures,
+            "registration_failures": list(app.state.route_registration_failures),
+            "skipped_modules": skipped,
+            "empty_modules": empty,
+            "modules": records,
+            "routes": inventory[:MAX_INVENTORY],
+            "routes_total": len(inventory),
+            "routes_truncated": len(inventory) > MAX_INVENTORY,
             **_boot_meta(app),
         }
 
@@ -410,21 +760,21 @@ def _register_health_endpoints(app: FastAPI) -> None:
                 media_type="application/json",
             )
 
-        # PATCH v15.0: prefer the cached snapshot from the health monitor.
-        # Fall back to check_all() only if no snapshot exists yet.
+        route_failures = [
+            item for item in app.state.route_registry
+            if item.get("required") and item.get("status") != "verified"
+        ]
+
         try:
             snapshot = health_registry.read_snapshot()
-        except AttributeError:
+        except Exception:
             snapshot = {}
 
         if not snapshot:
             try:
                 snapshot = await health_registry.check_all()
             except Exception as exc:
-                logger.warning(
-                    "readiness_check: registry probe failed: %s",
-                    _sanitize_error_message(exc),
-                )
+                logger.warning("Readiness registry probe failed: %s", _sanitize(exc, 300))
                 snapshot = {}
 
         unhealthy = [
@@ -439,44 +789,39 @@ def _register_health_endpoints(app: FastAPI) -> None:
             name for name, report in snapshot.items()
             if report.status == HealthStatus.UNKNOWN
         ]
-        boot_warnings = list(getattr(app.state, "boot_warnings", None) or _boot_warnings)
+        boot_warnings = list(app.state.boot_warnings)
+        has_critical = any(w.get("critical") for w in boot_warnings)
+        blockers = bool(route_failures or unhealthy or degraded or boot_warnings)
 
-        if unhealthy or degraded or boot_warnings:
-            return Response(
-                content=json.dumps({
-                    "status": "not_ready",
-                    "reason": "Required startup/services are degraded",
-                    "unhealthy_services": unhealthy,
-                    "degraded_services": degraded,
-                    "unknown_services": unknown,
-                    "boot_warnings": boot_warnings,
-                    **_boot_meta(app),
-                }, default=str),
-                status_code=503,
-                media_type="application/json",
-                headers={"Retry-After": "10"},
-            )
-        return {
-            "status": "ready",
+        payload = {
+            "status": "not_ready" if blockers else "ready",
+            "reason": (
+                "Required routes, startup warnings, or service health checks failed"
+                if blockers else None
+            ),
+            "required_route_failures": route_failures,
+            "unhealthy_services": unhealthy,
+            "degraded_services": degraded,
+            "unknown_services": unknown,
+            "boot_warnings": boot_warnings,
             "services_monitored": len(snapshot),
             **_boot_meta(app),
         }
+        retry_after = "60" if (has_critical or route_failures) else "10"
+        return Response(
+            content=json.dumps(payload, default=str),
+            status_code=503 if blockers else 200,
+            media_type="application/json",
+            headers={"Retry-After": retry_after} if blockers else {},
+        )
 
     @app.get("/health/detailed")
     async def detailed_health(request: Request):
-        if settings.is_production:
-            token = request.headers.get("X-API-Key", "")
-            auth_header = request.headers.get("Authorization", "")
-            if not token and auth_header.startswith("Bearer "):
-                token = auth_header[7:]
-            master_token = getattr(settings, "master_api_token", "") or ""
-            if not master_token or not token or not hmac.compare_digest(token, master_token):
-                raise HTTPException(status_code=401, detail="Authentication required")
+        _production_health_auth(request)
         return await _build_health_response(app)
 
 
 async def _build_health_response(app: FastAPI) -> dict[str, Any]:
-    """Build the detailed platform health response."""
     booted = getattr(app.state, "boot_completed", False)
     if not booted:
         return {
@@ -487,37 +832,34 @@ async def _build_health_response(app: FastAPI) -> dict[str, Any]:
             **_boot_meta(app),
         }
 
-    # PATCH v15.0: snapshot-first, fallback to live probe.
     try:
         service_health = health_registry.read_snapshot()
-    except AttributeError:
+    except Exception:
         service_health = {}
     if not service_health:
         try:
             service_health = await health_registry.check_all()
         except Exception as exc:
-            logger.warning(
-                "detailed_health: registry probe failed: %s",
-                _sanitize_error_message(exc),
-            )
+            logger.warning("Detailed health probe failed: %s", _sanitize(exc, 300))
             service_health = {}
 
     statuses = [report.status for report in service_health.values()]
-
-    if any(status == HealthStatus.UNHEALTHY for status in statuses):
+    route_failures = [
+        item for item in app.state.route_registry
+        if item.get("required") and item.get("status") != "verified"
+    ]
+    if route_failures or any(s == HealthStatus.UNHEALTHY for s in statuses):
         overall = "unhealthy"
-    elif any(status == HealthStatus.DEGRADED for status in statuses):
-        overall = "degraded"
-    elif _boot_warnings:
+    elif (
+        app.state.boot_warnings
+        or any(s in (HealthStatus.DEGRADED, HealthStatus.UNKNOWN) for s in statuses)
+    ):
         overall = "degraded"
     else:
         overall = "healthy"
 
-    uptime = (
-        (datetime.now(timezone.utc) - _startup_started_at).total_seconds()
-        if _startup_started_at else 0
-    )
-
+    started = getattr(app.state, "startup_started_at", None)
+    uptime = (datetime.now(timezone.utc) - started).total_seconds() if started else 0
     snapshot_age = None
     try:
         reader = getattr(health_registry, "read_snapshot_age_seconds", None)
@@ -530,8 +872,16 @@ async def _build_health_response(app: FastAPI) -> dict[str, Any]:
         "status": overall,
         "version": PLATFORM_VERSION,
         "uptime_seconds": round(uptime, 1),
-        "boot_duration_seconds": round(_startup_duration_seconds, 3),
-        "boot_warnings": len(_boot_warnings),
+        "boot_duration_seconds": round(app.state.startup_duration_seconds, 3),
+        "boot_warnings": len(app.state.boot_warnings),
+        "critical_boot_warnings": sum(
+            1 for w in app.state.boot_warnings if w.get("critical")
+        ),
+        "required_route_failures": route_failures,
+        "route_modules_registered": sum(
+            1 for item in app.state.route_registry if item.get("status") == "verified"
+        ),
+        "registered_endpoint_count": len(_route_inventory(app)),
         "health_snapshot_age_seconds": (
             round(snapshot_age, 2) if snapshot_age is not None else None
         ),
@@ -541,420 +891,137 @@ async def _build_health_response(app: FastAPI) -> dict[str, Any]:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# EVENT API MOUNTING
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ===========================================================================
+# EVENT API AND DIRECTOR
+# ===========================================================================
 
 def _mount_event_api(app: FastAPI) -> None:
-    """Mount Event API routes for real-time event observability."""
     try:
         from routes.event_api import register_event_api_routes
+        before = {id(r) for r in app.routes}
         register_event_api_routes(app)
-        logger.info("Event API routes mounted (/api/v1/events/*).")
-    except ImportError:
-        logger.debug("Event API routes not available — skipping.")
+        details = _describe_routes(r for r in app.routes if id(r) not in before)
+        _record_route_result(
+            app, name="Event API", module="routes.event_api", required=False,
+            status="verified" if details else "skipped",
+            imported=True, mounted=bool(details), routes_added=details,
+            error=None if details else "Registration added no inspectable endpoints",
+        )
+    except ImportError as exc:
+        _record_route_result(
+            app, name="Event API", module="routes.event_api", required=False,
+            status="skipped", error=_sanitize(exc, 300),
+        )
     except Exception as exc:
-        logger.warning("Event API mount failed: %s", str(exc)[:300])
+        _record_route_result(
+            app, name="Event API", module="routes.event_api", required=False,
+            status="failed", error=_sanitize(exc, 300),
+        )
+        logger.warning("Event API mount failed: %s", _sanitize(exc, 300))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DIRECTOR ROUTES
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _mount_director_routes_directly(app: FastAPI) -> None:
-    """Mount Director routes DIRECTLY from the services.director package.
-
-    PATCH v15.2: uses the async accessor get_director() from
-    services.director instead of the module-level `director` variable.
-
-    The module-level variable is a snapshot captured at import time, when
-    the Director singleton is still None. init_director() later reassigns
-    services.director.api.director, but the name re-exported by
-    services/director/__init__.py and imported here is a separate binding
-    that is never updated. This caused every /director/* request to return
-    404 because the mount was skipped with "Director instance is None".
-
-    get_director() always returns the current live instance. This function
-    schedules the mount on the running event loop; when called from
-    create_app() at import time (no loop), the mount defers to the lifespan
-    call after boot_infrastructure.
-    """
-    import asyncio
-
+async def _mount_director_routes_directly(app: FastAPI) -> bool:
+    """Await the live Director instance and mount its ASGI app exactly once."""
+    if getattr(app.state, "director_routes_mounted", False):
+        return True
     try:
         from services.director import create_app as create_director_app
         from services.director import get_director
-    except ImportError as exc:
-        logger.warning("Director module not available: %s", exc)
-        return
-
-    if getattr(app.state, "director_routes_mounted", False):
-        return
-
-    async def _resolve_and_mount() -> None:
-        try:
-            director = await get_director()
-            if director is None:
-                logger.warning("Director instance is None — routes not mounted")
-                return
-            if getattr(app.state, "director_routes_mounted", False):
-                return
-            director_app = create_director_app(director)
-            app.mount("/director", director_app)
-            app.state.director_routes_mounted = True
-            logger.info("✅ Director routes mounted directly at /director/*")
-        except Exception as exc:
-            logger.warning("Director route mounting failed (async): %s", exc)
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Called from create_app() at import time. No running loop, no
-        # initialized Director. The lifespan will mount it after
-        # boot_infrastructure initializes the Director.
-        logger.debug("No running loop for Director mount — deferring to lifespan")
-        return
-
-    loop.create_task(_resolve_and_mount())
+        director = await get_director()
+        if director is None:
+            raise RuntimeError("Director accessor returned None after infrastructure boot")
+        director_app = create_director_app(director)
+        app.mount("/director", director_app)
+        app.state.director_routes_mounted = True
+        logger.info("Director routes mounted directly at /director/*")
+        return True
+    except Exception as exc:
+        _record_boot_warning("director_route_mount", exc, app, critical=True)
+        logger.exception("Director route mounting failed")
+        return False
 
 
 def _mount_director_proxy(app: FastAPI) -> None:
-    """Mount /director/* proxy ONLY when Director is on SEPARATE instance."""
-
-    service_mode = _get_service_mode()
-
+    service_mode = app.state.service_mode
     if service_mode in ("full", "core", "director"):
         logger.info(
-            "Director proxy DISABLED — Director runs in-process (SERVICE_MODE=%s)",
+            "Director proxy disabled; Director is in-process (SERVICE_MODE=%s)",
             service_mode,
         )
-        _mount_director_routes_directly(app)
+        app.state.director_mount_mode = "in_process"
         return
 
-    logger.info(
-        "Director proxy ENABLED: /director/* -> %s (SERVICE_MODE=%s)",
-        DIRECTOR_SERVICE_URL,
-        service_mode,
-    )
+    app.state.director_mount_mode = "proxy"
+    logger.info("Director proxy enabled: /director/* -> %s", DIRECTOR_SERVICE_URL)
 
-    request_hop_by_hop_headers = {
+    request_hop = {
         "host", "content-length", "connection", "transfer-encoding", "accept-encoding",
     }
-    response_hop_by_hop_headers = {
+    response_hop = {
         "content-length", "connection", "transfer-encoding", "content-encoding",
     }
 
-    @app.api_route("/director/{path:path}", methods=["GET"], operation_id="director_proxy_get")
-    @app.api_route("/director/{path:path}", methods=["POST"], operation_id="director_proxy_post")
-    @app.api_route("/director/{path:path}", methods=["PUT"], operation_id="director_proxy_put")
-    @app.api_route("/director/{path:path}", methods=["DELETE"], operation_id="director_proxy_delete")
-    @app.api_route("/director/{path:path}", methods=["PATCH"], operation_id="director_proxy_patch")
-    @app.api_route("/director/{path:path}", methods=["OPTIONS"], operation_id="director_proxy_options")
-    @app.api_route("/director/{path:path}", methods=["HEAD"], operation_id="director_proxy_head")
+    @app.api_route(
+        "/director/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+        operation_id="director_proxy",
+    )
     async def proxy_director(request: Request, path: str):
         target_url = f"{DIRECTOR_SERVICE_URL}/{path}"
         headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in request_hop_by_hop_headers
+            key: value for key, value in request.headers.items()
+            if key.lower() not in request_hop
         }
         headers["accept-encoding"] = "identity"
-        params = list(request.query_params.multi_items())
-        body = await request.body()
-
         try:
             client = getattr(request.app.state, "director_http_client", None)
             if client is None:
-                client = httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
-                    follow_redirects=False,
-                )
-                request.app.state.director_http_client = client
-
+                raise RuntimeError("Director proxy HTTP client was not initialized")
             upstream = await client.request(
                 method=request.method,
                 url=target_url,
                 headers=headers,
-                params=params,
-                content=body if body else None,
+                params=list(request.query_params.multi_items()),
+                content=await request.body() or None,
             )
-
-            response_headers: dict[str, str] = {}
-            for key, value in upstream.headers.items():
-                if key.lower() in response_hop_by_hop_headers:
-                    continue
-                response_headers[key] = value
-
-            cors_origin = "*"
-            try:
-                from config.settings import settings as _cors_settings
-                if _cors_settings.is_production:
-                    allowed = _cors_settings.cors_allowed_origins
-                    request_origin = request.headers.get("origin", "")
-                    if request_origin and request_origin in allowed:
-                        cors_origin = request_origin
-                    elif allowed:
-                        cors_origin = allowed[0]
-            except Exception:
-                pass
-
-            response_headers.setdefault("Access-Control-Allow-Origin", cors_origin)
-            response_headers.setdefault(
-                "Access-Control-Allow-Methods",
-                "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD",
-            )
-            response_headers.setdefault(
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, X-API-Key, X-Correlation-ID",
-            )
-
+            response_headers = {
+                key: value for key, value in upstream.headers.items()
+                if key.lower() not in response_hop
+            }
             return Response(
                 content=upstream.content,
                 status_code=upstream.status_code,
                 headers=response_headers,
             )
-
         except httpx.TimeoutException:
             logger.warning("Director proxy timeout: %s %s", request.method, request.url.path)
             return Response(
-                content=json.dumps({"status": "error", "error": "Director service timeout"}),
-                status_code=504,
-                media_type="application/json",
+                content='{"status":"error","error":"Director service timeout"}',
+                status_code=504, media_type="application/json",
             )
         except httpx.ConnectError:
             logger.warning("Director proxy unavailable: %s", DIRECTOR_SERVICE_URL)
             return Response(
-                content=json.dumps({"status": "error", "error": "Director service unavailable"}),
-                status_code=503,
-                media_type="application/json",
+                content='{"status":"error","error":"Director service unavailable"}',
+                status_code=503, media_type="application/json",
             )
         except httpx.RequestError as exc:
-            logger.warning("Director proxy request failed: %s", str(exc)[:200])
+            logger.warning("Director proxy request failed: %s", _sanitize(exc, 200))
             return Response(
-                content=json.dumps({"status": "error", "error": "Director service request failed"}),
-                status_code=502,
-                media_type="application/json",
+                content='{"status":"error","error":"Director service request failed"}',
+                status_code=502, media_type="application/json",
             )
         except Exception:
             logger.exception("Unexpected Director proxy failure: %s", request.url.path)
             return Response(
-                content=json.dumps({"status": "error", "error": "Director proxy failure"}),
-                status_code=502,
-                media_type="application/json",
+                content='{"status":"error","error":"Director proxy failure"}',
+                status_code=502, media_type="application/json",
             )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ROUTE MOUNTING
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _mount_routes(app: FastAPI) -> None:
-    """Mount core application routers."""
-    route_modules = [
-    ("API v1", "api.v1", "router"),
-    ("KDO Engineering Console", "routes.kdo_engineering_console", "router"),
-    ("Rule Engine", "routes.rule_routes", "router"),
-    ("Meta Engine", "routes.meta_routes", "router"),
-    ("Email Service", "routes.email_routes", "router"),
-    ("Webhook", "routes.webhook", "router"),
-    ("Sensor Status", "routes.sensor_routes", "router"),
-    ("Affiliate Workload", "routes.affiliate_routes", "router"),
-    ("Species Control Plane", "routes.species_routes", "router"),
-    ]
-    for name, module_path, attr in route_modules:
-        try:
-            module = __import__(module_path, fromlist=[attr])
-            router = getattr(module, attr, None)
-            if router:
-                app.include_router(router)
-                logger.info("%s routes mounted.", name)
-        except ImportError:
-            logger.debug("%s routes not available — skipping.", name)
-        except Exception as exc:
-            logger.warning("%s routes failed to mount: %s", name, str(exc)[:300])
-
-    try:
-        from routes.affiliate_routes import public_router as affiliate_public_router
-        app.include_router(affiliate_public_router)
-        logger.info("Affiliate public routes mounted.")
-    except Exception as exc:
-        logger.error("Affiliate public routes failed to mount: %s", str(exc)[:300])
-
-    # Trend Intelligence routes
-    try:
-        from plugins.trend_intelligence.routes.public import router as trend_public_router
-        app.include_router(trend_public_router)
-        logger.info("Trend Intelligence public routes mounted.")
-    except ImportError:
-        logger.debug("Trend Intelligence public routes not available.")
-    except Exception as exc:
-        logger.warning("Trend Intelligence public routes mount failed: %s", str(exc)[:200])
-
-    try:
-        from plugins.trend_intelligence.routes.admin import router as trend_admin_router
-        app.include_router(trend_admin_router)
-        logger.info("Trend Intelligence admin routes mounted.")
-    except ImportError:
-        logger.debug("Trend Intelligence admin routes not available.")
-    except Exception as exc:
-        logger.warning("Trend Intelligence admin routes mount failed: %s", str(exc)[:200])
-
-    # Backup routes
-    try:
-        from plugins.backup.routes.public import router as backup_public_router
-        app.include_router(backup_public_router)
-        logger.info("Backup public routes mounted.")
-    except ImportError:
-        logger.debug("Backup public routes not available.")
-    except Exception as exc:
-        logger.warning("Backup public routes mount failed: %s", str(exc)[:200])
-
-    try:
-        from plugins.backup.routes.admin import router as backup_admin_router
-        app.include_router(backup_admin_router)
-        logger.info("Backup admin routes mounted.")
-    except ImportError:
-        logger.debug("Backup admin routes not available.")
-    except Exception as exc:
-        logger.warning("Backup admin routes mount failed: %s", str(exc)[:200])
-
-    # Canonical /api/v1 contract routes — mount ONCE only (no duplicate loop)
-    canonical_v1_routes = [
-        ("Timeline", "api.timeline_routes", "router"),
-        ("E2E", "api.e2e_routes", "router"),
-        ("KCPG Action Intent Bridge", "api.action_intent_routes", "router"),
-    ]
-    for name, module_path, attr in canonical_v1_routes:
-        try:
-            module = __import__(module_path, fromlist=[attr])
-            router = getattr(module, attr, None)
-            if router is not None:
-                app.include_router(router)
-                logger.info("%s routes mounted.", name)
-            else:
-                logger.error("%s module has no router; refusing silent omission.", name)
-        except Exception as exc:
-            logger.error("%s routes failed to mount: %s", name, str(exc)[:300])
-
-    control_plane_routes = [
-        ("Metabolism", "api.metabolism_routes", "router"),
-        ("Organism Body", "api.organism_body_routes", "router"),
-        ("Outbox", "api.outbox_routes", "router"),
-        ("Reports", "api.report_routes", "router"),
-        ("SLO", "api.slo_routes", "router"),
-        ("Observability", "api.observability_routes", "router"),
-        ("Web Intelligence", "api.web_intelligence", "router"),
-        ("Content Intelligence & Business Automation",
-         "api.content_intelligence_automation", "router"),
-        ("Unified Health", "api.health_unified", "router"),
-        ("Council", "routes.council_routes", "router"),
-        ("Circulation", "routes.circulation_routes", "router"),
-        ("Pulse", "routes.pulse_routes", "router"),
-        ("Production Runtime Convergence", "routes.production_runtime_routes", "router"),
-        ("Autonomous Workforce Bridge", "routes.autonomous_workforce_bridge_routes", "router"),
-        ("Durable Workforce Execution", "routes.workforce_execution_routes", "router"),
-        ("Production Route/Event Wiring", "routes.runtime_wiring_routes", "router"),
-        ("Legacy Runtime Authority Fence", "routes.legacy_runtime_fencing_routes", "router"),
-        ("Command Center Read Model", "routes.command_center_routes", "router"),
-        ("Failure Recovery", "routes.failure_recovery_routes", "router"),
-        ("Connector Fabric", "routes.connector_fabric_routes", "router"),
-        ("Sector Pack Portfolio", "routes.sector_pack_routes", "router"),
-        ("Business Onboarding", "routes.business_onboarding_routes", "router"),
-        ("Website Integrations", "api.website_integrations", "router"),
-        ("AI Control Plane", "routes.ai_control_plane_routes", "router"),
-    ]
-    for name, module_path, attr in control_plane_routes:
-        try:
-            module = __import__(module_path, fromlist=[attr])
-            router = getattr(module, attr, None)
-            if router is not None:
-                app.include_router(router)
-                if module_path == "api.content_intelligence_automation":
-                    public_router = getattr(module, "public_router", None)
-                    if public_router is not None:
-                        app.include_router(public_router)
-                        logger.info("Business Automation public ingress routes mounted.")
-                logger.info("%s control-plane routes mounted.", name)
-            else:
-                logger.error("%s module has no router; refusing silent omission.", name)
-        except Exception as exc:
-            logger.error("%s control-plane routes failed to mount: %s", name, str(exc)[:300])
-
-    # Complete backend contract routes — authoritative runtime/DB surfaces.
-    try:
-        from routes.backend_contract_routes import register_backend_contract_routes
-        register_backend_contract_routes(app)
-        logger.info("Backend contract routes mounted.")
-    except Exception as exc:
-        logger.error("Backend contract routes failed to mount: %s", str(exc)[:300])
-
-    try:
-        from routes.autonomy_routes import register_autonomy_routes
-        register_autonomy_routes(app)
-        logger.info("Autonomy governance routes mounted.")
-    except Exception as exc:
-        logger.error("Autonomy routes failed to mount: %s", str(exc)[:300])
-
-    try:
-        from routes.cp_surface_routes import register_cp_surface_routes
-        register_cp_surface_routes(app)
-        logger.info("CP surface routes (former stubs) mounted.")
-    except Exception as exc:
-        logger.error("CP surface routes failed to mount: %s", str(exc)[:300])
-
-    try:
-        from routes.cp_gap_routes import register_cp_gap_routes
-        register_cp_gap_routes(app)
-        logger.info("CP gap / compatibility routes mounted.")
-    except ImportError:
-        logger.debug("CP gap routes not available — skipping.")
-    except Exception as exc:
-        logger.warning("CP gap routes mount failed: %s", str(exc)[:300])
-
-    _mount_plugin(app, "growthbridge", "Growthbridge")
-    _mount_plugin(app, "github_connector", "GitHub Connector")
-    _mount_plugin(app, "monitor", "Monitor")
-
-    try:
-        from routes.code_intel_routes import router as code_intel_router
-        app.include_router(code_intel_router)
-        logger.info("Code Intelligence routes mounted.")
-    except ImportError:
-        logger.debug("Code Intelligence routes not available.")
-    except Exception as exc:
-        logger.warning("Code Intelligence routes failed to mount: %s", str(exc)[:300])
-
-
-def _mount_plugin(app: FastAPI, plugin_name: str, display_name: str) -> None:
-    """Mount public and admin routes for an optional plugin."""
-    try:
-        public_module = __import__(
-            f"plugins.{plugin_name}.routes.public", fromlist=["router"]
-        )
-        admin_module = __import__(
-            f"plugins.{plugin_name}.routes.admin", fromlist=["router"]
-        )
-        public_router = getattr(public_module, "router", None)
-        admin_router = getattr(admin_module, "router", None)
-
-        if public_router:
-            app.include_router(public_router)
-        if admin_router:
-            app.include_router(admin_router)
-        logger.info("%s plugin routes mounted.", display_name)
-    except ImportError:
-        logger.debug("%s plugin not available — skipping.", display_name)
-    except Exception as exc:
-        logger.warning("%s mount failed: %s", display_name, str(exc)[:300])
-
-
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # POST-BOOT HELPERS
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ===========================================================================
 
 def _resolve_redis(container: ServiceContainer):
     try:
@@ -963,36 +1030,37 @@ def _resolve_redis(container: ServiceContainer):
         if redis:
             logger.info("Redis client resolved for wiring.")
         return redis
-    except Exception as exp:
-        logger.debug("Redis not available: %s", exp)
+    except Exception as exc:
+        logger.debug("Redis unavailable: %s", _sanitize(exc, 200))
         return None
 
 
-def _init_api_stores(app, redis_client) -> None:
+def _init_api_stores(app: FastAPI, redis_client) -> None:
     from api.v1_stores import DraftStore, AsyncAuditLog, AsyncWorkflowHistory, AsyncKeyStore
+
     app.state.draft_store = DraftStore(redis_client=redis_client)
     app.state.audit_log = AsyncAuditLog(maxlen=200)
     app.state.workflow_history = AsyncWorkflowHistory(maxlen=20)
     app.state.key_store = AsyncKeyStore()
 
-    # PATCH v15.0: wrap the seed task so exceptions are logged, not swallowed
-    # by the event loop's "Task exception was never retrieved" warning.
-    async def _seed_and_log() -> None:
+    async def seed_and_log() -> None:
         try:
             await app.state.audit_log.seed_from_supabase()
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.exception("audit-log seed failed")
+            logger.exception("Audit-log seed failed")
 
     try:
-        task = asyncio.create_task(_seed_and_log(), name="audit-log-seed")
-        app.state.audit_log_seed_task = task
+        app.state.audit_log_seed_task = asyncio.create_task(
+            seed_and_log(), name="audit-log-seed"
+        )
     except Exception as exc:
-        logger.debug("Audit log seeding skipped: %s", exc)
+        logger.warning("Audit-log seed task could not be scheduled: %s", _sanitize(exc, 200))
+    logger.info("API stores initialized.")
 
-    logger.info("API stores initialized (DraftStore, AuditLog, WorkflowHistory, KeyStore).")
 
-
-async def _draft_cleanup_loop(app) -> None:
+async def _draft_cleanup_loop(app: FastAPI) -> None:
     while True:
         try:
             await asyncio.sleep(3600)
@@ -1001,29 +1069,56 @@ async def _draft_cleanup_loop(app) -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.debug("Draft cleanup error: %s", exc)
+            logger.warning("Draft cleanup error: %s", _sanitize(exc, 200))
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+async def _cancel_task(task: Optional[asyncio.Task], label: str) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("%s task shutdown error: %s", label, _sanitize(exc, 200))
+
+
+async def _best_effort_shutdown(container: Optional[ServiceContainer]) -> None:
+    if container is None:
+        return
+    try:
+        await asyncio.wait_for(graceful_shutdown(container), timeout=15.0)
+    except Exception:
+        logger.exception("Best-effort partial shutdown failed")
+
+
+# ===========================================================================
 # LIFESPAN
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ===========================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _startup_started_at, _startup_completed_at, _startup_duration_seconds
 
-    _startup_started_at = datetime.now(timezone.utc)
-    startup_start = time.monotonic()
-    service_mode = _get_service_mode()
-    _boot_warnings.clear()
+    started_at = datetime.now(timezone.utc)
+    monotonic_start = time.monotonic()
+    _startup_started_at = started_at
+    # service_mode is frozen in create_app(); never re-read the environment.
+    service_mode = app.state.service_mode
 
-    # PATCH v15.0: per-boot metadata on app.state (multi-worker safe).
-    app.state.boot_id = uuid.uuid4().hex
-    app.state.service_mode = service_mode
+    app.state.startup_started_at = started_at
+    app.state.startup_completed_at = None
+    app.state.startup_duration_seconds = 0.0
     app.state.python_version = _get_python_version()
+    app.state.boot_id = uuid.uuid4().hex
     app.state.boot_completed = False
     app.state.boot_warnings = []
+    app.state.container = None
+    app.state.director_http_client = None
+
+    # Reset the LEGACY module mirror for a single-app process.
+    _boot_warnings.clear()
 
     logger.info(
         "app.boot.start",
@@ -1038,32 +1133,36 @@ async def lifespan(app: FastAPI):
         },
     )
 
-    # Boot watchdog: exit the process if boot doesn't complete in time.
-    _boot_watchdog_seconds = float(os.getenv("BOOT_WATCHDOG_SECONDS", "120"))
+    # Required-route validation already ran in create_app() via
+    # _validate_route_manifest(); a failure there prevents the app from existing.
 
-    async def _boot_watchdog() -> None:
+    watchdog_seconds = float(os.getenv("BOOT_WATCHDOG_SECONDS", "120"))
+
+    async def boot_watchdog() -> None:
         try:
-            await asyncio.sleep(_boot_watchdog_seconds)
-            if not getattr(app.state, "boot_completed", False):
+            await asyncio.sleep(watchdog_seconds)
+            if not app.state.boot_completed:
                 logger.critical(
                     "Boot watchdog exceeded %.0fs; forcing process exit",
-                    _boot_watchdog_seconds,
+                    watchdog_seconds,
                 )
                 os._exit(1)
         except asyncio.CancelledError:
             raise
 
-    watchdog_task = asyncio.create_task(_boot_watchdog(), name="boot-watchdog")
+    watchdog_task = asyncio.create_task(boot_watchdog(), name="boot-watchdog")
+    container: Optional[ServiceContainer] = None
+    cleanup_task: Optional[asyncio.Task] = None
+    boot_succeeded = False
 
-    settings.validate_required()
-    logger.info("Building service container...")
-
-    container: ServiceContainer = build_container()
-    app.state.container = container
-    redis_client = _resolve_redis(container)
-
-    # V71.13 runtime composition (installer chain preserved verbatim).
     try:
+        settings.validate_required()
+        logger.info("Building service container...")
+        container = build_container()
+        app.state.container = container
+        redis_client = _resolve_redis(container)
+
+        # Preserve the existing V71 installer chain and order.
         from services.v71_13_production_runtime_convergence import install_production_runtime
         install_production_runtime(app, container)
         logger.info("V71.13 production runtime convergence installed.")
@@ -1076,9 +1175,6 @@ async def lifespan(app: FastAPI):
         install_legacy_runtime_fencing(app, container)
         logger.info("V71.15 legacy runtime authority fencing installed.")
 
-        # V71.16 workforce bridge install intentionally lives inside
-        # lifecycle._boot_autonomous_loop (see V71.16.1 note in that file).
-
         from services.v71_17_durable_workforce_execution import install_workforce_execution_coordinator
         install_workforce_execution_coordinator(app, container)
         logger.info("V71.17 durable workforce execution coordinator installed.")
@@ -1090,151 +1186,161 @@ async def lifespan(app: FastAPI):
         from services.v71_18_workforce_control_plane_persistence import install_workforce_control_plane_persistence
         install_workforce_control_plane_persistence(app, container)
         logger.info("V71.18 workforce control-plane persistence installed.")
-    except Exception as exc:
-        _record_boot_warning("v71_runtime_convergence", exc)
-        if watchdog_task and not watchdog_task.done():
-            watchdog_task.cancel()
-        raise
 
-    # Phased boot.
-    try:
         await boot_infrastructure(app, container)
         logger.info("Phased boot sequence complete.")
+
         if service_mode in ("full", "core", "director"):
-            _mount_director_routes_directly(app)
+            mounted = await _mount_director_routes_directly(app)
             app.openapi_schema = None
-    except SystemExit:
-        raise
-    except Exception as exc:
-        _record_boot_warning("boot_sequence", exc)
-        app.state.boot_completed = False
-        app.state.boot_warnings = list(_boot_warnings)
-        # PATCH v15.0: best-effort partial shutdown before re-raise.
-        try:
-            await asyncio.wait_for(graceful_shutdown(container), timeout=15.0)
-        except Exception:
-            logger.exception("Partial shutdown during boot failure also failed")
-        if watchdog_task and not watchdog_task.done():
-            watchdog_task.cancel()
-        raise
+            if not mounted:
+                # Director is a core surface in these modes; readiness must not
+                # report healthy when its direct route mount failed.
+                _record_boot_warning(
+                    "director_routes",
+                    RuntimeError("Director routes did not mount"),
+                    app,
+                    critical=True,
+                )
 
-    # Event API init.
-    if service_mode in ("full", "api", ""):
-        try:
-            from routes.event_api import init_event_api
-            await init_event_api()
-            logger.info("Event API initialized — capturing live events.")
-        except ImportError:
-            logger.debug("Event API not available — event capture skipped.")
-        except Exception as exc:
-            logger.warning("Event API initialization failed: %s", str(exc)[:200])
-
-    if service_mode in ("full", "api", ""):
-        _init_api_stores(app, redis_client)
-
-    cleanup_task: Optional[asyncio.Task] = None
-
-    if service_mode in ("api", ""):
-        app.state.director_http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=10.0),
-            follow_redirects=False,
-        )
-        await shutdown_registry.register(
-            "DirectorHTTPClient",
-            lambda: app.state.director_http_client.aclose()
-            if app.state.director_http_client is not None
-            else None,
-            timeout_seconds=10.0,
-        )
-
-        cleanup_task = asyncio.create_task(
-            _draft_cleanup_loop(app), name="draft-cleanup-loop"
-        )
-        await shutdown_registry.register(
-            "DraftCleanup",
-            lambda: cleanup_task.cancel()
-            if cleanup_task and not cleanup_task.done()
-            else None,
-            timeout_seconds=5.0,
-        )
-
-    # Cancel the watchdog — boot succeeded.
-    if watchdog_task and not watchdog_task.done():
-        watchdog_task.cancel()
-        try:
-            await watchdog_task
-        except asyncio.CancelledError:
-            pass
-
-    app.state.boot_completed = True
-    app.state.boot_warnings = list(_boot_warnings)
-    _startup_completed_at = datetime.now(timezone.utc)
-    _startup_duration_seconds = time.monotonic() - startup_start
-
-    logger.info(
-        "app.boot.complete",
-        extra={
-            "event": "app.boot.complete",
-            "boot_id": app.state.boot_id,
-            "duration_s": round(_startup_duration_seconds, 3),
-            "warnings": len(_boot_warnings),
-        },
-    )
-    if _boot_warnings:
-        for warning in _boot_warnings:
-            logger.warning("  ⚠ %s: %s", warning["service"], warning["error"])
-
-    try:
-        yield
-    finally:
-        logger.info(
-            "app.shutdown.start",
-            extra={"event": "app.shutdown.start", "boot_id": app.state.boot_id},
-        )
-        shutdown_start = time.monotonic()
-
-        if cleanup_task and not cleanup_task.done():
-            cleanup_task.cancel()
+        if service_mode in ("full", "api", ""):
             try:
-                await cleanup_task
-            except asyncio.CancelledError:
-                pass
+                from routes.event_api import init_event_api
+                await init_event_api()
+                logger.info("Event API initialized.")
+            except ImportError:
+                logger.debug("Event API unavailable; event capture skipped.")
             except Exception as exc:
-                logger.debug("Draft cleanup shutdown error: %s", str(exc)[:200])
+                _record_boot_warning("event_api_init", exc, app)
 
-        try:
-            summary = await graceful_shutdown(container)
-        except Exception:
-            summary = {}
-            logger.exception("graceful_shutdown raised")
+            try:
+                _init_api_stores(app, redis_client)
+            except Exception as exc:
+                _record_boot_warning("api_stores", exc, app)
 
-        app.state.boot_completed = False
+        # Director HTTP client exists only when the proxy routes were mounted.
+        # Closed once, by shutdown_registry (runs in both failure and success
+        # shutdown paths via graceful_shutdown).
+        if app.state.director_mount_mode == "proxy":
+            app.state.director_http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=10.0, read=30.0, write=30.0, pool=10.0
+                ),
+                follow_redirects=False,
+            )
+            await shutdown_registry.register(
+                "DirectorHTTPClient",
+                lambda: app.state.director_http_client.aclose()
+                if app.state.director_http_client is not None else None,
+                timeout_seconds=10.0,
+            )
+
+        # Draft cleanup runs in every mode that created the draft store
+        # (previously api-only, so "full" mode never purged expired drafts).
+        if hasattr(app.state, "draft_store"):
+            cleanup_task = asyncio.create_task(
+                _draft_cleanup_loop(app), name="draft-cleanup-loop"
+            )
+
+        app.state.startup_duration_seconds = time.monotonic() - monotonic_start
+        app.state.startup_completed_at = datetime.now(timezone.utc)
+        app.state.boot_completed = True
+        boot_succeeded = True
+
+        _startup_completed_at = app.state.startup_completed_at
+        _startup_duration_seconds = app.state.startup_duration_seconds
 
         logger.info(
-            "app.shutdown.complete",
+            "app.boot.complete",
             extra={
-                "event": "app.shutdown.complete",
+                "event": "app.boot.complete",
                 "boot_id": app.state.boot_id,
-                "duration_s": round(time.monotonic() - shutdown_start, 3),
-                "hooks_total": summary.get("total", 0) if isinstance(summary, dict) else 0,
-                "hooks_executed": summary.get("executed", 0) if isinstance(summary, dict) else 0,
-                "hooks_failed": summary.get("failed", 0) if isinstance(summary, dict) else 0,
-                "hooks_timed_out": summary.get("timed_out", 0) if isinstance(summary, dict) else 0,
-                "budget_exhausted": summary.get("budget_exhausted", False)
-                if isinstance(summary, dict) else False,
+                "duration_s": round(app.state.startup_duration_seconds, 3),
+                "warnings": len(app.state.boot_warnings),
+                "route_modules": len(app.state.route_registry),
             },
         )
+        for warning in app.state.boot_warnings:
+            logger.warning(
+                "Boot warning [%s]: %s",
+                warning["service"], warning["error"],
+            )
+
+        await _cancel_task(watchdog_task, "Boot watchdog")
+        yield
+
+    except BaseException as exc:
+        if not isinstance(exc, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+            _record_boot_warning("application_boot", exc, app, critical=True)
+        app.state.boot_completed = False
+        await _cancel_task(cleanup_task, "Draft cleanup")
+        await _cancel_task(
+            getattr(app.state, "audit_log_seed_task", None), "Audit-log seed"
+        )
+        await _best_effort_shutdown(container)
+        await _cancel_task(watchdog_task, "Boot watchdog")
+        raise
+
+    finally:
+        if boot_succeeded:
+            logger.info(
+                "app.shutdown.start",
+                extra={"event": "app.shutdown.start", "boot_id": app.state.boot_id},
+            )
+            shutdown_start = time.monotonic()
+            app.state.boot_completed = False
+
+            await _cancel_task(cleanup_task, "Draft cleanup")
+            await _cancel_task(
+                getattr(app.state, "audit_log_seed_task", None), "Audit-log seed"
+            )
+
+            # Drain outstanding best-effort API counters before the container
+            # is shut down. They are bounded and never block request handling.
+            counter_tasks = list(getattr(app.state, "api_counter_tasks", set()))
+            if counter_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*counter_tasks, return_exceptions=True),
+                        timeout=3.0,
+                    )
+                except asyncio.TimeoutError:
+                    for task in counter_tasks:
+                        task.cancel()
+
+            try:
+                summary = await graceful_shutdown(container) if container else {}
+            except Exception:
+                summary = {}
+                logger.exception("graceful_shutdown raised")
+
+            # DirectorHTTPClient is closed by its shutdown_registry hook above.
+            app.state.director_http_client = None
+
+            logger.info(
+                "app.shutdown.complete",
+                extra={
+                    "event": "app.shutdown.complete",
+                    "boot_id": app.state.boot_id,
+                    "duration_s": round(time.monotonic() - shutdown_start, 3),
+                    "hooks_total": summary.get("total", 0) if isinstance(summary, dict) else 0,
+                    "hooks_executed": summary.get("executed", 0) if isinstance(summary, dict) else 0,
+                    "hooks_failed": summary.get("failed", 0) if isinstance(summary, dict) else 0,
+                    "hooks_timed_out": summary.get("timed_out", 0) if isinstance(summary, dict) else 0,
+                    "budget_exhausted": summary.get("budget_exhausted", False)
+                    if isinstance(summary, dict) else False,
+                },
+            )
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # APPLICATION FACTORY
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ===========================================================================
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Kanyoza Systems AI Platform",
-        description="Multi-tenant social media AI platform with industry plugins",
+        description="Multi-tenant AI platform with industry plugins and control-plane services",
         version=PLATFORM_VERSION,
         lifespan=lifespan,
         docs_url="/docs" if settings.is_development else None,
@@ -1245,37 +1351,55 @@ def create_app() -> FastAPI:
     app.state.boot_completed = False
     app.state.container = None
     app.state.boot_warnings = []
+    app.state.route_registry = []
+    app.state.route_registration_failures = []
     app.state.director_routes_mounted = False
+    app.state.director_mount_mode = None
     app.state.director_http_client = None
     app.state.boot_id = None
-    app.state.service_mode = None
+    # Single read of the environment; lifespan and Director mounting use this.
+    app.state.service_mode = _get_service_mode()
     app.state.python_version = None
+    app.state.api_counter_tasks = set()
+    app.state.api_counter_dropped = 0
+    app.state.startup_started_at = None
+    app.state.startup_completed_at = None
+    app.state.startup_duration_seconds = 0.0
 
-    # Phase 16.9: configure the engineering console only when its dedicated
-    # PostgreSQL DSN is explicitly supplied. No SQLite/demo fallback is allowed.
+    # KDO Engineering Console: explicit PostgreSQL provider only; no demo DB.
     app.state.kdo_engineering_console_provider = None
     try:
-        from services.kdo_engineering_console_provider import create_console_provider_from_environment
-        app.state.kdo_engineering_console_provider = create_console_provider_from_environment()
+        from services.kdo_engineering_console_provider import (
+            create_console_provider_from_environment,
+        )
+        app.state.kdo_engineering_console_provider = (
+            create_console_provider_from_environment()
+        )
         if app.state.kdo_engineering_console_provider is not None:
-            logger.info("KDO engineering console PostgreSQL provider configured (connectivity is checked per request).")
+            logger.info(
+                "KDO engineering console PostgreSQL provider configured; "
+                "connectivity is checked per request."
+            )
         else:
-            logger.info("KDO engineering console provider not configured; console APIs will fail closed with 503.")
+            logger.info(
+                "KDO engineering console provider not configured; "
+                "console APIs will fail closed with 503."
+            )
     except Exception as exc:
-        # Do not prevent the entire platform from booting because an optional
-        # vertical's provider configuration is invalid; never silently fallback.
-        logger.error("KDO engineering console provider configuration failed: %s", str(exc)[:240])
+        logger.error(
+            "KDO engineering console provider configuration failed: %s",
+            _sanitize(exc, 240),
+        )
 
     _configure_middleware(app)
     _configure_cors(app)
 
-    # Startup gate must be outermost of the two so it sees requests first.
-    # (Counter is added last => outermost of all, per Starlette semantics.)
+    # Starlette executes the last-added middleware outermost.
     app.add_middleware(StartupGateMiddleware)
     app.add_middleware(ApiCallCounterMiddleware)
 
     _register_health_endpoints(app)
-    _mount_routes(app)
+    _mount_routes(app)  # raises here if a required route module is not verified
     _mount_event_api(app)
     _mount_director_proxy(app)
 
@@ -1289,35 +1413,29 @@ def create_app() -> FastAPI:
             "docs": "/docs" if settings.is_development else None,
             "events_api": "/api/v1/events",
             "director": "/director",
+            "health": {
+                "live": "/health/live",
+                "ready": "/health/ready",
+                "detailed": "/health/detailed",
+                "routes": "/health/routes",
+                "version": "/health/version",
+            },
         }
 
     return app
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# APPLICATION ASSEMBLY
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
+# ASGI APPLICATION ASSEMBLY
+# ===========================================================================
 
 fastapi_app = create_app()
 app = create_socket_app(fastapi_app)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# UTILITY
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def _get_python_version() -> str:
-    return f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════
-
-
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
