@@ -432,7 +432,11 @@ def _validate_route_manifest(app: FastAPI) -> None:
         )
     raise RuntimeError(
         "Required route registration failed: "
-        + ", ".join(item["name"] for item in failures)
+        + "; ".join(
+            f"{item['name']} ({item['module']}): "
+            f"{item.get('error') or item['status']}"
+            for item in failures
+        )
     )
 
 
