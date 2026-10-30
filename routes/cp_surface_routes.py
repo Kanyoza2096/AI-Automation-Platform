@@ -2,6 +2,15 @@
 
 Every endpoint talks to a real runtime object when available. Empty lists / unavailable
 status are honest outcomes, never fabricated metrics.
+
+v15.5 (2026-10-30) — dream system canonical resolution:
+  The /dreams/* endpoints previously read only from the organism-scoped
+  `org.dreams` instance, which is created in organism/lifecycle.py:80 but
+  never started. The canonical DreamSystem lives at core.dreams.dream_system
+  and is started by main.py's lifespan. These endpoints now prefer the
+  canonical instance, falling back to the organism instance only if the
+  canonical one is unavailable. Added POST /dreams/run for manual triggering
+  outside the 1–5 AM UTC window.
 """
 from __future__ import annotations
 
@@ -21,6 +30,7 @@ _blocklist: set[str] = set()
 def _auth_dep():
     from api.v1 import require_auth
     return require_auth
+
 
 def _operator_dep():
     from core.security.deps import require_workspace_operator
@@ -45,6 +55,23 @@ def _organism(request: Request):
         return get_organism(wid)
     except Exception:
         return None
+
+
+def _resolve_dreams(request: Request):
+    """Resolve the canonical DreamSystem, falling back to the organism instance.
+
+    The canonical instance lives at core.dreams.dream_system and is started
+    by main.py's lifespan. The organism-scoped instance (org.dreams) is created
+    in organism/lifecycle.py but never started, so we prefer the canonical one.
+    """
+    try:
+        from core.dreams import dream_system as canonical
+        if canonical is not None:
+            return canonical
+    except Exception:
+        pass
+    org = _organism(request)
+    return getattr(org, "dreams", None) if org else None
 
 
 # ── Pulse thresholds ────────────────────────────────────────────────────────
@@ -131,7 +158,6 @@ async def security_scan(request: Request):
             return {"ok": True, "started": True, "message": "Guardian scan started", "source": "guardian"}
     except Exception as exc:
         logger.warning("security scan: %s", type(exc).__name__)
-    # Fall through: still acknowledge request path exists
     return {"ok": True, "started": False, "message": "Guardian not configured — no scan started", "source": "none"}
 
 
@@ -141,7 +167,6 @@ async def security_scan(request: Request):
 async def reflex_triggers():
     try:
         from core.reflexes import ReflexSystem
-        # Prefer live instance if registered
         triggers: List[Dict[str, Any]] = []
         try:
             from core.service_registry import get_service_registry
@@ -238,7 +263,6 @@ async def optimal_posting_times(request: Request):
             return {"ok": True, "times": times, "source": "condition_engine"}
     except Exception:
         pass
-    # Honest default schedule slots (not engagement scores) — labeled as policy defaults
     return {
         "ok": True,
         "times": [
@@ -271,7 +295,6 @@ async def content_candidates(request: Request, limit: int = 20):
         pass
     if not rows:
         try:
-            # Fall back to recent post_history as observational candidates
             from config.settings import settings
             if getattr(settings, "supabase_enabled", False):
                 from core.supabase_client import get_supabase
@@ -296,12 +319,6 @@ async def content_queue(request: Request, limit: int = 20):
                     return {"ok": True, "queue": q, "count": len(q), "source": name}
     except Exception:
         pass
-    # Jobs pending as operational queue
-    try:
-        from core.service_registry import get_service_registry
-        # soft empty
-    except Exception:
-        pass
     return {"ok": True, "queue": [], "count": 0, "source": "none", "message": "No content queue provider bound"}
 
 
@@ -320,7 +337,6 @@ async def generate_topic_candidate(body: TopicBody, request: Request):
         "status": "staged",
         "source": "control_plane",
     }
-    # Try autonomous content if available
     try:
         from core.service_registry import get_service_registry
         reg = get_service_registry()
@@ -351,58 +367,141 @@ async def publish_content_topic(candidate_id: str, request: Request):
 
 @router.get("/dreams/status", dependencies=[Depends(_auth_dep())])
 async def dreams_status(request: Request):
-    org = _organism(request)
-    dreams = getattr(org, "dreams", None) if org else None
+    """Status of the canonical DreamSystem.
+
+    Prefers core.dreams.dream_system (started by main.py) over the organism-scoped
+    instance (org.dreams), which is created in organism/lifecycle.py but never started.
+    """
+    dreams = None
+    source = "none"
+
+    try:
+        from core.dreams import dream_system as canonical
+        if canonical is not None:
+            dreams = canonical
+            source = "dream_system_canonical"
+    except Exception:
+        pass
+
     if dreams is None:
-        try:
-            from core.dreams import DreamSystem
-            return {"ok": True, "status": "unbound", "message": "No organism dreams instance for workspace", "source": "none"}
-        except Exception:
-            return {"ok": True, "status": "unavailable", "source": "none"}
+        org = _organism(request)
+        dreams = getattr(org, "dreams", None) if org else None
+        source = "organism_dreams" if dreams else "none"
+
+    if dreams is None:
+        return {
+            "ok": True,
+            "status": "unbound",
+            "running": False,
+            "dream_count": 0,
+            "insights_count": 0,
+            "last_dream_time": None,
+            "recent_insights": [],
+            "message": "No DreamSystem instance bound",
+            "source": "none",
+        }
+
     status = dreams.get_status() if hasattr(dreams, "get_status") else {
+        "running": getattr(dreams, "_running", False),
         "dream_count": getattr(dreams, "_dream_count", 0),
-        "insights": len(getattr(dreams, "_insights", []) or []),
+        "insights_count": len(getattr(dreams, "_insights", []) or []),
+        "last_dream_time": None,
+        "recent_insights": list(getattr(dreams, "_insights", []) or [])[-5:],
     }
-    return {"ok": True, "status": "active", **(status if isinstance(status, dict) else {}), "source": "dream_system"}
+
+    return {
+        "ok": True,
+        "status": "active",
+        **(status if isinstance(status, dict) else {}),
+        "source": source,
+    }
+
+
+@router.post("/dreams/run", dependencies=[Depends(_operator_dep())])
+async def trigger_dream_cycle(request: Request):
+    """Force a single dream cycle for testing / manual recovery.
+
+    The dream loop fires only between 1 AM and 5 AM UTC. This endpoint lets
+    an operator trigger a dream outside the window without waiting.
+    """
+    dreams = _resolve_dreams(request)
+    if dreams is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "dream_system_not_bound",
+                "message": "No DreamSystem instance is bound. Check boot logs.",
+            },
+        )
+    if not getattr(dreams, "_running", False):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "dream_system_not_running",
+                "message": "DreamSystem is not running. Check main.py boot logs for start failure.",
+            },
+        )
+    if not hasattr(dreams, "run_once"):
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "run_once_not_implemented",
+                "message": "DreamSystem does not implement run_once().",
+            },
+        )
+    result = await dreams.run_once()
+    return {"ok": True, "status": result}
 
 
 @router.get("/dreams/insights", dependencies=[Depends(_auth_dep())])
 async def dreams_insights(request: Request):
-    org = _organism(request)
-    dreams = getattr(org, "dreams", None) if org else None
+    dreams = _resolve_dreams(request)
     insights = list(getattr(dreams, "_insights", []) or [])[-50:] if dreams else []
-    return {"ok": True, "insights": insights, "count": len(insights), "source": "dream_system" if dreams else "none"}
+    return {
+        "ok": True,
+        "insights": insights,
+        "count": len(insights),
+        "source": "dream_system" if dreams else "none",
+    }
 
 
 @router.get("/dreams/learning-curve", dependencies=[Depends(_auth_dep())])
 async def dreams_learning_curve(request: Request):
-    org = _organism(request)
-    dreams = getattr(org, "dreams", None) if org else None
+    dreams = _resolve_dreams(request)
     curve = []
     if dreams and hasattr(dreams, "get_learning_curve"):
         curve = dreams.get_learning_curve() or []
     elif dreams:
         insights = list(getattr(dreams, "_insights", []) or [])
         curve = [{"i": i, "count": 1} for i, _ in enumerate(insights[-30:])]
-    return {"ok": True, "curve": curve, "points": curve, "count": len(curve), "source": "dream_system" if dreams else "none"}
+    return {
+        "ok": True,
+        "curve": curve,
+        "points": curve,
+        "count": len(curve),
+        "source": "dream_system" if dreams else "none",
+    }
 
 
 @router.get("/dreams/patterns", dependencies=[Depends(_auth_dep())])
 async def dreams_patterns(request: Request):
-    org = _organism(request)
-    dreams = getattr(org, "dreams", None) if org else None
+    dreams = _resolve_dreams(request)
     patterns = []
     if dreams and hasattr(dreams, "get_patterns"):
         patterns = dreams.get_patterns() or []
     elif dreams:
         patterns = list(getattr(dreams, "_patterns", []) or [])
-    return {"ok": True, "patterns": patterns, "count": len(patterns), "source": "dream_system" if dreams else "none"}
+    return {
+        "ok": True,
+        "patterns": patterns,
+        "count": len(patterns),
+        "source": "dream_system" if dreams else "none",
+    }
 
 
 @router.post("/dreams/insights/{insight_id}/apply", dependencies=[Depends(_operator_dep())])
 async def apply_dream_insight(insight_id: str, request: Request):
-    org = _organism(request)
-    dreams = getattr(org, "dreams", None) if org else None
+    dreams = _resolve_dreams(request)
     if dreams is None:
         raise HTTPException(503, detail="Dream system not bound for workspace")
     if hasattr(dreams, "apply_insight"):
@@ -461,7 +560,6 @@ async def heartbeat_history(limit: int = 50):
     return {"ok": True, "history": history, "count": len(history), "source": "heartbeat"}
 
 
-
 @router.get("/social/twitter/status", dependencies=[Depends(_auth_dep())])
 async def twitter_provider_status():
     """Readiness for X/Twitter provider — not a browser OAuth redirect."""
@@ -493,7 +591,6 @@ async def twitter_provider_status():
         }
     except Exception as exc:
         return {"ok": False, "platform": "twitter", "provider_ready": False, "error": type(exc).__name__}
-
 
 
 def register_cp_surface_routes(app) -> None:
