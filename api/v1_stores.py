@@ -32,7 +32,7 @@ class DraftStore:
     async def create(self, data: dict) -> dict:
         """Create a new draft and return it."""
         import json as _json
-        draft_id = str(_uuid_mod.uuid4())
+        draft_id = str(uuid.uuid4())
         draft = {
             "id": draft_id,
             **data,
@@ -149,26 +149,93 @@ class AsyncAuditLog:
 
 
 class AsyncWorkflowHistory:
-    """Thread-safe async workflow history."""
+    """
+    Persistent workflow history — v2.0 (2026-10-31).
 
-    def __init__(self, maxlen: int = 20):
+    Writes to the Supabase `workflow_history` table when a Supabase client is
+    supplied; falls back to an in-memory deque when it is not. The in-memory
+    deque is retained as a fallback but is NOT the source of truth in
+    production; every append mirrors to Supabase, and every read queries
+    Supabase first.
+
+    Fixes:
+      - Previous version kept history exclusively in a bounded in-memory deque
+        (maxlen=20). Every process restart, deploy, or Render sleep wiped the
+        history, so /api/v1/workflow/history returned [] even when workflows
+        had run. This made the Workflow Runs page unable to show any data.
+      - Added workspace_id filtering on reads. The previous version returned
+        global history with workspace_id: null, which was confusing for
+        workspace-scoped UIs.
+      - Raised the in-memory maxlen from 20 to 200 so the fallback mode is
+        still usable during transient Supabase outages.
+      - find_and_update now also updates the Supabase row, not just the
+        in-memory deque.
+    """
+
+    def __init__(self, maxlen: int = 200, supabase_client=None):
         self._lock = asyncio.Lock()
         self._history: deque = deque(maxlen=maxlen)
+        self._sb = supabase_client
 
     async def append(self, entry: dict):
         async with self._lock:
-            self._history.append(entry)
+            self._history.appendleft(entry)
+        if self._sb is not None:
+            try:
+                await asyncio.to_thread(
+                    lambda: self._sb.table("workflow_history").insert(entry).execute()
+                )
+            except Exception as exc:
+                logger.warning("workflow_history insert failed: %s", exc)
 
     async def get_all(self) -> list[dict]:
+        if self._sb is not None:
+            try:
+                res = await asyncio.to_thread(
+                    lambda: self._sb.table("workflow_history")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(200)
+                    .execute()
+                )
+                return list(res.data or [])
+            except Exception as exc:
+                logger.warning("workflow_history fetch failed: %s", exc)
         async with self._lock:
             return list(self._history)
 
-    async def get_recent(self, limit: int = 20) -> list[dict]:
+    async def get_recent(self, limit: int = 20, workspace_id: str | None = None) -> list[dict]:
+        if self._sb is not None:
+            try:
+                q = (
+                    self._sb.table("workflow_history")
+                    .select("*")
+                    .order("created_at", desc=True)
+                    .limit(limit)
+                )
+                if workspace_id:
+                    q = q.eq("workspace_id", workspace_id)
+                res = await asyncio.to_thread(lambda: q.execute())
+                return list(res.data or [])
+            except Exception as exc:
+                logger.warning("workflow_history recent fetch failed: %s", exc)
         async with self._lock:
-            items = list(self._history)[-limit:]
-            return list(reversed(items))
+            items = list(self._history)[:limit]
+        return items
 
     async def find_and_update(self, match_key: str, match_value: str, updates: dict) -> bool:
+        if self._sb is not None:
+            try:
+                res = await asyncio.to_thread(
+                    lambda: self._sb.table("workflow_history")
+                    .update(updates)
+                    .eq(match_key, match_value)
+                    .execute()
+                )
+                if res.data:
+                    return True
+            except Exception as exc:
+                logger.warning("workflow_history update failed: %s", exc)
         async with self._lock:
             for entry in self._history:
                 if entry.get(match_key) == match_value:
@@ -297,4 +364,3 @@ def _get_account_platform_id(account) -> str:
         pc = getattr(account, "platform_config", {}) or {}
         pid = pc.get("page_id") or pc.get("phone_number_id") or pc.get("person_urn") or ""
     return pid
-
