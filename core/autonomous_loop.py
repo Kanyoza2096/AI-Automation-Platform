@@ -24,6 +24,7 @@ v3.3 (Retained):
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import math
@@ -193,7 +194,7 @@ class CircuitBreaker:
             result = await func()
             await self._record_success()
             return result
-        except Exception as exc:
+        except Exception:
             await self._record_failure()
             raise
 
@@ -578,7 +579,7 @@ class SeasonalAnomalyDetector:
         values = self._seasonal_history[metric][season]
         if len(values) >= self.min_samples:
             mean_val = sum(values) / len(values)
-            std_val = (sum((v - mean_val)**2 for v in values) / len(values)) ** 0.5
+            std_val = (sum((v - mean_val) ** 2 for v in values) / len(values)) ** 0.5
             self._seasonal_stats[metric][season] = {
                 "mean": mean_val,
                 "std": std_val,
@@ -626,7 +627,7 @@ class AdaptiveThresholds:
         values = self._history[metric]
         if len(values) >= self.min_samples:
             mean_val = sum(values) / len(values)
-            std_val = (sum((v - mean_val)**2 for v in values) / len(values)) ** 0.5
+            std_val = (sum((v - mean_val) ** 2 for v in values) / len(values)) ** 0.5
             self._thresholds[metric] = mean_val + 3 * std_val
 
     def get_threshold(self, metric: str) -> float:
@@ -711,6 +712,21 @@ class IntelligenceEngine:
         # v4.0 — Boyd's schwerpunkt
         self.world_model = WorldModel()
 
+        # Per-event observation scope. A single inbound event can reach
+        # analyze_context more than once (the loop's Orient step, then the
+        # handler's own intelligence call). Within one scope each signal key
+        # is observed by the world model once and the deviation is reused,
+        # so frequency/deviation estimates are not double counted.
+        self._event_scope: contextvars.ContextVar[Optional[Dict[str, float]]] = (
+            contextvars.ContextVar("kanyoza_event_scope", default=None)
+        )
+
+    def begin_event_scope(self) -> contextvars.Token:
+        return self._event_scope.set({})
+
+    def end_event_scope(self, token: contextvars.Token) -> None:
+        self._event_scope.reset(token)
+
     def signal_key_for_event(self, event: Dict[str, Any]) -> str:
         """v4.0 — canonical key for world model."""
         event_type = event.get("event_type", "unknown")
@@ -723,8 +739,30 @@ class IntelligenceEngine:
         """v4.0 — Orientation. Compares observation vs world model."""
         # v4.0 — get deviation from world model
         signal_key = self.signal_key_for_event(event)
-        deviation = await self.world_model.observe_signal(signal_key, success=True)
 
+        # Derive success from event status/type instead of hardcoding True.
+        # Hardcoding True made the world model learn "everything is always
+        # fine," so volatility stayed 0, so deviation stayed 0, so Orient
+        # never saw a novel signal.
+        payload = event.get("payload", {}) if isinstance(event, dict) else {}
+        status = str(payload.get("status", "unknown")).lower() if isinstance(payload, dict) else "unknown"
+        event_type_lower = str(event.get("event_type", "")).lower() if isinstance(event, dict) else ""
+        is_failure = (
+            "fail" in event_type_lower
+            or "error" in event_type_lower
+            or "alert" in event_type_lower
+            or status in ("degraded", "unhealthy", "critical", "failed", "error")
+        )
+        success = not is_failure
+
+        scope = self._event_scope.get()
+        if scope is not None and signal_key in scope:
+            # Already observed during this event — reuse, don't re-record.
+            deviation = scope[signal_key]
+        else:
+            deviation = await self.world_model.observe_signal(signal_key, success=success)
+            if scope is not None:
+                scope[signal_key] = deviation
         context = {
             "event_type": event.get("event_type", "unknown"),
             "timestamp": event.get("timestamp", datetime.now(timezone.utc).isoformat()),
@@ -903,7 +941,10 @@ class IntelligenceEngine:
             if state and action:
                 reward = score if score is not None else (1.0 if success else 0.0)
                 self.bandit.update(state, action, reward)
-            self._confidence = min(1.0, self._confidence + self._learning_rate * 0.5) if success else max(0.0, self._confidence - self._learning_rate * 0.25)
+            if success:
+                self._confidence = min(1.0, self._confidence + self._learning_rate * 0.5)
+            else:
+                self._confidence = max(0.0, self._confidence - self._learning_rate * 0.25)
             return True
         return False
 
@@ -1208,7 +1249,11 @@ class AutonomousLoop:
     async def check_health_async(self) -> HealthReport:
         try:
             if not self._running:
-                return HealthReport(status=HealthStatus.UNKNOWN, service_name=self.service_name, error_message="Loop is not running")
+                return HealthReport(
+                    status=HealthStatus.UNKNOWN,
+                    service_name=self.service_name,
+                    error_message="Loop is not running",
+                )
             return HealthReport(
                 status=HealthStatus.HEALTHY,
                 service_name=self.service_name,
@@ -1227,11 +1272,17 @@ class AutonomousLoop:
                     "current_interval_seconds": self._current_interval,
                     "current_volatility": self.intelligence.world_model.compute_volatility(),
                     "intelligence": self.intelligence.get_status(),
-                    "circuit_breakers": {name: breaker.get_stats() for name, breaker in self._circuit_breakers.items()},
+                    "circuit_breakers": {
+                        name: breaker.get_stats() for name, breaker in self._circuit_breakers.items()
+                    },
                 },
             )
         except Exception as exc:
-            return HealthReport(status=HealthStatus.UNHEALTHY, service_name=self.service_name, error_message=str(exc))
+            return HealthReport(
+                status=HealthStatus.UNHEALTHY,
+                service_name=self.service_name,
+                error_message=str(exc),
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # EVENT SUBSCRIPTION
@@ -1318,6 +1369,8 @@ class AutonomousLoop:
         """
         # 1. OBSERVE
         events_processed = await self._observe_phase()
+
+        await self._check_system_health()
 
         # 2. ORIENT + 3. DECIDE + 4. ACT are inside _process_event
         # but we track metrics separately
@@ -1560,27 +1613,45 @@ class AutonomousLoop:
             "timestamp": event_data.get("timestamp"),
             "correlation_id": correlation_id,
         }
-        context = await self.intelligence.analyze_context(event_context)
-
-        if context.get("is_novel"):
-            self._metrics.deviations_detected += 1
-
-        # ── 3. DECIDE ───────────────────────────────────────────────
+        # One observation scope per inbound event: Orient and the handler's
+        # own intelligence calls share it, so the world model records each
+        # signal once per event instead of once per call.
+        scope_token = self.intelligence.begin_event_scope()
         try:
-            async with asyncio.timeout(self.HANDLER_TIMEOUT_SECONDS):
-                # Execute the handler (which decides internally)
-                await handler(payload)
-                decision_success = True
-        except asyncio.TimeoutError:
-            logger.error("Handler timeout for %s", event_type)
-            self._metrics.events_failed += 1
-            decision_success = False
-        except Exception as exc:
-            logger.error(f"Handler error for {event_type}: {exc}")
-            self._metrics.events_failed += 1
-            decision_success = False
+            context = await self.intelligence.analyze_context(event_context)
+
+            if context.get("is_novel"):
+                self._metrics.deviations_detected += 1
+
+            # ── 3. DECIDE ───────────────────────────────────────────
+            try:
+                async with asyncio.timeout(self.HANDLER_TIMEOUT_SECONDS):
+                    # Execute the handler (which decides internally)
+                    await handler(payload)
+                    decision_success = True
+            except asyncio.TimeoutError:
+                logger.error("Handler timeout for %s", event_type)
+                self._metrics.events_failed += 1
+                decision_success = False
+            except Exception as exc:
+                logger.error(f"Handler error for {event_type}: {exc}")
+                self._metrics.events_failed += 1
+                decision_success = False
+        finally:
+            self.intelligence.end_event_scope(scope_token)
 
         # ── 4. ACT (already done inside handler) + Capture feedback ─
+        # v4.0: Record the real action result for orientation feedback —
+        # failures included, so _reshape_observation_priorities can watch
+        # failing signals harder.
+        signal_key = self.intelligence.signal_key_for_event(event_context)
+        self._recent_action_results.append({
+            "signal_key": signal_key,
+            "event_type": str(event_type),
+            "success": decision_success,
+            "timestamp": time.time(),
+        })
+
         if decision_success:
             # Update metrics
             await self._mark_event_processed(event_data, True)
@@ -1588,15 +1659,6 @@ class AutonomousLoop:
             self._metrics.events_by_type[str(event_type)] = (
                 self._metrics.events_by_type.get(str(event_type), 0) + 1
             )
-
-            # v4.0: Record action result for orientation feedback
-            signal_key = self.intelligence.signal_key_for_event(event_context)
-            self._recent_action_results.append({
-                "signal_key": signal_key,
-                "event_type": str(event_type),
-                "success": True,
-                "timestamp": time.time(),
-            })
 
             # Track implicit vs explicit
             # (Handlers use the intelligence engine which sets guidance mode)
@@ -1642,7 +1704,7 @@ class AutonomousLoop:
                         await self.shared_bus.publish(event_type, payload)
                     else:
                         raise
-                except Exception as exc:
+                except Exception:
                     if hasattr(self.shared_bus, "publish"):
                         await self.shared_bus.publish(event_type, payload)
                     else:
@@ -1691,13 +1753,29 @@ class AutonomousLoop:
 
     async def _handle_status_update(self, payload: Dict[str, Any]) -> None:
         engine = payload.get("engine", "")
-        status = payload.get("status", "")
+        status = str(payload.get("status", "")).lower()
+        workspace_id = payload.get("workspace_id", "platform")
+
         if status == "healthy":
             self.predictive_engine.record_health(engine, 90)
         elif status == "degraded":
             self.predictive_engine.record_health(engine, 50)
+            # Degraded status is a real signal — trigger Orient.
+            await self._handle_alert({
+                "engine": engine,
+                "status": "degraded",
+                "message": f"{engine} is degraded",
+                "workspace_id": workspace_id,
+            })
         else:
             self.predictive_engine.record_health(engine, 10)
+            # Critical/unhealthy status — trigger Orient.
+            await self._handle_alert({
+                "engine": engine,
+                "status": "critical",
+                "message": f"{engine} is {status}",
+                "workspace_id": workspace_id,
+            })
 
     async def _handle_heartbeat(self, payload: Dict[str, Any]) -> None:
         logger.debug(f"💓 HEARTBEAT: {payload.get('service', '')}")
@@ -1873,11 +1951,16 @@ class AutonomousLoop:
         if not action or not workspace_id:
             return
         if self._workforce_bridge is None:
-            logger.warning("V71.16 workforce bridge unavailable; strategy withheld workspace=%s action=%s", workspace_id, action)
-            await self._publish_event("action.blocked", {**payload, "action": action, "workspace_id": workspace_id,
-                                                        "decision": "SUGGEST",
-                                                        "reason": "workforce_bridge_unavailable",
-                                                        "execution_requested": False, "authority_granted": False})
+            logger.warning(
+                "V71.16 workforce bridge unavailable; strategy withheld workspace=%s action=%s",
+                workspace_id, action,
+            )
+            await self._publish_event("action.blocked", {
+                **payload, "action": action, "workspace_id": workspace_id,
+                "decision": "SUGGEST",
+                "reason": "workforce_bridge_unavailable",
+                "execution_requested": False, "authority_granted": False,
+            })
             return
         proposal = await self._workforce_bridge.propose(payload, capability=action, workflow=payload.get("workflow"))
         await self._publish_event("workforce.proposal", {
