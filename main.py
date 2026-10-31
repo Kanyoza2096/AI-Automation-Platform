@@ -973,9 +973,16 @@ def _init_api_stores(app, redis_client) -> None:
     from api.v1_stores import DraftStore, AsyncAuditLog, AsyncWorkflowHistory, AsyncKeyStore
     app.state.draft_store = DraftStore(redis_client=redis_client)
     app.state.audit_log = AsyncAuditLog(maxlen=200)
-    app.state.workflow_history = AsyncWorkflowHistory(maxlen=20)
-    app.state.key_store = AsyncKeyStore()
 
+    _sb = None
+    try:
+        from services.supabase import supabase_service
+        _sb = supabase_service.service_client or supabase_service.client
+    except Exception:
+        pass
+    app.state.workflow_history = AsyncWorkflowHistory(maxlen=200, supabase_client=_sb)
+
+    app.state.key_store = AsyncKeyStore()
     # PATCH v15.0: wrap the seed task so exceptions are logged, not swallowed
     # by the event loop's "Task exception was never retrieved" warning.
     async def _seed_and_log() -> None:
