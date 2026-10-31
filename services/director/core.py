@@ -2545,6 +2545,13 @@ class Director:
             },
         }
         self.briefings.append(brief)
+        # Add a top-level `summary` so the event stream can render a
+        # human-readable one-liner without knowing the brief's schema.
+        brief["summary"] = (
+            brief["insights"][0]
+            if brief.get("insights")
+            else f"Director briefing ({brief.get('type', 'unknown')})"
+        )
         _publish_event("director_briefing", brief)
         return brief
 
