@@ -2,6 +2,12 @@
 Reliability Engine — orchestrates Pulse → Diagnose → Plan → Guardian → Execute → Memory.
 
 Does NOT auto-generate and deploy arbitrary code.
+
+v1.1 (2026-10-31):
+  Added `summary` field to reliability.escalation, reliability.recommendation,
+  and reliability.outcome event payloads. The KCPG event stream UI displays
+  `payload.summary` as the primary label; without it, events rendered as
+  "no producer summary supplied" even when the structured data was complete.
 """
 
 from __future__ import annotations
@@ -39,7 +45,7 @@ class ReliabilityEngine:
     Subscribe to engine_alert / stagnation and run the full lifecycle.
     """
 
-    VERSION = "1.0.0"
+    VERSION = "1.1.0"
     service_name = "reliability_engine"
 
     def __init__(self, container=None, policy: Optional[AutonomyPolicy] = None):
@@ -175,7 +181,15 @@ class ReliabilityEngine:
                 detail={**gate, "reason": plan.reason},
             )
             self._remember(incident, diagnosis, plan, result)
+
+            # v1.1 — add human-readable summary for the event stream UI.
+            escalation_summary = (
+                f"ESCALATION: {incident.symptom} "
+                f"(cause={diagnosis.probable_cause}, "
+                f"confidence={diagnosis.confidence:.0%})"
+            )
             await self._publish("reliability.escalation", {
+                "summary": escalation_summary,
                 "incident": incident.to_dict(),
                 "diagnosis": diagnosis.to_dict(),
                 "plan": plan.to_dict(),
@@ -201,7 +215,15 @@ class ReliabilityEngine:
                 detail={"reason": "autonomy_level_recommend_only", "plan": plan.to_dict()},
             )
             self._remember(incident, diagnosis, plan, result)
+
+            # v1.1 — add human-readable summary for the event stream UI.
+            recommendation_summary = (
+                f"RECOMMENDATION: {plan.action.value} for "
+                f"{incident.component or incident.source} "
+                f"(risk={plan.risk})"
+            )
             await self._publish("reliability.recommendation", {
+                "summary": recommendation_summary,
                 "incident": incident.to_dict(),
                 "diagnosis": diagnosis.to_dict(),
                 "plan": plan.to_dict(),
@@ -233,7 +255,16 @@ class ReliabilityEngine:
         # 7. Memory
         self._remember(incident, diagnosis, plan, result)
 
+        # v1.1 — add human-readable summary for the event stream UI.
+        outcome_summary = (
+            f"{plan.action.value} on {incident.component or incident.source}: "
+            f"{result.status}"
+        )
+        if diagnosis.probable_cause:
+            outcome_summary += f" — {diagnosis.probable_cause}"
+
         await self._publish("reliability.outcome", {
+            "summary": outcome_summary,
             "incident": incident.to_dict(),
             "diagnosis": diagnosis.to_dict(),
             "plan": plan.to_dict(),
