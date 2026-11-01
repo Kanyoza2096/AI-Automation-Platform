@@ -25,9 +25,6 @@ logger = logging.getLogger(__name__)
 #
 UNCONFIGURED_CATEGORY = "unconfigured"
 
-# Single honest fallback. Not five generic prompts. If a brand reaches this
-# tier, the right behavior is to surface the gap, not to fill it with
-# content the operator never chose.
 _UNCONFIGURED_TOPICS: list[str] = [
     "This brand has no topic source configured; add topic_direction, "
     "custom_topics, brand_config.fallback_topics, or Knowledge Base entries.",
@@ -38,21 +35,6 @@ _UNCONFIGURED_TOPICS: list[str] = [
 # TOPIC OUTPUT VALIDATION
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# generate_from_direction() is the ONLY tier that produces an arbitrary
-# string as a topic — every other tier returns a human-curated value. That
-# makes it the single uncontrolled-input door into the pipeline. An 8B model
-# at temperature 0.9 with max_tokens=40 was observed echoing the prompt's
-# own instruction text back as the "topic" and truncating it mid-word:
-#
-#   'Choosing the axis "infrastructure" at random, here is a topic:  '
-#   'Kubernetes Cluster Costs Outstrip Ex'
-#
-# That string reached the content generator, which — being handed a
-# non-topic — regressed to a generic listicle. This block rejects
-# instruction-echo and truncation artifacts before they can be returned.
-#
-# _TOPIC_LEAK_MARKERS: substrings that only appear when the model is
-# narrating its compliance rather than complying. Case-insensitive.
 _TOPIC_LEAK_MARKERS = (
     "here is a topic",
     "here's a topic",
@@ -78,31 +60,14 @@ _TOPIC_LEAK_MARKERS = (
     "recent topics",
 )
 
-# A topic must be between these bounds (characters). 3 is the shortest
-# plausible real topic ("AI", "Go"); 120 is generous but bounded.
 _TOPIC_MIN_LEN = 3
 _TOPIC_MAX_LEN = 120
-
-# The number of words the prompt asks for. Used to catch runaway output
-# that survived the leak check but is clearly not a 3-8 word topic.
 _TOPIC_MIN_WORDS = 1
 _TOPIC_MAX_WORDS = 12
 
 
 def _is_plausible_topic(candidate: str) -> tuple[bool, str]:
-    """Return (ok, reason). ok=False means: do not use this as a topic.
-
-    Deliberately conservative and observable. Catches:
-      - empty / too-short / too-long output
-      - instruction-echo (the model narrating its task)
-      - truncation (ends mid-word: last token has no boundary and is long,
-        or the string ends on a dangling preposition/conjunction)
-      - list/markdown artifacts (the model returning multiple lines or
-        bullets when asked for one line)
-
-    Does NOT attempt semantic quality judgment — that is the content
-    engine's LLM judge, a separate layer. This only guards the door.
-    """
+    """Return (ok, reason). ok=False means: do not use this as a topic."""
     if not candidate:
         return False, "empty"
 
@@ -112,34 +77,25 @@ def _is_plausible_topic(candidate: str) -> tuple[bool, str]:
     if len(text) > _TOPIC_MAX_LEN:
         return False, f"too_long:{len(text)}"
 
-    # Instruction echo: the model paraphrased the prompt.
     low = text.lower()
     for marker in _TOPIC_LEAK_MARKERS:
         if marker in low:
             return False, f"instruction_leak:{marker}"
 
-    # Multi-line / bullet output: asked for one line, got a structure.
     if "\n" in text:
         return False, "multiline"
     if text.lstrip().startswith(("-", "*", "•", "1.", "2.", "3.")):
         return False, "looks_like_list_item"
 
-    # Word-count sanity. A real 3-8 word topic, generously bounded.
     words = text.split()
     if len(words) < _TOPIC_MIN_WORDS:
         return False, "no_words"
     if len(words) > _TOPIC_MAX_WORDS:
         return False, f"too_many_words:{len(words)}"
 
-    # Truncation heuristics.
-    # (a) The last token is suspiciously long — typical of a mid-word cut
-    #     ("Ex", "Infrastructur", "Kubernete"). Real topic-final words are
-    #     usually short; a 15+ char final token with no following space is
-    #     almost always truncation.
     last_token = words[-1].strip("\"'.,;:!?()[]")
     if len(last_token) >= 15:
         return False, f"last_token_suspicious:{len(last_token)}"
-    # (b) Ends on a dangling function word — a cut mid-phrase.
     dangling = {"and", "or", "the", "a", "an", "of", "to", "in", "on",
                 "for", "with", "vs", "versus", "from", "by", "at"}
     if last_token.lower() in dangling:
@@ -149,44 +105,27 @@ def _is_plausible_topic(candidate: str) -> tuple[bool, str]:
 
 
 def _clean_topic_text(raw: str) -> str:
-    """Normalize a raw model output into a candidate topic string.
-
-    Kept narrow on purpose: strip wrappers, collapse whitespace, drop a
-    single trailing period. Does NOT try to salvage a leaked string —
-    _is_plausible_topic rejects those outright.
-    """
+    """Normalize a raw model output into a candidate topic string."""
     text = str(raw or "")
-    # Strip common wrappers the model adds despite instructions.
     text = text.strip()
     for wrapper in ('"', "'", "`", "**", "*"):
         if text.startswith(wrapper) and text.endswith(wrapper) and len(text) > len(wrapper):
             text = text[len(wrapper):-len(wrapper)].strip()
-    # Collapse internal whitespace/newlines to single spaces.
     text = " ".join(text.split())
-    # Drop a single trailing sentence-period; keep internal punctuation.
     if text.endswith(".") and not text.endswith(".."):
         text = text[:-1].rstrip()
     return text.strip()
 
 
 def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optional[dict[str, list[str]]]:
-    """
-    Query the brand's Knowledge Base and build topics from it.
-
-    Generates both direct topics (from titles) and comparison-style topics
-    (from related entries) for brands that use comparison format.
-
-    Returns None if no KB data is available.
-    """
+    """Query the brand's Knowledge Base and build topics from it."""
     if not brand or not getattr(brand, 'id', None):
         return None
-
     if knowledge_repo is None:
         return None
 
     try:
         entries = knowledge_repo.find_by_brand(brand.id)
-
         if not entries:
             logger.info(
                 "TopicSelector: No KB entries for brand '%s' (id=%s)",
@@ -195,13 +134,10 @@ def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optiona
             return None
 
         kb_categories: dict[str, list[str]] = {}
-
         for entry in entries:
             cat = getattr(entry, 'doc_type', None) or 'general'
             title = getattr(entry, 'title', None) or ''
             content = getattr(entry, 'content', None) or ''
-
-            # Use title as the primary topic
             if title.strip():
                 topic = title.strip()
             elif content.strip():
@@ -209,15 +145,12 @@ def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optiona
                 topic = first_sentence[:100] if len(first_sentence) > 100 else first_sentence
             else:
                 continue
-
             cat_display = cat.replace('_', ' ').title()
             if cat_display not in kb_categories:
                 kb_categories[cat_display] = []
             if topic not in kb_categories[cat_display]:
                 kb_categories[cat_display].append(topic)
 
-        # Generate comparison topics from related entries
-        # (useful for professional/technical brands)
         for cat_name, topics in list(kb_categories.items()):
             if len(topics) >= 2:
                 for i in range(len(topics) - 1):
@@ -233,13 +166,11 @@ def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optiona
                 total, len(kb_categories), getattr(brand, 'name', 'unknown'),
             )
             return kb_categories
-
     except Exception as e:
         logger.warning(
             "TopicSelector: KB query failed for brand '%s': %s",
             getattr(brand, 'name', 'unknown'), e,
         )
-
     return None
 
 
@@ -284,30 +215,12 @@ def _categories_from_brand_config(brand) -> Optional[dict[str, list[str]]]:
     return categories or None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Direction-based topic configuration
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Keys the direction-generation path reads off the brand. On the brands table
-# they live as first-class columns (`topic_direction`, `topic_axes`). If those
-# columns aren't populated, we also look in `brand.metadata` under the same
-# keys — a compatibility path for brands created before the columns existed.
 _TOPIC_DIRECTION_KEYS = ("topic_direction",)
 _TOPIC_AXES_KEYS = ("topic_axes",)
 
 
 def _read_topic_config(brand) -> tuple[Optional[str], Optional[dict[str, str]]]:
-    """Read the brand's direction and axes.
-
-    Returns (direction, axes). Either may be None.
-
-    Sources, in order of precedence for each field:
-      1. First-class column on the brand (topic_direction / topic_axes)
-      2. Same key inside brand.metadata (jsonb compatibility path)
-
-    The brand object may be a Pydantic model, a dataclass, or a Supabase row
-    wrapper. Every read is done defensively via getattr and .get(...).
-    """
+    """Read the brand's direction and axes."""
     if brand is None:
         return None, None
 
@@ -340,6 +253,27 @@ def _read_topic_config(brand) -> tuple[Optional[str], Optional[dict[str, str]]]:
     return direction, axes
 
 
+def _infer_axis_from_recent(recent: Optional[list[str]], axes: dict[str, str]) -> Optional[str]:
+    """Return the axis name that the most recent topic appears to be about.
+
+    This is a lightweight heuristic: if any recent topic mentions an axis
+    name (case-insensitive substring), treat that axis as the last-used one.
+    Falls back to None when no match is found — in which case the caller
+    treats the whole axis pool as available.
+    """
+    if not recent or not axes:
+        return None
+    # Check the most recent first — if the immediate predecessor matches an
+    # axis, avoid that axis. If nothing in the recent window matches any
+    # axis, fall back to random over the full pool.
+    for topic in reversed(recent):
+        t_low = str(topic).lower()
+        for axis_name in axes.keys():
+            if str(axis_name).lower() in t_low:
+                return axis_name
+    return None
+
+
 class TopicSelector:
     """
     Selects topics for content generation.
@@ -352,15 +286,15 @@ class TopicSelector:
       5. Platform fallback topics
       6. Unconfigured sentinel (single honest message; callers may skip)
 
-    The direction path is opt-in: it runs when the brand has a
-    topic_direction, and returns None on any failure so the caller can fall
-    through to selection.
-
-    Tier 6 returns a single message and the sentinel category
-    ``UNCONFIGURED_CATEGORY``. Callers that want to refuse publishing an
-    unconfigured brand can check for that category. The pipeline currently
-    publishes whatever this method returns, so the sentinel is a signal,
-    not an enforcement.
+    V2.5 — AXIS-AWARE DIRECTION GENERATION
+      The direction generation path now selects a specific axis from
+      brand.topic_axes before asking the model for a topic. The previous
+      version presented axes as passive context; the model defaulted to
+      the same generic theme every call, producing "spiritual growth is
+      a slow and gentle process" repeatedly. Selecting the axis first,
+      excluding the axis inferred from `recent`, and instructing the
+      model to focus on the chosen axis makes the output vary across
+      calls without asking the model to narrate its choice.
     """
 
     def __init__(
@@ -376,8 +310,6 @@ class TopicSelector:
         self._categories: dict[str, list[str]] = {}
         self._unused: list[str] = []
 
-        # Direction fields, resolved once at construction. Used by
-        # generate_from_direction() and by the caller's mode decision.
         self._topic_direction, self._topic_axes = _read_topic_config(brand)
         if self._topic_direction:
             logger.info(
@@ -387,12 +319,10 @@ class TopicSelector:
                 len(self._topic_axes or {}),
             )
 
-        # 1. Explicit categories passed in
         if categories is not None:
             self._categories = categories
             return
 
-        # 2. Brand has custom_topics configured
         if brand and getattr(brand, 'custom_topics', None):
             if isinstance(brand.custom_topics, dict) and brand.custom_topics:
                 self._categories = brand.custom_topics
@@ -402,7 +332,6 @@ class TopicSelector:
                 )
                 return
 
-        # 3. brand_config.fallback_topics / keywords (Supabase via runtime_config)
         bc = _categories_from_brand_config(brand)
         if bc:
             self._categories = bc
@@ -413,13 +342,11 @@ class TopicSelector:
             )
             return
 
-        # 4. Query Knowledge Base for this brand
         kb_categories = _build_categories_from_knowledge_base(brand, knowledge_repo)
         if kb_categories:
             self._categories = kb_categories
             return
 
-        # 5. Platform safe defaults (avoid empty selector / generic only path)
         try:
             from core.brand_content_config import get_fallback_topics
             brand_id = str(getattr(brand, "id", None) or getattr(brand, "name", None) or "default")
@@ -436,9 +363,6 @@ class TopicSelector:
         except Exception as fb_exc:
             logger.debug("TopicSelector platform fallback failed: %s", fb_exc)
 
-        # 6. Unconfigured sentinel. This is not a topic list — it is a signal
-        # that the brand has not been set up. Log loudly so it shows up in
-        # fleet diagnostics, and mark the category so callers can skip.
         logger.error(
             "TopicSelector: Brand '%s' (id=%s) has no configured topic source. "
             "Add one of: topic_direction, custom_topics, "
@@ -455,7 +379,6 @@ class TopicSelector:
 
     @property
     def has_direction(self) -> bool:
-        """True when the brand has a topic_direction set."""
         return bool(self._topic_direction)
 
     def generate_from_direction(
@@ -466,38 +389,9 @@ class TopicSelector:
     ) -> Optional[str]:
         """Generate one topic from the brand's direction using the AI fabric.
 
-        Returns None when:
-          - the brand has no topic_direction
-          - the AI fabric is unavailable
-          - the AI returns no usable text
-          - the AI returns text that fails _is_plausible_topic (instruction
-            echo, truncation, multi-line structure)
-
-        Callers should fall through to selection (pick()) when this returns
-        None. The method never raises.
-
-        Changes vs prior version (root-cause fix for the leaked-topic bug):
-          - temperature 0.9 → 0.3. This is an extraction task ("return one
-            topic"), not creative writing. High temperature raised the
-            probability of preamble-style continuations.
-          - max_tokens 40 → 120. 40 was too small to fit the axes preamble
-            plus a topic, so the model spent the budget narrating and the
-            actual topic was cut mid-word at the token limit. 120 gives
-            room to comply, so truncation becomes *detectable* by the
-            validator instead of silent.
-          - The prompt no longer asks the model to narrate its axis
-            selection. The axes are presented as context; the instruction
-            is a single unambiguous output line. "Choose ONE axis at
-            random, then generate a topic under it" invited a two-step
-            answer and a small model resolved the tension by narrating.
-          - Added _is_plausible_topic() rejection. A leaked string is
-            treated as a generation failure and returns None, so the
-            caller falls through to a configured topic rather than
-            publishing a post about the prompt.
-          - Length bound lowered 120 → _TOPIC_MAX_LEN and applied only to
-            candidates that already passed validation. The old
-            unconditional 120-char slice could mask a leak by truncating
-            it further; validation runs on the full candidate first.
+        V2.5 — Selects an axis first, then asks the model for a topic on that
+        axis. This eliminates the "same theme every post" bug that occurred
+        when axes were presented as passive context.
         """
         direction = self._topic_direction
         if not direction:
@@ -511,17 +405,33 @@ class TopicSelector:
 
         axes = self._topic_axes or {}
 
-        # Axes are CONTEXT, not a task. Present them as descriptive areas;
-        # do not ask the model to "pick one at random and generate under
-        # it" — that instruction is what produced the echoed preamble.
+        # ── V2.5 — Select an axis explicitly ─────────────────────────
+        # Exclude the axis that the most recent topic appears to be about.
+        # If no recent topic maps to an axis, treat all axes as available.
+        selected_axis_name: Optional[str] = None
+        selected_axis_desc: Optional[str] = None
         axes_block = ""
+
         if axes:
-            axes_lines = "\n".join(
-                f"- {name}: {desc}" for name, desc in axes.items()
-            )
+            recent_axis = _infer_axis_from_recent(recent, axes)
+            available = [n for n in axes.keys() if n != recent_axis]
+            if not available:
+                available = list(axes.keys())
+            selected_axis_name = random.choice(available)
+            selected_axis_desc = str(axes[selected_axis_name] or "")
+
             axes_block = (
-                "The brand's thematic areas:\n"
-                f"{axes_lines}\n\n"
+                f"Focus this topic on the axis: {selected_axis_name}\n"
+                f"({selected_axis_desc})\n\n"
+            )
+
+            logger.info(
+                "TopicSelector: axis='%s' chosen (recent_axis=%s, pool=%d) "
+                "for brand='%s'",
+                selected_axis_name,
+                recent_axis or "none",
+                len(axes),
+                getattr(self.brand, "name", "unknown"),
             )
 
         recent_block = ""
@@ -538,10 +448,10 @@ class TopicSelector:
             f"Brand voice and direction:\n{direction}\n\n"
             f"{axes_block}"
             f"{recent_block}"
-            f"Output exactly one line: a single topic of 3 to 8 words "
-            f"that fits this brand. Be specific. No preamble, no quotes, "
-            f"no explanation, no trailing punctuation, no mention of axes "
-            f"or instructions."
+            f"Output exactly one line: a single topic of 3 to 8 words that "
+            f"fits this brand and the axis above. Be specific to that axis. "
+            f"No preamble, no quotes, no explanation, no trailing punctuation, "
+            f"no mention of axes or instructions."
         )
 
         try:
@@ -573,39 +483,35 @@ class TopicSelector:
 
         ok, reason = _is_plausible_topic(candidate)
         if not ok:
-            # A leaked/truncated/structured string is a generation failure,
-            # not a topic. Log with enough context to diagnose the model,
-            # and return None so the caller falls through to pick().
             logger.warning(
                 "Direction generation: rejected candidate (%s): raw=%r "
-                "provider=%s model=%s",
+                "provider=%s model=%s axis=%s",
                 reason,
                 raw[:160],
                 getattr(result, "provider", "unknown"),
                 getattr(result, "model", "unknown"),
+                selected_axis_name or "none",
             )
             return None
 
-        # Bound the length of a *validated* topic (belt-and-braces; the
-        # validator already enforces _TOPIC_MAX_LEN).
         if len(candidate) > _TOPIC_MAX_LEN:
             candidate = candidate[:_TOPIC_MAX_LEN].rstrip()
 
         logger.info(
-            "TopicSelector: Direction-generated topic='%s' provider=%s model=%s",
+            "TopicSelector: Direction-generated topic='%s' axis='%s' "
+            "provider=%s model=%s",
             candidate[:80],
+            selected_axis_name or "none",
             getattr(result, "provider", "unknown"),
             getattr(result, "model", "unknown"),
         )
         return candidate
 
     # ------------------------------------------------------------------
-    # Selection (existing behavior, unchanged)
+    # Selection (unchanged)
     # ------------------------------------------------------------------
 
     def pick(self, category: Optional[str] = None) -> tuple[str, str]:
-        """Return (topic, category). Returns the unconfigured sentinel when
-        the brand has no topic source at all."""
         with self._lock:
             if not self._categories:
                 logger.error(
@@ -633,11 +539,9 @@ class TopicSelector:
         return self._unused.pop()
 
     def has_topics(self) -> bool:
-        """Check if this selector has any topics available."""
         return len(self._categories) > 0
 
     def is_configured(self) -> bool:
-        """True when the selector has a real topic source, not the sentinel."""
         return (
             bool(self._categories)
             and UNCONFIGURED_CATEGORY not in self._categories
