@@ -2,55 +2,35 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V2.4 — TOPIC AXIS ROTATION + LENGTH FLOOR:
+V2.6 — KB-DRIVEN TOPIC AXIS ROTATION + LENGTH FLOOR:
 
-  1. TOPIC AXES. If the brand defines `topic_axes` (a dict of
-     axis_name -> description), build_post_prompt() selects one axis per
-     post, preferring any axis other than `last_used_axis`, and instructs
-     the model to write about that axis only. The selected axis is stored
-     on `self.last_used_axis` so the caller can record it and pass it back
-     on the next generation. Brands without `topic_axes` are unaffected.
+  1. TOPIC AXES. The axis pool is derived from the themes present in the
+     brand's knowledge base. `brand.topic_axes` (axis_name -> description),
+     when set, acts as a priority hint: axes that also exist in the KB are
+     preferred. build_post_prompt() selects one axis per post, preferring
+     any axis other than `last_used_axis`, and instructs the model to write
+     about that axis only. The selected axis is stored on
+     `self.last_used_axis` so the caller can record it and pass it back on
+     the next generation. Brands with neither KB themes nor topic_axes are
+     unaffected. KB lookup fails soft: an outage means no KB axes, never a
+     crashed generation.
 
-  2. LENGTH FLOOR. Both the structured and prose length blocks now state
-     a 60-word minimum. The old "a shorter caption is always better"
-     escape hatch is removed; it produced 30-word status updates.
+  2. LENGTH FLOOR. Both the structured and prose length blocks state a
+     60-word minimum. The old "a shorter caption is always better" escape
+     hatch is removed; it produced 30-word status updates.
 
-V2.3 (2026-10-27) — HASHTAG POLICY + TITLE-OPTIONAL:
+V2.3 — HASHTAG POLICY + TITLE-OPTIONAL:
+  - Hashtags are no longer requested from the model; the publishing layer
+    (CaptionBuilder) appends the brand's configured hashtags.
+  - Title is optional. Facebook/Twitter/Instagram/WhatsApp captions have no
+    title; LinkedIn/blog may include one.
 
-  Two changes to how the pipeline produces content shape:
-
-  1. HASHTAGS ARE NO LONGER REQUESTED FROM THE MODEL.
-     The model used to be asked for 3-8 hashtags. On Facebook, Twitter/X,
-     WhatsApp, hashtags do not drive discovery — the platforms deprecated
-     hashtag-based discovery years ago. Instagram is the exception, but
-     the pipeline doesn't target it. Producing hashtags from the model
-     meant brand hashtags were either overridden or dropped (never
-     merged consistently), and the model's topic tags were often generic
-     (#technology, #innovation) or spammy (#tech, #life, #blessed).
-     Now: the publishing layer (CaptionBuilder) appends the brand's
-     configured hashtags. The prompt explicitly forbids a "hashtags"
-     field. This eliminates wasted tokens, generic tags, and the merge
-     problem entirely.
-
-  2. TITLE IS OPTIONAL (was required).
-     The TechPost schema previously required a 4-15 word title on every
-     post. That title-only shape is a LinkedIn/blog convention. Facebook,
-     Twitter/X, Instagram, and WhatsApp captions have no title — the
-     first sentence IS the hook. Requiring a title forced the model to
-     produce LinkedIn-essay structure regardless of the target platform,
-     which is the exact failure the CONTENT_QUALITY_CONTRACT was written
-     to prevent. Now: title is optional, and the platform contract
-     decides whether to include one. Facebook/Twitter/Instagram/WhatsApp
-     → no title. LinkedIn/blog → title OK if the model wants to add one.
-
-V2.2 (2026-10-24) — MERGED CONTRACT + CHARTER + TRUNCATION-AWARE LENGTH:
-  (unchanged from V2.2 — see full history in previous version)
-
-V2.1 (2026-10-02) — BRAND CHARTER WIRING (preserved).
-V2.0 (2026-10-02) — VOICE, SUBSTANCE, COMPLETENESS CONTRACT (preserved).
-V1.9 (2026-10-02) — PLAIN-TEXT OUTPUT (preserved).
-V1.8 (2026-10-01) — STRUCTURED-OUTPUT SUPPORT (preserved).
-V1.7 (2026-09-28) — PERMANENT DESIGN (preserved).
+V2.2 — MERGED CONTRACT + CHARTER + TRUNCATION-AWARE LENGTH (preserved).
+V2.1 — BRAND CHARTER WIRING (preserved).
+V2.0 — VOICE, SUBSTANCE, COMPLETENESS CONTRACT (preserved).
+V1.9 — PLAIN-TEXT OUTPUT (preserved).
+V1.8 — STRUCTURED-OUTPUT SUPPORT (preserved).
+V1.7 — PERMANENT DESIGN (preserved).
 """
 
 from __future__ import annotations
@@ -72,7 +52,7 @@ logger = logging.getLogger("kanyoza.services.prompt_builder")
 # Structured-output contract — SINGLE SOURCE OF TRUTH
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# V2.3 — Only "caption" is required. Title is optional (platform-dependent).
+# Only "caption" is required. Title is optional (platform-dependent).
 # Hashtags are NOT requested from the model. See module docstring.
 #
 POST_SCHEMA_REQUIRED_KEYS: tuple[str, ...] = ("caption",)
@@ -291,11 +271,8 @@ lines between paragraphs and full capitalization for emphasis.
 # Platform contracts — length, structure, hashtags, opening, emoji, formatting
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# V2.3 — Hashtag guidance relaxed. Only Instagram and LinkedIn mention
-# hashtag counts at all (Instagram is the one platform where they still
-# matter; LinkedIn mentions them as branding). Facebook/Twitter/WhatsApp
-# contracts no longer instruct the model to produce hashtags — the
-# publishing layer handles them.
+# Hashtag guidance: the publishing layer appends brand hashtags on every
+# platform that uses them. No contract asks the model to produce hashtags.
 #
 _LINKEDIN_CONTRACT = """
 PLATFORM CONTRACT — LinkedIn.
@@ -400,14 +377,19 @@ _DEFAULT_PLATFORM_CONTRACT = _FACEBOOK_CONTRACT
 def resolve_platform_contract(platform: Optional[str]) -> str:
     """Return the platform contract that matches the target channel.
 
-    V2.3 — Default is now Facebook (was LinkedIn). The primary use case
-    for the platform is social content, and Facebook's constraints are
-    the safest default for an unspecified social channel. Brands that
-    target LinkedIn set brand.platform='linkedin' and get the LinkedIn
-    contract explicitly.
+    Default is Facebook. The primary use case for the platform is social
+    content, and Facebook's constraints are the safest default for an
+    unspecified social channel. Brands that target LinkedIn set
+    brand.platform='linkedin' and get the LinkedIn contract explicitly.
     """
     key = (platform or "").strip().lower()
     return PLATFORM_CONTRACTS.get(key, _DEFAULT_PLATFORM_CONTRACT)
+
+
+def _contract_heading(contract: str) -> str:
+    """First line of a platform contract, without the leading '- '."""
+    first_line = contract.splitlines()[0] if contract else ""
+    return first_line.lstrip("- ").strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -416,10 +398,8 @@ def resolve_platform_contract(platform: Optional[str]) -> str:
 
 _STYLE_REGISTRY_PATH = Path(__file__).parent.parent / "config" / "content_styles.yaml"
 
-# V2.3 — Fallback guide rewritten from a list of don'ts to a description
-# of what to produce. Models follow positive instructions much more
-# reliably than negative ones; the previous version listed only what to
-# avoid, so the model fell back to its default voice (LinkedIn-inflected).
+# Fallback guide is written as a description of what to produce rather than
+# a list of don'ts. Models follow positive instructions more reliably.
 _SAFE_FALLBACK_GUIDE = """
 Content Style: CONVERSATIONAL
 
@@ -501,7 +481,7 @@ class StyleRegistry:
                 return guide.strip()
         return None
 
-    def infer_style_for(self, brand: "Brand") -> str:
+    def infer_style_for(self, brand: Brand) -> str:
         explicit = getattr(brand, "style_category", None)
         if explicit and self.get(explicit):
             return explicit.strip().lower()
@@ -536,7 +516,7 @@ class StyleRegistry:
             return best_key
         return "general"
 
-    def resolve_for_brand(self, brand: "Brand") -> tuple[str, str]:
+    def resolve_for_brand(self, brand: Brand) -> tuple[str, str]:
         """Return (guide, source_label).
 
         source_label is one of: 'custom', 'registry:<key>', 'fallback'.
@@ -551,7 +531,7 @@ class StyleRegistry:
             return guide, f"registry:{key}"
         return _SAFE_FALLBACK_GUIDE.strip(), "fallback"
 
-    def guide_for_brand(self, brand: "Brand") -> str:
+    def guide_for_brand(self, brand: Brand) -> str:
         """Backward-compatible: returns just the guide text."""
         guide, _ = self.resolve_for_brand(brand)
         return guide
@@ -569,6 +549,30 @@ def reload_style_registry() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Knowledge-base theme lookup (module level, used by topic-axis selection)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _get_kb_themes(brand: Brand) -> Dict[str, str]:
+    """Return {theme: description} from the brand's knowledge base.
+
+    Fails soft: if the KB service is unavailable or raises, returns {} so
+    post generation falls back to brand.topic_axes (or no axis) instead of
+    crashing.
+    """
+    try:
+        from services.knowledge_base import get_brand_themes
+
+        themes = get_brand_themes(
+            brand_id=getattr(brand, "id", None),
+            workspace_id=getattr(brand, "workspace_id", None),
+        )
+        return dict(themes) if themes else {}
+    except Exception as exc:
+        logger.warning("KB theme lookup failed, continuing without: %s", exc)
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # PromptBuilder
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -579,9 +583,11 @@ class PromptBuilder:
 
     def __init__(self, style_registry: Optional[StyleRegistry] = None):
         self._registry = style_registry or _style_registry
-        # V2.4 — set during build_post_prompt; caller reads it after to
+        # Set during build_post_prompt; the caller reads it afterwards to
         # record the axis used for this post so the next generation rotates.
         self.last_used_axis: Optional[str] = None
+
+    # ── Health ────────────────────────────────────────────────────────
 
     def health_check(self) -> dict:
         try:
@@ -612,19 +618,19 @@ class PromptBuilder:
     # ── Defaults ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _default_brand() -> "Brand":
+    def _default_brand() -> Brand:
         from models.brand import Brand as _Brand
         return _Brand.create_default("default")
 
     @staticmethod
-    def _default_ai_profile() -> "AIProfile":
+    def _default_ai_profile() -> AIProfile:
         from models.ai_profile import AIProfile as _AIProfile
         return _AIProfile.create_default("default")
 
-    # ── Brand charter helper ──────────────────────────────────────────
+    # ── Shared helpers ────────────────────────────────────────────────
 
     @staticmethod
-    def _brand_charter_block(brand: "Brand") -> str:
+    def _brand_charter_block(brand: Brand) -> str:
         """Return a formatted brand voice/direction block, or "".
 
         brand.topic_direction is a charter: subject matter, voice, and
@@ -647,29 +653,67 @@ class PromptBuilder:
             f"{direction.strip()}\n"
         )
 
-    # ── V2.4 — Topic axis selection ──────────────────────────────────
+    @staticmethod
+    def _brand_context_block(brand: Brand) -> str:
+        """Render the BRAND CONTEXT section body."""
+        lines = [
+            f"Brand Tone: {brand.tone}",
+            f"Brand Language: {brand.language}",
+        ]
+        if getattr(brand, "hashtags", None):
+            lines.append(
+                "Default Hashtags (appended by publishing layer): "
+                f"{brand.formatted_hashtags}"
+            )
+        style_category = getattr(brand, "style_category", None)
+        if style_category:
+            lines.append(f"Style Category: {style_category}")
+        return "\n".join(lines) + "\n"
+
+    # ── Topic axis selection (KB-driven) ─────────────────────────────
 
     @staticmethod
     def _select_topic_axis(
-        brand: "Brand",
+        brand: Brand,
         last_used_axis: Optional[str],
     ) -> tuple[Optional[str], Optional[str]]:
-        """Select a topic axis, preferring one not used in the last post.
+        """Select a topic axis for this post.
 
-        Returns (axis_name, axis_description) or (None, None) if the brand
-        has no topic_axes configured.
+        The pool comes from the themes in the brand's knowledge base.
+        brand.topic_axes, when populated, is a priority hint.
+
+        Priority:
+          1. brand.topic_axes that also exist in the KB.
+          2. Every theme in the KB.
+          3. brand.topic_axes alone (KB empty or unavailable).
+        An axis other than last_used_axis is always preferred when the
+        pool has more than one entry.
+
+        Returns (axis_name, description) or (None, None).
         """
-        topic_axes = getattr(brand, "topic_axes", None)
-        if not isinstance(topic_axes, dict) or not topic_axes:
-            return None, None
+        kb_themes = _get_kb_themes(brand)
+        brand_axes: Mapping[str, Any] = getattr(brand, "topic_axes", None) or {}
 
-        available = [k for k in topic_axes.keys() if k != last_used_axis]
-        if not available:
-            available = list(topic_axes.keys())
+        def pick(pool: List[str]) -> str:
+            fresh = [k for k in pool if k != last_used_axis]
+            return random.choice(fresh or pool)
 
-        selected_name = random.choice(available)
-        selected_desc = str(topic_axes.get(selected_name) or "")
-        return selected_name, selected_desc
+        if brand_axes and kb_themes:
+            overlapping = [k for k in brand_axes if k in kb_themes]
+            if overlapping:
+                selected = pick(overlapping)
+                description = brand_axes.get(selected) or kb_themes.get(selected) or ""
+                return selected, str(description)
+
+        if kb_themes:
+            selected = pick(list(kb_themes.keys()))
+            return selected, str(kb_themes.get(selected) or "")
+
+        if brand_axes:
+            selected = pick(list(brand_axes.keys()))
+            return selected, str(brand_axes.get(selected) or "")
+
+        return None, None
 
     @staticmethod
     def _axis_block(axis_name: Optional[str], axis_description: Optional[str]) -> str:
@@ -689,8 +733,8 @@ class PromptBuilder:
 
     def build_post_prompt(
         self,
-        brand: Optional["Brand"] = None,
-        ai_profile: Optional["AIProfile"] = None,
+        brand: Optional[Brand] = None,
+        ai_profile: Optional[AIProfile] = None,
         topic: Optional[str] = None,
         knowledge_context: Optional[str] = None,
         structured: bool = False,
@@ -708,13 +752,12 @@ class PromptBuilder:
         `platform` selects the platform contract. Resolution order:
           1. Explicit argument.
           2. brand.platform attribute.
-          3. Facebook default (V2.3).
+          3. Facebook default.
 
-        `last_used_axis` (V2.4) is the topic axis used for the previous
-        post. If the brand defines `topic_axes`, a different axis is
-        preferred. The axis chosen for THIS prompt is left on
-        `self.last_used_axis` for the caller to record; it is None when
-        the brand has no axes.
+        `last_used_axis` is the topic axis used for the previous post.
+        A different axis is preferred when one is available. The axis
+        chosen for THIS prompt is left on `self.last_used_axis` for the
+        caller to record; it is None when no axis could be selected.
         """
         if brand is None:
             brand = self._default_brand()
@@ -729,22 +772,15 @@ class PromptBuilder:
             audience=brand.audience_description,
         )
 
-        brand_context = f"Brand Tone: {brand.tone}\n"
-        brand_context += f"Brand Language: {brand.language}\n"
-        if getattr(brand, "hashtags", None):
-            brand_context += f"Default Hashtags (appended by publishing layer): {brand.formatted_hashtags}\n"
-        style_category = getattr(brand, "style_category", None)
-        if style_category:
-            brand_context += f"Style Category: {style_category}\n"
+        brand_context = self._brand_context_block(brand)
 
-        # V2.4 — Topic axis selection.
+        # Topic axis.
         axis_name, axis_desc = self._select_topic_axis(brand, last_used_axis)
         if axis_name is not None:
             self.last_used_axis = axis_name
             logger.debug(
-                "Topic axis selected: %s (last used: %s, axis pool: %d)",
+                "Topic axis selected: %s (last used: %s)",
                 axis_name, last_used_axis,
-                len(getattr(brand, "topic_axes", {}) or {}),
             )
         axis_str = self._axis_block(axis_name, axis_desc)
 
@@ -772,13 +808,11 @@ class PromptBuilder:
         # Platform contract — the model writes for the target channel.
         resolved_platform = platform or getattr(brand, "platform", None)
         platform_contract = resolve_platform_contract(resolved_platform)
+        platform_heading = _contract_heading(platform_contract)
 
         # Format instruction: structured gets the full JSON schema block,
         # prose gets the plain-text block.
-        if structured:
-            format_instruction = f"\n{POST_SCHEMA_PROMPT_BLOCK}\n"
-        else:
-            format_instruction = f"\n{_PROSE_PLAIN_TEXT_BLOCK}\n"
+        format_block = POST_SCHEMA_PROMPT_BLOCK if structured else _PROSE_PLAIN_TEXT_BLOCK
 
         task = f"""
 Task:
@@ -791,9 +825,11 @@ Write one social media post for {brand.name}.
 --- UNIVERSAL CONTENT QUALITY CONTRACT ---
 {CONTENT_QUALITY_CONTRACT}
 
---- {platform_contract.splitlines()[0].lstrip('- ')} ---
+--- {platform_heading} ---
 {platform_contract}
-{format_instruction}
+
+{format_block}
+
 --- BRAND CONTEXT ---
 {brand_context}
 {knowledge_str}
@@ -816,8 +852,8 @@ Then write the post. Do not include the three decisions in the output.
 
     def build_chat_prompt(
         self,
-        brand: Optional["Brand"] = None,
-        ai_profile: Optional["AIProfile"] = None,
+        brand: Optional[Brand] = None,
+        ai_profile: Optional[AIProfile] = None,
         user_profile: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
