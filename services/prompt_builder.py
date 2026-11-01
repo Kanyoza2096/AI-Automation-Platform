@@ -2,6 +2,19 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
+V2.4 — TOPIC AXIS ROTATION + LENGTH FLOOR:
+
+  1. TOPIC AXES. If the brand defines `topic_axes` (a dict of
+     axis_name -> description), build_post_prompt() selects one axis per
+     post, preferring any axis other than `last_used_axis`, and instructs
+     the model to write about that axis only. The selected axis is stored
+     on `self.last_used_axis` so the caller can record it and pass it back
+     on the next generation. Brands without `topic_axes` are unaffected.
+
+  2. LENGTH FLOOR. Both the structured and prose length blocks now state
+     a 60-word minimum. The old "a shorter caption is always better"
+     escape hatch is removed; it produced 30-word status updates.
+
 V2.3 (2026-10-27) — HASHTAG POLICY + TITLE-OPTIONAL:
 
   Two changes to how the pipeline produces content shape:
@@ -43,6 +56,7 @@ V1.7 (2026-09-28) — PERMANENT DESIGN (preserved).
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Mapping
 
@@ -96,11 +110,14 @@ characters, which is ugly and unprofessional:
 
 LENGTH BUDGET — this is the single most important rule:
 - Aim for 60-120 words. Do not exceed 150.
+- Do not go below 60 words. A 30-word caption is not a caption; it is a
+  status update. If the topic feels thin, that means you have not yet
+  found the specific claim. Find the specific claim, develop it, then
+  write. The word count follows from the specificity, not the other way
+  around.
 - The caption MUST end at a sentence boundary (period, question mark,
   or exclamation point). Do not end mid-sentence, mid-word, or with a
   trailing ellipsis.
-- A shorter complete caption is always better than a longer truncated
-  one. If you are unsure whether you have more to say, stop.
 
 VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT open with "As a [role], I've seen...", "In today's...",
@@ -147,11 +164,13 @@ PLAIN-TEXT RULES — the post is published to a plain-text platform:
 
 LENGTH BUDGET:
 - Aim for 60-120 words. Do not exceed 150.
+- Do not go below 60 words. A 30-word caption is not a caption; it is
+  a status update. If the topic feels thin, that means you have not
+  yet found the specific claim. Find the specific claim, develop it,
+  then write. The word count follows from the specificity.
 - The caption MUST end at a sentence boundary (period, question mark,
   or exclamation point). Do not end mid-sentence, mid-word, or with
   a trailing ellipsis.
-- A shorter complete caption is always better than a longer truncated
-  one. If you are unsure whether you have more to say, stop.
 
 VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT open with "As a [role], I've seen...", "In today's...",
@@ -560,6 +579,9 @@ class PromptBuilder:
 
     def __init__(self, style_registry: Optional[StyleRegistry] = None):
         self._registry = style_registry or _style_registry
+        # V2.4 — set during build_post_prompt; caller reads it after to
+        # record the axis used for this post so the next generation rotates.
+        self.last_used_axis: Optional[str] = None
 
     def health_check(self) -> dict:
         try:
@@ -625,6 +647,44 @@ class PromptBuilder:
             f"{direction.strip()}\n"
         )
 
+    # ── V2.4 — Topic axis selection ──────────────────────────────────
+
+    @staticmethod
+    def _select_topic_axis(
+        brand: "Brand",
+        last_used_axis: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Select a topic axis, preferring one not used in the last post.
+
+        Returns (axis_name, axis_description) or (None, None) if the brand
+        has no topic_axes configured.
+        """
+        topic_axes = getattr(brand, "topic_axes", None)
+        if not isinstance(topic_axes, dict) or not topic_axes:
+            return None, None
+
+        available = [k for k in topic_axes.keys() if k != last_used_axis]
+        if not available:
+            available = list(topic_axes.keys())
+
+        selected_name = random.choice(available)
+        selected_desc = str(topic_axes.get(selected_name) or "")
+        return selected_name, selected_desc
+
+    @staticmethod
+    def _axis_block(axis_name: Optional[str], axis_description: Optional[str]) -> str:
+        """Render the axis instruction block, or "" if no axis was selected."""
+        if not axis_name:
+            return ""
+        desc_line = f"{axis_description}\n" if axis_description else ""
+        return (
+            f'\nTODAY\'S TOPIC AXIS: "{axis_name}"\n'
+            f"{desc_line}\n"
+            f"The post MUST be about this specific axis. Do not blend other "
+            f"axes into it. Do not write a generic statement about the brand. "
+            f"Do not open with a warm-up. Focus entirely on '{axis_name}'.\n"
+        )
+
     # ── Public API ────────────────────────────────────────────────────
 
     def build_post_prompt(
@@ -635,6 +695,7 @@ class PromptBuilder:
         knowledge_context: Optional[str] = None,
         structured: bool = False,
         platform: Optional[str] = None,
+        last_used_axis: Optional[str] = None,
     ) -> str:
         """Build a post-generation prompt.
 
@@ -648,11 +709,20 @@ class PromptBuilder:
           1. Explicit argument.
           2. brand.platform attribute.
           3. Facebook default (V2.3).
+
+        `last_used_axis` (V2.4) is the topic axis used for the previous
+        post. If the brand defines `topic_axes`, a different axis is
+        preferred. The axis chosen for THIS prompt is left on
+        `self.last_used_axis` for the caller to record; it is None when
+        the brand has no axes.
         """
         if brand is None:
             brand = self._default_brand()
         if ai_profile is None:
             ai_profile = self._default_ai_profile()
+
+        # Reset per-call; set below only if an axis was selected.
+        self.last_used_axis = None
 
         system_prompt = ai_profile.build_system_prompt(
             brand_name=brand.name,
@@ -666,6 +736,17 @@ class PromptBuilder:
         style_category = getattr(brand, "style_category", None)
         if style_category:
             brand_context += f"Style Category: {style_category}\n"
+
+        # V2.4 — Topic axis selection.
+        axis_name, axis_desc = self._select_topic_axis(brand, last_used_axis)
+        if axis_name is not None:
+            self.last_used_axis = axis_name
+            logger.debug(
+                "Topic axis selected: %s (last used: %s, axis pool: %d)",
+                axis_name, last_used_axis,
+                len(getattr(brand, "topic_axes", {}) or {}),
+            )
+        axis_str = self._axis_block(axis_name, axis_desc)
 
         # Topic: supplied by the pipeline. If absent, do not invite the
         # model to invent one — that produced duplicate content in an
@@ -703,7 +784,7 @@ class PromptBuilder:
 Task:
 Write one social media post for {brand.name}.
 {topic_str}
-{charter_block}
+{axis_str}{charter_block}
 --- BRAND VOICE GUIDE ---
 {style_guide}
 
@@ -726,9 +807,10 @@ Then write the post. Do not include the three decisions in the output.
 
         logger.debug(
             "Built post prompt: brand=%s style=%s platform=%s registry_version=%s "
-            "structured=%s charter_present=%s",
+            "structured=%s charter_present=%s axis=%s",
             brand.name, style_source, resolved_platform or "facebook",
             self._registry.version, structured, bool(charter_block),
+            axis_name or "none",
         )
         return f"{system_prompt}\n\n{task}"
 
