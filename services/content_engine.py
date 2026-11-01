@@ -1,6 +1,24 @@
 """
 Kanyoza Systems
-Content Engine v15.8 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+Content Engine v15.9 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+
+v15.9 CHANGES — TOPIC AXIS ROTATION:
+
+  Wires prompt_builder V2.4 topic axes into the pipeline.
+
+  - _get_last_used_axis(brand_id): last axis of the most recent PUBLISHED
+    job for the brand (automation_jobs.topic_axis).
+  - _record_used_axis(brand_id, axis): stores the axis on the brand's most
+    recent job so the next generation rotates.
+  - generate_post() fetches the last axis once, passes it to every prompt
+    build, and records the axis of the prompt that produced the post.
+  - The axis is captured into a local variable IMMEDIATELY after each
+    prompt build (no await in between). prompt_builder is a shared
+    singleton, so reading prompt_builder.last_used_axis later would race
+    with concurrent generations.
+  - Prompt caching is bypassed for brands that define topic_axes: a cached
+    prompt would freeze one axis, and a cache hit never calls the builder.
+  - Requires a nullable text column automation_jobs.topic_axis.
 
 v15.8 CHANGES (2026-10-27) — ROUTE TO 70B + HARD LENGTH CAP + FREE-FORM DEFAULT:
 
@@ -291,7 +309,7 @@ class ContentEngine:
         placement_drift = VALID_THEME_VALUES - (_CARD_THEMES | _AI_IMAGE_THEMES)
         return {
             "status": "healthy" if not drift and not placement_drift else "degraded",
-            "version": "15.8.0",
+            "version": "15.9.0",
             "prompt_cache_size": len(self._prompt_cache),
             "redis_available": self._redis is not None,
             "theme_enum_drift": sorted(drift) if drift else None,
@@ -345,6 +363,81 @@ class ContentEngine:
         except Exception:
             pass
         return None
+
+    # ═══════════════════════════════════════════════════════════════
+    # v15.9 — TOPIC AXIS PERSISTENCE
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _get_last_used_axis(self, brand_id: str) -> Optional[str]:
+        """Return the axis used in the most recent published post for this brand."""
+        try:
+            client = self._get_supabase_client()
+            if client is None:
+                return None
+            loop = asyncio.get_event_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: (
+                    client.table("automation_jobs")
+                    .select("topic_axis")
+                    .eq("brand_id", brand_id)
+                    .eq("status", "PUBLISHED")
+                    .not_.is_("topic_axis", "null")
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                ),
+            )
+            if res and res.data and len(res.data) > 0:
+                return res.data[0].get("topic_axis")
+        except Exception as exc:
+            logger.debug("_get_last_used_axis failed: %s", exc)
+        return None
+
+    async def _record_used_axis(self, brand_id: str, axis_name: Optional[str]) -> None:
+        """Record the axis used for this post so the next one rotates."""
+        if not axis_name:
+            return
+        try:
+            client = self._get_supabase_client()
+            if client is None:
+                return
+            loop = asyncio.get_event_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: (
+                    client.table("automation_jobs")
+                    .select("id")
+                    .eq("brand_id", brand_id)
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                ),
+            )
+            if res and res.data and len(res.data) > 0:
+                job_id = res.data[0].get("id")
+                if job_id:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: (
+                            client.table("automation_jobs")
+                            .update({"topic_axis": axis_name})
+                            .eq("id", job_id)
+                            .execute()
+                        ),
+                    )
+        except Exception as exc:
+            logger.debug("_record_used_axis failed: %s", exc)
+
+    @staticmethod
+    def _axis_from_builder() -> Optional[str]:
+        """Read the axis chosen by the most recent build_post_prompt call.
+
+        MUST be called immediately after _build_prompt with no await in
+        between — prompt_builder is a shared singleton.
+        """
+        from services.prompt_builder import prompt_builder
+        return prompt_builder.last_used_axis
 
     # ═══════════════════════════════════════════════════════════════
     # BRAND HELPERS
@@ -694,19 +787,35 @@ class ContentEngine:
         base_prompt: Optional[str],
         *,
         structured: bool = False,
+        last_used_axis: Optional[str] = None,
     ) -> str:
+        from services.prompt_builder import prompt_builder
+
+        # Clear any axis left over from a previous call. If this call
+        # returns early (explicit base_prompt, cache hit) the builder never
+        # runs, and a stale axis would otherwise be recorded against this
+        # post.
+        prompt_builder.last_used_axis = None
+
         if base_prompt:
             return str(base_prompt).strip()
-        cached = self._cached_prompt(brand, ai_profile, topic, structured=structured)
-        if cached:
-            return cached
-        from services.prompt_builder import prompt_builder
+
+        # Do not cache when the brand rotates topic axes: the cache key
+        # does not include the axis, so a cached prompt would freeze one
+        # axis, and a cache hit never calls the builder.
+        use_cache = not getattr(brand, "topic_axes", None)
+        if use_cache:
+            cached = self._cached_prompt(brand, ai_profile, topic, structured=structured)
+            if cached:
+                return cached
+
         prompt = prompt_builder.build_post_prompt(
             brand, ai_profile, topic,
             structured=structured,
             platform=getattr(brand, "platform", None),
+            last_used_axis=last_used_axis,
         )
-        if prompt:
+        if prompt and use_cache:
             self._cache_prompt(brand, ai_profile, topic, prompt, structured=structured)
         return str(prompt or "").strip()
 
@@ -936,6 +1045,12 @@ class ContentEngine:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
+            # v15.9 — Axis rotation state. `axis_used` always holds the axis
+            # of the MOST RECENT prompt build in this call; it is captured
+            # synchronously right after each build (see _axis_from_builder).
+            last_used_axis = await self._get_last_used_axis(brand_id)
+            axis_used: Optional[str] = None
+
             # ═════════════════════════════════════════════════════════
             # v15.6 — PROSE-FIRST PATH FOR FREE-FORM BRANDS
             # ═════════════════════════════════════════════════════════
@@ -950,7 +1065,9 @@ class ContentEngine:
                     topic=selected_topic,
                     base_prompt=base_prompt,
                     structured=False,
+                    last_used_axis=last_used_axis,
                 )
+                axis_used = self._axis_from_builder()
                 if prompt_prose:
                     text_body, intel_mode = self._llm_generate_text(
                         prompt_prose,
@@ -966,6 +1083,8 @@ class ContentEngine:
                             brand_name=brand_name,
                             started=started,
                         )
+                        if isinstance(result, dict) and result.get("publishable"):
+                            await self._record_used_axis(brand_id, axis_used)
                         if isinstance(result, dict):
                             result["intelligence_mode"] = intel_mode
                             result["degraded"] = (
@@ -986,7 +1105,9 @@ class ContentEngine:
                 topic=selected_topic,
                 base_prompt=base_prompt,
                 structured=True,
+                last_used_axis=last_used_axis,
             )
+            axis_used = self._axis_from_builder()
             if not prompt_structured:
                 raise ValueError("Prompt construction returned an empty prompt")
 
@@ -1017,7 +1138,9 @@ class ContentEngine:
                     topic=selected_topic,
                     base_prompt=base_prompt,
                     structured=False,
+                    last_used_axis=last_used_axis,
                 )
+                axis_used = self._axis_from_builder()
                 text_body, intel_mode = self._llm_generate_text(
                     prompt_prose, workspace_id=str(brand_id or "platform"),
                 )
@@ -1031,6 +1154,8 @@ class ContentEngine:
                         brand_name=brand_name,
                         started=started,
                     )
+                    if isinstance(result, dict) and result.get("publishable"):
+                        await self._record_used_axis(brand_id, axis_used)
                     if isinstance(result, dict):
                         result["intelligence_mode"] = intel_mode
                         result["degraded"] = (
@@ -1078,6 +1203,9 @@ class ContentEngine:
                     reason=f"caption_quality: {reason}",
                     caption=caption,
                 )
+
+            # v15.9 — Caption passed the quality gate; record its axis.
+            await self._record_used_axis(brand_id, axis_used)
 
             strategy = self._resolve_visual_strategy(post, brand=brand)
             logger.info(
