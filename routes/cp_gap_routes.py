@@ -117,8 +117,67 @@ async def applications():
 
 
 @router.get("/repos")
-async def repos():
-    return {"ok": True, "repos": [], "source": "none"}
+async def get_repos():
+    """List GitHub repositories visible to the platform operator token.
+
+    Sources in order:
+      1. GitHub adapter (requires GITHUB_TOKEN env var; reads /user/repos)
+      2. Empty list with honest source="none" and an explicit reason
+
+    Workspace-scoped registrations (github_repos table) are not yet
+    implemented; when they are, they should be checked before the adapter.
+    """
+    try:
+        from services.connectors.github_adapter import GitHubAdapter
+        from services.connectors.enterprise_provider_base import ProviderAdapterError
+
+        adapter = GitHubAdapter()
+
+        # The base adapter exposes the token as `_token` (or `token` depending
+        # on the base class implementation). Check both to be defensive.
+        token = getattr(adapter, "_token", None)
+        if token is None:
+            token = getattr(adapter, "token", "")
+
+        if not token:
+            logger.debug("get_repos: GITHUB_TOKEN not configured")
+            return {
+                "ok": True,
+                "repos": [],
+                "source": "none",
+                "message": "GITHUB_TOKEN not configured",
+            }
+
+        repos = adapter.list_repos(per_page=100)
+        if repos:
+            return {
+                "ok": True,
+                "repos": repos,
+                "count": len(repos),
+                "source": "github_adapter",
+            }
+        return {
+            "ok": True,
+            "repos": [],
+            "source": "none",
+            "message": "Token configured but no repos returned",
+        }
+    except ProviderAdapterError as exc:
+        logger.warning("get_repos: GitHub adapter error: %s", exc)
+        return {
+            "ok": False,
+            "repos": [],
+            "source": "github_adapter_error",
+            "error": str(exc),
+        }
+    except Exception as exc:
+        logger.exception("get_repos: unexpected error")
+        return {
+            "ok": False,
+            "repos": [],
+            "source": "error",
+            "error": type(exc).__name__,
+        }
 
 
 
