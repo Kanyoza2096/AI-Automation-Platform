@@ -281,6 +281,97 @@ async def get_ci_runs(repo: Optional[str] = None, limit: int = 30):
             "error": type(exc).__name__,
         }
 
+@router.get("/github/repos/{owner}/{repo}")
+async def get_repo_detail(owner: str, repo: str):
+    """Get detailed repo metadata (language breakdown, stats, default branch, etc.)."""
+    try:
+        from services.connectors.github_adapter import GitHubAdapter
+        from services.connectors.enterprise_provider_base import ProviderAdapterError
+
+        adapter = GitHubAdapter()
+        token = getattr(adapter, "_token", None) or getattr(adapter, "token", "")
+        if not token:
+            return {"ok": False, "source": "none", "error": "GITHUB_TOKEN not configured"}
+
+        data = adapter.get_repository(owner, repo)
+        return {"ok": True, "repo": data, "source": "github_adapter"}
+    except ProviderAdapterError as exc:
+        return {"ok": False, "source": "github_adapter_error", "error": str(exc)}
+    except Exception as exc:
+        return {"ok": False, "source": "error", "error": type(exc).__name__}
+
+
+@router.get("/github/repos/{owner}/{repo}/contents")
+async def get_repo_contents(owner: str, repo: str, path: str = ""):
+    """List files and folders at a given path in a repository.
+
+    Empty path → root directory. Path like "src" → subdirectory.
+    Uses GitHub's /repos/{owner}/{repo}/contents/{path} endpoint.
+    """
+    try:
+        from services.connectors.github_adapter import GitHubAdapter
+        from services.connectors.enterprise_provider_base import ProviderAdapterError
+        import httpx
+
+        adapter = GitHubAdapter()
+        token = getattr(adapter, "_token", None) or getattr(adapter, "token", "")
+        if not token:
+            return {"ok": False, "source": "none", "error": "GITHUB_TOKEN not configured"}
+
+        api_path = f"repos/{owner}/{repo}/contents"
+        if path:
+            api_path = f"{api_path}/{path.lstrip('/')}"
+
+        # Use the adapter's _request helper for authenticated GET
+        code, data, headers = adapter._request("GET", api_path)
+        if code == 404:
+            return {"ok": False, "source": "github_adapter", "error": "path_not_found",
+                    "message": f"Path '{path}' does not exist in {owner}/{repo}"}
+        if code >= 400:
+            return {"ok": False, "source": "github_adapter", "error": f"HTTP {code}"}
+
+        # GitHub returns: array (directory listing) or object (single file)
+        if isinstance(data, list):
+            entries = [
+                {
+                    "name": item.get("name"),
+                    "path": item.get("path"),
+                    "type": item.get("type"),  # "file" | "dir" | "symlink" | "submodule"
+                    "size": item.get("size"),
+                    "sha": item.get("sha"),
+                    "download_url": item.get("download_url"),
+                    "html_url": item.get("html_url"),
+                }
+                for item in data
+            ]
+            # Sort: directories first, then alphabetical
+            entries.sort(key=lambda e: (0 if e["type"] == "dir" else 1, e["name"].lower()))
+            return {"ok": True, "path": path, "type": "directory", "entries": entries,
+                    "count": len(entries), "source": "github_adapter"}
+        elif isinstance(data, dict):
+            # Single file
+            return {
+                "ok": True,
+                "path": path,
+                "type": "file",
+                "file": {
+                    "name": data.get("name"),
+                    "path": data.get("path"),
+                    "size": data.get("size"),
+                    "sha": data.get("sha"),
+                    "download_url": data.get("download_url"),
+                    "html_url": data.get("html_url"),
+                    "content": data.get("content"),         # base64-encoded
+                    "encoding": data.get("encoding"),       # "base64"
+                },
+                "source": "github_adapter",
+            }
+        else:
+            return {"ok": False, "source": "github_adapter", "error": "unexpected_response_shape"}
+    except Exception as exc:
+        logger.exception("get_repo_contents failed")
+        return {"ok": False, "source": "error", "error": type(exc).__name__}
+
 
 
 
