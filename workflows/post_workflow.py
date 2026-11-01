@@ -18,6 +18,25 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.13 — TOPIC AXIS ROTATION, PERSISTED PER JOB:
+
+  prompt_builder V2.4 only ROTATES axes when it is told which axis the
+  previous post used (its `last_used_axis` argument); it keeps no rotation
+  state of its own. This workflow builds the prompt itself and hands it to
+  ContentEngine as `base_prompt`, so ContentEngine's own axis logic is a
+  no-op on this path. The workflow therefore owns the whole cycle:
+
+    1. GenerateContentStep reads the brand's last PUBLISHED axis from
+       automation_jobs (only for brands that define topic_axes) and passes
+       it to build_post_prompt(last_used_axis=...).
+    2. Immediately after the build (no await in between) it copies
+       prompt_builder.last_used_axis into context["topic_axis"].
+    3. PublishStep, on success, writes topic_axis (and topic) onto the
+       automation_jobs row identified by context["job_id"] — the exact job,
+       not "the latest job for the brand".
+
+  Requires a nullable text column automation_jobs.topic_axis.
+
 V1.12 (2026-10-24) — THREE FIXES:
 
   (1) HASHTAG-TAIL FALSE POSITIVE IN _caption_is_well_formed:
@@ -226,6 +245,9 @@ class GenerateContentStep(Step):
       The previous `and knowledge_context` guard meant empty-KB brands
       bypassed the entire V2.2 prompt — brand charter, platform contract,
       and quality contract never reached the model.
+    V1.13 — Topic axis rotation: reads the brand's last published axis,
+      passes it to the builder, and captures the chosen axis into
+      context["topic_axis"] for PublishStep to persist.
     """
     name = "generate_content"
 
@@ -242,9 +264,31 @@ class GenerateContentStep(Step):
         self._ai_profile = ai_profile
         self._prompt_builder = prompt_builder
 
+    async def _fetch_last_used_axis(self) -> str | None:
+        """Last PUBLISHED axis for this brand, or None.
+
+        Only queried for brands that define topic_axes, so brands without
+        axes pay no extra database round trip.
+        """
+        if not getattr(self._brand, "topic_axes", None):
+            return None
+        getter = getattr(self._engine, "_get_last_used_axis", None)
+        if not callable(getter):
+            return None
+        try:
+            brand_id = self._engine._brand_id(self._brand)
+            return await getter(brand_id)
+        except Exception as exc:
+            logger.debug("PostWorkflow: last-axis lookup failed: %s", exc)
+            return None
+
     async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
         knowledge_context = context.get("knowledge_context", "")
+
+        # Reset so a stale axis from an earlier run of this context can
+        # never be persisted against a post that used no axis.
+        context["topic_axis"] = None
 
         base_prompt: str | None = None
         if self._prompt_builder:
@@ -253,18 +297,30 @@ class GenerateContentStep(Step):
                     context.get("platform")
                     or getattr(self._brand, "platform", None)
                 )
+                last_used_axis = await self._fetch_last_used_axis()
+
                 base_prompt = self._prompt_builder.build_post_prompt(
                     brand=self._brand,
                     ai_profile=self._ai_profile,
                     topic=topic,
                     knowledge_context=knowledge_context or None,
                     platform=resolved_platform,
+                    last_used_axis=last_used_axis,
+                )
+                # Capture IMMEDIATELY — build_post_prompt is synchronous and
+                # the builder instance is shared, so nothing may be awaited
+                # between the build and this read.
+                context["topic_axis"] = getattr(
+                    self._prompt_builder, "last_used_axis", None
                 )
                 logger.info(
                     "PostWorkflow: prompt assembled via PromptBuilder "
-                    "(kb_chars=%d, platform=%s) for brand='%s'",
+                    "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
+                    "for brand='%s'",
                     len(knowledge_context or ""),
                     resolved_platform or "linkedin",
+                    context["topic_axis"] or "none",
+                    last_used_axis or "none",
                     self._brand.name,
                 )
             except Exception as exc:
@@ -274,6 +330,7 @@ class GenerateContentStep(Step):
                     exc,
                 )
                 base_prompt = None
+                context["topic_axis"] = None
 
         result = await self._engine.generate_post(
             brand=self._brand,
@@ -523,6 +580,10 @@ class PublishStep(Step):
     V1.11 — Writes post_history on success. The write is best-effort and
     never fails the publish; the post is live and post_history is the
     read model, not the source of truth.
+
+    V1.13 — On success also writes topic_axis / topic onto the
+    automation_jobs row for context["job_id"]. Best-effort, never fails
+    the publish.
     """
     name = "publish"
 
@@ -657,6 +718,10 @@ class PublishStep(Step):
                 provider_post_id=provider_post_id,
             )
 
+            # V1.13 — Persist the axis (and topic) on the exact job row so
+            # the next generation for this brand rotates.
+            await self._record_job_axis(context=context, job_id=job_id)
+
             return publish_result
 
         if is_uncertain:
@@ -703,6 +768,57 @@ class PublishStep(Step):
                 "platform_post_id": provider_post_id,
             },
         )
+
+    async def _record_job_axis(
+        self,
+        *,
+        context: dict[str, Any],
+        job_id: str | None,
+    ) -> None:
+        """Write topic_axis (and topic) onto the automation_jobs row.
+
+        Never raises — the post is already live. A failure is logged at
+        WARNING because a missed write means the next post may repeat the
+        axis.
+        """
+        axis = context.get("topic_axis")
+        topic = context.get("topic")
+        if not job_id or not (axis or topic):
+            return
+
+        update: dict[str, Any] = {}
+        if axis:
+            update["topic_axis"] = axis
+        if topic:
+            update["topic"] = topic
+
+        try:
+            from services.supabase import supabase_service
+            client = supabase_service.service_client or supabase_service.client
+            if client is None:
+                logger.warning(
+                    "PostWorkflow: axis recording skipped — supabase client "
+                    "unavailable (job=%s axis=%s)", job_id, axis,
+                )
+                return
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: (
+                    client.table("automation_jobs")
+                    .update(update)
+                    .eq("id", job_id)
+                    .execute()
+                ),
+            )
+            logger.info(
+                "PostWorkflow: recorded topic_axis='%s' for job=%s",
+                axis or "none", job_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "PostWorkflow: axis recording failed for job=%s axis=%s: %s",
+                job_id, axis, exc,
+            )
 
     async def _write_post_history(
         self,
