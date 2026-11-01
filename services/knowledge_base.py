@@ -1,22 +1,33 @@
 """
-KnowledgeBase Service v3.0 — Per-brand knowledge store with semantic search.
+KnowledgeBase Service v3.1 — Per-brand knowledge store with semantic search.
 
-v3.0 CHANGES:
-  - asyncio.Lock replaces threading.Lock
-  - Async repository calls (offloaded to executor)
-  - All v2.0 features preserved (inverted index, TF-IDF, topic extraction)
+v3.1 CHANGES:
+  - Brand theme lookup (get_brand_themes / aget_brand_themes) drives topic
+    axis rotation. The taxonomy comes from knowledge_entries.metadata.theme,
+    not from a hardcoded list.
+  - Theme cache has a TTL (a script that writes straight to the DB, or a
+    second worker process, can no longer leave it stale forever) and is
+    invalidated on add_document AND remove_document.
+  - Theme query paginates (Supabase returns at most ~1000 rows per request).
+  - asyncio.get_running_loop() replaces the deprecated get_event_loop().
+  - _rebuild_index clears the index even when the brand has no entries left.
+  - _add_to_index no longer double-counts a re-added entry id.
+
+v3.0: asyncio.Lock, async repository calls, inverted index, TF-IDF,
+topic extraction (all preserved).
 """
 
 from __future__ import annotations
 
-import asyncio  # ✅ ADD
+import asyncio
+import logging
 import math
 import re
+import threading
+import time
 import uuid
-import json
-import logging
 from collections import defaultdict
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from models.knowledge_entry import KnowledgeEntry
 from repositories.knowledge_repository import KnowledgeRepository
@@ -25,7 +36,7 @@ logger = logging.getLogger("kanyoza.services.knowledge_base")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# UTILITIES (unchanged — pure functions)
+# UTILITIES (pure functions)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def tokenize(text: str) -> List[str]:
@@ -42,7 +53,7 @@ STOP_WORDS = {
     "you", "he", "she", "they", "them", "their", "our",
     "its", "just", "also", "very", "too", "all", "some",
     "any", "each", "every", "both", "few", "more", "most",
-    "other", "some", "such", "only", "own", "same", "than",
+    "other", "such", "only", "own", "same", "than",
     "about", "after", "before", "between", "during",
     "through", "above", "below", "up", "down", "out",
     "off", "over", "under", "again", "further", "then",
@@ -61,13 +72,127 @@ def _term_similarity(a: str, b: str) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# KNOWLEDGE BASE v3.0 — ASYNC-NATIVE
+# BRAND THEME CACHE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# get_brand_themes() derives the topic-axis rotation pool from the themes
+# actually present in knowledge_entries (metadata.theme). Adding an entry
+# with theme="baptism" adds "baptism" to the pool with no code change.
+#
+_THEMES_CACHE_TTL_SECONDS = 600.0
+_THEMES_PAGE_SIZE = 500
+_THEME_DESCRIPTION_CHARS = 100
+
+# key -> (stored_at_monotonic, themes)
+_BRAND_THEMES_CACHE: Dict[Tuple[str, str], Tuple[float, Dict[str, str]]] = {}
+_BRAND_THEMES_CACHE_LOCK = threading.Lock()
+
+
+def _themes_cache_key(
+    brand_id: Optional[str], workspace_id: Optional[str]
+) -> Tuple[str, str]:
+    return (str(workspace_id or ""), str(brand_id or ""))
+
+
+def get_brand_themes(
+    brand_id: Optional[str], workspace_id: Optional[str]
+) -> Dict[str, str]:
+    """Return {theme: sample_description} for the brand's KB.
+
+    Synchronous and may hit the database on a cache miss. From async code,
+    use aget_brand_themes() so the event loop is not blocked.
+
+    The description is the first ~100 characters of the first entry tagged
+    with that theme (prompt context only). Cached per (workspace, brand)
+    for _THEMES_CACHE_TTL_SECONDS or until invalidate_brand_themes_cache().
+    Fails soft: any error returns {} (and is not cached).
+    """
+    if not workspace_id:
+        return {}
+
+    key = _themes_cache_key(brand_id, workspace_id)
+    now = time.monotonic()
+    with _BRAND_THEMES_CACHE_LOCK:
+        cached = _BRAND_THEMES_CACHE.get(key)
+        if cached is not None and (now - cached[0]) < _THEMES_CACHE_TTL_SECONDS:
+            return dict(cached[1])
+
+    try:
+        from services.supabase import supabase_service
+
+        client = supabase_service.service_client or supabase_service.client
+        if client is None:
+            return {}
+
+        themes: Dict[str, str] = {}
+        offset = 0
+        while True:
+            query = (
+                client.table("knowledge_entries")
+                .select("id, metadata, content")
+                .eq("workspace_id", workspace_id)
+            )
+            if brand_id:
+                query = query.eq("brand_id", brand_id)
+            result = (
+                query.order("id")
+                .range(offset, offset + _THEMES_PAGE_SIZE - 1)
+                .execute()
+            )
+            rows = result.data or []
+
+            for row in rows:
+                meta = row.get("metadata") or {}
+                theme = str(meta.get("theme") or "").strip()
+                if theme and theme not in themes:
+                    themes[theme] = (row.get("content") or "")[
+                        :_THEME_DESCRIPTION_CHARS
+                    ]
+
+            if len(rows) < _THEMES_PAGE_SIZE:
+                break
+            offset += _THEMES_PAGE_SIZE
+
+        with _BRAND_THEMES_CACHE_LOCK:
+            _BRAND_THEMES_CACHE[key] = (time.monotonic(), dict(themes))
+
+        logger.info(
+            "KnowledgeBase: loaded %d distinct themes for brand=%s workspace=%s",
+            len(themes), brand_id or "(workspace)", workspace_id,
+        )
+        return themes
+    except Exception as exc:
+        logger.warning("get_brand_themes failed: %s", exc)
+        return {}
+
+
+async def aget_brand_themes(
+    brand_id: Optional[str], workspace_id: Optional[str]
+) -> Dict[str, str]:
+    """Async wrapper: runs get_brand_themes in the default executor."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, get_brand_themes, brand_id, workspace_id
+    )
+
+
+def invalidate_brand_themes_cache(
+    brand_id: Optional[str], workspace_id: Optional[str]
+) -> None:
+    """Drop the cached themes for one brand (and the workspace-wide entry)."""
+    with _BRAND_THEMES_CACHE_LOCK:
+        _BRAND_THEMES_CACHE.pop(_themes_cache_key(brand_id, workspace_id), None)
+        _BRAND_THEMES_CACHE.pop(_themes_cache_key(None, workspace_id), None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# KNOWLEDGE BASE v3.1 — ASYNC-NATIVE
 # ═══════════════════════════════════════════════════════════════════════════
 
 class KnowledgeBase:
     """Manages brand knowledge entries with TF-IDF semantic search.
 
-    v3.0: asyncio.Lock, async repository calls.
+    Call `await kb.initialize()` after construction to build the index.
     """
 
     def __init__(
@@ -86,35 +211,24 @@ class KnowledgeBase:
         self._doc_tokens: Dict[str, List[str]] = {}
         self._entries: Dict[str, KnowledgeEntry] = {}
 
-        # ✅ Async lock
         self._lock = asyncio.Lock()
 
         self._search_count = 0
         self._index_dirty = False
 
-        # Don't build index in __init__ (needs async)
-        # Call `await kb.initialize()` instead
-
-    # ═══════════════════════════════════════════════════════════════
-    # INITIALIZATION (ASYNC)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Initialization ────────────────────────────────────────────────
 
     async def initialize(self) -> None:
         """Async initialization — builds index from repository."""
         await self._rebuild_index()
 
-    # ═══════════════════════════════════════════════════════════════
-    # INDEX MANAGEMENT (ASYNC)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Index management ──────────────────────────────────────────────
 
     async def _rebuild_index(self) -> None:
-        """Rebuild index from repository (async)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         entries = await loop.run_in_executor(
             None, self.repo.find_by_brand, self.brand_id
         )
-        if not entries:
-            return
 
         async with self._lock:
             self._inverted_index.clear()
@@ -122,7 +236,7 @@ class KnowledgeBase:
             self._entries.clear()
             self._idf_cache.clear()
 
-            for entry in entries:
+            for entry in entries or []:
                 tokens = tokenize(entry.content or "")
                 if not tokens:
                     continue
@@ -148,15 +262,24 @@ class KnowledgeBase:
         )
 
     async def _add_to_index(self, entry: KnowledgeEntry) -> None:
-        """Add document to index (async)."""
         tokens = tokenize(entry.content or "")
         if not tokens:
             return
 
         async with self._lock:
+            # Re-adding an existing id: drop its old postings first.
+            old_tokens = self._doc_tokens.get(entry.id)
+            if old_tokens:
+                for term in set(old_tokens):
+                    postings = self._inverted_index.get(term)
+                    if postings is not None:
+                        postings.discard(entry.id)
+                        if not postings:
+                            del self._inverted_index[term]
+
             self._entries[entry.id] = entry
             self._doc_tokens[entry.id] = tokens
-            self._num_docs += 1
+            self._num_docs = len(self._doc_tokens)
 
             for term in set(tokens):
                 self._inverted_index[term].add(entry.id)
@@ -164,9 +287,7 @@ class KnowledgeBase:
             self._idf_cache.clear()
             self._index_dirty = True
 
-    # ═══════════════════════════════════════════════════════════════
-    # CRUD (ASYNC)
-    # ═══════════════════════════════════════════════════════════════
+    # ── CRUD ──────────────────────────────────────────────────────────
 
     async def add_document(
         self,
@@ -186,9 +307,10 @@ class KnowledgeBase:
             metadata=metadata or {},
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self.repo.save, entry)
         await self._add_to_index(entry)
+        invalidate_brand_themes_cache(self.brand_id, self.workspace_id)
 
         logger.info("KnowledgeBase: added document %s", entry_id)
         return entry
@@ -207,18 +329,17 @@ class KnowledgeBase:
         return entries
 
     async def remove_document(self, entry_id: str) -> bool:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         entry = await loop.run_in_executor(None, self.repo.find_by_id, entry_id)
         if not entry:
             return False
 
         await loop.run_in_executor(None, self.repo.delete, entry_id)
         await self._rebuild_index()
+        invalidate_brand_themes_cache(self.brand_id, self.workspace_id)
         return True
 
-    # ═══════════════════════════════════════════════════════════════
-    # SEARCH (SYNC — CPU-bound, no I/O)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Search ────────────────────────────────────────────────────────
 
     async def search(
         self, query: str, top_k: int = 5
@@ -234,7 +355,7 @@ class KnowledgeBase:
             if self._num_docs == 0:
                 return []
 
-            # Find candidates via inverted index
+            # Candidates via inverted index
             candidate_ids: set = set()
             for token in query_tokens:
                 if token in self._inverted_index:
@@ -309,9 +430,7 @@ class KnowledgeBase:
             results.sort(key=lambda x: x[1], reverse=True)
             return results[:top_k]
 
-    # ═══════════════════════════════════════════════════════════════
-    # TOPICS (SYNC — CPU-bound, no I/O)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Topics ────────────────────────────────────────────────────────
 
     async def extract_topics(self, top_n: int = 10) -> List[Tuple[str, float]]:
         if self._index_dirty:
@@ -321,6 +440,7 @@ class KnowledgeBase:
             all_tokens = [
                 t for tokens in self._doc_tokens.values() for t in tokens
             ]
+            idf_snapshot = dict(self._idf_cache)
 
         if not all_tokens:
             return []
@@ -335,7 +455,7 @@ class KnowledgeBase:
             if len(term) < 4 or term in STOP_WORDS or term.isdigit():
                 continue
             tf_val = count / total
-            idf_val = self._idf_cache.get(term, 0.0)
+            idf_val = idf_snapshot.get(term, 0.0)
             length_bonus = math.log(len(term) + 1)
             scored.append((term, round(tf_val * idf_val * length_bonus, 6)))
 
@@ -344,12 +464,9 @@ class KnowledgeBase:
 
     async def get_topic_suggestions(self, top_n: int = 5) -> List[str]:
         topics = await self.extract_topics(top_n=top_n * 2)
-        # ... (same logic as v2.0)
         return [t for t, _ in topics[:top_n]]
 
-    # ═══════════════════════════════════════════════════════════════
-    # HEALTH & STATS (unchanged)
-    # ═══════════════════════════════════════════════════════════════
+    # ── Health & stats ────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
         return {
@@ -369,3 +486,13 @@ class KnowledgeBase:
         elif stats["index_dirty"]:
             status = "degraded"
         return {"status": status, "stats": stats}
+
+
+__all__ = [
+    "KnowledgeBase",
+    "tokenize",
+    "STOP_WORDS",
+    "get_brand_themes",
+    "aget_brand_themes",
+    "invalidate_brand_themes_cache",
+]
