@@ -3,6 +3,14 @@
 Read operations are available by default. Mutations require allow_mutations=True;
 high-risk workflow dispatch, workflow-run control, and PR merges also require
 allow_high_risk=True and confirm=True at the call site.
+
+v1.1 (2026-11-01):
+  Added list_repos() read method. The /api/v1/repos endpoint previously had
+  no way to enumerate repositories from the adapter — only get_repository()
+  for a known owner/name pair. The stub in routes/cp_gap_routes.py returned
+  a hardcoded empty list because the adapter lacked enumeration capability.
+  This adds the missing method so the endpoint can return real repositories
+  when GITHUB_TOKEN is configured.
 """
 from __future__ import annotations
 
@@ -44,6 +52,46 @@ class GitHubAdapter(EnterpriseProviderAdapter):
     def get_repository(self, owner: str, repo: str) -> dict[str, Any]:
         _, data, _ = self._request("GET", self._repo(owner, repo))
         return data
+
+    def list_repos(self, *, visibility: str = "all",
+                   affiliation: str = "owner,collaborator,organization_member",
+                   per_page: int = 100, page: int = 1, sort: str = "updated",
+                   direction: str = "desc") -> list[dict[str, Any]]:
+        """List repositories visible to the configured token.
+
+        Reads from GitHub's /user/repos endpoint, which returns all repos the
+        authenticated user has access to (owned, collaborator, or via org
+        membership). Read-only — no mutation flag required.
+
+        Args:
+            visibility: "all" | "public" | "private"
+            affiliation: comma-separated list of "owner", "collaborator", "organization_member"
+            per_page: 1-100
+            page: 1-based page number
+            sort: "created" | "updated" | "pushed" | "full_name"
+            direction: "asc" | "desc"
+        """
+        if visibility not in {"all", "public", "private"}:
+            raise ValueError("visibility must be all, public, or private")
+        if not 1 <= per_page <= 100:
+            raise ValueError("per_page must be 1..100")
+        if page < 1:
+            raise ValueError("page must be >= 1")
+        if sort not in {"created", "updated", "pushed", "full_name"}:
+            raise ValueError("invalid sort")
+        if direction not in {"asc", "desc"}:
+            raise ValueError("direction must be asc or desc")
+
+        params: dict[str, Any] = {
+            "visibility": visibility,
+            "affiliation": affiliation,
+            "per_page": per_page,
+            "page": page,
+            "sort": sort,
+            "direction": direction,
+        }
+        _, data, _ = self._request("GET", "user/repos", params=params)
+        return data or []
 
     def list_issues(self, owner: str, repo: str, *, state: str = "open", per_page: int = 30,
                     page: int = 1, labels: Optional[list[str]] = None) -> list[dict[str, Any]]:
@@ -114,8 +162,6 @@ class GitHubAdapter(EnterpriseProviderAdapter):
         try:
             code, _, headers = self._request("POST", f"{self._repo(owner, repo)}/actions/workflows/{workflow_id}/dispatches",
                 json={"ref": ref, "inputs": inputs or {}}, mutation=True)
-            # GitHub returns 204 without a run ID. Acceptance is not a terminal
-            # execution receipt; keep it uncertain until a run is observed.
             return self._receipt(status="uncertain", request_id=headers.get("X-GitHub-Request-Id"),
                 error="Workflow dispatch accepted but run ID is not returned; reconcile workflow runs",
                 metadata={"http_status": code, "workflow_id": workflow_id, "ref": ref, "reconciliation_required": True})
@@ -155,7 +201,6 @@ class GitHubAdapter(EnterpriseProviderAdapter):
 
     def reconcile_workflow(self, owner: str, repo: str, *, workflow_id: str,
                            ref: str, started_after: datetime, per_page: int = 100) -> dict[str, Any]:
-        """Find candidate workflow runs after an ambiguous dispatch; never guesses absence."""
         if started_after.tzinfo is None: started_after = started_after.replace(tzinfo=timezone.utc)
         runs = self.list_workflow_runs(owner, repo, workflow_id=workflow_id, branch=ref, per_page=per_page)
         threshold = started_after.astimezone(timezone.utc)
