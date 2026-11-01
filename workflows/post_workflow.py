@@ -210,6 +210,7 @@ class KnowledgeContextStep(Step):
                 workspace_id=self._brand.workspace_id,
                 repository=self._repo,
             )
+            await kb.initialize()
             results = await kb.search(topic, top_k=3)
             facts = [entry.content for entry, _score in (results or [])]
             knowledge_context = "\n".join(facts)
