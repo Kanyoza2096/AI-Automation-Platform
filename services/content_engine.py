@@ -997,10 +997,6 @@ class ContentEngine:
         )
         if not metric_language.search(caption):
             return True, "no empirical performance claim detected"
-        has_quantifier = re.search(
-            r"\b\d+(?:\.\d+)?\s*(?:%|percent|ms|milliseconds?|seconds?|secs?|"
-            r"minutes?|mins?|hours?|x|times?)?\b", caption, re.IGNORECASE,
-        )
         evidence_record = verified_evidence if isinstance(verified_evidence, dict) else {}
         evidence = str(evidence_record.get("text") or "").strip()
         source_id = str(evidence_record.get("source_id") or "").strip()
