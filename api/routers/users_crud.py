@@ -14,13 +14,14 @@ router = APIRouter()
 @router.get("/workspaces/{workspace_id}/users")
 async def list_workspace_users(
     workspace_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
     _admin=Depends(require_workspace_admin),
 ):
     """List all users in a workspace. Requires admin or above."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
 
         from repositories.workspace_member_repository import WorkspaceMemberRepository
         repo = await _async_wrap(container.resolve, WorkspaceMemberRepository)
@@ -49,6 +50,7 @@ async def list_workspace_users(
 async def add_workspace_user(
     workspace_id: str,
     body: UserCreateRequest,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -56,7 +58,7 @@ async def add_workspace_user(
 ):
     """Add a user to a workspace. Requires admin or above."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
 
         from models.workspace import WorkspaceMember, MemberRole
         from repositories.workspace_member_repository import WorkspaceMemberRepository
@@ -103,6 +105,7 @@ async def update_workspace_user(
     workspace_id: str,
     user_id: str,
     body: UserUpdateRequest,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -110,7 +113,7 @@ async def update_workspace_user(
 ):
     """Update a user's role. Requires admin or above. Cannot modify yourself."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
 
         from repositories.workspace_member_repository import WorkspaceMemberRepository
         from models.workspace import MemberRole
@@ -164,6 +167,7 @@ async def update_workspace_user(
 async def remove_workspace_user(
     workspace_id: str,
     user_id: str,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -171,7 +175,7 @@ async def remove_workspace_user(
 ):
     """Remove a user from a workspace. Requires admin or above."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
 
         from repositories.workspace_member_repository import WorkspaceMemberRepository
         from models.workspace import MemberRole
@@ -206,4 +210,3 @@ async def remove_workspace_user(
         raise
     except Exception as exc:
         return _safe_err(exc, f"DELETE /api/v1/workspaces/{workspace_id}/users/{user_id}")
-
