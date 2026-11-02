@@ -40,6 +40,20 @@ V2.0 — Double-hash defense on formatted_hashtags.
          - `model_config` now has `validate_assignment=True` so future
            direct-assignment mutations go through the validator.
        Behavior for correctly-constructed brands is unchanged.
+
+V3.0 — Direction-based topic generation deprecated.
+       `topic_direction` and `topic_axes` are retained in the schema for
+       backward compatibility with existing brand rows, but the
+       TopicSelector no longer reads `topic_direction`. Direction
+       generation was removed because it produced abstract topics the
+       corpus could not support — retrieval returned irrelevant chunks
+       and the model invented metrics to fill the gap. Topics now come
+       exclusively from the brand's Knowledge Base, custom_topics, or
+       brand_config.fallback_topics.
+
+       The `has_direction` property remains for compatibility but is no
+       longer consulted anywhere in the pipeline. Retire the column in a
+       future migration once all rows are reviewed.
 """
 from __future__ import annotations
 
@@ -219,20 +233,22 @@ class Brand(KanyozaModel):
         description="Brand-specific topic bank: {category: [topics]}",
     )
 
-    # Direction-based content generation
+    # Direction-based content generation — DEPRECATED in V3.0.
+    # See module docstring. Kept in the schema for backward compatibility
+    # with existing rows; not read by TopicSelector or PromptBuilder.
     topic_direction: Optional[str] = Field(
         default=None,
         max_length=2000,
-        description="Voice and scope brief for AI-generated topics. When set, "
-                    "the workflow generates topics from this direction rather "
-                    "than selecting from custom_topics.",
+        description="DEPRECATED — no longer read by TopicSelector. Kept "
+                    "for backward compatibility with existing rows.",
     )
 
     topic_axes: Dict[str, str] = Field(
         default_factory=dict,
-        description="Thematic axes for direction-based generation: "
-                    "{axis_name: one-sentence description}. When empty, the "
-                    "generator uses only topic_direction.",
+        description="DEPRECATED for direction generation but still used as "
+                    "a priority hint by PromptBuilder._select_topic_axis "
+                    "when those axes also exist in the Knowledge Base. "
+                    "Format: {axis_name: one-sentence description}.",
     )
 
     # Scheduling
@@ -449,7 +465,12 @@ class Brand(KanyozaModel):
 
     @property
     def has_direction(self) -> bool:
-        """True when the brand declares an AI-topic direction."""
+        """True when the brand declares an AI-topic direction.
+
+        DEPRECATED in V3.0 — no consumer reads this after V1.16 of
+        post_workflow. The property remains so external callers do not
+        break; remove in V4.0 along with the topic_direction field.
+        """
         return bool(self.topic_direction and self.topic_direction.strip())
 
     # ═══════════════════════════════════════════════════════════════════════
