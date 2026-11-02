@@ -66,8 +66,12 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             res = self.supabase.table('knowledge_entries').select('*').eq('brand_id', brand_id).execute()
             return [KnowledgeEntry(**row) for row in (res.data or [])]
         except Exception as e:
+            # An incomplete database read must not masquerade as a valid,
+            # possibly empty index. Surface the failure to the caller.
             logger.error("Failed to find knowledge entries by brand %s: %s", brand_id, e)
-            return [k for k in self._in_memory.values() if k.brand_id == brand_id]
+            raise RuntimeError(
+                f"Knowledge entries for brand {brand_id} could not be loaded"
+            ) from e
 
     def find_by_workspace(self, workspace_id: str) -> List[KnowledgeEntry]:
         if not self.supabase:
