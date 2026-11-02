@@ -24,6 +24,17 @@ router = APIRouter()
 #   Fixed by routing through KnowledgeRepository (which already had
 #   find_by_workspace / find_by_id) and adding require_workspace_ownership
 #   checks on the destructive path.
+#
+# INCIDENT-2026-11-02-knowledge-bulk:
+#   require_workspace_ownership was called as
+#     require_workspace_ownership("workspace", workspace_id, container)
+#   but the function signature is
+#     require_workspace_ownership(resource_type, resource_id, request, container)
+#   The `container` was being bound to the `request` parameter, and the
+#   function body immediately dereferenced request.app.state — raising
+#   AttributeError: 'ServiceContainer' object has no attribute 'app' on
+#   every bulk ingestion call. Every call site in this file has been
+#   updated to pass `request` as the third positional argument.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -31,12 +42,13 @@ router = APIRouter()
 async def create_knowledge_entry(
     brand_id: str,
     body: KnowledgeCreateRequest,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """Create a knowledge entry for a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from repositories.brand_repository import BrandRepository
         from repositories.knowledge_repository import KnowledgeRepository
         from services.knowledge_base import KnowledgeBase
@@ -68,12 +80,13 @@ async def create_knowledge_entry(
 @router.get("/brands/{brand_id}/knowledge")
 async def list_knowledge_entries(
     brand_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """List knowledge entries for a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(container.resolve, KnowledgeRepository)
         entries = await _async_wrap(repo.find_by_brand, brand_id)
@@ -87,6 +100,7 @@ async def list_knowledge_entries(
 @router.delete("/knowledge/{knowledge_id}")
 async def delete_knowledge_entry(
     knowledge_id: str,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -109,9 +123,9 @@ async def delete_knowledge_entry(
         brand_id = getattr(entry, "brand_id", None)
         workspace_id = getattr(entry, "workspace_id", None)
         if brand_id:
-            await require_workspace_ownership("brand", brand_id, container)
+            await require_workspace_ownership("brand", brand_id, request, container)
         elif workspace_id:
-            await require_workspace_ownership("workspace", workspace_id, container)
+            await require_workspace_ownership("workspace", workspace_id, request, container)
         else:
             # No tenancy binding on the row. Refuse rather than allow a
             # delete against an ambiguous target.
@@ -132,12 +146,13 @@ async def delete_knowledge_entry(
 async def search_knowledge_entries(
     brand_id: str,
     body: KnowledgeSearchRequest,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """Search knowledge entries for a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from repositories.brand_repository import BrandRepository
         from repositories.knowledge_repository import KnowledgeRepository
         from services.knowledge_base import KnowledgeBase
@@ -169,13 +184,14 @@ async def search_knowledge_entries(
 async def bulk_create_knowledge(
     workspace_id: str,
     body: BulkKnowledgeRequest,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
     """Bulk create knowledge entries."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from repositories.knowledge_repository import KnowledgeRepository
         from services.knowledge_base import KnowledgeBase
 
