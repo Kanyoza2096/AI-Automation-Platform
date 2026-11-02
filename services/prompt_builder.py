@@ -2,29 +2,32 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V3.0 — DIRECTION REMOVED + GROUNDING STRENGTHENED:
+V3.1 — LENGTH FLOOR 150 WORDS, 3-5 PARAGRAPHS, LAYERED STRUCTURE:
 
-  1. DIRECTION REMOVED. `_brand_charter_block` no longer injects
-     brand.topic_direction into the prompt. That feature was deprecated
-     when TopicSelector V3.0 removed direction-based topic generation.
-     The method remains for backward compatibility but always returns "".
+  Restores the substance of the months-ago captions (~180-200 words,
+  4 paragraphs, each adding new information) that the current prompt
+  was suppressing.
 
-  2. GROUNDING. The SUBSTANCE / VOICE sections of both format blocks
-     previously required "at least one concrete detail — a metric, a
-     scenario, a specific tool or version." That instruction forced the
-     model to invent metrics (e.g., "our latency dropped from 1200ms to
-     900ms") when the retrieved passages contained no metrics. Replaced
-     with explicit grounding rules:
-       - Every claim traceable to a retrieved passage.
-       - First person forbidden unless the passage uses it.
-       - No before/after/next-step case-study structure.
-       - Conceptual claims are valid evidence.
+  1. LENGTH BUDGET raised from "60-120, floor 60" to "180-200, floor 150".
+     The old 60-word floor was the operative constraint — the model
+     landed at the minimum every time, producing 55-80 word captions
+     that met the letter of the prompt and none of the intent.
 
-  3. CONTENT_QUALITY_CONTRACT rule 4 softened: "conceptual claim from a
-     retrieved passage" is explicitly allowed as evidence for technical
-     brands where the source is a reference text, not a case study.
+  2. STRUCTURE block added. Each paragraph must add new information;
+     restatement is forbidden. The months-ago captions used paragraph
+     layers (claim → context → example → implication → question) and
+     the current captions flattened into a single restating paragraph.
 
-V2.6 — KB-DRIVEN TOPIC AXIS ROTATION + LENGTH FLOOR (preserved).
+  3. Applies to both _PROSE_PLAIN_TEXT_BLOCK and POST_SCHEMA_PROMPT_BLOCK
+     so both generation paths get the same length and structure rules.
+
+V3.0 — DIRECTION REMOVED + GROUNDING STRENGTHENED (preserved):
+  - _brand_charter_block returns "" (direction feature deprecated).
+  - VOICE / GROUNDING / FORBIDDEN STRUCTURE rules prohibit fabricated
+    metrics, first-person case studies, and before/after/next-step
+    templates.
+
+V2.6 — KB-DRIVEN TOPIC AXIS ROTATION (preserved).
 V2.3 — HASHTAG POLICY + TITLE-OPTIONAL (preserved).
 V2.2 — MERGED CONTRACT + CHARTER + TRUNCATION-AWARE LENGTH (preserved).
 V2.1 — BRAND CHARTER WIRING (deprecated in V3.0).
@@ -65,7 +68,7 @@ fences. Do not explain your reasoning. Return raw JSON and nothing else.
 
 Required keys:
 {
-  "caption": "the full body of the post, 60-120 words, plain text"
+  "caption": "the full body of the post, 180-200 words, plain text, 3-5 paragraphs"
 }
 
 Optional keys (omit if the target platform does not use them):
@@ -90,15 +93,30 @@ characters, which is ugly and unprofessional:
 - For emphasis, use sentence structure — not asterisks.
 
 LENGTH BUDGET — this is the single most important rule:
-- Aim for 60-120 words. Do not exceed 150.
-- Do not go below 60 words. A 30-word caption is not a caption; it is a
-  status update. If the topic feels thin, that means you have not yet
-  found the specific claim. Find the specific claim, develop it, then
-  write. The word count follows from the specificity, not the other way
-  around.
+- Aim for 180-200 words. Do not exceed 220.
+- Do not go below 150 words. A caption shorter than 150 words is
+  almost certainly underdeveloped — it means you have not yet found
+  the specific claim and developed it. Find the claim, develop it,
+  then write. The word count follows from the specificity, not the
+  other way around.
 - The caption MUST end at a sentence boundary (period, question mark,
-  or exclamation point). Do not end mid-sentence, mid-word, or with a
-  trailing ellipsis.
+  or exclamation point). Do not end mid-sentence, mid-word, or with
+  a trailing ellipsis.
+
+STRUCTURE — the post must build, not restate:
+- Paragraph 1: the claim or observation. Something specific.
+- Paragraph 2: why it matters, or what is usually misunderstood.
+- Paragraph 3: an illustrative example, a specific tool, or a
+  scenario that makes the point concrete.
+- Paragraph 4 (optional): the implication — what the reader does
+  differently.
+- Closing (optional): a specific question, not a generic invitation
+  to comment.
+- Target 3-5 paragraphs. Each paragraph must add new information.
+  Do not restate the previous paragraph's point in different words.
+- If a sentence could be deleted without the reader losing anything,
+  delete it. Every sentence must earn its place.
+- Separate paragraphs with a single blank line.
 
 VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT open with "As a [role], I've seen...", "In today's...",
@@ -122,8 +140,8 @@ VOICE — first person is FORBIDDEN unless the retrieved passages use it:
   task handling."
 - Right: "Idempotent task handling lets a long-running agent
   checkpoint and replay without corrupting state."
-- The reader can tell the difference between a real case study and a
-  fabricated one. Fabricated first-person destroys credibility.
+- The reader can tell the difference between a real case study and
+  a fabricated one. Fabricated first-person destroys credibility.
 
 GROUNDING — where does the content come from:
 - Every claim in the post must be traceable to one of the retrieved
@@ -152,26 +170,43 @@ Hard rules:
 """.strip()
 
 
-# Prose path (structured=False) needs the same plain-text, voice, and
-# grounding rules. Without them, the model defaults to Markdown and to
-# the LinkedIn-influencer register that technical audiences reject.
+# Prose path (structured=False) needs the same plain-text, voice,
+# grounding, length, and structure rules. Without them, the model
+# defaults to Markdown, the LinkedIn-influencer register, single-paragraph
+# restatement, and 60-word status updates.
 _PROSE_PLAIN_TEXT_BLOCK = """
 PLAIN-TEXT RULES — the post is published to a plain-text platform:
 - Do NOT use Markdown syntax. No **, __, *, _, ##, `, or >.
 - For lists, use the bullet character "•" followed by a space.
-- For line breaks, use actual line breaks. Blank lines between
-  paragraphs are fine.
+- For line breaks, use actual line breaks (a single blank line between
+  paragraphs).
 - For emphasis, use sentence structure — not asterisks.
 
 LENGTH BUDGET:
-- Aim for 60-120 words. Do not exceed 150.
-- Do not go below 60 words. A 30-word caption is not a caption; it is
-  a status update. If the topic feels thin, that means you have not
-  yet found the specific claim. Find the specific claim, develop it,
-  then write. The word count follows from the specificity.
+- Aim for 180-200 words. Do not exceed 220.
+- Do not go below 150 words. A caption shorter than 150 words is
+  almost certainly underdeveloped — it means you have not yet found
+  the specific claim and developed it. Find the claim, develop it,
+  then write. The word count follows from the specificity, not the
+  other way around.
 - The caption MUST end at a sentence boundary (period, question mark,
   or exclamation point). Do not end mid-sentence, mid-word, or with
   a trailing ellipsis.
+
+STRUCTURE — the post must build, not restate:
+- Paragraph 1: the claim or observation. Something specific.
+- Paragraph 2: why it matters, or what is usually misunderstood.
+- Paragraph 3: an illustrative example, a specific tool, or a
+  scenario that makes the point concrete.
+- Paragraph 4 (optional): the implication — what the reader does
+  differently.
+- Closing (optional): a specific question, not a generic invitation
+  to comment.
+- Target 3-5 paragraphs. Each paragraph must add new information.
+  Do not restate the previous paragraph's point in different words.
+- If a sentence could be deleted without the reader losing anything,
+  delete it. Every sentence must earn its place.
+- Separate paragraphs with a single blank line.
 
 VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT open with "As a [role], I've seen...", "In today's...",
@@ -319,18 +354,18 @@ lines between paragraphs and full capitalization for emphasis.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Platform contracts — unchanged from V2.6.
+# Platform contracts
 # ═══════════════════════════════════════════════════════════════════════════
 _LINKEDIN_CONTRACT = """
 PLATFORM CONTRACT — LinkedIn.
-- Length: 60-120 words. Do not exceed 150.
-- Structure: short paragraphs of 1-3 sentences, blank line between each.
+- Length: 180-200 words. Do not exceed 220.
+- Structure: short paragraphs of 2-4 sentences, blank line between each.
   No markdown headers, no bold section titles.
 - Formatting: plain text only. No markdown. No **bold**, no *italic*,
   no # headers, no - bullets. LinkedIn renders these characters literally.
 - Opening: the first two lines appear in the preview. They must carry
   the hook. Do not use the first line as a warm-up.
-- Closing: the consequence of the point, or a specific next step.
+- Closing: the consequence of the point, or a specific question.
 - Hashtags: the publishing layer appends 3-5 brand hashtags
   automatically. Do not produce hashtags yourself.
 - Emoji: at most one per 100 words, only when meaningful.
@@ -353,14 +388,14 @@ PLATFORM CONTRACT — Twitter / X.
 
 _FACEBOOK_CONTRACT = """
 PLATFORM CONTRACT — Facebook.
-- Length: 60-120 words. Do not exceed 150.
-- Structure: conversational, no headers. Short paragraphs.
+- Length: 180-200 words. Do not exceed 220.
+- Structure: 3-5 paragraphs of 2-4 sentences each. Blank line between
+  paragraphs. The first paragraph must carry the hook because Facebook
+  truncates at ~250 characters behind "See more".
 - Formatting: plain text only. No markdown. No **bold**, no *italic*,
   no # headers, no - bullets. Facebook renders these characters literally.
-  Use line breaks for pacing.
-- Opening: the first line is the hook. Facebook truncates long posts
-  behind "See more" at around 250 characters; make the first line count.
-- Closing: the consequence of the point, or a specific next step.
+- Opening: the first line is the hook. Make it count.
+- Closing: the consequence of the point, or a specific question.
 - Hashtags: the publishing layer appends 1-3 brand hashtags
   automatically. Do not produce hashtags yourself.
 - Emoji: occasional, meaningful.
@@ -368,15 +403,15 @@ PLATFORM CONTRACT — Facebook.
 
 _INSTAGRAM_CONTRACT = """
 PLATFORM CONTRACT — Instagram.
-- Length: 80-150 words for the caption. The first 125 characters are
+- Length: 150-200 words for the caption. The first 125 characters are
   visible before "more" — they are the whole preview.
-- Structure: line breaks between thoughts, no headers. The image carries
-  the visual weight; the caption carries the story.
+- Structure: line breaks between thoughts, 3-5 paragraphs. The image
+  carries the visual weight; the caption carries the story.
 - Formatting: plain text only. No markdown. Instagram renders these
   characters literally.
 - Opening: the first line is the entire visible preview. Make it earn
   the tap.
-- Closing: the consequence or a specific next step.
+- Closing: the consequence or a specific question.
 - Hashtags: the publishing layer appends brand + topic hashtags
   automatically, up to 30 for this platform. Do not produce hashtags
   yourself.
@@ -385,7 +420,7 @@ PLATFORM CONTRACT — Instagram.
 
 _WHATSAPP_CONTRACT = """
 PLATFORM CONTRACT — WhatsApp (business broadcast / channel).
-- Length: 40-100 words. Short-form.
+- Length: 60-120 words. Short-form.
 - Structure: plain text, no markdown. Use line breaks for pacing only.
 - Formatting: WhatsApp does not render markdown. Prefer plain text.
 - Opening: the first line is the whole message preview.
@@ -654,16 +689,10 @@ class PromptBuilder:
     def _brand_charter_block(brand: Brand) -> str:
         """DEPRECATED in V3.0 — always returns "".
 
-        Direction-based topic generation was removed in TopicSelector V3.0
-        because it produced abstract topics the corpus could not support.
+        Direction-based topic generation was removed in TopicSelector V3.0.
         The charter was the model-side input to that feature. Keeping it
-        out of the prompt removes the last path by which brand.topic_direction
-        could override the grounding rules — a charter that says "be
-        specific, cite metrics" would push the model back into fabricated
-        case-study mode.
-
-        The method remains callable for backward compatibility with any
-        external code that still invokes it; it simply returns "".
+        out of the prompt removes the last path by which
+        brand.topic_direction could override the grounding rules.
         """
         return ""
 
@@ -773,9 +802,6 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
-        # V3.0 — charter_block is always "" (deprecated). Kept in the
-        # prompt template so the shape stays stable for any downstream
-        # consumer that expects the field.
         charter_block = self._brand_charter_block(brand)
 
         resolved_platform = platform or getattr(brand, "platform", None)
