@@ -229,8 +229,14 @@ class ResearchStep(Step):
     name = "research"
     continue_on_failure = True
 
-    def __init__(self, brand: Optional[Brand] = None, config: PipelineConfig = None) -> None:
+    def __init__(
+        self,
+        brand: Optional[Brand] = None,
+        knowledge_repo: Optional[KnowledgeRepository] = None,
+        config: PipelineConfig = None,
+    ) -> None:
         self._brand = brand
+        self._knowledge_repo = knowledge_repo
         self._config = config or PipelineConfig()
 
     async def run_async(self, context: dict[str, Any]) -> Any:
@@ -269,9 +275,16 @@ class ResearchStep(Step):
 
         if not research_facts and self._brand:
             try:
-                kb = KnowledgeBase(brand_id=self._brand.id, workspace_id=self._brand.workspace_id)
+                if self._knowledge_repo is None:
+                    raise RuntimeError("KnowledgeRepository is unavailable for KB research")
+                kb = KnowledgeBase(
+                    brand_id=self._brand.id,
+                    workspace_id=self._brand.workspace_id,
+                    repository=self._knowledge_repo,
+                )
+                await kb.initialize()
                 kb_results = await asyncio.wait_for(
-                    loop.run_in_executor(None, kb.search, topic, 3),
+                    kb.search(topic, 3),
                     timeout=self._config.knowledge_timeout_seconds,
                 )
                 for entry, _ in kb_results:
@@ -816,7 +829,11 @@ class ContentGenerationPipeline(Workflow):
         super().__init__(
             steps=[
                 PlannerStep(brand, category, knowledge_repo=knowledge_repo, config=self._config),
-                ResearchStep(brand=brand, config=self._config),
+                ResearchStep(
+                    brand=brand,
+                    knowledge_repo=knowledge_repo,
+                    config=self._config,
+                ),
                 ContentIntelligenceStep(config=self._config),
                 KnowledgeStep(brand, knowledge_repo, config=self._config),
                 PromptBuilderStep(brand, ai_profile, prompt_builder, config=self._config),

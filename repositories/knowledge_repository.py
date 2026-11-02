@@ -35,9 +35,13 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
                 return KnowledgeEntry(**res.data[0])
             return entity
         except Exception as e:
+            # A production ingestion must not report success when Supabase
+            # persistence failed. In-memory fallback would disappear across
+            # requests/restarts and create a false-positive indexed record.
             logger.error("Failed to save knowledge entry %s: %s", entity.id, e)
-            self._in_memory[entity.id] = entity
-            return entity
+            raise RuntimeError(
+                f"Knowledge entry {entity.id} could not be persisted"
+            ) from e
 
     def delete(self, record_id: str) -> bool:
         if not self.supabase:
@@ -62,8 +66,12 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             res = self.supabase.table('knowledge_entries').select('*').eq('brand_id', brand_id).execute()
             return [KnowledgeEntry(**row) for row in (res.data or [])]
         except Exception as e:
+            # An incomplete database read must not masquerade as a valid,
+            # possibly empty index. Surface the failure to the caller.
             logger.error("Failed to find knowledge entries by brand %s: %s", brand_id, e)
-            return [k for k in self._in_memory.values() if k.brand_id == brand_id]
+            raise RuntimeError(
+                f"Knowledge entries for brand {brand_id} could not be loaded"
+            ) from e
 
     def find_by_workspace(self, workspace_id: str) -> List[KnowledgeEntry]:
         if not self.supabase:
