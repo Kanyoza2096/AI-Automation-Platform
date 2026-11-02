@@ -18,72 +18,50 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.14 — KB-DRIVEN AXIS ROTATION WIRING:
+
+  prompt_builder V2.6 draws the rotation pool from the themes in the
+  brand's knowledge base (brand.topic_axes is only a priority hint). Two
+  consequences for this workflow:
+
+    1. The last-published-axis lookup is no longer gated on
+       brand.topic_axes. A brand with an empty topic_axes but a themed KB
+       previously got NO last_used_axis, so rotation had no memory and
+       could repeat the same theme back to back.
+    2. build_post_prompt() is synchronous and may hit the database on a
+       theme-cache miss. GenerateContentStep now warms the theme cache
+       through the executor (aget_brand_themes) BEFORE building the prompt,
+       so the build itself is a pure in-memory cache hit and never blocks
+       the event loop.
+
 V1.13 — TOPIC AXIS ROTATION, PERSISTED PER JOB:
 
-  prompt_builder V2.4 only ROTATES axes when it is told which axis the
-  previous post used (its `last_used_axis` argument); it keeps no rotation
-  state of its own. This workflow builds the prompt itself and hands it to
-  ContentEngine as `base_prompt`, so ContentEngine's own axis logic is a
-  no-op on this path. The workflow therefore owns the whole cycle:
+  prompt_builder only ROTATES axes when told which axis the previous post
+  used (`last_used_axis`); it keeps no rotation state of its own. This
+  workflow builds the prompt itself and hands it to ContentEngine as
+  `base_prompt`, so ContentEngine's own axis logic is a no-op here. The
+  workflow owns the whole cycle:
 
     1. GenerateContentStep reads the brand's last PUBLISHED axis from
-       automation_jobs (only for brands that define topic_axes) and passes
-       it to build_post_prompt(last_used_axis=...).
+       automation_jobs and passes it to build_post_prompt(last_used_axis=).
     2. Immediately after the build (no await in between) it copies
        prompt_builder.last_used_axis into context["topic_axis"].
     3. PublishStep, on success, writes topic_axis (and topic) onto the
        automation_jobs row identified by context["job_id"] — the exact job,
-       not "the latest job for the brand".
+       not "the latest job for the brand". If context has no job_id,
+       nothing is recorded and rotation has no memory for that run.
 
   Requires a nullable text column automation_jobs.topic_axis.
 
-V1.12 (2026-10-24) — THREE FIXES:
-
-  (1) HASHTAG-TAIL FALSE POSITIVE IN _caption_is_well_formed:
-
-    The V1.10 structural guard checked for terminal punctuation within
-    the last 40 characters. A caption ending with a hashtag block — the
-    canonical LinkedIn/Facebook form — has its last 40 characters
-    entirely composed of hashtags (#kubernetes #cost #sre #infra). None
-    of those characters is terminal punctuation, so the check returned
-    False and the caption was rejected as malformed. Every post ending
-    with hashtags would have failed. The fix strips trailing hashtag
-    tokens before the terminal-punctuation check and widens the tail
-    window to 200 chars so a short post followed by hashtags still
-    passes if it ends its sentence earlier.
-
-  (2) PROMPT BUILDER GATED ON knowledge_context:
-
-    GenerateContentStep only invoked PromptBuilder.build_post_prompt()
-    when knowledge_context was non-empty. For brands with no KB entries
-    this skipped the builder entirely, and ContentEngine.generate_post
-    fell back to its own internal prompt construction — which does not
-    include the brand charter, platform contract, or content quality
-    contract. The V2.2 prompt is now always used when a prompt_builder
-    is present; an empty knowledge_context simply omits the KB block.
-
-  (3) EMIT EVENT PASSED OBJECT TO UNIFIED BUS:
-
-    EmitEventStep called self._bus.publish(PostPublishedEvent(...)) —
-    an event object, not an (event_name, payload) pair. UnifiedEventBus
-    expects (event_name: str, payload: dict). The object failed in
-    _dispatch_event when used as a dict key: "unhashable type:
-    'PostPublishedEvent'". The event now publishes as ("post.published",
-    {...}) so subscribers actually receive it.
-
-V1.11 (2026-10-23) — POST_HISTORY READ-MODEL WRITE:
-  PublishStep writes to post_history on every successful publish. The
-  write is best-effort and never fails the publish.
-
-V1.10 (2026-10-22) — TRUNCATION GUARD IN GENERATE STEP:
-  GenerateContentStep rejects structurally malformed captions.
-
-V1.9 (2026-10-01) — STRUCTURED STEP FAILURES:
-  PublishStep raises StepFailure instead of RuntimeError.
-
-V1.8 (2026-10-01) — DIRECTION-BASED TOPIC GENERATION.
-V1.7 (2026-09-29) — PUBLISH RESULT CONTRACT NORMALIZATION.
-V1.6 (2026-09-28) — ASYNC-NATIVE STEPS.
+V1.12 — Hashtag-tail false positive fixed in _caption_is_well_formed;
+  PromptBuilder always used when present (not gated on knowledge_context);
+  EmitEventStep publishes ("post.published", payload) to UnifiedEventBus.
+V1.11 — PublishStep writes post_history (best-effort).
+V1.10 — Truncation guard in GenerateContentStep.
+V1.9  — PublishStep raises StepFailure instead of RuntimeError.
+V1.8  — Direction-based topic generation.
+V1.7  — Publish result contract normalization.
+V1.6  — Async-native steps.
 """
 
 from __future__ import annotations
@@ -96,14 +74,16 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from workflows.base import Step, Workflow, StepFailure
-from models.media_artifact import MediaArtifact, MediaStatus
+from models.media_artifact import MediaArtifact, MediaStatus  # noqa: F401
 from core.errors import (
     AIValidationError,
-    RenderFailedError,
-    KanyozaError,
+    RenderFailedError,  # noqa: F401
+    KanyozaError,  # noqa: F401
 )
 
 if TYPE_CHECKING:
+    from models.brand import Brand
+    from models.ai_profile import AIProfile
     from services.content_engine import ContentEngine
     from services.content_validator import ContentValidator
     from plugins.base import PluginRegistry
@@ -123,7 +103,7 @@ _TRAILING_HASHTAGS_RE = re.compile(r"(?:\s*#\w+)+$")
 class SelectTopicStep(Step):
     """Pick a topic — either generated from the brand's direction or selected.
 
-    V1.8 — Direction-based generation runs first when the brand declares a
+    Direction-based generation runs first when the brand declares a
     topic_direction. Falls through to selection on any failure so the
     workflow never blocks on AI availability.
     """
@@ -186,9 +166,9 @@ class SelectTopicStep(Step):
 class KnowledgeContextStep(Step):
     """Retrieve relevant KB facts for the chosen topic.
 
-    V1.6 — Async-native. KnowledgeBase.search() is async.
-    continue_on_failure=True so a missing or empty KB never blocks the
-    pipeline — the content engine will still generate without context.
+    Async-native. continue_on_failure=True so a missing or empty KB never
+    blocks the pipeline — the content engine will still generate without
+    context.
     """
     name = "knowledge_context"
     continue_on_failure = True
@@ -238,16 +218,13 @@ class KnowledgeContextStep(Step):
 class GenerateContentStep(Step):
     """Call ContentEngine to produce caption + MediaArtifact.
 
-    V1.6 — Async-native. ContentEngine.generate_post is async.
-    V1.10 — Rejects malformed/truncated captions before they reach
-      ValidateContentStep and PublishStep. See _caption_is_well_formed.
-    V1.12 — PromptBuilder.build_post_prompt() is now always used when a
-      builder is present, regardless of whether the brand has KB entries.
-      The previous `and knowledge_context` guard meant empty-KB brands
-      bypassed the entire V2.2 prompt — brand charter, platform contract,
-      and quality contract never reached the model.
-    V1.13 — Topic axis rotation: reads the brand's last published axis,
-      passes it to the builder, and captures the chosen axis into
+    - Async-native. ContentEngine.generate_post is async.
+    - Rejects malformed/truncated captions before they reach
+      ValidateContentStep and PublishStep (_caption_is_well_formed).
+    - PromptBuilder.build_post_prompt() is always used when a builder is
+      present, regardless of whether the brand has KB entries.
+    - Topic axis rotation: reads the brand's last published axis, passes it
+      to the builder, and captures the chosen axis into
       context["topic_axis"] for PublishStep to persist.
     """
     name = "generate_content"
@@ -268,11 +245,10 @@ class GenerateContentStep(Step):
     async def _fetch_last_used_axis(self) -> str | None:
         """Last PUBLISHED axis for this brand, or None.
 
-        Only queried for brands that define topic_axes, so brands without
-        axes pay no extra database round trip.
+        V1.14 — No longer gated on brand.topic_axes: the rotation pool is
+        derived from the KB, so every brand with a themed KB needs the
+        previous axis to avoid back-to-back repeats.
         """
-        if not getattr(self._brand, "topic_axes", None):
-            return None
         getter = getattr(self._engine, "_get_last_used_axis", None)
         if not callable(getter):
             return None
@@ -282,6 +258,23 @@ class GenerateContentStep(Step):
         except Exception as exc:
             logger.debug("PostWorkflow: last-axis lookup failed: %s", exc)
             return None
+
+    async def _warm_theme_cache(self) -> None:
+        """Populate the KB theme cache off the event loop.
+
+        build_post_prompt() is synchronous; on a cache miss it would run a
+        blocking database query inside the loop. Warming first makes the
+        build a pure in-memory read. Best-effort: failure just means the
+        build does its own (fail-soft) lookup.
+        """
+        try:
+            from services.knowledge_base import aget_brand_themes
+            await aget_brand_themes(
+                getattr(self._brand, "id", None),
+                getattr(self._brand, "workspace_id", None),
+            )
+        except Exception as exc:
+            logger.debug("PostWorkflow: theme cache warm-up failed: %s", exc)
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         topic = context.get("topic", "")
@@ -299,6 +292,7 @@ class GenerateContentStep(Step):
                     or getattr(self._brand, "platform", None)
                 )
                 last_used_axis = await self._fetch_last_used_axis()
+                await self._warm_theme_cache()
 
                 base_prompt = self._prompt_builder.build_post_prompt(
                     brand=self._brand,
@@ -319,7 +313,7 @@ class GenerateContentStep(Step):
                     "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
                     "for brand='%s'",
                     len(knowledge_context or ""),
-                    resolved_platform or "linkedin",
+                    resolved_platform or "facebook",
                     context["topic_axis"] or "none",
                     last_used_axis or "none",
                     self._brand.name,
@@ -415,11 +409,9 @@ class GenerateContentStep(Step):
         case where the LLM response was truncated mid-markdown or
         mid-sentence because the provider hit its max_tokens budget.
 
-        V1.12 — Strips trailing hashtags before the terminal-punctuation
-        check. V2.2's prompt requires 3-8 hashtags at the end of every
-        caption; without stripping, the last 40 chars are entirely
-        hashtags and the terminal-punctuation test always fails. Every
-        post that ended with hashtags was rejected as malformed.
+        Trailing hashtags (appended by the publishing layer, or present in
+        a scheduled caption) are stripped before the terminal-punctuation
+        check so a post ending in hashtags is not rejected as truncated.
         """
         if not caption or not caption.strip():
             return False
@@ -429,18 +421,11 @@ class GenerateContentStep(Step):
         if trimmed.count("```") % 2 != 0:
             return False
 
-        # Strip trailing hashtag block before checking terminal
-        # punctuation. A caption like "...worth sharing. #kubernetes
-        # #sre" ends its sentence with '.' but its last 40 chars are
-        # entirely hashtags. The stripped_body ends with the same
-        # terminal punctuation as the original prose.
         stripped_body = _TRAILING_HASHTAGS_RE.sub("", trimmed).rstrip()
         if not stripped_body:
             # Caption was only hashtags — clearly malformed.
             return False
 
-        # Widened window: 200 chars so a short post plus hashtags still
-        # finds its terminal punctuation.
         tail = stripped_body[-200:]
         if stripped_body[-1].isalpha() and not any(c in tail for c in ".!?\"')]"):
             return False
@@ -461,10 +446,7 @@ class GenerateContentStep(Step):
 
 # ── 3. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
-    """Validate AI-generated content before proceeding.
-
-    V1.6 — Async-native. ContentValidator.validate is async.
-    """
+    """Validate AI-generated content before proceeding (async)."""
     name = "validate_content"
 
     def __init__(self, validator: "ContentValidator" = None) -> None:
@@ -575,16 +557,11 @@ class RenderImageStep(Step):
 class PublishStep(Step):
     """Publish via the plugin registry with MediaArtifact awareness.
 
-    V1.9 — Raises workflows.base.StepFailure instead of RuntimeError so the
-    pipeline's structured failure survives to the API envelope.
-
-    V1.11 — Writes post_history on success. The write is best-effort and
-    never fails the publish; the post is live and post_history is the
-    read model, not the source of truth.
-
-    V1.13 — On success also writes topic_axis / topic onto the
-    automation_jobs row for context["job_id"]. Best-effort, never fails
-    the publish.
+    - Raises workflows.base.StepFailure so the pipeline's structured
+      failure survives to the API envelope.
+    - Writes post_history on success (best-effort, never fails the publish).
+    - Writes topic_axis / topic onto the automation_jobs row for
+      context["job_id"] on success (best-effort, never fails the publish).
     """
     name = "publish"
 
@@ -669,20 +646,15 @@ class PublishStep(Step):
         output = result.get("output") if isinstance(result.get("output"), dict) else {}
         raw_status = str(result.get("status") or "").strip().lower()
 
-        provider_post_id = None
-        if isinstance(output, dict):
-            provider_post_id = (
-                output.get("platform_post_id")
-                or output.get("post_id")
-                or output.get("provider_object_id")
-            )
         provider_post_id = (
-            provider_post_id
+            output.get("platform_post_id")
+            or output.get("post_id")
+            or output.get("provider_object_id")
             or result.get("provider_object_id")
             or result.get("platform_post_id")
         )
 
-        output_ok = bool(output.get("ok")) if isinstance(output, dict) else False
+        output_ok = bool(output.get("ok"))
         is_success = (
             raw_status in self._SUCCESS_STATUSES
             and (output_ok or bool(provider_post_id))
@@ -719,8 +691,8 @@ class PublishStep(Step):
                 provider_post_id=provider_post_id,
             )
 
-            # V1.13 — Persist the axis (and topic) on the exact job row so
-            # the next generation for this brand rotates.
+            # Persist the axis (and topic) on the exact job row so the next
+            # generation for this brand rotates.
             await self._record_job_axis(context=context, job_id=job_id)
 
             return publish_result
@@ -778,13 +750,21 @@ class PublishStep(Step):
     ) -> None:
         """Write topic_axis (and topic) onto the automation_jobs row.
 
-        Never raises — the post is already live. A failure is logged at
-        WARNING because a missed write means the next post may repeat the
+        Never raises — the post is already live. A skipped or failed write
+        is logged at WARNING because it means the next post may repeat the
         axis.
         """
         axis = context.get("topic_axis")
         topic = context.get("topic")
-        if not job_id or not (axis or topic):
+        if not (axis or topic):
+            return
+        if not job_id:
+            logger.warning(
+                "PostWorkflow: axis recording skipped — context has no "
+                "job_id, rotation will have no memory for this post "
+                "(brand='%s' axis=%s)",
+                self._brand.name, axis or "none",
+            )
             return
 
         update: dict[str, Any] = {}
@@ -941,16 +921,10 @@ class RecordAnalyticsStep(Step):
 class EmitEventStep(Step):
     """Emit PostPublishedEvent to the event bus.
 
-    V1.12 — Publishes via the (event_name, payload) signature that
-    UnifiedEventBus requires. The previous version passed a
-    PostPublishedEvent object as the sole argument; UnifiedEventBus
-    used it as a dict key in _dispatch_event and raised
-    "unhashable type: 'PostPublishedEvent'" — the event never reached
-    any subscriber.
-
-    Derives the event_name and payload from the PostPublishedEvent
-    instance so the dataclass remains the source of truth for what
-    fields the event carries.
+    Publishes via the (event_name, payload) signature UnifiedEventBus
+    requires. Event name and payload are derived from the
+    PostPublishedEvent instance so the dataclass stays the source of truth
+    for what fields the event carries.
     """
     name = "emit_event"
     continue_on_failure = True
@@ -981,9 +955,6 @@ class EmitEventStep(Step):
                 caption_preview=caption,
             )
 
-            # UnifiedEventBus.publish(event_name: str, payload: dict, ...).
-            # Derive both from the event object so the dataclass stays
-            # the source of truth for what's in the payload.
             event_name = getattr(event_obj, "event_type", "post.published")
             if hasattr(event_name, "value"):
                 event_name = event_name.value
