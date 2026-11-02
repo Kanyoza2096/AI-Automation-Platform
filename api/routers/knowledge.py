@@ -221,8 +221,16 @@ async def bulk_create_knowledge(
     """
     try:
         await require_workspace_ownership("workspace", workspace_id, request, container)
+        from repositories.brand_repository import BrandRepository
         from repositories.knowledge_repository import KnowledgeRepository
         from services.knowledge_base import KnowledgeBase
+
+        # The caller owns the workspace, but the requested brand must also
+        # belong to that workspace before any records are written.
+        brand_repo = await _async_wrap(container.resolve, BrandRepository)
+        brand = await _async_wrap(brand_repo.find_by_id, body.brand_id)
+        if not brand or brand.workspace_id != workspace_id:
+            raise HTTPException(status_code=404, detail="Brand not found")
 
         kb_repo = await _async_wrap(container.resolve, KnowledgeRepository)
         kb = KnowledgeBase(
