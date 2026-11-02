@@ -32,3 +32,9 @@ def test_general_technical_advice_does_not_require_numeric_evidence():
                "does not duplicate side effects. Persist a stable task key before retrying.")
     assert ContentEngine._validate_factual_claims(caption) == (
         True, "no empirical performance claim detected")
+
+def test_non_numeric_empirical_performance_claim_still_requires_evidence():
+    ok, reason = ContentEngine._validate_factual_claims(
+        "Our authentication latency improved after the migration.")
+    assert not ok
+    assert "verified" in reason
