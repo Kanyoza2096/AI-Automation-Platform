@@ -277,3 +277,27 @@ def test_claim_rejects_invalid_lease_duration_types_and_bounds(tmp_path, lease_s
     with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
         queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
     queue.close()
+
+
+def test_scoped_claim_skips_jobs_outside_tenant_and_workspace(tmp_path):
+    queue = make_queue(tmp_path)
+    other = queue.enqueue(tenant_id="tenant-b", workspace_id="workspace-b", task_id="other-task",
+                          plan_digest=DIGEST, idempotency_key="other-idem")
+    expected = queue.enqueue(tenant_id="tenant-a", workspace_id="workspace-a", task_id="target-task",
+                             plan_digest=DIGEST, idempotency_key="target-idem")
+    claimed = queue.claim_next(worker_id="worker-a", tenant_id="tenant-a", workspace_id="workspace-a")
+    assert claimed is not None
+    assert claimed.job_id == expected.job_id
+    assert claimed.tenant_id == "tenant-a" and claimed.workspace_id == "workspace-a"
+    assert queue.get(other.job_id, tenant_id="tenant-b", workspace_id="workspace-b").status == "queued"
+    queue.close()
+
+
+@pytest.mark.parametrize("tenant_id,workspace_id", [
+    ("tenant-a", None), (None, "workspace-a"), ("", "workspace-a"), ("tenant-a", ""),
+])
+def test_scoped_claim_requires_complete_scope(tmp_path, tenant_id, workspace_id):
+    queue = make_queue(tmp_path)
+    with pytest.raises(Phase163Error, match="scope"):
+        queue.claim_next(worker_id="worker-a", tenant_id=tenant_id, workspace_id=workspace_id)
+    queue.close()
