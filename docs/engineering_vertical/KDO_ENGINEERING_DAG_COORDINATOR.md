@@ -22,3 +22,18 @@ This component is a **readiness coordinator**, not a durable worker queue or exe
 ## Acceptance tests added
 
 The focused tests cover dependency ordering, waiting for prerequisites, failure propagation, invalid DAG rejection, missing adapters, stale revisions, and tenant/workspace isolation. Test execution must be verified by CI or a local test run before this change is considered validated.
+
+
+## Worker queue and lease boundary
+
+KDO already has a separate governed build queue in
+`services/kdo_engineering_phase16_3.py`. It provides idempotent enqueue, worker
+claims, owner/token-fenced lease renewal and completion, and conservative expired
+lease reconciliation. The DAG coordinator must not enqueue a build job directly:
+build admission still requires the persisted approved plan and Council/Action
+Kernel decision path.
+
+Expired work is not automatically replayed. If worker absence cannot be confirmed,
+the queue leaves the job running; if absence is confirmed after lease expiry, it
+marks the job `uncertain` for explicit reconciliation. The SQLite queue is a
+single-host development/staging adapter, not the production shared queue.
