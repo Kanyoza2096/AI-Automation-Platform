@@ -62,3 +62,28 @@ def test_manifest_tracks_policy_and_context_versions():
     assert manifest["policy_version"] == "security-policy-7"
     assert len(manifest["task_contract_sha256"]) == 64
     assert len(manifest["manifest_sha256"]) == 64
+
+
+
+def test_every_registered_specialist_has_a_stable_prompt_template():
+    from services.kdo_engineering_agent_registry import ROLE_BY_ID
+    from services.kdo_engineering_prompt_assembler import DEFAULT_ROLE_TEMPLATES
+
+    missing = sorted(set(ROLE_BY_ID) - set(DEFAULT_ROLE_TEMPLATES))
+    assert missing == []
+    for role_id in ROLE_BY_ID:
+        template = DEFAULT_ROLE_TEMPLATES[role_id]
+        assert template.role == role_id
+        assert template.version
+        assert template.instructions.strip()
+        assert "Do not grant or expand permissions." in template.prohibited_actions
+
+
+def test_specialist_roles_assemble_task_specific_prompts():
+    assembler = EngineeringPromptAssembler()
+    for role_id in ("frontend_engineer", "reliability_engineer", "context_engineer",
+                    "agent_evaluation_engineer", "authorization_auditor"):
+        prompt, manifest = assembler.assemble(task(role=role_id, objective="Inspect this task"))
+        assert f"ROLE TEMPLATE ({role_id} v1)" in prompt
+        assert "Inspect this task" in prompt
+        assert manifest["role"] == role_id
