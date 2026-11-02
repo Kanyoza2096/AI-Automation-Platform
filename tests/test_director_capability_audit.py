@@ -78,3 +78,13 @@ def test_quality_review_returns_advisory_without_executing_remediation(monkeypat
     assert result["advisory_only"] is True
     assert result["execution_performed"] is False
     assert result["result"]["advisory"] is True
+
+
+def test_service_registry_resolves_current_director_singleton(monkeypatch):
+    import services.director.api as director_api
+    from core.service_definitions import _resolve_director
+
+    live_director = object()
+    monkeypatch.setattr(director_api, "director", live_director)
+
+    assert _resolve_director(None) is live_director
