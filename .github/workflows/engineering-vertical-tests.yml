@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - "services/kdo_engineering_*.py"
-      - "services/kdo_engineering_*.py"
       - "tests/engineering_vertical/**"
       - "migrations/*engineering*"
       - "requirements.txt"
