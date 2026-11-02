@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, List
+import logging
 import re
 import html
 
@@ -7,11 +8,58 @@ import html
 # PYDANTIC REQUEST MODELS — A03 Input validation at the boundary
 # ═══════════════════════════════════════════════════════════════════════════
 
+logger = logging.getLogger("kanyoza.api.v1_models")
+
 # Local validation constants intentionally live in this model module so the
 # request models do not depend on importing the monolithic api.v1 module.
 MAX_AI_PROMPT_LENGTH = 4000
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 
+# Prompt-injection patterns. Local to this module so the models are
+# self-contained. If a shared pattern library emerges later, migrate here.
+INJECTION_PATTERNS_RE = re.compile(
+    r"(?i)\b("
+    r"ignore (?:all )?(?:the )?(?:previous|above|prior|system) instructions"
+    r"|disregard (?:all )?(?:the )?(?:previous|above|prior|system)"
+    r"|you are now"
+    r"|system:\s"
+    r"|assistant:\s"
+    r"|forget (?:all )?(?:your )?instructions"
+    r")"
+)
+
+# Correlation id: prefer the canonical ContextVar from api.support so log
+# entries from model validators join the request trace. Fall back to a local
+# ContextVar if the import fails (defensive — the module must always import).
+try:
+    from api.support import correlation_id_var  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover
+    from contextvars import ContextVar
+    correlation_id_var: ContextVar = ContextVar("correlation_id", default="unknown")
+
+
+def _sanitize(value: Optional[str]) -> str:
+    """Defensive string sanitizer used by every validator in this module.
+
+    Contract:
+      - None or "" → "" (never returns None; validators must return str)
+      - Strips HTML tags (XSS defense at the model boundary)
+      - Collapses whitespace runs and trims
+      - Does NOT truncate — max_length is enforced by Field(), not here.
+        Content length preservation is required for long-form text
+        (knowledge base entries, sermon text, AI prompts).
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    s = HTML_TAG_RE.sub("", s)
+    s = " ".join(s.split())
+    return s
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# POSTS
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 class PostCreateRequest(BaseModel):
@@ -36,6 +84,11 @@ class PostCreateRequest(BaseModel):
         return _sanitize(v)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MESSAGING
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 class MessageReplyRequest(BaseModel):
     social_account_id: str = Field(..., min_length=1, max_length=128)
     recipient_id: str = Field(..., min_length=1, max_length=128)
@@ -47,6 +100,11 @@ class MessageReplyRequest(BaseModel):
         return _sanitize(v)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# AI
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 class AIChatRequest(BaseModel):
     """A03: Prompt injection guard at the validation layer."""
     message: str = Field(..., min_length=1, max_length=MAX_AI_PROMPT_LENGTH)
@@ -55,47 +113,18 @@ class AIChatRequest(BaseModel):
     @field_validator("message")
     @classmethod
     def sanitize_and_check_injection(cls, v: str) -> str:
-        # Strip HTML tags
         clean = HTML_TAG_RE.sub("", str(v))
-        # Normalize whitespace
         clean = " ".join(clean.split())
         if not clean:
             raise ValueError("message must not be empty after sanitization")
-        # Escape HTML entities
-        clean = _html_mod.escape(clean, quote=False)
-        # Check for prompt injection patterns
         if INJECTION_PATTERNS_RE.search(clean):
             cid = correlation_id_var.get()
             logger.warning("[%s] A03: Prompt injection blocked in validator", cid)
             raise ValueError("Message contains prohibited patterns")
-        return clean
-
-
-class ScheduleUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-
-    post_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
-    news_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
-    enabled: Optional[bool] = None
-    content_hours_utc: Optional[list[int]] = None
-    news_hours_utc: Optional[list[int]] = None
-
-    @field_validator("content_hours_utc", "news_hours_utc")
-    @classmethod
-    def validate_hours(cls, v: list[int] | None) -> list[int] | None:
-        if v is None:
-            return v
-        for hour in v:
-            if not 0 <= hour <= 23:
-                raise ValueError(f"Hour must be 0-23, got {hour}")
-        return v
-
-
-class ImageGenerateRequest(BaseModel):
-    topic: str = Field(..., min_length=1, max_length=500)
-    content: Optional[str] = Field(default="", max_length=2000)
-    author: Optional[str] = Field(default="")
-    platform: Optional[str] = Field(default="facebook")
+        # Escape HTML entities for downstream LLM context. Storage keeps raw
+        # text; this field is destined for the model prompt, so escaping is
+        # appropriate here.
+        return html.escape(clean, quote=False)
 
 
 class AIInterpretRequest(BaseModel):
@@ -124,6 +153,11 @@ class AIConfigUpdateRequest(BaseModel):
     tone_assertiveness: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     tone_humor: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     tone_formality: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WORKSPACES + USERS
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 class WorkspaceCreateRequest(BaseModel):
@@ -163,6 +197,35 @@ class UserUpdateRequest(BaseModel):
         return _sanitize(v) if v else v
 
 
+class UserDeleteRequest(BaseModel):
+    reassign_to: Optional[str] = Field(default=None, max_length=255)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SCHEDULING + RATE LIMITS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ScheduleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    post_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+    news_interval_hours: Optional[int] = Field(default=None, ge=1, le=168)
+    enabled: Optional[bool] = None
+    content_hours_utc: Optional[list[int]] = None
+    news_hours_utc: Optional[list[int]] = None
+
+    @field_validator("content_hours_utc", "news_hours_utc")
+    @classmethod
+    def validate_hours(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return v
+        for hour in v:
+            if not 0 <= hour <= 23:
+                raise ValueError(f"Hour must be 0-23, got {hour}")
+        return v
+
+
 class RateLimitConfigRequest(BaseModel):
     limit: int = Field(..., ge=1, le=10000)
     window: int = Field(..., ge=1, le=86400, description="Window in seconds")
@@ -172,6 +235,18 @@ class RateLimitConfigRequest(BaseModel):
     enabled: bool = Field(default=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# IMAGE + API KEYS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ImageGenerateRequest(BaseModel):
+    topic: str = Field(..., min_length=1, max_length=500)
+    content: Optional[str] = Field(default="", max_length=2000)
+    author: Optional[str] = Field(default="")
+    platform: Optional[str] = Field(default="facebook")
+
+
 class APIKeyGenerateRequest(BaseModel):
     label: str = Field(default="api-key", min_length=1, max_length=64)
 
@@ -179,6 +254,11 @@ class APIKeyGenerateRequest(BaseModel):
     @classmethod
     def sanitize_label(cls, v: str) -> str:
         return _sanitize(v)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# KNOWLEDGE
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 class KnowledgeCreateRequest(BaseModel):
@@ -208,6 +288,11 @@ class BulkKnowledgeRequest(BaseModel):
     items: list[dict] = Field(..., min_length=1, max_length=50)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# WORKFLOW + MISC
+# ═══════════════════════════════════════════════════════════════════════════
+
+
 class WorkflowRunRequest(BaseModel):
     workflow: str = Field(default="post_publish", max_length=128)
 
@@ -234,7 +319,3 @@ class PluginExecuteRequest(BaseModel):
     @classmethod
     def sanitize_plugin_fields(cls, v: str) -> str:
         return _sanitize(v)
-
-class UserDeleteRequest(BaseModel):
-    reassign_to: Optional[str] = Field(default=None, max_length=255)
-
