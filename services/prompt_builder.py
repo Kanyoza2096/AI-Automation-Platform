@@ -2,31 +2,32 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V2.6 — KB-DRIVEN TOPIC AXIS ROTATION + LENGTH FLOOR:
+V3.0 — DIRECTION REMOVED + GROUNDING STRENGTHENED:
 
-  1. TOPIC AXES. The axis pool is derived from the themes present in the
-     brand's knowledge base. `brand.topic_axes` (axis_name -> description),
-     when set, acts as a priority hint: axes that also exist in the KB are
-     preferred. build_post_prompt() selects one axis per post, preferring
-     any axis other than `last_used_axis`, and instructs the model to write
-     about that axis only. The selected axis is stored on
-     `self.last_used_axis` so the caller can record it and pass it back on
-     the next generation. Brands with neither KB themes nor topic_axes are
-     unaffected. KB lookup fails soft: an outage means no KB axes, never a
-     crashed generation.
+  1. DIRECTION REMOVED. `_brand_charter_block` no longer injects
+     brand.topic_direction into the prompt. That feature was deprecated
+     when TopicSelector V3.0 removed direction-based topic generation.
+     The method remains for backward compatibility but always returns "".
 
-  2. LENGTH FLOOR. Both the structured and prose length blocks state a
-     60-word minimum. The old "a shorter caption is always better" escape
-     hatch is removed; it produced 30-word status updates.
+  2. GROUNDING. The SUBSTANCE / VOICE sections of both format blocks
+     previously required "at least one concrete detail — a metric, a
+     scenario, a specific tool or version." That instruction forced the
+     model to invent metrics (e.g., "our latency dropped from 1200ms to
+     900ms") when the retrieved passages contained no metrics. Replaced
+     with explicit grounding rules:
+       - Every claim traceable to a retrieved passage.
+       - First person forbidden unless the passage uses it.
+       - No before/after/next-step case-study structure.
+       - Conceptual claims are valid evidence.
 
-V2.3 — HASHTAG POLICY + TITLE-OPTIONAL:
-  - Hashtags are no longer requested from the model; the publishing layer
-    (CaptionBuilder) appends the brand's configured hashtags.
-  - Title is optional. Facebook/Twitter/Instagram/WhatsApp captions have no
-    title; LinkedIn/blog may include one.
+  3. CONTENT_QUALITY_CONTRACT rule 4 softened: "conceptual claim from a
+     retrieved passage" is explicitly allowed as evidence for technical
+     brands where the source is a reference text, not a case study.
 
+V2.6 — KB-DRIVEN TOPIC AXIS ROTATION + LENGTH FLOOR (preserved).
+V2.3 — HASHTAG POLICY + TITLE-OPTIONAL (preserved).
 V2.2 — MERGED CONTRACT + CHARTER + TRUNCATION-AWARE LENGTH (preserved).
-V2.1 — BRAND CHARTER WIRING (preserved).
+V2.1 — BRAND CHARTER WIRING (deprecated in V3.0).
 V2.0 — VOICE, SUBSTANCE, COMPLETENESS CONTRACT (preserved).
 V1.9 — PLAIN-TEXT OUTPUT (preserved).
 V1.8 — STRUCTURED-OUTPUT SUPPORT (preserved).
@@ -113,16 +114,36 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Assume the reader is a developer with 3+ years of experience. Do not
   explain what a CI/CD pipeline is. Do not define terms they use daily.
 
-SUBSTANCE — this is what makes the post worth reading:
-- Open with a specific, non-obvious claim. A number, a failure, a
-  counter-intuitive observation. Not a restatement of the topic.
-- Take a position where the topic allows. "It depends on X, and for
-  most teams X is Y" is a position. Presenting two options neutrally
-  is not.
-- Include at least one concrete detail: a metric, a scenario, a
-  specific tool or version.
-- Close with a consequence or a specific next step. Not a rhetorical
-  question.
+VOICE — first person is FORBIDDEN unless the retrieved passages use it:
+- Do NOT write "our system," "our team," "our production," "we
+  reduced," "we implemented," "we learned."
+- Most handbook and reference content is third person. Match it.
+- Wrong: "We cut agent restarts by 30% by implementing idempotent
+  task handling."
+- Right: "Idempotent task handling lets a long-running agent
+  checkpoint and replay without corrupting state."
+- The reader can tell the difference between a real case study and a
+  fabricated one. Fabricated first-person destroys credibility.
+
+GROUNDING — where does the content come from:
+- Every claim in the post must be traceable to one of the retrieved
+  passages. If the passage says "durable state survives restarts,"
+  you may say that. You may NOT say "we reduced latency by 30%."
+- A conceptual claim from the passage IS the evidence. You do not
+  need to add a metric. A specific idea, correctly expressed, is
+  more credible than an invented case study.
+- If the retrieved passages contain a specific metric, tool, or
+  scenario, you may use it. If they do not, do NOT invent one.
+- Close with the practical consequence of the concept. What does
+  the reader do differently? Not a fabricated next step.
+
+FORBIDDEN STRUCTURE — do NOT write a case study:
+- Do NOT open with "We [verb]ed [thing] and [outcome]."
+- Do NOT use a "before state → after state → next step" template.
+- Do NOT include invented metrics, percentages, or latency numbers
+  unless they appear in a retrieved passage.
+- Do NOT close with "Next step is to..." or "We plan to..."
+- The post is a reflection, not a postmortem summary.
 
 Hard rules:
 - "caption" MUST be present and non-empty.
@@ -132,7 +153,7 @@ Hard rules:
 
 
 # Prose path (structured=False) needs the same plain-text, voice, and
-# substance rules. Without them, the model defaults to Markdown and to
+# grounding rules. Without them, the model defaults to Markdown and to
 # the LinkedIn-influencer register that technical audiences reject.
 _PROSE_PLAIN_TEXT_BLOCK = """
 PLAIN-TEXT RULES — the post is published to a plain-text platform:
@@ -162,24 +183,42 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT close with "The key is..." or a summary section.
 - Assume the reader is a developer with 3+ years of experience.
 
-SUBSTANCE:
-- Open with a specific, non-obvious claim. Not a restatement.
-- Take a position where the topic allows.
-- Include at least one concrete detail — a number, a scenario, a
-  specific tool or version.
-- Close with a consequence or a specific next step.
+VOICE — first person is FORBIDDEN unless the retrieved passages use it:
+- Do NOT write "our system," "our team," "our production," "we
+  reduced," "we implemented," "we learned."
+- Most handbook and reference content is third person. Match it.
+- Wrong: "We cut agent restarts by 30% by implementing idempotent
+  task handling."
+- Right: "Idempotent task handling lets a long-running agent
+  checkpoint and replay without corrupting state."
+- The reader can tell the difference between a real case study and
+  a fabricated one. Fabricated first-person destroys credibility.
+
+GROUNDING — where does the content come from:
+- Every claim in the post must be traceable to one of the retrieved
+  passages. If the passage says "durable state survives restarts,"
+  you may say that. You may NOT say "we reduced latency by 30%."
+- A conceptual claim from the passage IS the evidence. You do not
+  need to add a metric. A specific idea, correctly expressed, is
+  more credible than an invented case study.
+- If the retrieved passages contain a specific metric, tool, or
+  scenario, you may use it. If they do not, do NOT invent one.
+- Close with the practical consequence of the concept. What does
+  the reader do differently? Not a fabricated next step.
+
+FORBIDDEN STRUCTURE — do NOT write a case study:
+- Do NOT open with "We [verb]ed [thing] and [outcome]."
+- Do NOT use a "before state → after state → next step" template.
+- Do NOT include invented metrics, percentages, or latency numbers
+  unless they appear in a retrieved passage.
+- Do NOT close with "Next step is to..." or "We plan to..."
+- The post is a reflection, not a postmortem summary.
 """.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Content quality contract — universal rules for every brand and platform
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# These rules are structural, not topical. They apply to a devotional post
-# on WhatsApp and a technical post on LinkedIn equally. The rules never
-# tell the model what to say — they tell it what shape the output must
-# take, and they forbid the specific patterns that mark AI-generated text.
-#
 CONTENT_QUALITY_CONTRACT = """
 CONTENT QUALITY CONTRACT — every rule below is a hard requirement.
 
@@ -206,10 +245,20 @@ balanced list.
 Ground the post in something the reader can verify or relate to. What
 counts as evidence depends on the brand — a number, a config value, a
 named tool, a scripture reference, a personal experience, a quote, a
-customer story, a specific situation. The brand voice guide above states
-which of these applies. The rule is: the reader should be able to say
-"yes, I have seen that" or "no, but I understand the comparison". Do
-not post in the abstract.
+customer story, a specific situation, OR a conceptual claim from the
+retrieved passages.
+
+For technical brands whose corpus is reference text (handbooks,
+textbooks, algorithm references), the CONCEPT ITSELF is the evidence.
+"Union-find with path compression gives amortized near-constant time"
+is sufficient. Do not invent a metric to satisfy a "be concrete"
+instinct — fabricated metrics destroy credibility faster than any
+conceptual abstraction.
+
+The rule is: the reader should be able to say "yes, I have seen that"
+or "no, but I understand the comparison." Do not post in the abstract.
+Do not fabricate. If the retrieved passages contain no metric, state
+the concept — don't invent one.
 
 5. NO ENCYCLOPEDIC STRUCTURE.
 Forbidden:
@@ -231,17 +280,18 @@ Do not open with:
   - "It's no secret that..." / "We all know that..."
   - A dictionary-style definition of the topic
   - A restatement of the title
+  - "We [verb]ed X and [outcome]" — this is a fabricated case study opener
 Start with something only this post could say.
 
 7. PEER VOICE.
 Write as one person to another. Contractions are fine. First-person
 singular is fine and often better than "we" — "we" is meaningless when
-the reader does not know who else is in the room. Sentences may vary in
-length; fragments are allowed. Avoid corporate verbs ("leverage",
-"optimize", "deploy", "enable", "scale") unless the topic is literally
-about those operations. The brand voice guide above tells you what
-"peer" means for this audience — a technical peer, a fellow believer,
-a fellow operator, a neighbour.
+the reader does not know who else is in the room. First-person plural
+("we," "our") is FORBIDDEN unless the retrieved passages use it —
+fabricated first-person reads as a case study, which the reader can
+detect and rejects. Sentences may vary in length; fragments are allowed.
+Avoid corporate verbs ("leverage", "optimize", "deploy", "enable",
+"scale") unless the topic is literally about those operations.
 
 8. CLOSE WITH A SPECIFIC ENDING.
 End with something concrete: the consequence of the point, the next
@@ -249,6 +299,7 @@ action, the specific question the post set up. Forbidden closes:
   - "What do you think?" (too generic)
   - "Let me know your thoughts!" (says nothing)
   - "Follow for more content like this."
+  - "Next step is to..." (fabricated case-study close)
   - Any sentence that sounds like a summary of the post.
 
 9. EMOJI, IF USED, MUST BE SPECIFIC.
@@ -268,12 +319,8 @@ lines between paragraphs and full capitalization for emphasis.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Platform contracts — length, structure, hashtags, opening, emoji, formatting
+# Platform contracts — unchanged from V2.6.
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# Hashtag guidance: the publishing layer appends brand hashtags on every
-# platform that uses them. No contract asks the model to produce hashtags.
-#
 _LINKEDIN_CONTRACT = """
 PLATFORM CONTRACT — LinkedIn.
 - Length: 60-120 words. Do not exceed 150.
@@ -375,13 +422,7 @@ _DEFAULT_PLATFORM_CONTRACT = _FACEBOOK_CONTRACT
 
 
 def resolve_platform_contract(platform: Optional[str]) -> str:
-    """Return the platform contract that matches the target channel.
-
-    Default is Facebook. The primary use case for the platform is social
-    content, and Facebook's constraints are the safest default for an
-    unspecified social channel. Brands that target LinkedIn set
-    brand.platform='linkedin' and get the LinkedIn contract explicitly.
-    """
+    """Return the platform contract that matches the target channel."""
     key = (platform or "").strip().lower()
     return PLATFORM_CONTRACTS.get(key, _DEFAULT_PLATFORM_CONTRACT)
 
@@ -393,13 +434,11 @@ def _contract_heading(contract: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Style Registry — loads once at import, hot-swappable via reload()
+# Style Registry
 # ═══════════════════════════════════════════════════════════════════════════
 
 _STYLE_REGISTRY_PATH = Path(__file__).parent.parent / "config" / "content_styles.yaml"
 
-# Fallback guide is written as a description of what to produce rather than
-# a list of don'ts. Models follow positive instructions more reliably.
 _SAFE_FALLBACK_GUIDE = """
 Content Style: CONVERSATIONAL
 
@@ -420,8 +459,9 @@ Voice:
 
 Evidence for this brand: whatever the reader could point at and say
 "yes, that." A number, a scene, a name, a quotation, a specific
-situation. Do not invent facts. If you don't have evidence, write about
-something else.
+situation, or a conceptual claim from the retrieved passages. Do not
+invent facts. If you don't have evidence, state the concept — don't
+fabricate.
 
 Peer for this brand: someone the writer knows by name. Not "our
 audience". Not "developers". Not "believers". A person.
@@ -517,10 +557,6 @@ class StyleRegistry:
         return "general"
 
     def resolve_for_brand(self, brand: Brand) -> tuple[str, str]:
-        """Return (guide, source_label).
-
-        source_label is one of: 'custom', 'registry:<key>', 'fallback'.
-        """
         custom = getattr(brand, "custom_style_guide", None)
         if isinstance(custom, str) and custom.strip():
             return custom.strip(), "custom"
@@ -532,7 +568,6 @@ class StyleRegistry:
         return _SAFE_FALLBACK_GUIDE.strip(), "fallback"
 
     def guide_for_brand(self, brand: Brand) -> str:
-        """Backward-compatible: returns just the guide text."""
         guide, _ = self.resolve_for_brand(brand)
         return guide
 
@@ -549,19 +584,13 @@ def reload_style_registry() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Knowledge-base theme lookup (module level, used by topic-axis selection)
+# Knowledge-base theme lookup
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_kb_themes(brand: Brand) -> Dict[str, str]:
-    """Return {theme: description} from the brand's knowledge base.
-
-    Fails soft: if the KB service is unavailable or raises, returns {} so
-    post generation falls back to brand.topic_axes (or no axis) instead of
-    crashing.
-    """
+    """Return {theme: description} from the brand's knowledge base."""
     try:
         from services.knowledge_base import get_brand_themes
-
         themes = get_brand_themes(
             brand_id=getattr(brand, "id", None),
             workspace_id=getattr(brand, "workspace_id", None),
@@ -583,11 +612,7 @@ class PromptBuilder:
 
     def __init__(self, style_registry: Optional[StyleRegistry] = None):
         self._registry = style_registry or _style_registry
-        # Set during build_post_prompt; the caller reads it afterwards to
-        # record the axis used for this post so the next generation rotates.
         self.last_used_axis: Optional[str] = None
-
-    # ── Health ────────────────────────────────────────────────────────
 
     def health_check(self) -> dict:
         try:
@@ -615,8 +640,6 @@ class PromptBuilder:
     def get_status(self) -> dict:
         return self.health_check()
 
-    # ── Defaults ──────────────────────────────────────────────────────
-
     @staticmethod
     def _default_brand() -> Brand:
         from models.brand import Brand as _Brand
@@ -627,35 +650,25 @@ class PromptBuilder:
         from models.ai_profile import AIProfile as _AIProfile
         return _AIProfile.create_default("default")
 
-    # ── Shared helpers ────────────────────────────────────────────────
-
     @staticmethod
     def _brand_charter_block(brand: Brand) -> str:
-        """Return a formatted brand voice/direction block, or "".
+        """DEPRECATED in V3.0 — always returns "".
 
-        brand.topic_direction is a charter: subject matter, voice, and
-        constraints. It was originally written for topic selection but
-        reads as an editorial brief. Surfacing it in the post and chat
-        prompts means the generation call honors the same declared voice
-        the topic-selection call was already following.
+        Direction-based topic generation was removed in TopicSelector V3.0
+        because it produced abstract topics the corpus could not support.
+        The charter was the model-side input to that feature. Keeping it
+        out of the prompt removes the last path by which brand.topic_direction
+        could override the grounding rules — a charter that says "be
+        specific, cite metrics" would push the model back into fabricated
+        case-study mode.
 
-        The block is explicitly marked as overriding any conflicting
-        guidance below it so that a specific charter beats a generic
-        rule. When the brand has no charter, the block is empty and the
-        generic rules act as the floor.
+        The method remains callable for backward compatibility with any
+        external code that still invokes it; it simply returns "".
         """
-        direction = getattr(brand, "topic_direction", None)
-        if not isinstance(direction, str) or not direction.strip():
-            return ""
-        return (
-            "\nBrand voice and direction — this OVERRIDES any conflicting "
-            "guidance below. Follow it exactly:\n"
-            f"{direction.strip()}\n"
-        )
+        return ""
 
     @staticmethod
     def _brand_context_block(brand: Brand) -> str:
-        """Render the BRAND CONTEXT section body."""
         lines = [
             f"Brand Tone: {brand.tone}",
             f"Brand Language: {brand.language}",
@@ -670,27 +683,12 @@ class PromptBuilder:
             lines.append(f"Style Category: {style_category}")
         return "\n".join(lines) + "\n"
 
-    # ── Topic axis selection (KB-driven) ─────────────────────────────
-
     @staticmethod
     def _select_topic_axis(
         brand: Brand,
         last_used_axis: Optional[str],
     ) -> tuple[Optional[str], Optional[str]]:
-        """Select a topic axis for this post.
-
-        The pool comes from the themes in the brand's knowledge base.
-        brand.topic_axes, when populated, is a priority hint.
-
-        Priority:
-          1. brand.topic_axes that also exist in the KB.
-          2. Every theme in the KB.
-          3. brand.topic_axes alone (KB empty or unavailable).
-        An axis other than last_used_axis is always preferred when the
-        pool has more than one entry.
-
-        Returns (axis_name, description) or (None, None).
-        """
+        """Select a topic axis for this post."""
         kb_themes = _get_kb_themes(brand)
         brand_axes: Mapping[str, Any] = getattr(brand, "topic_axes", None) or {}
 
@@ -717,7 +715,6 @@ class PromptBuilder:
 
     @staticmethod
     def _axis_block(axis_name: Optional[str], axis_description: Optional[str]) -> str:
-        """Render the axis instruction block, or "" if no axis was selected."""
         if not axis_name:
             return ""
         desc_line = f"{axis_description}\n" if axis_description else ""
@@ -729,8 +726,6 @@ class PromptBuilder:
             f"Do not open with a warm-up. Focus entirely on '{axis_name}'.\n"
         )
 
-    # ── Public API ────────────────────────────────────────────────────
-
     def build_post_prompt(
         self,
         brand: Optional[Brand] = None,
@@ -741,30 +736,11 @@ class PromptBuilder:
         platform: Optional[str] = None,
         last_used_axis: Optional[str] = None,
     ) -> str:
-        """Build a post-generation prompt.
-
-        `structured=True` appends POST_SCHEMA_PROMPT_BLOCK so the model
-        emits a JSON object matching POST_SCHEMA_REQUIRED_KEYS. Callers
-        using the gateway's structured path MUST set this. Callers
-        generating free prose (chat, fallback) MUST NOT — the prose
-        path uses _PROSE_PLAIN_TEXT_BLOCK instead.
-
-        `platform` selects the platform contract. Resolution order:
-          1. Explicit argument.
-          2. brand.platform attribute.
-          3. Facebook default.
-
-        `last_used_axis` is the topic axis used for the previous post.
-        A different axis is preferred when one is available. The axis
-        chosen for THIS prompt is left on `self.last_used_axis` for the
-        caller to record; it is None when no axis could be selected.
-        """
         if brand is None:
             brand = self._default_brand()
         if ai_profile is None:
             ai_profile = self._default_ai_profile()
 
-        # Reset per-call; set below only if an axis was selected.
         self.last_used_axis = None
 
         system_prompt = ai_profile.build_system_prompt(
@@ -774,7 +750,6 @@ class PromptBuilder:
 
         brand_context = self._brand_context_block(brand)
 
-        # Topic axis.
         axis_name, axis_desc = self._select_topic_axis(brand, last_used_axis)
         if axis_name is not None:
             self.last_used_axis = axis_name
@@ -784,9 +759,6 @@ class PromptBuilder:
             )
         axis_str = self._axis_block(axis_name, axis_desc)
 
-        # Topic: supplied by the pipeline. If absent, do not invite the
-        # model to invent one — that produced duplicate content in an
-        # earlier version. Failing closed is the correct behavior.
         topic_str = (
             f"Topic: {topic}"
             if topic and str(topic).strip()
@@ -801,17 +773,15 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
-        # Brand charter. Sits immediately after the topic and before the
-        # style guide so it has primary weight.
+        # V3.0 — charter_block is always "" (deprecated). Kept in the
+        # prompt template so the shape stays stable for any downstream
+        # consumer that expects the field.
         charter_block = self._brand_charter_block(brand)
 
-        # Platform contract — the model writes for the target channel.
         resolved_platform = platform or getattr(brand, "platform", None)
         platform_contract = resolve_platform_contract(resolved_platform)
         platform_heading = _contract_heading(platform_contract)
 
-        # Format instruction: structured gets the full JSON schema block,
-        # prose gets the plain-text block.
         format_block = POST_SCHEMA_PROMPT_BLOCK if structured else _PROSE_PLAIN_TEXT_BLOCK
 
         task = f"""
@@ -843,10 +813,9 @@ Then write the post. Do not include the three decisions in the output.
 
         logger.debug(
             "Built post prompt: brand=%s style=%s platform=%s registry_version=%s "
-            "structured=%s charter_present=%s axis=%s",
+            "structured=%s axis=%s",
             brand.name, style_source, resolved_platform or "facebook",
-            self._registry.version, structured, bool(charter_block),
-            axis_name or "none",
+            self._registry.version, structured, axis_name or "none",
         )
         return f"{system_prompt}\n\n{task}"
 
