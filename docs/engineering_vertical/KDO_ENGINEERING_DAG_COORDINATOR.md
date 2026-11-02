@@ -37,3 +37,14 @@ Expired work is not automatically replayed. If worker absence cannot be confirme
 the queue leaves the job running; if absence is confirmed after lease expiry, it
 marks the job `uncertain` for explicit reconciliation. The SQLite queue is a
 single-host development/staging adapter, not the production shared queue.
+
+
+### Scoped worker claims
+
+The build queue's `claim_next` accepts optional `tenant_id` and
+`workspace_id` together. When both are supplied, the claim query selects only
+queued jobs in that exact tenant/workspace scope. Supplying only one value or an
+empty scope fails closed. Omitting both retains the global claim behavior for
+trusted central schedulers; tenant-bound workers should always provide both.
+Scope-filtered claiming reduces cross-tenant work capture, while execution still
+revalidates actor authorization, the lease fence, and approved-plan evidence.
