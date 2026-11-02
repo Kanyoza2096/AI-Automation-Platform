@@ -4,6 +4,7 @@ from api.dependencies import *
 from api.v1_models import *
 from api.v1_helpers import *
 from api.v1_stores import *
+from workflows import AVAILABLE_WORKFLOWS
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ async def list_workflows(
             last_runs[name] = entry
 
     workflows = [
-        {"name": n, **m, "last_run": last_runs.get(n)}
+        {"name": n, **{k: v for k, v in m.items() if k != "class"}, "last_run": last_runs.get(n)}
         for n, m in AVAILABLE_WORKFLOWS.items()
     ]
     return _ok({"workflows": workflows})
@@ -38,18 +39,11 @@ async def run_workflow(
     workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
     _auth: bool = Depends(require_auth),
 ):
-    """Run a workflow for all brands.
-
-    FIX: `manager.trigger_all` is an async method. The previous version
-    passed it to `_async_wrap`, which runs synchronous callables in a
-    thread executor — it would return the coroutine object without
-    awaiting it, and the `.get("ok")` call on that coroutine would
-    raise AttributeError, which _safe_err caught and reported as a 500.
-    """
+    """Run a workflow for all brands."""
     try:
         name = body.workflow.strip().lower()
         if name not in AVAILABLE_WORKFLOWS:
-            return _err(f"Unknown workflow: {name}", 400)
+            return _err(f"Unknown workflow: {name}. Available: {list(AVAILABLE_WORKFLOWS.keys())}", 400)
 
         from scheduler.brand_scheduler import BrandSchedulerManager
         manager = await _async_wrap(container.resolve, BrandSchedulerManager)
@@ -69,7 +63,6 @@ async def run_workflow(
                 "brands_triggered": result.get("brands_triggered", 0),
                 "results": result.get("results", {}),
             })
-        # trigger_all returns brands_failed (list), not error (str)
         failed = result.get("brands_failed") or []
         return _err(
             f"Workflow failed for {len(failed)} brand(s): {failed}",
@@ -84,7 +77,6 @@ async def workflow_status(container=Depends(get_container), _auth: bool = Depend
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
         manager = await _async_wrap(container.resolve, BrandSchedulerManager)
-        # get_all_status is sync; _async_wrap is correct here.
         all_status = await _async_wrap(manager.get_all_status)
         running = sum(1 for s in all_status if s.get("running"))
         return _ok({
@@ -102,12 +94,7 @@ async def workflow_history_endpoint(
     _auth: bool = Depends(require_auth),
     limit: int = 20,
 ):
-    """
-    Get workflow run history — workspace-scoped.
-
-    Architecture §31 — Tenant Isolation:
-      History is filtered to the authenticated workspace.
-    """
+    """Get workflow run history — workspace-scoped."""
     try:
         limit = min(50, max(1, limit))
         workspace_id = auth_workspace_id_var.get()
@@ -134,7 +121,6 @@ async def workflow_pause(container=Depends(get_container), _auth=Depends(require
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
         manager = await _async_wrap(container.resolve, BrandSchedulerManager)
-        # manager.stop is sync; _async_wrap is correct.
         await _async_wrap(manager.stop)
         return _ok({"status": "paused"})
     except Exception as exc:
@@ -147,17 +133,7 @@ async def workflow_trigger(
     container=Depends(get_container),
     _auth=Depends(require_workspace_operator),
 ):
-    """Trigger a workflow run for a specific brand.
-
-    Returns job_id for traceability (Architecture §29).
-
-    FIX: the previous version constructed a BrandScheduler with no
-    job_service or event_bus. trigger_manual then ran without being able
-    to create or track an automation_job, so the "trigger" succeeded but
-    left no trace in automation_jobs and never reached the durable path.
-    Now the dependencies are resolved from the container, matching how
-    BrandSchedulerManager builds its per-brand schedulers.
-    """
+    """Trigger a workflow run for a specific brand."""
     try:
         from scheduler.brand_scheduler import BrandScheduler, BrandSchedulerManager
         from repositories.brand_repository import BrandRepository
@@ -182,9 +158,6 @@ async def workflow_trigger(
         if not ai_profile:
             return _err(f"No AI profile found for brand '{brand_id}'. Assign one in Brand settings.", 400)
 
-        # Reuse the manager's already-running scheduler if it exists;
-        # otherwise construct one with the same dependencies the manager
-        # would use. This keeps the job tracking and event bus intact.
         manager = container.try_resolve(BrandSchedulerManager)
         scheduler = None
         if manager is not None and hasattr(manager, "_schedulers"):
