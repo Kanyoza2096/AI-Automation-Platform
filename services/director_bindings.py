@@ -79,6 +79,16 @@ CRITICAL_CAPABILITIES = frozenset({
     "change_access_control",
 })
 
+# These capabilities are deliberately present in the Director's capability
+# catalogue but must not be bound to autonomous Director execution.
+# Scheduled content generation and publishing belong exclusively to the
+# Brand Scheduler; binding this handler caused duplicate publishes and quota
+# exhaustion. Keep the capability visible for governance/compatibility, but
+# exclude it from the "unbound handler" defect report.
+INTENTIONALLY_UNBOUND_CAPABILITIES = frozenset({
+    "publish_scheduled_content",
+})
+
 
 def _ok(service: str, result: Any = None, **extra) -> Dict[str, Any]:
     out: Dict[str, Any] = {"ok": True, "status": "executed", "service": service}
@@ -668,9 +678,15 @@ def bind_director_capabilities(director, container=None) -> Dict[str, str]:
 
 
 def assert_no_unbound_capabilities(director) -> List[str]:
+    """Return genuinely missing handlers, excluding governed non-bindings.
+
+    Some capabilities remain in the catalogue for visibility and policy
+    validation while execution is intentionally owned by another subsystem.
+    Those must not be reported as broken bindings.
+    """
     unbound: List[str] = []
     for name, cap in getattr(director, "capabilities", {}).items():
-        if name in CRITICAL_CAPABILITIES:
+        if name in CRITICAL_CAPABILITIES or name in INTENTIONALLY_UNBOUND_CAPABILITIES:
             continue
         handler = getattr(cap, "handler", None)
         hname = getattr(handler, "__name__", str(handler))
@@ -683,4 +699,5 @@ __all__ = [
     "bind_director_capabilities",
     "assert_no_unbound_capabilities",
     "CRITICAL_CAPABILITIES",
+    "INTENTIONALLY_UNBOUND_CAPABILITIES",
 ]
