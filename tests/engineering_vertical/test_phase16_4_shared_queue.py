@@ -185,6 +185,7 @@ def test_scoped_claim_filters_tenant_and_workspace_in_locked_select():
     select = next((sql, params) for sql, params in conn.statements
                   if "FOR UPDATE SKIP LOCKED" in sql)
     assert "tenant_id=%s AND workspace_id=%s" in select[0]
+    assert "ORDER BY created_at,job_id LIMIT 1 FOR UPDATE SKIP LOCKED" in select[0]
     assert select[1] == ("tenant-a", "workspace-a")
     assert conn.committed
 
