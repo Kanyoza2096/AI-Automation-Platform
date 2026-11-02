@@ -1,0 +1,47 @@
+name: Engineering Vertical Focused Tests
+
+on:
+  pull_request:
+    paths:
+      - "services/kdo_engineering_*.py"
+      - "services/kdo_engineering_*.py"
+      - "tests/engineering_vertical/**"
+      - "migrations/*engineering*"
+      - "requirements.txt"
+      - ".github/workflows/engineering-vertical-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engineering-vertical-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install system libraries for declared runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev pkg-config python3-dev
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Run focused engineering vertical tests
+        run: |
+          python -m pytest -q \
+            tests/engineering_vertical/test_phase16_3_worker_queue.py \
+            tests/engineering_vertical/test_phase16_4_shared_queue.py \
+            tests/engineering_vertical/test_dag_coordinator.py
