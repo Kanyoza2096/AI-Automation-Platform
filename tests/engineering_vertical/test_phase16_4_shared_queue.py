@@ -174,3 +174,25 @@ def test_postgres_contract_registration_is_explicit_and_high_risk():
                                                receipt_verifier=lambda _scope, _receipt: True)
     assert ready["ready"] is True
     assert ready["release_authorized"] is False
+
+
+def test_scoped_claim_filters_tenant_and_workspace_in_locked_select():
+    conn = FakeConnection(next_job=job_row())
+    queue = PostgresEngineeringBuildQueue(lambda: conn)
+    claimed = queue.claim_next(worker_id="worker-a", lease_seconds=90,
+                               tenant_id="tenant-a", workspace_id="workspace-a")
+    assert claimed is not None
+    select = next((sql, params) for sql, params in conn.statements
+                  if "FOR UPDATE SKIP LOCKED" in sql)
+    assert "tenant_id=%s AND workspace_id=%s" in select[0]
+    assert select[1] == ("tenant-a", "workspace-a")
+    assert conn.committed
+
+
+@pytest.mark.parametrize("tenant_id,workspace_id", [
+    ("tenant-a", None), (None, "workspace-a"), ("", "workspace-a"), ("tenant-a", ""),
+])
+def test_postgres_scoped_claim_rejects_partial_or_empty_scope(tenant_id, workspace_id):
+    queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row()))
+    with pytest.raises(Phase163Error, match="scope"):
+        queue.claim_next(worker_id="worker-a", tenant_id=tenant_id, workspace_id=workspace_id)
