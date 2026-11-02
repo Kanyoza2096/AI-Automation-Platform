@@ -18,6 +18,25 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.16 — DIRECTION-BASED TOPIC GENERATION REMOVED:
+
+  The direction-based generation path (brand.topic_direction read by the
+  model to invent topics) was removed. Direction generation produced
+  abstract topics from the brand charter that the corpus could not
+  support — retrieval returned irrelevant chunks, and the prompt's
+  specificity contract forced the model to invent metrics (e.g.,
+  "our auth latency was 250ms until we switched to JWT").
+
+  Topics now come exclusively from configured sources, in this order:
+    1. brand.custom_topics
+    2. brand_config.fallback_topics + keywords
+    3. Knowledge Base entries (metadata.title grouped by metadata.theme)
+    4. Platform fallback topics
+
+  Every topic is backed by at least one record, so retrieval is grounded.
+  brands.topic_direction is retained in the schema for backward
+  compatibility but is no longer read.
+
 V1.15 — AXIS PERSISTENCE MATCHES THE RIGHT COLUMN:
 
   automation_jobs has two identifiers: `id` (primary key, job_*) and
@@ -68,7 +87,7 @@ V1.12 — Hashtag-tail false positive fixed in _caption_is_well_formed;
 V1.11 — PublishStep writes post_history (best-effort).
 V1.10 — Truncation guard in GenerateContentStep.
 V1.9  — PublishStep raises StepFailure instead of RuntimeError.
-V1.8  — Direction-based topic generation.
+V1.8  — Direction-based topic generation. REMOVED in V1.16.
 V1.7  — Publish result contract normalization.
 V1.6  — Async-native steps.
 """
@@ -110,11 +129,22 @@ _TRAILING_HASHTAGS_RE = re.compile(r"(?:\s*#\w+)+$")
 
 # ── 1. Select Topic ───────────────────────────────────────────────────
 class SelectTopicStep(Step):
-    """Pick a topic — either generated from the brand's direction or selected.
+    """Pick a topic from the brand's configured sources.
 
-    Direction-based generation runs first when the brand declares a
-    topic_direction. Falls through to selection on any failure so the
-    workflow never blocks on AI availability.
+    V1.16 — DIRECTION REMOVED:
+      The direction-based generation path was removed. Topics now come
+      exclusively from configured sources (custom_topics, brand_config,
+      or the brand's Knowledge Base), so every topic is backed by at least
+      one record and retrieval is grounded.
+
+    Priority order (handled by TopicSelector):
+      1. custom_topics
+      2. brand_config.fallback_topics
+      3. Knowledge Base entries (metadata.title grouped by metadata.theme)
+      4. Platform fallback topics
+
+    Brands with no configured topic source raise ValueError instead of
+    publishing the "unconfigured" sentinel text.
     """
     name = "select_topic"
 
@@ -136,29 +166,14 @@ class SelectTopicStep(Step):
             knowledge_repo=self._knowledge_repo,
         )
 
-        if getattr(selector, "has_direction", False):
-            recent = context.get("recent_topics") or []
-            generated = selector.generate_from_direction(recent=recent)
-            if generated:
-                context["topic"] = generated
-                context["category"] = "generated"
-                logger.info(
-                    "PostWorkflow: topic='%s' category='generated' brand='%s' "
-                    "(direction)",
-                    generated, self._brand.name,
-                )
-                return {"topic": generated, "category": "generated"}
-            logger.info(
-                "PostWorkflow: direction generation unavailable for brand '%s'; "
-                "falling back to selection",
+        if not selector.is_configured():
+            logger.error(
+                "PostWorkflow: brand '%s' has no configured topic source. "
+                "Add custom_topics, brand_config.fallback_topics, or KB entries.",
                 self._brand.name,
             )
-
-        if not selector.has_topics():
-            logger.warning(
-                "PostWorkflow: brand '%s' has no KB entries and no custom_topics. "
-                "Add documents to the Knowledge Base so topics can be picked from it.",
-                self._brand.name,
+            raise ValueError(
+                f"Brand '{self._brand.name}' has no configured topic source"
             )
 
         topic, cat = selector.pick(self._category)
@@ -1019,7 +1034,7 @@ class PostPublishWorkflow(Workflow):
     """8-stage workflow.
 
     Stages:
-      1. Select Topic          — from brand KB, custom_topics, or AI-generated
+      1. Select Topic          — from brand KB or custom_topics
       2. Knowledge Context     — retrieve relevant KB facts
       3. Generate Content      — LLM caption + Cloudflare image
       4. Validate Content      — ContentValidator
