@@ -15,13 +15,14 @@ router = APIRouter()
 async def create_brand(
     workspace_id: str,
     body: dict,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
     """Create a brand in a workspace."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from models.brand import Brand
         from repositories.brand_repository import BrandRepository
 
@@ -50,12 +51,13 @@ async def create_brand(
 @router.get("/workspaces/{workspace_id}/brands")
 async def list_brands(
     workspace_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """List brands in a workspace."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from repositories.brand_repository import BrandRepository
         repo = await _async_wrap(container.resolve, BrandRepository)
         brands = await _async_wrap(repo.find_by_workspace, workspace_id)
@@ -69,12 +71,13 @@ async def list_brands(
 @router.get("/brands/{brand_id}")
 async def get_brand(
     brand_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """Get a specific brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from repositories.brand_repository import BrandRepository
         repo = await _async_wrap(container.resolve, BrandRepository)
         brand = await _async_wrap(repo.find_by_id, brand_id)
@@ -91,13 +94,14 @@ async def get_brand(
 async def update_brand(
     brand_id: str,
     body: dict,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
     """Update a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from models.brand import Brand
         from repositories.brand_repository import BrandRepository
 
@@ -128,13 +132,14 @@ async def update_brand(
 @router.delete("/brands/{brand_id}")
 async def delete_brand(
     brand_id: str,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
     """Delete a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         from repositories.brand_repository import BrandRepository
         repo = await _async_wrap(container.resolve, BrandRepository)
         deleted = await _async_wrap(repo.delete, brand_id)
@@ -146,4 +151,3 @@ async def delete_brand(
         raise
     except Exception as exc:
         return _safe_err(exc, f"DELETE /api/v1/brands/{brand_id}")
-
