@@ -10,8 +10,21 @@ router = APIRouter()
 # ═══════════════════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE
 #
-# INCIDENT-2026-10-16-knowledge: (unchanged) — see prior incidents.
-# INCIDENT-2026-11-02-knowledge-bulk: (unchanged) — request param fixed.
+# INCIDENT-2026-10-16-knowledge:
+#   Three handlers in this file were un-scoped (read leak, orphan write,
+#   cross-tenant delete). Fixed by routing through KnowledgeRepository and
+#   adding require_workspace_ownership checks.
+#
+# INCIDENT-2026-11-02-knowledge-bulk:
+#   require_workspace_ownership was called with 3 args instead of 4; fixed
+#   by passing request as the third positional argument everywhere.
+#
+# INCIDENT-2026-11-02-knowledge-async:
+#   KnowledgeBase.add_document / .search / .initialize are `async def`.
+#   They were being invoked via _async_wrap (which runs sync callables in a
+#   thread pool) — that returns a coroutine object without awaiting it, so
+#   `entry.id` failed with 'coroutine' object has no attribute 'id'. Fixed
+#   by awaiting the coroutine directly.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -41,8 +54,26 @@ async def create_knowledge_entry(
             workspace_id=brand.workspace_id,
             repository=kb_repo,
         )
-        entry = await _async_wrap(
-            kb.add_document,
+        # KnowledgeBase may expose an async initialize(); call it if present.
+        init_fn = getattr(kb, "initialize", None)
+        if callable(init_fn):
+            try:
+                init_result = init_fn()
+                if asyncio.iscoroutine(init_result):
+                    await init_result
+            except Exception as e:
+                logger.warning(
+                    "kb_initialize_failed",
+                    extra={
+                        "event": "kb_initialize_failed",
+                        "brand_id": brand_id,
+                        "error_class": type(e).__name__,
+                        "error_msg": str(e)[:300],
+                    },
+                )
+
+        # add_document is async — await directly.
+        entry = await kb.add_document(
             content=body.content,
             doc_type=body.doc_type,
             metadata=body.metadata,
@@ -82,7 +113,11 @@ async def delete_knowledge_entry(
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
-    """Delete a knowledge entry the caller's workspace owns."""
+    """Delete a knowledge entry the caller's workspace owns.
+
+    INCIDENT-2026-10-16-knowledge: previously deleted any entry by ID with
+    no ownership check. Now: look up first, verify tenancy binding, delete.
+    """
     try:
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(container.resolve, KnowledgeRepository)
@@ -98,6 +133,8 @@ async def delete_knowledge_entry(
         elif workspace_id:
             await require_workspace_ownership("workspace", workspace_id, request, container)
         else:
+            # No tenancy binding on the row. Refuse rather than allow a
+            # delete against an ambiguous target.
             raise HTTPException(status_code=404, detail="Knowledge entry not found")
 
         deleted = await _async_wrap(repo.delete, knowledge_id)
@@ -137,7 +174,25 @@ async def search_knowledge_entries(
             workspace_id=brand.workspace_id,
             repository=kb_repo,
         )
-        results = await _async_wrap(kb.search, query=body.query, top_k=body.top_k)
+        init_fn = getattr(kb, "initialize", None)
+        if callable(init_fn):
+            try:
+                init_result = init_fn()
+                if asyncio.iscoroutine(init_result):
+                    await init_result
+            except Exception as e:
+                logger.warning(
+                    "kb_initialize_failed",
+                    extra={
+                        "event": "kb_initialize_failed",
+                        "brand_id": brand_id,
+                        "error_class": type(e).__name__,
+                        "error_msg": str(e)[:300],
+                    },
+                )
+
+        # search is async — await directly.
+        results = await kb.search(query=body.query, top_k=body.top_k)
         serialised = [
             {"entry": entry.model_dump(mode="json"), "similarity": float(sim)}
             for entry, sim in results
@@ -160,9 +215,9 @@ async def bulk_create_knowledge(
 ):
     """Bulk create knowledge entries.
 
-    Each item failure is logged with error_class + error_msg, and the
-    first 20 failures are returned in the response as `error_details` so
-    the caller can diagnose without a log round-trip.
+    Each item failure is logged with error_class + error_msg; the first 20
+    failures are returned in the response as `error_details` so the caller
+    can diagnose without a log round-trip.
     """
     try:
         await require_workspace_ownership("workspace", workspace_id, request, container)
@@ -176,14 +231,13 @@ async def bulk_create_knowledge(
             repository=kb_repo,
         )
 
-        # Some KnowledgeBase implementations require explicit initialization
-        # before add_document works. If the class exposes initialize(), call
-        # it once here; the call is idempotent-safe (guarded by an internal
-        # flag in most implementations) and cheap when it's already ready.
+        # Initialize the KB if it exposes an async initialize().
         init_fn = getattr(kb, "initialize", None)
         if callable(init_fn):
             try:
-                await _async_wrap(init_fn)
+                init_result = init_fn()
+                if asyncio.iscoroutine(init_result):
+                    await init_result
             except Exception as e:
                 logger.warning(
                     "bulk_kb_initialize_failed",
@@ -201,8 +255,8 @@ async def bulk_create_knowledge(
                 errors.append({"index": i, "error": "content required"})
                 continue
             try:
-                entry = await _async_wrap(
-                    kb.add_document,
+                # add_document is async — await directly, do NOT _async_wrap.
+                entry = await kb.add_document(
                     content=content,
                     doc_type=item.get("doc_type", "text"),
                     metadata=item.get("metadata", {}),
@@ -250,7 +304,11 @@ async def list_knowledge(
     limit: int = 50,
     q: str = "",
 ):
-    """List knowledge entries for the caller's workspace."""
+    """List knowledge entries for the caller's workspace.
+
+    INCIDENT-2026-10-16-knowledge: previously ran an un-scoped select("*").
+    Now scoped to the caller's workspace via KnowledgeRepository.find_by_workspace().
+    """
     try:
         limit = min(200, max(1, limit))
         workspace_id = _resolve_workspace_from_request(request)
@@ -282,7 +340,12 @@ async def create_knowledge(
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
-    """Create a knowledge entry in the caller's workspace."""
+    """Create a knowledge entry in the caller's workspace.
+
+    INCIDENT-2026-10-16-knowledge: previously inserted a row with no
+    workspace_id (orphan) and swallowed write failures with bare except.
+    Now: workspace_id is set from the request, failures propagate.
+    """
     try:
         workspace_id = _resolve_workspace_from_request(request)
         if not workspace_id:
