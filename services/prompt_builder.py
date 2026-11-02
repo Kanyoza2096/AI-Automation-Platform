@@ -2,35 +2,43 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V3.1 — LENGTH FLOOR 150 WORDS, 3-5 PARAGRAPHS, LAYERED STRUCTURE:
+V3.2 — VOICE CHARTER RESTORED + MANDATORY QUESTION CLOSE + EVIDENCE MENU:
 
-  Restores the substance of the months-ago captions (~180-200 words,
-  4 paragraphs, each adding new information) that the current prompt
-  was suppressing.
+  1. VOICE CHARTER RESTORED. `_brand_voice_block` injects
+     brand.topic_direction as an OVERRIDING voice brief in the post and
+     chat prompts. V3.0 correctly removed direction-based TOPIC
+     generation but also (incorrectly) removed direction-based VOICE
+     injection. Those are separate concerns:
+       - Topic generation: driven by KB themes (V3.0's change — keep).
+       - Voice: driven by the brand charter (V2.1's feature — restore).
+     A well-written charter ("analytical, opinionated, name tradeoffs,
+     short paragraphs") is what produces the best captions this brand
+     has ever published.
 
-  1. LENGTH BUDGET raised from "60-120, floor 60" to "180-200, floor 150".
-     The old 60-word floor was the operative constraint — the model
-     landed at the minimum every time, producing 55-80 word captions
-     that met the letter of the prompt and none of the intent.
+  2. FIRST-PERSON RESOLVED. V3.0 forbade "we/our" unless the retrieved
+     passages used it. That was too strict for a charter that explicitly
+     permits first-person plural. New rule: first person allowed if
+     EITHER the charter OR the retrieved passages use it. If neither,
+     stay neutral.
 
-  2. STRUCTURE block added. Each paragraph must add new information;
-     restatement is forbidden. The months-ago captions used paragraph
-     layers (claim → context → example → implication → question) and
-     the current captions flattened into a single restating paragraph.
+  3. MANDATORY QUESTION CLOSE. Facebook contract requires the post to
+     close with a specific question directed at the reader. Not
+     rhetorical, not "what do you think?", not a summary. The months-ago
+     captions all used this; the intermediate ones didn't because the
+     rule had weakened to "consequence OR question."
 
-  3. Applies to both _PROSE_PLAIN_TEXT_BLOCK and POST_SCHEMA_PROMPT_BLOCK
-     so both generation paths get the same length and structure rules.
+  4. FOUR-WAY EVIDENCE MENU. Restored the V2.1 evidence instruction —
+     "include at least one concrete detail: a metric, a scenario, a
+     specific tool or version" — merged with V3.0's grounding rules. The
+     model may pick any of the four, or state a conceptual claim from
+     the passages. Do not invent a metric to satisfy "be concrete."
 
-V3.0 — DIRECTION REMOVED + GROUNDING STRENGTHENED (preserved):
-  - _brand_charter_block returns "" (direction feature deprecated).
-  - VOICE / GROUNDING / FORBIDDEN STRUCTURE rules prohibit fabricated
-    metrics, first-person case studies, and before/after/next-step
-    templates.
-
+V3.1 — LENGTH FLOOR 150 WORDS, 3-5 PARAGRAPHS, LAYERED STRUCTURE (preserved).
+V3.0 — DIRECTION TOPIC GENERATION REMOVED + GROUNDING STRENGTHENED (preserved).
 V2.6 — KB-DRIVEN TOPIC AXIS ROTATION (preserved).
 V2.3 — HASHTAG POLICY + TITLE-OPTIONAL (preserved).
-V2.2 — MERGED CONTRACT + CHARTER + TRUNCATION-AWARE LENGTH (preserved).
-V2.1 — BRAND CHARTER WIRING (deprecated in V3.0).
+V2.2 — MERGED CONTRACT + TRUNCATION-AWARE LENGTH (preserved).
+V2.1 — BRAND CHARTER WIRING (voice restored in V3.2).
 V2.0 — VOICE, SUBSTANCE, COMPLETENESS CONTRACT (preserved).
 V1.9 — PLAIN-TEXT OUTPUT (preserved).
 V1.8 — STRUCTURED-OUTPUT SUPPORT (preserved).
@@ -110,8 +118,9 @@ STRUCTURE — the post must build, not restate:
   scenario that makes the point concrete.
 - Paragraph 4 (optional): the implication — what the reader does
   differently.
-- Closing (optional): a specific question, not a generic invitation
-  to comment.
+- Closing paragraph: a specific question directed at the reader that
+  invites a real reply. Not rhetorical. Not "What do you think?" —
+  something the reader has an actual opinion about.
 - Target 3-5 paragraphs. Each paragraph must add new information.
   Do not restate the previous paragraph's point in different words.
 - If a sentence could be deleted without the reader losing anything,
@@ -132,28 +141,34 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Assume the reader is a developer with 3+ years of experience. Do not
   explain what a CI/CD pipeline is. Do not define terms they use daily.
 
-VOICE — first person is FORBIDDEN unless the retrieved passages use it:
-- Do NOT write "our system," "our team," "our production," "we
-  reduced," "we implemented," "we learned."
-- Most handbook and reference content is third person. Match it.
-- Wrong: "We cut agent restarts by 30% by implementing idempotent
-  task handling."
-- Right: "Idempotent task handling lets a long-running agent
-  checkpoint and replay without corrupting state."
-- The reader can tell the difference between a real case study and
-  a fabricated one. Fabricated first-person destroys credibility.
+VOICE — first person allowed only when the charter or passages use it:
+- If the BRAND CHARTER above uses first-person plural ("we," "our,"
+  "us"), match it.
+- If the charter is neutral (no first person), and the retrieved
+  passages are also neutral, stay neutral (third person).
+- If neither the charter nor the passages use "we/our," do not invent
+  it. Fabricated first-person reads as a fake case study and the reader
+  will detect it.
+- The reader can tell the difference between a real case study and a
+  fabricated one. Fabricated first-person destroys credibility.
 
 GROUNDING — where does the content come from:
 - Every claim in the post must be traceable to one of the retrieved
   passages. If the passage says "durable state survives restarts,"
   you may say that. You may NOT say "we reduced latency by 30%."
-- A conceptual claim from the passage IS the evidence. You do not
-  need to add a metric. A specific idea, correctly expressed, is
-  more credible than an invented case study.
-- If the retrieved passages contain a specific metric, tool, or
-  scenario, you may use it. If they do not, do NOT invent one.
-- Close with the practical consequence of the concept. What does
-  the reader do differently? Not a fabricated next step.
+- Include ONE of the following as evidence, grounded in a retrieved
+  passage (do not invent):
+    * A specific metric from a passage.
+    * A specific scenario or illustrative example ("consider a 5TB
+      PostgreSQL instance").
+    * A named tool, library, or version from a passage.
+    * A conceptual claim from a passage, stated clearly.
+- For technical brands whose corpus is reference text, a conceptual
+  claim IS sufficient. Do not invent a metric to satisfy a "be
+  concrete" instinct — a fabricated metric is worse than an honest
+  concept.
+- Close with a specific question directed at the reader that invites
+  a real reply. Not a summary, not a fabricated next step.
 
 FORBIDDEN STRUCTURE — do NOT write a case study:
 - Do NOT open with "We [verb]ed [thing] and [outcome]."
@@ -171,9 +186,7 @@ Hard rules:
 
 
 # Prose path (structured=False) needs the same plain-text, voice,
-# grounding, length, and structure rules. Without them, the model
-# defaults to Markdown, the LinkedIn-influencer register, single-paragraph
-# restatement, and 60-word status updates.
+# grounding, length, and structure rules.
 _PROSE_PLAIN_TEXT_BLOCK = """
 PLAIN-TEXT RULES — the post is published to a plain-text platform:
 - Do NOT use Markdown syntax. No **, __, *, _, ##, `, or >.
@@ -200,8 +213,9 @@ STRUCTURE — the post must build, not restate:
   scenario that makes the point concrete.
 - Paragraph 4 (optional): the implication — what the reader does
   differently.
-- Closing (optional): a specific question, not a generic invitation
-  to comment.
+- Closing paragraph: a specific question directed at the reader that
+  invites a real reply. Not rhetorical. Not "What do you think?" —
+  something the reader has an actual opinion about.
 - Target 3-5 paragraphs. Each paragraph must add new information.
   Do not restate the previous paragraph's point in different words.
 - If a sentence could be deleted without the reader losing anything,
@@ -218,28 +232,34 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT close with "The key is..." or a summary section.
 - Assume the reader is a developer with 3+ years of experience.
 
-VOICE — first person is FORBIDDEN unless the retrieved passages use it:
-- Do NOT write "our system," "our team," "our production," "we
-  reduced," "we implemented," "we learned."
-- Most handbook and reference content is third person. Match it.
-- Wrong: "We cut agent restarts by 30% by implementing idempotent
-  task handling."
-- Right: "Idempotent task handling lets a long-running agent
-  checkpoint and replay without corrupting state."
-- The reader can tell the difference between a real case study and
-  a fabricated one. Fabricated first-person destroys credibility.
+VOICE — first person allowed only when the charter or passages use it:
+- If the BRAND CHARTER above uses first-person plural ("we," "our,"
+  "us"), match it.
+- If the charter is neutral (no first person), and the retrieved
+  passages are also neutral, stay neutral (third person).
+- If neither the charter nor the passages use "we/our," do not invent
+  it. Fabricated first-person reads as a fake case study and the reader
+  will detect it.
+- The reader can tell the difference between a real case study and a
+  fabricated one. Fabricated first-person destroys credibility.
 
 GROUNDING — where does the content come from:
 - Every claim in the post must be traceable to one of the retrieved
   passages. If the passage says "durable state survives restarts,"
   you may say that. You may NOT say "we reduced latency by 30%."
-- A conceptual claim from the passage IS the evidence. You do not
-  need to add a metric. A specific idea, correctly expressed, is
-  more credible than an invented case study.
-- If the retrieved passages contain a specific metric, tool, or
-  scenario, you may use it. If they do not, do NOT invent one.
-- Close with the practical consequence of the concept. What does
-  the reader do differently? Not a fabricated next step.
+- Include ONE of the following as evidence, grounded in a retrieved
+  passage (do not invent):
+    * A specific metric from a passage.
+    * A specific scenario or illustrative example ("consider a 5TB
+      PostgreSQL instance").
+    * A named tool, library, or version from a passage.
+    * A conceptual claim from a passage, stated clearly.
+- For technical brands whose corpus is reference text, a conceptual
+  claim IS sufficient. Do not invent a metric to satisfy a "be
+  concrete" instinct — a fabricated metric is worse than an honest
+  concept.
+- Close with a specific question directed at the reader that invites
+  a real reply. Not a summary, not a fabricated next step.
 
 FORBIDDEN STRUCTURE — do NOT write a case study:
 - Do NOT open with "We [verb]ed [thing] and [outcome]."
@@ -320,17 +340,19 @@ Start with something only this post could say.
 
 7. PEER VOICE.
 Write as one person to another. Contractions are fine. First-person
-singular is fine and often better than "we" — "we" is meaningless when
-the reader does not know who else is in the room. First-person plural
-("we," "our") is FORBIDDEN unless the retrieved passages use it —
+singular is fine. First-person plural ("we," "our") is allowed ONLY
+when the brand charter above uses it or the retrieved passages use it —
 fabricated first-person reads as a case study, which the reader can
-detect and rejects. Sentences may vary in length; fragments are allowed.
-Avoid corporate verbs ("leverage", "optimize", "deploy", "enable",
-"scale") unless the topic is literally about those operations.
+detect and rejects. Sentences may vary in length; fragments are
+allowed. Avoid corporate verbs ("leverage", "optimize", "deploy",
+"enable", "scale") unless the topic is literally about those operations.
 
-8. CLOSE WITH A SPECIFIC ENDING.
-End with something concrete: the consequence of the point, the next
-action, the specific question the post set up. Forbidden closes:
+8. CLOSE WITH A SPECIFIC QUESTION.
+The post must close with a specific question directed at the reader
+that invites a real reply — not rhetorical, not "What do you think?",
+not "Let me know your thoughts!", not a summary of the point. The
+question should be one the reader has an actual opinion about, based
+on their own experience. Forbidden closes:
   - "What do you think?" (too generic)
   - "Let me know your thoughts!" (says nothing)
   - "Follow for more content like this."
@@ -365,7 +387,9 @@ PLATFORM CONTRACT — LinkedIn.
   no # headers, no - bullets. LinkedIn renders these characters literally.
 - Opening: the first two lines appear in the preview. They must carry
   the hook. Do not use the first line as a warm-up.
-- Closing: the consequence of the point, or a specific question.
+- Closing: the consequence of the point, FOLLOWED BY a specific
+  question directed at the reader that invites a real reply. Not
+  rhetorical. Not "What do you think?"
 - Hashtags: the publishing layer appends 3-5 brand hashtags
   automatically. Do not produce hashtags yourself.
 - Emoji: at most one per 100 words, only when meaningful.
@@ -380,7 +404,8 @@ PLATFORM CONTRACT — Twitter / X.
 - Formatting: plain text only. No markdown. No **bold**, no *italic*,
   no # headers, no - bullets. Twitter/X renders these characters literally.
 - Opening: the first tweet must stand alone as a claim or a question.
-- Closing: the last tweet lands the consequence or next step.
+- Closing: the last tweet lands the consequence or asks a specific
+  question.
 - Hashtags: the publishing layer appends 1-2 brand hashtags automatically.
   Do not produce hashtags yourself.
 - Emoji: 0-1 per tweet, only when meaningful.
@@ -395,7 +420,10 @@ PLATFORM CONTRACT — Facebook.
 - Formatting: plain text only. No markdown. No **bold**, no *italic*,
   no # headers, no - bullets. Facebook renders these characters literally.
 - Opening: the first line is the hook. Make it count.
-- Closing: the consequence of the point, or a specific question.
+- Closing: the consequence of the point, FOLLOWED BY a specific
+  question directed at the reader that invites a real reply. Not
+  rhetorical. Not "What do you think?" — something the reader has an
+  actual opinion about.
 - Hashtags: the publishing layer appends 1-3 brand hashtags
   automatically. Do not produce hashtags yourself.
 - Emoji: occasional, meaningful.
@@ -411,7 +439,8 @@ PLATFORM CONTRACT — Instagram.
   characters literally.
 - Opening: the first line is the entire visible preview. Make it earn
   the tap.
-- Closing: the consequence or a specific question.
+- Closing: the consequence of the point, FOLLOWED BY a specific
+  question.
 - Hashtags: the publishing layer appends brand + topic hashtags
   automatically, up to 30 for this platform. Do not produce hashtags
   yourself.
@@ -687,14 +716,45 @@ class PromptBuilder:
 
     @staticmethod
     def _brand_charter_block(brand: Brand) -> str:
-        """DEPRECATED in V3.0 — always returns "".
+        """DEPRECATED — use `_brand_voice_block` instead.
 
-        Direction-based topic generation was removed in TopicSelector V3.0.
-        The charter was the model-side input to that feature. Keeping it
-        out of the prompt removes the last path by which
-        brand.topic_direction could override the grounding rules.
+        Kept for backward compatibility with any external caller. Always
+        returns "" so that no code path re-introduces the old
+        direction-as-topic-generator behavior.
         """
         return ""
+
+    @staticmethod
+    def _brand_voice_block(brand: Brand) -> str:
+        """Return the brand's voice charter as an OVERRIDING prompt block.
+
+        V3.2 — restored from V2.1. brand.topic_direction originally served
+        two roles:
+          1. A topic-generation brief (TopicSelector V3.0 removed this).
+          2. A voice charter for the model (V3.0 also removed this — a
+             mistake).
+
+        This method restores only (2). The charter text is injected as
+        guidance for HOW to write, not WHAT to write about. Topic
+        selection is decoupled and driven by the KB.
+
+        If the charter contains topic-generation directives ("choose axes
+        from...", "generate topics about..."), TopicSelector won't act on
+        them, and the prompt's grounding rules will refuse any invented
+        content. The charter's voice guidance is what surfaces.
+
+        The block is marked as overriding so a specific charter beats the
+        generic rules below it. When the brand has no charter, the block
+        is empty and the generic rules act as the floor.
+        """
+        direction = getattr(brand, "topic_direction", None)
+        if not isinstance(direction, str) or not direction.strip():
+            return ""
+        return (
+            "\n--- BRAND CHARTER (OVERRIDES conflicting rules below) ---\n"
+            f"{direction.strip()}\n"
+            "--- END BRAND CHARTER ---\n"
+        )
 
     @staticmethod
     def _brand_context_block(brand: Brand) -> str:
@@ -802,7 +862,10 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
-        charter_block = self._brand_charter_block(brand)
+        # V3.2 — voice charter restored. Deprecated charter_block kept at
+        # "" for any external caller that still references the old name.
+        _charter_deprecated = self._brand_charter_block(brand)
+        voice_block = self._brand_voice_block(brand)
 
         resolved_platform = platform or getattr(brand, "platform", None)
         platform_contract = resolve_platform_contract(resolved_platform)
@@ -814,7 +877,7 @@ class PromptBuilder:
 Task:
 Write one social media post for {brand.name}.
 {topic_str}
-{axis_str}{charter_block}
+{axis_str}{voice_block}
 --- BRAND VOICE GUIDE ---
 {style_guide}
 
@@ -839,9 +902,10 @@ Then write the post. Do not include the three decisions in the output.
 
         logger.debug(
             "Built post prompt: brand=%s style=%s platform=%s registry_version=%s "
-            "structured=%s axis=%s",
+            "structured=%s charter_present=%s axis=%s",
             brand.name, style_source, resolved_platform or "facebook",
-            self._registry.version, structured, axis_name or "none",
+            self._registry.version, structured, bool(voice_block),
+            axis_name or "none",
         )
         return f"{system_prompt}\n\n{task}"
 
@@ -865,13 +929,14 @@ Then write the post. Do not include the three decisions in the output.
         )
 
         user_name = user_profile.get("name", "User")
-        charter_block = self._brand_charter_block(brand)
+        # V3.2 — voice charter restored in chat as well.
+        voice_block = self._brand_voice_block(brand)
 
         chat_context = f"""
 Task Context:
 You are conversing directly with {user_name} in a chat interface.
 Brand Language: {brand.language}
-{charter_block}
+{voice_block}
 Guidelines:
 1. Respond naturally, concisely, and consistently with your persona.
 2. Keep responses brief since this is a chat interface.
