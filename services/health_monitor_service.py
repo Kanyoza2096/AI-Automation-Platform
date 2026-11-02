@@ -264,6 +264,11 @@ class HealthMonitorService:
                     "services_ok": sum(1 for v in services.values() if v == "ok"),
                     "services_down": sum(1 for v in services.values() if v == "down"),
                     "services_unknown": sum(1 for v in services.values() if v == "unknown"),
+                    # Counts alone cannot identify which dependency is failing.
+                    # Emit names so operators can distinguish outages from
+                    # missing or unsupported health probes.
+                    "services_down_names": sorted(name for name, state in services.items() if state == "down"),
+                    "services_unknown_names": sorted(name for name, state in services.items() if state == "unknown"),
                     "transitions": transitions,
                 },
             )
