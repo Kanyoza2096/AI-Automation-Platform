@@ -53,7 +53,11 @@ class HealCommandConsumer:
 
     async def _on_heal_command(self, event: Any = None, payload: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         try:
-            data = payload or (event if isinstance(event, dict) else {})
+            raw = payload if isinstance(payload, dict) else (event if isinstance(event, dict) else {})
+            nested = raw.get("payload") if isinstance(raw, dict) else None
+            # UnifiedEventBus handlers receive an envelope, not the raw payload.
+            # Preserve envelope correlation metadata while preferring domain fields.
+            data = {**raw, **nested} if isinstance(nested, dict) else raw
             if not data:
                 return
 
