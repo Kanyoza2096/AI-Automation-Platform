@@ -168,3 +168,28 @@ from services.kdo_engineering_phase16_3 import (  # noqa: E402
     register_engineering_build_enqueue_contract,
     run_claimed_build_job,
 )
+
+
+def claim_tenant_scoped_engineering_build_job(
+    *, queue: Any, worker_id: str, tenant_id: str, workspace_id: str,
+    lease_seconds: int = 300,
+) -> EngineeringBuildJob | None:
+    """Claim only within a worker's configured tenant/workspace.
+
+    This wrapper is intentionally claim-only: it does not grant execution,
+    approval, or release authority. The caller must still run the governed worker
+    path that revalidates actor permissions, plan approval, and lease fencing.
+    """
+    if not isinstance(tenant_id, str) or not tenant_id.strip():
+        raise Phase163Error("tenant_and_workspace_scope_required")
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise Phase163Error("tenant_and_workspace_scope_required")
+    claim = getattr(queue, "claim_next", None)
+    if not callable(claim):
+        raise Phase163Error("engineering_build_queue_claim_api_required")
+    return claim(
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )

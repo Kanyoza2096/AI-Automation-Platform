@@ -174,3 +174,33 @@ def test_postgres_contract_registration_is_explicit_and_high_risk():
                                                receipt_verifier=lambda _scope, _receipt: True)
     assert ready["ready"] is True
     assert ready["release_authorized"] is False
+
+
+def test_scoped_claim_filters_tenant_and_workspace_in_locked_select():
+    conn = FakeConnection(next_job=job_row())
+    queue = PostgresEngineeringBuildQueue(lambda: conn)
+    claimed = queue.claim_next(worker_id="worker-a", lease_seconds=90,
+                               tenant_id="tenant-a", workspace_id="workspace-a")
+    assert claimed is not None
+    sql, params = next((sql, params) for sql, params in conn.statements
+                       if "FOR UPDATE SKIP LOCKED" in sql)
+    assert "tenant_id=%s AND workspace_id=%s" in sql
+    assert "ORDER BY created_at,job_id LIMIT 1 FOR UPDATE SKIP LOCKED" in sql
+    assert params == ("tenant-a", "workspace-a")
+    assert conn.committed and conn.closed
+
+
+@pytest.mark.parametrize("tenant_id,workspace_id", [
+    ("tenant-a", None), (None, "workspace-a"), ("", "workspace-a"), ("tenant-a", ""),
+])
+def test_postgres_scoped_claim_rejects_partial_or_empty_scope(tenant_id, workspace_id):
+    queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row()))
+    with pytest.raises(Phase163Error, match="scope"):
+        queue.claim_next(worker_id="worker-a", tenant_id=tenant_id, workspace_id=workspace_id)
+
+
+@pytest.mark.parametrize("lease_seconds", [True, 29, 3601, 30.5, "60"])
+def test_postgres_claim_rejects_invalid_lease_duration(lease_seconds):
+    queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row()))
+    with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
+        queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)

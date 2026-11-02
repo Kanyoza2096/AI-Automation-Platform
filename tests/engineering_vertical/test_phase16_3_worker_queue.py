@@ -301,3 +301,38 @@ def test_scoped_claim_requires_complete_scope(tmp_path, tenant_id, workspace_id)
     with pytest.raises(Phase163Error, match="scope"):
         queue.claim_next(worker_id="worker-a", tenant_id=tenant_id, workspace_id=workspace_id)
     queue.close()
+
+
+def test_worker_claim_wrapper_passes_required_tenant_workspace_scope():
+    from services.kdo_engineering_persisted_workflow import claim_tenant_scoped_engineering_build_job
+
+    class FakeQueue:
+        def __init__(self):
+            self.kwargs = None
+        def claim_next(self, **kwargs):
+            self.kwargs = kwargs
+            return "claimed"
+
+    queue = FakeQueue()
+    result = claim_tenant_scoped_engineering_build_job(
+        queue=queue, worker_id="worker-a", tenant_id="tenant-a",
+        workspace_id="workspace-a", lease_seconds=90,
+    )
+    assert result == "claimed"
+    assert queue.kwargs == {
+        "worker_id": "worker-a", "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a", "lease_seconds": 90,
+    }
+
+
+@pytest.mark.parametrize("tenant_id,workspace_id", [
+    ("", "workspace-a"), ("tenant-a", ""), (None, "workspace-a"), ("tenant-a", None),
+])
+def test_worker_claim_wrapper_rejects_missing_scope(tenant_id, workspace_id):
+    from services.kdo_engineering_persisted_workflow import claim_tenant_scoped_engineering_build_job
+
+    with pytest.raises(Phase163Error, match="scope"):
+        claim_tenant_scoped_engineering_build_job(
+            queue=object(), worker_id="worker-a",
+            tenant_id=tenant_id, workspace_id=workspace_id,
+        )
