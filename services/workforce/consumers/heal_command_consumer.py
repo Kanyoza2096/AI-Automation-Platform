@@ -78,6 +78,7 @@ class HealCommandConsumer:
                 "target": engine,
                 "reason": reason,
                 "workspace_id": workspace_id,
+                "correlation_id": str(data.get("correlation_id") or ""),
                 "requested_by": "autonomous_loop",
             })
 
