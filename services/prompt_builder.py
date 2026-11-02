@@ -2,39 +2,37 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V3.2 — VOICE CHARTER RESTORED + MANDATORY QUESTION CLOSE + EVIDENCE MENU:
+V3.3 — PADDING FORBIDDEN + FABRICATION BANNED:
 
-  1. VOICE CHARTER RESTORED. `_brand_voice_block` injects
-     brand.topic_direction as an OVERRIDING voice brief in the post and
-     chat prompts. V3.0 correctly removed direction-based TOPIC
-     generation but also (incorrectly) removed direction-based VOICE
-     injection. Those are separate concerns:
-       - Topic generation: driven by KB themes (V3.0's change — keep).
-       - Voice: driven by the brand charter (V2.1's feature — restore).
-     A well-written charter ("analytical, opinionated, name tradeoffs,
-     short paragraphs") is what produces the best captions this brand
-     has ever published.
+  1. LENGTH FLOOR REMOVED. V3.1 raised the floor from 60 to 150 to fix
+     80-word status updates. But V3.2's output showed the floor was
+     *causing* fabrication: the model padded short posts with invented
+     metrics ("error rates by up to 30%") and fabricated case studies
+     ("in a project where we used ZooKeeper...") to hit 180 words.
 
-  2. FIRST-PERSON RESOLVED. V3.0 forbade "we/our" unless the retrieved
-     passages used it. That was too strict for a charter that explicitly
-     permits first-person plural. New rule: first person allowed if
-     EITHER the charter OR the retrieved passages use it. If neither,
-     stay neutral.
+     The floor now depends on the retrieved source. A rich passage
+     supports a long caption; a thin passage supports a short one.
+     Minimum 80 words, maximum 220, target 120-200 when the source
+     supports it. Padding is explicitly forbidden — a shorter grounded
+     caption beats a longer fabricated one.
 
-  3. MANDATORY QUESTION CLOSE. Facebook contract requires the post to
-     close with a specific question directed at the reader. Not
-     rhetorical, not "what do you think?", not a summary. The months-ago
-     captions all used this; the intermediate ones didn't because the
-     rule had weakened to "consequence OR question."
+  2. FABRICATION BANNED EXPLICITLY. The previous prompt forbade
+     metrics and case-study openers, but the model found workarounds:
+       - Framed invented metrics as "in my experience"
+       - Put the fabricated case study in paragraph 3, not paragraph 1
+       - Named training-memory tools (ZooKeeper) that weren't in any
+         retrieved passage
+     The new rule bans any specific tool, project, metric, or case
+     study that does not appear in a retrieved passage. Full stop.
 
-  4. FOUR-WAY EVIDENCE MENU. Restored the V2.1 evidence instruction —
-     "include at least one concrete detail: a metric, a scenario, a
-     specific tool or version" — merged with V3.0's grounding rules. The
-     model may pick any of the four, or state a conceptual claim from
-     the passages. Do not invent a metric to satisfy "be concrete."
+  3. FIRST-PERSON STRICT PER CHARTER. If the charter says "first-person
+     plural (we, our)," the model writes in "we" voice and NEVER uses
+     "I." If silent, third person only. The previous rule allowed any
+     first person when the charter used any first person.
 
-V3.1 — LENGTH FLOOR 150 WORDS, 3-5 PARAGRAPHS, LAYERED STRUCTURE (preserved).
-V3.0 — DIRECTION TOPIC GENERATION REMOVED + GROUNDING STRENGTHENED (preserved).
+V3.2 — VOICE CHARTER RESTORED + MANDATORY QUESTION CLOSE (preserved).
+V3.1 — LENGTH FLOOR 150 (superseded by V3.3's conditional floor).
+V3.0 — DIRECTION TOPIC GENERATION REMOVED + GROUNDING (preserved).
 V2.6 — KB-DRIVEN TOPIC AXIS ROTATION (preserved).
 V2.3 — HASHTAG POLICY + TITLE-OPTIONAL (preserved).
 V2.2 — MERGED CONTRACT + TRUNCATION-AWARE LENGTH (preserved).
@@ -63,10 +61,6 @@ logger = logging.getLogger("kanyoza.services.prompt_builder")
 # ═══════════════════════════════════════════════════════════════════════════
 # Structured-output contract — SINGLE SOURCE OF TRUTH
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# Only "caption" is required. Title is optional (platform-dependent).
-# Hashtags are NOT requested from the model. See module docstring.
-#
 POST_SCHEMA_REQUIRED_KEYS: tuple[str, ...] = ("caption",)
 
 POST_SCHEMA_PROMPT_BLOCK = """
@@ -76,7 +70,7 @@ fences. Do not explain your reasoning. Return raw JSON and nothing else.
 
 Required keys:
 {
-  "caption": "the full body of the post, 180-200 words, plain text, 3-5 paragraphs"
+  "caption": "the full body of the post, 120-200 words, plain text, 3-5 paragraphs"
 }
 
 Optional keys (omit if the target platform does not use them):
@@ -100,13 +94,17 @@ characters, which is ugly and unprofessional:
 - For a list, use the bullet character "•" followed by a space.
 - For emphasis, use sentence structure — not asterisks.
 
-LENGTH BUDGET — this is the single most important rule:
-- Aim for 180-200 words. Do not exceed 220.
-- Do not go below 150 words. A caption shorter than 150 words is
-  almost certainly underdeveloped — it means you have not yet found
-  the specific claim and developed it. Find the claim, develop it,
-  then write. The word count follows from the specificity, not the
-  other way around.
+LENGTH BUDGET:
+- The target length depends on the retrieved passages. If the passages
+  contain 1000+ words of material on this topic, aim for 180-200
+  words. If they contain 500-1000 words, aim for 120-180. If they
+  contain less, aim for 80-120.
+- Minimum 80 words. Maximum 220 words.
+- PADDING IS FORBIDDEN. If you cannot reach the upper end of the
+  range without inventing a metric, a case study, a project, or a
+  named tool that is not in the retrieved passages, write the shorter
+  version instead. A grounded 100-word caption is better than a
+  fabricated 180-word one.
 - The caption MUST end at a sentence boundary (period, question mark,
   or exclamation point). Do not end mid-sentence, mid-word, or with
   a trailing ellipsis.
@@ -114,10 +112,10 @@ LENGTH BUDGET — this is the single most important rule:
 STRUCTURE — the post must build, not restate:
 - Paragraph 1: the claim or observation. Something specific.
 - Paragraph 2: why it matters, or what is usually misunderstood.
-- Paragraph 3: an illustrative example, a specific tool, or a
-  scenario that makes the point concrete.
-- Paragraph 4 (optional): the implication — what the reader does
-  differently.
+- Paragraph 3 (optional): an illustrative example, a specific tool,
+  or a scenario that makes the point concrete. Only include this if
+  the retrieved passages contain a specific tool, scenario, or
+  example. If not, skip to the closing.
 - Closing paragraph: a specific question directed at the reader that
   invites a real reply. Not rhetorical. Not "What do you think?" —
   something the reader has an actual opinion about.
@@ -141,16 +139,17 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Assume the reader is a developer with 3+ years of experience. Do not
   explain what a CI/CD pipeline is. Do not define terms they use daily.
 
-VOICE — first person allowed only when the charter or passages use it:
-- If the BRAND CHARTER above uses first-person plural ("we," "our,"
-  "us"), match it.
-- If the charter is neutral (no first person), and the retrieved
-  passages are also neutral, stay neutral (third person).
-- If neither the charter nor the passages use "we/our," do not invent
-  it. Fabricated first-person reads as a fake case study and the reader
+VOICE — first-person rule (strict, follow the charter):
+- If the BRAND CHARTER above specifies "first-person plural (we, our)"
+  — write in "we" voice. NEVER use "I", "me", "my".
+- If the charter specifies "first-person singular (I)" — write in "I"
+  voice. NEVER use "we", "our".
+- If the charter is silent on first person, and the retrieved passages
+  are neutral, use third person only (no "I", no "we").
+- If neither the charter nor the passages use first person, do not
+  invent it.
+- Fabricated first-person reads as a fake case study and the reader
   will detect it.
-- The reader can tell the difference between a real case study and a
-  fabricated one. Fabricated first-person destroys credibility.
 
 GROUNDING — where does the content come from:
 - Every claim in the post must be traceable to one of the retrieved
@@ -159,9 +158,10 @@ GROUNDING — where does the content come from:
 - Include ONE of the following as evidence, grounded in a retrieved
   passage (do not invent):
     * A specific metric from a passage.
-    * A specific scenario or illustrative example ("consider a 5TB
-      PostgreSQL instance").
-    * A named tool, library, or version from a passage.
+    * A specific scenario or illustrative example FROM A PASSAGE
+      ("consider a 5TB PostgreSQL instance" only if 5TB or PostgreSQL
+      appears in a retrieved passage).
+    * A named tool, library, or version FROM A PASSAGE.
     * A conceptual claim from a passage, stated clearly.
 - For technical brands whose corpus is reference text, a conceptual
   claim IS sufficient. Do not invent a metric to satisfy a "be
@@ -170,13 +170,26 @@ GROUNDING — where does the content come from:
 - Close with a specific question directed at the reader that invites
   a real reply. Not a summary, not a fabricated next step.
 
-FORBIDDEN STRUCTURE — do NOT write a case study:
-- Do NOT open with "We [verb]ed [thing] and [outcome]."
+FORBIDDEN FABRICATION — anywhere in the caption:
+- Do NOT write "In my experience", "I've seen this firsthand",
+  "In a project where we...", "In one project...", "I once worked
+  on...", "Our team recently...", or any similar phrasing UNLESS the
+  exact scenario appears in a retrieved passage.
+- Do NOT introduce a specific tool, company, project, or technology
+  (ZooKeeper, Kafka, Kubernetes, a specific database, a specific
+  service) UNLESS it appears in a retrieved passage.
+- Do NOT invent percentages, latency numbers, improvement metrics, or
+  any quantified claim UNLESS the number and the metric appear in a
+  retrieved passage.
+- Do NOT open with "We [verb]ed [thing] and [outcome]." That is a
+  fabricated case study opener.
 - Do NOT use a "before state → after state → next step" template.
-- Do NOT include invented metrics, percentages, or latency numbers
-  unless they appear in a retrieved passage.
 - Do NOT close with "Next step is to..." or "We plan to..."
-- The post is a reflection, not a postmortem summary.
+- The retrieved passages are the ONLY source of factual content. If a
+  sentence contains a fact not in the passages, delete it.
+- The post is a reflection on a concept, not a case study about a
+  fictional project. If you don't have a real example in the
+  passages, write about the concept instead.
 
 Hard rules:
 - "caption" MUST be present and non-empty.
@@ -185,8 +198,7 @@ Hard rules:
 """.strip()
 
 
-# Prose path (structured=False) needs the same plain-text, voice,
-# grounding, length, and structure rules.
+# Prose path (structured=False) needs the same rules.
 _PROSE_PLAIN_TEXT_BLOCK = """
 PLAIN-TEXT RULES — the post is published to a plain-text platform:
 - Do NOT use Markdown syntax. No **, __, *, _, ##, `, or >.
@@ -196,12 +208,16 @@ PLAIN-TEXT RULES — the post is published to a plain-text platform:
 - For emphasis, use sentence structure — not asterisks.
 
 LENGTH BUDGET:
-- Aim for 180-200 words. Do not exceed 220.
-- Do not go below 150 words. A caption shorter than 150 words is
-  almost certainly underdeveloped — it means you have not yet found
-  the specific claim and developed it. Find the claim, develop it,
-  then write. The word count follows from the specificity, not the
-  other way around.
+- The target length depends on the retrieved passages. If the passages
+  contain 1000+ words of material on this topic, aim for 180-200
+  words. If they contain 500-1000 words, aim for 120-180. If they
+  contain less, aim for 80-120.
+- Minimum 80 words. Maximum 220 words.
+- PADDING IS FORBIDDEN. If you cannot reach the upper end of the
+  range without inventing a metric, a case study, a project, or a
+  named tool that is not in the retrieved passages, write the shorter
+  version instead. A grounded 100-word caption is better than a
+  fabricated 180-word one.
 - The caption MUST end at a sentence boundary (period, question mark,
   or exclamation point). Do not end mid-sentence, mid-word, or with
   a trailing ellipsis.
@@ -209,10 +225,10 @@ LENGTH BUDGET:
 STRUCTURE — the post must build, not restate:
 - Paragraph 1: the claim or observation. Something specific.
 - Paragraph 2: why it matters, or what is usually misunderstood.
-- Paragraph 3: an illustrative example, a specific tool, or a
-  scenario that makes the point concrete.
-- Paragraph 4 (optional): the implication — what the reader does
-  differently.
+- Paragraph 3 (optional): an illustrative example, a specific tool,
+  or a scenario that makes the point concrete. Only include this if
+  the retrieved passages contain a specific tool, scenario, or
+  example. If not, skip to the closing.
 - Closing paragraph: a specific question directed at the reader that
   invites a real reply. Not rhetorical. Not "What do you think?" —
   something the reader has an actual opinion about.
@@ -232,16 +248,17 @@ VOICE — do NOT write like a LinkedIn influencer:
 - Do NOT close with "The key is..." or a summary section.
 - Assume the reader is a developer with 3+ years of experience.
 
-VOICE — first person allowed only when the charter or passages use it:
-- If the BRAND CHARTER above uses first-person plural ("we," "our,"
-  "us"), match it.
-- If the charter is neutral (no first person), and the retrieved
-  passages are also neutral, stay neutral (third person).
-- If neither the charter nor the passages use "we/our," do not invent
-  it. Fabricated first-person reads as a fake case study and the reader
+VOICE — first-person rule (strict, follow the charter):
+- If the BRAND CHARTER above specifies "first-person plural (we, our)"
+  — write in "we" voice. NEVER use "I", "me", "my".
+- If the charter specifies "first-person singular (I)" — write in "I"
+  voice. NEVER use "we", "our".
+- If the charter is silent on first person, and the retrieved passages
+  are neutral, use third person only.
+- If neither the charter nor the passages use first person, do not
+  invent it.
+- Fabricated first-person reads as a fake case study and the reader
   will detect it.
-- The reader can tell the difference between a real case study and a
-  fabricated one. Fabricated first-person destroys credibility.
 
 GROUNDING — where does the content come from:
 - Every claim in the post must be traceable to one of the retrieved
@@ -250,9 +267,8 @@ GROUNDING — where does the content come from:
 - Include ONE of the following as evidence, grounded in a retrieved
   passage (do not invent):
     * A specific metric from a passage.
-    * A specific scenario or illustrative example ("consider a 5TB
-      PostgreSQL instance").
-    * A named tool, library, or version from a passage.
+    * A specific scenario or illustrative example FROM A PASSAGE.
+    * A named tool, library, or version FROM A PASSAGE.
     * A conceptual claim from a passage, stated clearly.
 - For technical brands whose corpus is reference text, a conceptual
   claim IS sufficient. Do not invent a metric to satisfy a "be
@@ -261,18 +277,29 @@ GROUNDING — where does the content come from:
 - Close with a specific question directed at the reader that invites
   a real reply. Not a summary, not a fabricated next step.
 
-FORBIDDEN STRUCTURE — do NOT write a case study:
+FORBIDDEN FABRICATION — anywhere in the caption:
+- Do NOT write "In my experience", "I've seen this firsthand",
+  "In a project where we...", "In one project...", "I once worked
+  on...", "Our team recently...", or any similar phrasing UNLESS the
+  exact scenario appears in a retrieved passage.
+- Do NOT introduce a specific tool, company, project, or technology
+  UNLESS it appears in a retrieved passage.
+- Do NOT invent percentages, latency numbers, improvement metrics, or
+  any quantified claim UNLESS the number and the metric appear in a
+  retrieved passage.
 - Do NOT open with "We [verb]ed [thing] and [outcome]."
 - Do NOT use a "before state → after state → next step" template.
-- Do NOT include invented metrics, percentages, or latency numbers
-  unless they appear in a retrieved passage.
 - Do NOT close with "Next step is to..." or "We plan to..."
-- The post is a reflection, not a postmortem summary.
+- The retrieved passages are the ONLY source of factual content. If a
+  sentence contains a fact not in the passages, delete it.
+- The post is a reflection on a concept, not a case study about a
+  fictional project. If you don't have a real example in the
+  passages, write about the concept instead.
 """.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Content quality contract — universal rules for every brand and platform
+# Content quality contract
 # ═══════════════════════════════════════════════════════════════════════════
 CONTENT_QUALITY_CONTRACT = """
 CONTENT QUALITY CONTRACT — every rule below is a hard requirement.
@@ -340,12 +367,15 @@ Start with something only this post could say.
 
 7. PEER VOICE.
 Write as one person to another. Contractions are fine. First-person
-singular is fine. First-person plural ("we," "our") is allowed ONLY
-when the brand charter above uses it or the retrieved passages use it —
-fabricated first-person reads as a case study, which the reader can
-detect and rejects. Sentences may vary in length; fragments are
-allowed. Avoid corporate verbs ("leverage", "optimize", "deploy",
-"enable", "scale") unless the topic is literally about those operations.
+register follows the brand charter exactly:
+  - charter says "we" → write "we"
+  - charter says "I" → write "I"
+  - charter silent → third person only
+Never fabricate a first-person case study ("In my experience,"
+"I've seen firsthand") unless the scenario appears in a retrieved
+passage. Sentences may vary in length; fragments are allowed. Avoid
+corporate verbs ("leverage", "optimize", "deploy", "enable", "scale")
+unless the topic is literally about those operations.
 
 8. CLOSE WITH A SPECIFIC QUESTION.
 The post must close with a specific question directed at the reader
@@ -380,16 +410,15 @@ lines between paragraphs and full capitalization for emphasis.
 # ═══════════════════════════════════════════════════════════════════════════
 _LINKEDIN_CONTRACT = """
 PLATFORM CONTRACT — LinkedIn.
-- Length: 180-200 words. Do not exceed 220.
+- Length: 120-200 words depending on source richness. Max 220.
 - Structure: short paragraphs of 2-4 sentences, blank line between each.
   No markdown headers, no bold section titles.
-- Formatting: plain text only. No markdown. No **bold**, no *italic*,
-  no # headers, no - bullets. LinkedIn renders these characters literally.
+- Formatting: plain text only. No markdown. LinkedIn renders these
+  characters literally.
 - Opening: the first two lines appear in the preview. They must carry
   the hook. Do not use the first line as a warm-up.
 - Closing: the consequence of the point, FOLLOWED BY a specific
-  question directed at the reader that invites a real reply. Not
-  rhetorical. Not "What do you think?"
+  question directed at the reader that invites a real reply.
 - Hashtags: the publishing layer appends 3-5 brand hashtags
   automatically. Do not produce hashtags yourself.
 - Emoji: at most one per 100 words, only when meaningful.
@@ -399,46 +428,39 @@ _TWITTER_CONTRACT = """
 PLATFORM CONTRACT — Twitter / X.
 - Length: 240 characters max per tweet. If the idea needs more, write a
   thread of up to 15 tweets.
-- Structure: one idea per tweet. Do not use "1/14" notation; the platform
-  handles threading.
-- Formatting: plain text only. No markdown. No **bold**, no *italic*,
-  no # headers, no - bullets. Twitter/X renders these characters literally.
+- Structure: one idea per tweet. Do not use "1/14" notation.
+- Formatting: plain text only. No markdown.
 - Opening: the first tweet must stand alone as a claim or a question.
 - Closing: the last tweet lands the consequence or asks a specific
   question.
-- Hashtags: the publishing layer appends 1-2 brand hashtags automatically.
+- Hashtags: the publishing layer appends 1-2 brand hashtags.
   Do not produce hashtags yourself.
 - Emoji: 0-1 per tweet, only when meaningful.
 """.strip()
 
 _FACEBOOK_CONTRACT = """
 PLATFORM CONTRACT — Facebook.
-- Length: 180-200 words. Do not exceed 220.
+- Length: 120-200 words depending on source richness. Max 220.
 - Structure: 3-5 paragraphs of 2-4 sentences each. Blank line between
   paragraphs. The first paragraph must carry the hook because Facebook
   truncates at ~250 characters behind "See more".
-- Formatting: plain text only. No markdown. No **bold**, no *italic*,
-  no # headers, no - bullets. Facebook renders these characters literally.
+- Formatting: plain text only. No markdown.
 - Opening: the first line is the hook. Make it count.
 - Closing: the consequence of the point, FOLLOWED BY a specific
   question directed at the reader that invites a real reply. Not
   rhetorical. Not "What do you think?" — something the reader has an
   actual opinion about.
-- Hashtags: the publishing layer appends 1-3 brand hashtags
-  automatically. Do not produce hashtags yourself.
+- Hashtags: the publishing layer appends 1-3 brand hashtags.
+  Do not produce hashtags yourself.
 - Emoji: occasional, meaningful.
 """.strip()
 
 _INSTAGRAM_CONTRACT = """
 PLATFORM CONTRACT — Instagram.
-- Length: 150-200 words for the caption. The first 125 characters are
-  visible before "more" — they are the whole preview.
-- Structure: line breaks between thoughts, 3-5 paragraphs. The image
-  carries the visual weight; the caption carries the story.
-- Formatting: plain text only. No markdown. Instagram renders these
-  characters literally.
-- Opening: the first line is the entire visible preview. Make it earn
-  the tap.
+- Length: 120-200 words. The first 125 characters are the preview.
+- Structure: line breaks between thoughts, 3-5 paragraphs.
+- Formatting: plain text only. No markdown.
+- Opening: the first line is the entire visible preview.
 - Closing: the consequence of the point, FOLLOWED BY a specific
   question.
 - Hashtags: the publishing layer appends brand + topic hashtags
@@ -465,10 +487,9 @@ PLATFORM CONTRACT — Blog / long-form.
   one argument per section. Headers must carry information, not just
   label a section ("The 340ms threshold", not "Section 2").
 - Formatting: markdown is permitted and expected.
-- Opening: a hook in the first paragraph. Do not summarize the post or
-  tell the reader what they will read.
+- Opening: a hook in the first paragraph. Do not summarize the post.
 - Closing: next steps, a specific question, or a clear offer.
-- Hashtags: irrelevant for the body; use tags or keywords via metadata.
+- Hashtags: irrelevant for the body; use tags via metadata.
 - Emoji: usually none.
 """.strip()
 
@@ -486,13 +507,11 @@ _DEFAULT_PLATFORM_CONTRACT = _FACEBOOK_CONTRACT
 
 
 def resolve_platform_contract(platform: Optional[str]) -> str:
-    """Return the platform contract that matches the target channel."""
     key = (platform or "").strip().lower()
     return PLATFORM_CONTRACTS.get(key, _DEFAULT_PLATFORM_CONTRACT)
 
 
 def _contract_heading(contract: str) -> str:
-    """First line of a platform contract, without the leading '- '."""
     first_line = contract.splitlines()[0] if contract else ""
     return first_line.lstrip("- ").strip()
 
@@ -716,32 +735,16 @@ class PromptBuilder:
 
     @staticmethod
     def _brand_charter_block(brand: Brand) -> str:
-        """DEPRECATED — use `_brand_voice_block` instead.
-
-        Kept for backward compatibility with any external caller. Always
-        returns "" so that no code path re-introduces the old
-        direction-as-topic-generator behavior.
-        """
+        """DEPRECATED — use `_brand_voice_block` instead."""
         return ""
 
     @staticmethod
     def _brand_voice_block(brand: Brand) -> str:
         """Return the brand's voice charter as an OVERRIDING prompt block.
 
-        V3.2 — restored from V2.1. brand.topic_direction originally served
-        two roles:
-          1. A topic-generation brief (TopicSelector V3.0 removed this).
-          2. A voice charter for the model (V3.0 also removed this — a
-             mistake).
-
-        This method restores only (2). The charter text is injected as
-        guidance for HOW to write, not WHAT to write about. Topic
-        selection is decoupled and driven by the KB.
-
-        If the charter contains topic-generation directives ("choose axes
-        from...", "generate topics about..."), TopicSelector won't act on
-        them, and the prompt's grounding rules will refuse any invented
-        content. The charter's voice guidance is what surfaces.
+        V3.2 — restored from V2.1. brand.topic_direction is a voice
+        charter: HOW to write, not WHAT to write about. Topic selection
+        is decoupled and driven by the KB.
 
         The block is marked as overriding so a specific charter beats the
         generic rules below it. When the brand has no charter, the block
@@ -862,8 +865,6 @@ class PromptBuilder:
 
         style_guide, style_source = self._registry.resolve_for_brand(brand)
 
-        # V3.2 — voice charter restored. Deprecated charter_block kept at
-        # "" for any external caller that still references the old name.
         _charter_deprecated = self._brand_charter_block(brand)
         voice_block = self._brand_voice_block(brand)
 
@@ -929,7 +930,6 @@ Then write the post. Do not include the three decisions in the output.
         )
 
         user_name = user_profile.get("name", "User")
-        # V3.2 — voice charter restored in chat as well.
         voice_block = self._brand_voice_block(brand)
 
         chat_context = f"""
