@@ -174,12 +174,13 @@ async def list_workspaces(
 @router.get("/workspaces/{workspace_id}")
 async def get_workspace(
     workspace_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
 ):
     """A01: Get a workspace — ownership verified."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from repositories.workspace_repository import WorkspaceRepository
         repo = await _async_wrap(container.resolve, WorkspaceRepository)
         ws = await _async_wrap(repo.find_by_id, workspace_id)
@@ -196,6 +197,7 @@ async def get_workspace(
 async def update_workspace(
     workspace_id: str,
     body: dict,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -203,7 +205,7 @@ async def update_workspace(
 ):
     """A01: Update a workspace — ownership verified."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from models.workspace import Workspace
         from repositories.workspace_repository import WorkspaceRepository
 
@@ -234,6 +236,7 @@ async def update_workspace(
 @router.delete("/workspaces/{workspace_id}")
 async def delete_workspace(
     workspace_id: str,
+    request: Request,
     container=Depends(get_container),
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
@@ -241,7 +244,7 @@ async def delete_workspace(
 ):
     """A01: Delete a workspace — ownership verified."""
     try:
-        await require_workspace_ownership("workspace", workspace_id, container)
+        await require_workspace_ownership("workspace", workspace_id, request, container)
         from repositories.workspace_repository import WorkspaceRepository
         repo = await _async_wrap(container.resolve, WorkspaceRepository)
         deleted = await _async_wrap(repo.delete, workspace_id)
