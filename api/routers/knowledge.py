@@ -54,23 +54,21 @@ async def create_knowledge_entry(
             workspace_id=brand.workspace_id,
             repository=kb_repo,
         )
-        # KnowledgeBase may expose an async initialize(); call it if present.
-        init_fn = getattr(kb, "initialize", None)
-        if callable(init_fn):
-            try:
-                init_result = init_fn()
-                if asyncio.iscoroutine(init_result):
-                    await init_result
-            except Exception as e:
-                logger.warning(
-                    "kb_initialize_failed",
-                    extra={
-                        "event": "kb_initialize_failed",
-                        "brand_id": brand_id,
-                        "error_class": type(e).__name__,
-                        "error_msg": str(e)[:300],
-                    },
-                )
+        # A failed index load must fail the request; never search or write
+        # against an uninitialized, potentially empty index.
+        try:
+            await kb.initialize()
+        except Exception as e:
+            logger.error(
+                "kb_initialize_failed",
+                extra={
+                    "event": "kb_initialize_failed",
+                    "brand_id": brand_id,
+                    "error_class": type(e).__name__,
+                    "error_msg": str(e)[:300],
+                },
+            )
+            raise HTTPException(status_code=503, detail="Knowledge index unavailable") from e
 
         # add_document is async — await directly.
         entry = await kb.add_document(
@@ -174,22 +172,21 @@ async def search_knowledge_entries(
             workspace_id=brand.workspace_id,
             repository=kb_repo,
         )
-        init_fn = getattr(kb, "initialize", None)
-        if callable(init_fn):
-            try:
-                init_result = init_fn()
-                if asyncio.iscoroutine(init_result):
-                    await init_result
-            except Exception as e:
-                logger.warning(
-                    "kb_initialize_failed",
-                    extra={
-                        "event": "kb_initialize_failed",
-                        "brand_id": brand_id,
-                        "error_class": type(e).__name__,
-                        "error_msg": str(e)[:300],
-                    },
-                )
+        # A failed index load must fail the request; never search or write
+        # against an uninitialized, potentially empty index.
+        try:
+            await kb.initialize()
+        except Exception as e:
+            logger.error(
+                "kb_initialize_failed",
+                extra={
+                    "event": "kb_initialize_failed",
+                    "brand_id": brand_id,
+                    "error_class": type(e).__name__,
+                    "error_msg": str(e)[:300],
+                },
+            )
+            raise HTTPException(status_code=503, detail="Knowledge index unavailable") from e
 
         # search is async — await directly.
         results = await kb.search(query=body.query, top_k=body.top_k)
@@ -239,22 +236,21 @@ async def bulk_create_knowledge(
             repository=kb_repo,
         )
 
-        # Initialize the KB if it exposes an async initialize().
-        init_fn = getattr(kb, "initialize", None)
-        if callable(init_fn):
-            try:
-                init_result = init_fn()
-                if asyncio.iscoroutine(init_result):
-                    await init_result
-            except Exception as e:
-                logger.warning(
-                    "bulk_kb_initialize_failed",
-                    extra={
-                        "event": "bulk_kb_initialize_failed",
-                        "error_class": type(e).__name__,
-                        "error_msg": str(e)[:300],
-                    },
-                )
+        # A failed index load must abort bulk ingestion before any writes.
+        try:
+            await kb.initialize()
+        except Exception as e:
+            logger.error(
+                "bulk_kb_initialize_failed",
+                extra={
+                    "event": "bulk_kb_initialize_failed",
+                    "brand_id": body.brand_id,
+                    "workspace_id": workspace_id,
+                    "error_class": type(e).__name__,
+                    "error_msg": str(e)[:300],
+                },
+            )
+            raise HTTPException(status_code=503, detail="Knowledge index unavailable") from e
 
         results, errors = [], []
         for i, item in enumerate(body.items):
