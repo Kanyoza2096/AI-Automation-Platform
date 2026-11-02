@@ -411,6 +411,27 @@ class GenerateContentStep(Step):
                 },
             )
 
+        # Re-check the exact caption that will be published. A scheduled or
+        # caller-supplied caption must not bypass the factual-claim gate.
+        from services.content_engine import ContentEngine
+        claims_ok, claims_reason = ContentEngine._validate_factual_claims(
+            caption_to_check, knowledge_context or None
+        )
+        if not claims_ok:
+            logger.warning(
+                "PostWorkflow: rejecting unsupported quantitative claim "
+                "for brand='%s' topic='%s' reason=%s",
+                self._brand.name, topic[:80], claims_reason,
+            )
+            raise AIValidationError(
+                message=f"Caption failed factual-claim validation: {claims_reason}",
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "claim_validation_reason": claims_reason,
+                },
+            )
+
         context["content_result"] = result
         context["caption"] = caption_to_check
         context["image_bytes"] = result.get("image_bytes")
