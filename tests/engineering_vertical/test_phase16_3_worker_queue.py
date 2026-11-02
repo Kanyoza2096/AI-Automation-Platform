@@ -269,3 +269,11 @@ def test_lease_mutations_require_worker_identity_and_token(tmp_path, worker_id, 
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
         queue.renew(claimed, worker_id=worker_id, lease_token=lease_token)
     queue.close()
+
+
+@pytest.mark.parametrize("lease_seconds", [True, 29, 3601, 30.5, "60"])
+def test_claim_rejects_invalid_lease_duration_types_and_bounds(tmp_path, lease_seconds):
+    queue = make_queue(tmp_path)
+    with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
+        queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
+    queue.close()
