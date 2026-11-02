@@ -1327,7 +1327,7 @@ class ContentEngine:
         brand_id: str,
         brand_name: str,
         started: float,
-        verified_evidence: Optional[str] = None,
+        verified_evidence: Optional[dict] = None,
     ) -> dict:
         ok, reason = self._validate_caption_quality(caption)
         if ok:
