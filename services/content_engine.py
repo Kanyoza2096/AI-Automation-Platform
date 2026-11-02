@@ -987,7 +987,7 @@ class ContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
-    def _validate_factual_claims(caption: str, verified_evidence: Optional[str] = None) -> tuple[bool, str]:
+    def _validate_factual_claims(caption: str, verified_evidence: Optional[dict] = None) -> tuple[bool, str]:
         """Reject empirical performance claims without matching source evidence."""
         metric_language = re.compile(
             r"\b(?:reduc(?:e|ed|tion)|drop(?:ped)?|decreas(?:e|ed)|increas(?:e|ed)|"
@@ -1003,15 +1003,17 @@ class ContentEngine:
         )
         if not has_quantifier:
             return True, "no numeric performance claim detected"
-        evidence = str(verified_evidence or "").strip()
-        if not evidence:
-            return False, "quantitative performance claim has no verified evidence context"
+        evidence_record = verified_evidence if isinstance(verified_evidence, dict) else {}
+        evidence = str(evidence_record.get("text") or "").strip()
+        source_id = str(evidence_record.get("source_id") or "").strip()
+        if evidence_record.get("verified") is not True or not source_id or not evidence:
+            return False, "quantitative performance claim lacks explicitly verified, traceable evidence"
         numbers = set(re.findall(r"\d+(?:\.\d+)?", caption))
         evidence_numbers = set(re.findall(r"\d+(?:\.\d+)?", evidence))
         missing = sorted(numbers - evidence_numbers)
         if missing:
             return False, "quantitative performance claim contains values absent from verified evidence: " + ", ".join(missing)
-        return True, "quantitative values found in verified evidence"
+        return True, f"quantitative values found in verified evidence source {source_id}"
 
     @staticmethod
     def _validate_caption_quality(caption: str) -> tuple[bool, str]:
@@ -1050,7 +1052,7 @@ class ContentEngine:
         ai_profile=None,
         topic: Optional[str] = None,
         base_prompt: Optional[str] = None,
-        verified_evidence: Optional[str] = None,
+        verified_evidence: Optional[dict] = None,
     ) -> dict:
         started = time.monotonic()
         brand_id = self._brand_id(brand)
