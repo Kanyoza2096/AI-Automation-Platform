@@ -46,6 +46,7 @@ async def get_job_status(
 @router.get("/brands/{brand_id}/jobs")
 async def get_brand_jobs(
     brand_id: str,
+    request: Request,
     container=Depends(get_container),
     _auth: bool = Depends(require_auth),
     status: str = "",
@@ -58,7 +59,7 @@ async def get_brand_jobs(
       - limit: Max results (default 20, max 100)
     """
     try:
-        await require_workspace_ownership("brand", brand_id, container)
+        await require_workspace_ownership("brand", brand_id, request, container)
         
         from services.job_service import JobService
         from models.automation_job import JobStatus
@@ -99,4 +100,3 @@ async def get_brand_jobs(
         return _safe_err(exc, f"GET /api/v1/brands/{brand_id}/jobs")
     except Exception as exc:
         return _safe_err(exc, f"GET /api/v1/brands/{brand_id}/jobs")
-
