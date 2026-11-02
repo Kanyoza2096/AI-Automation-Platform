@@ -987,6 +987,33 @@ class ContentEngine:
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
+    def _validate_factual_claims(caption: str, verified_evidence: Optional[str] = None) -> tuple[bool, str]:
+        """Reject empirical performance claims without matching source evidence."""
+        metric_language = re.compile(
+            r"\b(?:reduc(?:e|ed|tion)|drop(?:ped)?|decreas(?:e|ed)|increas(?:e|ed)|"
+            r"improv(?:e|ed|ement)|cut|save(?:d)?|faster|slower|latency|restarts?|"
+            r"throughput|response time|load|error rate|success rate|uptime)\b",
+            re.IGNORECASE,
+        )
+        if not metric_language.search(caption):
+            return True, "no empirical performance claim detected"
+        has_quantifier = re.search(
+            r"\b\d+(?:\.\d+)?\s*(?:%|percent|ms|milliseconds?|seconds?|secs?|"
+            r"minutes?|mins?|hours?|x|times?)?\b", caption, re.IGNORECASE,
+        )
+        if not has_quantifier:
+            return True, "no numeric performance claim detected"
+        evidence = str(verified_evidence or "").strip()
+        if not evidence:
+            return False, "quantitative performance claim has no verified evidence context"
+        numbers = set(re.findall(r"\d+(?:\.\d+)?", caption))
+        evidence_numbers = set(re.findall(r"\d+(?:\.\d+)?", evidence))
+        missing = sorted(numbers - evidence_numbers)
+        if missing:
+            return False, "quantitative performance claim contains values absent from verified evidence: " + ", ".join(missing)
+        return True, "quantitative values found in verified evidence"
+
+    @staticmethod
     def _validate_caption_quality(caption: str) -> tuple[bool, str]:
         """Reject the "professional-boilerplate" style.
 
@@ -1023,6 +1050,7 @@ class ContentEngine:
         ai_profile=None,
         topic: Optional[str] = None,
         base_prompt: Optional[str] = None,
+        verified_evidence: Optional[str] = None,
     ) -> dict:
         started = time.monotonic()
         brand_id = self._brand_id(brand)
@@ -1082,6 +1110,7 @@ class ContentEngine:
                             brand_id=brand_id,
                             brand_name=brand_name,
                             started=started,
+                            verified_evidence=verified_evidence,
                         )
                         if isinstance(result, dict) and result.get("publishable"):
                             await self._record_used_axis(brand_id, axis_used)
@@ -1153,6 +1182,7 @@ class ContentEngine:
                         brand_id=brand_id,
                         brand_name=brand_name,
                         started=started,
+                        verified_evidence=verified_evidence,
                     )
                     if isinstance(result, dict) and result.get("publishable"):
                         await self._record_used_axis(brand_id, axis_used)
@@ -1188,6 +1218,8 @@ class ContentEngine:
             caption = str(caption).strip()
 
             ok, reason = self._validate_caption_quality(caption)
+            if ok:
+                ok, reason = self._validate_factual_claims(caption, verified_evidence)
             if not ok:
                 logger.warning(
                     "Structured caption rejected by quality gate: reason=%s "
@@ -1295,8 +1327,11 @@ class ContentEngine:
         brand_id: str,
         brand_name: str,
         started: float,
+        verified_evidence: Optional[str] = None,
     ) -> dict:
         ok, reason = self._validate_caption_quality(caption)
+        if ok:
+            ok, reason = self._validate_factual_claims(caption, verified_evidence)
         if not ok:
             logger.warning(
                 "Caption rejected by quality gate: reason=%s brand='%s' topic='%s'",
