@@ -420,8 +420,11 @@ Voice:
 
 Evidence for this brand: whatever the reader could point at and say
 "yes, that." A number, a scene, a name, a quotation, a specific
-situation. Do not invent facts. If you don't have evidence, write about
-something else.
+situation. Do not invent facts or claim that the brand measured a result
+unless supplied source material supports it. Never fabricate metrics,
+before/after values, percentages, causal effects, or first-person reports.
+If no source supports a quantitative result, write useful qualitative
+technical guidance without pretending that a result was measured.
 
 Peer for this brand: someone the writer knows by name. Not "our
 audience". Not "developers". Not "believers". A person.
