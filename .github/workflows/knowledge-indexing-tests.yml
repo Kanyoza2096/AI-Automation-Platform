@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "repositories/knowledge_repository.py"
+      - "repositories/base.py"
+      - "services/knowledge_base.py"
       - "models/knowledge_entry.py"
       - "models/base.py"
       - "tests/test_knowledge_repository_fail_closed.py"
