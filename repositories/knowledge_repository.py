@@ -22,7 +22,9 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             return None
         except Exception as e:
             logger.error("Failed to find knowledge entry %s: %s", record_id, e)
-            return self._in_memory.get(record_id)
+            raise RuntimeError(
+                f"Knowledge entry {record_id} could not be loaded"
+            ) from e
 
     def save(self, entity: KnowledgeEntry) -> KnowledgeEntry:
         if not self.supabase:
@@ -58,10 +60,9 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             return True
         except Exception as e:
             logger.error("Failed to delete knowledge entry %s: %s", record_id, e)
-            if record_id in self._in_memory:
-                del self._in_memory[record_id]
-                return True
-            return False
+            raise RuntimeError(
+                f"Knowledge entry {record_id} could not be deleted"
+            ) from e
 
     def find_by_brand(self, brand_id: str) -> List[KnowledgeEntry]:
         if not self.supabase:
@@ -85,4 +86,6 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             return [KnowledgeEntry(**row) for row in (res.data or [])]
         except Exception as e:
             logger.error("Failed to find knowledge entries by workspace %s: %s", workspace_id, e)
-            return [k for k in self._in_memory.values() if k.workspace_id == workspace_id]
+            raise RuntimeError(
+                f"Knowledge entries for workspace {workspace_id} could not be loaded"
+            ) from e
