@@ -64,6 +64,7 @@ def test_heal_consumer_dispatches_nested_engine_payload():
             "target": "job_stats_service",
             "reason": "service degraded",
             "workspace_id": "platform",
+            "correlation_id": "corr-456",
             "requested_by": "autonomous_loop",
         },
     )]
