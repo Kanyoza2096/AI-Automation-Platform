@@ -33,7 +33,11 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
             res = self.supabase.table('knowledge_entries').upsert(data).execute()
             if res.data:
                 return KnowledgeEntry(**res.data[0])
-            return entity
+            # Do not claim durable success unless the database confirms the
+            # upsert. A no-representation response is ambiguous for ingestion.
+            raise RuntimeError(
+                f"Knowledge entry {entity.id} was not confirmed by Supabase"
+            )
         except Exception as e:
             # A production ingestion must not report success when Supabase
             # persistence failed. In-memory fallback would disappear across
