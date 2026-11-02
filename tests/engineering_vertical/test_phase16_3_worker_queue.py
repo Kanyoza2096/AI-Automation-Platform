@@ -222,3 +222,58 @@ def test_claimed_job_cannot_be_relabelled_to_another_task(tmp_path):
     with pytest.raises(Phase163Error, match="lease_fence_rejected"):
         queue.complete(forged, worker_id="worker-a", lease_token=claimed.lease_token, status="awaiting_review")
     queue.close()
+
+
+def test_lease_renewal_extends_expiry_and_preserves_fencing(tmp_path):
+    queue = make_queue(tmp_path)
+    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+                  plan_digest=DIGEST, idempotency_key="idem1")
+    claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
+    assert claimed is not None
+    before = datetime.fromisoformat(claimed.lease_expires_at)
+    renewed = queue.renew(claimed, worker_id="worker-a", lease_token=claimed.lease_token,
+                          lease_seconds=120)
+    after = datetime.fromisoformat(renewed.lease_expires_at)
+    assert after > before
+    assert renewed.lease_token == claimed.lease_token
+    with pytest.raises(Phase163Error, match="lease_fence_rejected"):
+        queue.renew(renewed, worker_id="worker-b", lease_token=claimed.lease_token)
+    queue.close()
+
+
+def test_expired_lease_cannot_be_renewed_or_completed(tmp_path):
+    queue = make_queue(tmp_path)
+    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+                  plan_digest=DIGEST, idempotency_key="idem1")
+    claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
+    expired = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    with queue._lock:
+        queue._db.execute(
+            "UPDATE kdo_engineering_build_jobs SET lease_expires_at=? WHERE job_id=?",
+            (expired, claimed.job_id),
+        )
+    with pytest.raises(Phase163Error, match="worker_lease_expired"):
+        queue.renew(claimed, worker_id="worker-a", lease_token=claimed.lease_token)
+    with pytest.raises(Phase163Error, match="worker_lease_expired_completion_uncertain"):
+        queue.complete(claimed, worker_id="worker-a", lease_token=claimed.lease_token,
+                       status="awaiting_review")
+    queue.close()
+
+
+@pytest.mark.parametrize("worker_id,lease_token", [("", "token"), ("worker", ""), (None, "token")])
+def test_lease_mutations_require_worker_identity_and_token(tmp_path, worker_id, lease_token):
+    queue = make_queue(tmp_path)
+    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+                  plan_digest=DIGEST, idempotency_key="idem1")
+    claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.renew(claimed, worker_id=worker_id, lease_token=lease_token)
+    queue.close()
+
+
+@pytest.mark.parametrize("lease_seconds", [True, 29, 3601, 30.5, "60"])
+def test_claim_rejects_invalid_lease_duration_types_and_bounds(tmp_path, lease_seconds):
+    queue = make_queue(tmp_path)
+    with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
+        queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
+    queue.close()

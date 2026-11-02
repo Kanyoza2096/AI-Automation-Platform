@@ -141,7 +141,7 @@ class SQLiteEngineeringBuildQueue:
     def claim_next(self, *, worker_id: str, lease_seconds: int = 300) -> EngineeringBuildJob | None:
         if not isinstance(worker_id, str) or not worker_id.strip():
             raise Phase163Error("worker_identity_required")
-        if not 30 <= lease_seconds <= 3600:
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
             raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
@@ -165,7 +165,9 @@ class SQLiteEngineeringBuildQueue:
 
     def renew(self, job: EngineeringBuildJob, *, worker_id: str, lease_token: str,
               lease_seconds: int = 300) -> EngineeringBuildJob:
-        if not 30 <= lease_seconds <= 3600:
+        if not isinstance(worker_id, str) or not worker_id.strip() or not isinstance(lease_token, str) or not lease_token.strip():
+            raise Phase163Error("worker_identity_and_lease_token_required")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
             raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
         now = _utcnow()
         with self._lock:
@@ -192,6 +194,8 @@ class SQLiteEngineeringBuildQueue:
 
     def complete(self, job: EngineeringBuildJob, *, worker_id: str, lease_token: str,
                  status: str) -> EngineeringBuildJob:
+        if not isinstance(worker_id, str) or not worker_id.strip() or not isinstance(lease_token, str) or not lease_token.strip():
+            raise Phase163Error("worker_identity_and_lease_token_required")
         if status not in {"awaiting_review", "failed", "uncertain"}:
             raise Phase163Error("invalid_worker_terminal_status")
         now = _utcnow()
