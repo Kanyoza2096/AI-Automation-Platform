@@ -17,6 +17,9 @@ class FailingQuery:
     def upsert(self, *_args, **_kwargs):
         return self
 
+    def delete(self):
+        return self
+
     def execute(self):
         raise OSError("simulated Supabase outage")
 
@@ -72,3 +75,24 @@ def test_save_raises_when_upsert_is_not_confirmed():
         repo.save(entity)
 
     assert entity.id not in repo._in_memory
+
+
+def test_find_by_id_raises_when_supabase_read_fails():
+    repo = KnowledgeRepository(supabase_client=FailingSupabase())
+
+    with pytest.raises(RuntimeError, match="could not be loaded"):
+        repo.find_by_id("kb-test-record")
+
+
+def test_find_by_workspace_raises_when_supabase_read_fails():
+    repo = KnowledgeRepository(supabase_client=FailingSupabase())
+
+    with pytest.raises(RuntimeError, match="could not be loaded"):
+        repo.find_by_workspace("ws-test")
+
+
+def test_delete_raises_when_supabase_delete_fails():
+    repo = KnowledgeRepository(supabase_client=FailingSupabase())
+
+    with pytest.raises(RuntimeError, match="could not be deleted"):
+        repo.delete("kb-test-record")
