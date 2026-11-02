@@ -11,114 +11,58 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Sentinel category for the tier-6 fallback
+# Sentinel category for the unconfigured fallback
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# When a brand has no direction, no custom_topics, no brand_config, no KB
-# entries, and no platform fallback, TopicSelector returns a topic from the
-# last-resort list. That list is intentionally honest — it says "this brand
-# has not been configured" rather than inventing plausible-sounding topics
-# that the pipeline would happily publish.
-#
+# When a brand has no custom_topics, no brand_config, no KB entries, and no
+# platform fallback, TopicSelector returns a topic from the last-resort list.
 # Callers that want to skip unconfigured brands can check
 # `category == UNCONFIGURED_CATEGORY` and refuse to publish.
 #
 UNCONFIGURED_CATEGORY = "unconfigured"
 
 _UNCONFIGURED_TOPICS: list[str] = [
-    "This brand has no topic source configured; add topic_direction, "
-    "custom_topics, brand_config.fallback_topics, or Knowledge Base entries.",
+    "This brand has no topic source configured; add custom_topics, "
+    "brand_config.fallback_topics, or Knowledge Base entries.",
 ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TOPIC OUTPUT VALIDATION
+# V3.0 — DIRECTION FEATURE REMOVED
 # ═══════════════════════════════════════════════════════════════════════════
 #
-_TOPIC_LEAK_MARKERS = (
-    "here is a topic",
-    "here's a topic",
-    "here is the topic",
-    "choosing the axis",
-    "choose the axis",
-    "choose one axis",
-    "chosen the axis",
-    "at random",
-    "generate one",
-    "generated one",
-    "respond with",
-    "no quotes",
-    "no explanation",
-    "no preamble",
-    "thematic axes",
-    "brand voice",
-    "brand direction",
-    "topic:",
-    "axis:",
-    "output exactly",
-    "do not duplicate",
-    "recent topics",
-)
-
-_TOPIC_MIN_LEN = 3
-_TOPIC_MAX_LEN = 120
-_TOPIC_MIN_WORDS = 1
-_TOPIC_MAX_WORDS = 12
+# The direction-based topic generation feature (brand.topic_direction read
+# by the model to invent topics) was removed in v3.0.
+#
+# Why: direction generation produced abstract topics from the brand charter
+# that the corpus could not support. Retrieval returned irrelevant chunks
+# because no record matched the topic. The prompt's quality contract
+# demanded concrete evidence, so the model invented metrics to fill the
+# gap. Result: fabricated engineering posts (e.g., "our auth latency was
+# 250ms until we switched to JWT").
+#
+# The fix: topics come exclusively from the brand's Knowledge Base (or
+# custom_topics, or brand_config.fallback_topics). Every topic is backed
+# by at least one record, so retrieval is grounded and the model has
+# nothing to invent.
+#
+# brands.topic_direction column is retained in the schema for backward
+# compatibility with existing brand rows, but its value is no longer read
+# by TopicSelector. Retire the column in a future migration once all brand
+# rows have been reviewed and the frontend no longer writes to it.
+# ═══════════════════════════════════════════════════════════════════════════
 
 
-def _is_plausible_topic(candidate: str) -> tuple[bool, str]:
-    """Return (ok, reason). ok=False means: do not use this as a topic."""
-    if not candidate:
-        return False, "empty"
+def _build_categories_from_knowledge_base(
+    brand, knowledge_repo=None
+) -> Optional[dict[str, list[str]]]:
+    """Query the brand's Knowledge Base and build topics from it.
 
-    text = candidate.strip()
-    if len(text) < _TOPIC_MIN_LEN:
-        return False, f"too_short:{len(text)}"
-    if len(text) > _TOPIC_MAX_LEN:
-        return False, f"too_long:{len(text)}"
-
-    low = text.lower()
-    for marker in _TOPIC_LEAK_MARKERS:
-        if marker in low:
-            return False, f"instruction_leak:{marker}"
-
-    if "\n" in text:
-        return False, "multiline"
-    if text.lstrip().startswith(("-", "*", "•", "1.", "2.", "3.")):
-        return False, "looks_like_list_item"
-
-    words = text.split()
-    if len(words) < _TOPIC_MIN_WORDS:
-        return False, "no_words"
-    if len(words) > _TOPIC_MAX_WORDS:
-        return False, f"too_many_words:{len(words)}"
-
-    last_token = words[-1].strip("\"'.,;:!?()[]")
-    if len(last_token) >= 15:
-        return False, f"last_token_suspicious:{len(last_token)}"
-    dangling = {"and", "or", "the", "a", "an", "of", "to", "in", "on",
-                "for", "with", "vs", "versus", "from", "by", "at"}
-    if last_token.lower() in dangling:
-        return False, f"dangling_word:{last_token.lower()}"
-
-    return True, ""
-
-
-def _clean_topic_text(raw: str) -> str:
-    """Normalize a raw model output into a candidate topic string."""
-    text = str(raw or "")
-    text = text.strip()
-    for wrapper in ('"', "'", "`", "**", "*"):
-        if text.startswith(wrapper) and text.endswith(wrapper) and len(text) > len(wrapper):
-            text = text[len(wrapper):-len(wrapper)].strip()
-    text = " ".join(text.split())
-    if text.endswith(".") and not text.endswith(".."):
-        text = text[:-1].rstrip()
-    return text.strip()
-
-
-def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optional[dict[str, list[str]]]:
-    """Query the brand's Knowledge Base and build topics from it."""
+    Reads `metadata.title` and `metadata.theme` from each entry — the
+    fields the bulk ingestion writes. Falls back to `entry.title` and
+    content-derived topics for legacy records. Categories are grouped
+    by theme; topics within each category are the entry titles.
+    """
     if not brand or not getattr(brand, 'id', None):
         return None
     if knowledge_repo is None:
@@ -135,22 +79,32 @@ def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optiona
 
         kb_categories: dict[str, list[str]] = {}
         for entry in entries:
-            cat = getattr(entry, 'doc_type', None) or 'general'
-            title = getattr(entry, 'title', None) or ''
-            content = getattr(entry, 'content', None) or ''
-            if title.strip():
-                topic = title.strip()
-            elif content.strip():
-                first_sentence = content.strip().split('.')[0].strip()
+            metadata = getattr(entry, 'metadata', None) or {}
+            theme = str(metadata.get('theme') or '').strip()
+            meta_title = str(metadata.get('title') or '').strip()
+
+            if meta_title:
+                topic = meta_title
+            elif getattr(entry, 'title', None) and entry.title.strip():
+                topic = entry.title.strip()
+            elif getattr(entry, 'content', None) and entry.content.strip():
+                first_sentence = entry.content.strip().split('.')[0].strip()
                 topic = first_sentence[:100] if len(first_sentence) > 100 else first_sentence
             else:
                 continue
-            cat_display = cat.replace('_', ' ').title()
+
+            if theme:
+                cat_display = theme.replace('_', ' ').title()
+            else:
+                cat = getattr(entry, 'doc_type', None) or 'general'
+                cat_display = cat.replace('_', ' ').title()
+
             if cat_display not in kb_categories:
                 kb_categories[cat_display] = []
             if topic not in kb_categories[cat_display]:
                 kb_categories[cat_display].append(topic)
 
+        # "X vs Y" comparison topics within a category
         for cat_name, topics in list(kb_categories.items()):
             if len(topics) >= 2:
                 for i in range(len(topics) - 1):
@@ -175,7 +129,7 @@ def _build_categories_from_knowledge_base(brand, knowledge_repo=None) -> Optiona
 
 
 def _categories_from_brand_config(brand) -> Optional[dict[str, list[str]]]:
-    """Load fallback_topics and keywords from brand_config table / runtime_config."""
+    """Load fallback_topics and keywords from brand_config table."""
     if not brand:
         return None
     brand_id = getattr(brand, "id", None) or getattr(brand, "brand_id", None)
@@ -215,86 +169,21 @@ def _categories_from_brand_config(brand) -> Optional[dict[str, list[str]]]:
     return categories or None
 
 
-_TOPIC_DIRECTION_KEYS = ("topic_direction",)
-_TOPIC_AXES_KEYS = ("topic_axes",)
-
-
-def _read_topic_config(brand) -> tuple[Optional[str], Optional[dict[str, str]]]:
-    """Read the brand's direction and axes."""
-    if brand is None:
-        return None, None
-
-    metadata = getattr(brand, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-
-    direction: Optional[str] = None
-    for key in _TOPIC_DIRECTION_KEYS:
-        value = getattr(brand, key, None)
-        if isinstance(value, str) and value.strip():
-            direction = value.strip()
-            break
-    if direction is None:
-        raw = metadata.get("topic_direction")
-        if isinstance(raw, str) and raw.strip():
-            direction = raw.strip()
-
-    axes: Optional[dict[str, str]] = None
-    for key in _TOPIC_AXES_KEYS:
-        value = getattr(brand, key, None)
-        if isinstance(value, dict) and value:
-            axes = {str(k): str(v) for k, v in value.items() if v}
-            break
-    if axes is None:
-        raw = metadata.get("topic_axes")
-        if isinstance(raw, dict) and raw:
-            axes = {str(k): str(v) for k, v in raw.items() if v}
-
-    return direction, axes
-
-
-def _infer_axis_from_recent(recent: Optional[list[str]], axes: dict[str, str]) -> Optional[str]:
-    """Return the axis name that the most recent topic appears to be about.
-
-    This is a lightweight heuristic: if any recent topic mentions an axis
-    name (case-insensitive substring), treat that axis as the last-used one.
-    Falls back to None when no match is found — in which case the caller
-    treats the whole axis pool as available.
-    """
-    if not recent or not axes:
-        return None
-    # Check the most recent first — if the immediate predecessor matches an
-    # axis, avoid that axis. If nothing in the recent window matches any
-    # axis, fall back to random over the full pool.
-    for topic in reversed(recent):
-        t_low = str(topic).lower()
-        for axis_name in axes.keys():
-            if str(axis_name).lower() in t_low:
-                return axis_name
-    return None
-
-
 class TopicSelector:
-    """
-    Selects topics for content generation.
+    """Selects topics for content generation from configured sources.
 
     Priority order:
-      1. Direction-based AI generation (brand.topic_direction set, AI fabric up)
-      2. Brand's custom_topics (if configured in brand settings)
-      3. brand_config.fallback_topics + keywords (Supabase)
-      4. Brand's Knowledge Base entries (dynamically queried)
-      5. Platform fallback topics
-      6. Unconfigured sentinel (single honest message; callers may skip)
+      1. Brand's custom_topics (if configured in brand settings)
+      2. brand_config.fallback_topics + keywords (Supabase)
+      3. Brand's Knowledge Base entries (dynamically queried)
+      4. Platform fallback topics
+      5. Unconfigured sentinel (single honest message; callers may skip)
 
-    V2.5 — AXIS-AWARE DIRECTION GENERATION
-      The direction generation path now selects a specific axis from
-      brand.topic_axes before asking the model for a topic. The previous
-      version presented axes as passive context; the model defaulted to
-      the same generic theme every call, producing "spiritual growth is
-      a slow and gentle process" repeatedly. Selecting the axis first,
-      excluding the axis inferred from `recent`, and instructing the
-      model to focus on the chosen axis makes the output vary across
-      calls without asking the model to narrate its choice.
+    V3.0 — DIRECTION REMOVED
+      The direction-based generation path was removed in v3.0. See the
+      module docstring above for the rationale. Topics now come
+      exclusively from the KB, custom_topics, or brand_config — never
+      from a brand charter interpreted by the model.
     """
 
     def __init__(
@@ -309,15 +198,6 @@ class TopicSelector:
         self._lock = threading.Lock()
         self._categories: dict[str, list[str]] = {}
         self._unused: list[str] = []
-
-        self._topic_direction, self._topic_axes = _read_topic_config(brand)
-        if self._topic_direction:
-            logger.info(
-                "TopicSelector: Direction-based generation available for brand '%s' "
-                "(%d axes)",
-                getattr(brand, "name", "unknown"),
-                len(self._topic_axes or {}),
-            )
 
         if categories is not None:
             self._categories = categories
@@ -365,150 +245,15 @@ class TopicSelector:
 
         logger.error(
             "TopicSelector: Brand '%s' (id=%s) has no configured topic source. "
-            "Add one of: topic_direction, custom_topics, "
-            "brand_config.fallback_topics, or Knowledge Base entries. "
-            "Returning unconfigured sentinel.",
+            "Add one of: custom_topics, brand_config.fallback_topics, or "
+            "Knowledge Base entries. Returning unconfigured sentinel.",
             getattr(brand, 'name', 'unknown') if brand else 'default',
             getattr(brand, 'id', None) if brand else None,
         )
         self._categories = {UNCONFIGURED_CATEGORY: list(_UNCONFIGURED_TOPICS)}
 
     # ------------------------------------------------------------------
-    # Direction-based generation
-    # ------------------------------------------------------------------
-
-    @property
-    def has_direction(self) -> bool:
-        return bool(self._topic_direction)
-
-    def generate_from_direction(
-        self,
-        *,
-        recent: Optional[list[str]] = None,
-        temperature: float = 0.3,
-    ) -> Optional[str]:
-        """Generate one topic from the brand's direction using the AI fabric.
-
-        V2.5 — Selects an axis first, then asks the model for a topic on that
-        axis. This eliminates the "same theme every post" bug that occurred
-        when axes were presented as passive context.
-        """
-        direction = self._topic_direction
-        if not direction:
-            return None
-
-        try:
-            from ai.gateway import get_llm_gateway
-        except Exception as exc:
-            logger.debug("Direction generation: gateway import failed: %s", exc)
-            return None
-
-        axes = self._topic_axes or {}
-
-        # ── V2.5 — Select an axis explicitly ─────────────────────────
-        # Exclude the axis that the most recent topic appears to be about.
-        # If no recent topic maps to an axis, treat all axes as available.
-        selected_axis_name: Optional[str] = None
-        selected_axis_desc: Optional[str] = None
-        axes_block = ""
-
-        if axes:
-            recent_axis = _infer_axis_from_recent(recent, axes)
-            available = [n for n in axes.keys() if n != recent_axis]
-            if not available:
-                available = list(axes.keys())
-            selected_axis_name = random.choice(available)
-            selected_axis_desc = str(axes[selected_axis_name] or "")
-
-            axes_block = (
-                f"Focus this topic on the axis: {selected_axis_name}\n"
-                f"({selected_axis_desc})\n\n"
-            )
-
-            logger.info(
-                "TopicSelector: axis='%s' chosen (recent_axis=%s, pool=%d) "
-                "for brand='%s'",
-                selected_axis_name,
-                recent_axis or "none",
-                len(axes),
-                getattr(self.brand, "name", "unknown"),
-            )
-
-        recent_block = ""
-        if recent:
-            recent_slice = [str(t).strip() for t in recent[-10:] if str(t).strip()]
-            if recent_slice:
-                recent_block = (
-                    "Recently used topics (do not reuse any):\n"
-                    + "\n".join(f"- {t}" for t in recent_slice)
-                    + "\n\n"
-                )
-
-        prompt = (
-            f"Brand voice and direction:\n{direction}\n\n"
-            f"{axes_block}"
-            f"{recent_block}"
-            f"Output exactly one line: a single topic of 3 to 8 words that "
-            f"fits this brand and the axis above. Be specific to that axis. "
-            f"No preamble, no quotes, no explanation, no trailing punctuation, "
-            f"no mention of axes or instructions."
-        )
-
-        try:
-            gateway = get_llm_gateway()
-            result = gateway.complete(
-                prompt,
-                capability="chat",
-                temperature=temperature,
-                max_tokens=120,
-                caller="content",
-            )
-        except Exception as exc:
-            logger.warning("Direction generation: gateway call failed: %s", exc)
-            return None
-
-        if not getattr(result, "ok", False):
-            logger.info(
-                "Direction generation: gateway declined (mode=%s reason=%s)",
-                getattr(result, "mode", "unknown"),
-                str(getattr(result, "reason", ""))[:120],
-            )
-            return None
-
-        raw = str(getattr(result, "text", "") or "").strip()
-        if not raw:
-            return None
-
-        candidate = _clean_topic_text(raw)
-
-        ok, reason = _is_plausible_topic(candidate)
-        if not ok:
-            logger.warning(
-                "Direction generation: rejected candidate (%s): raw=%r "
-                "provider=%s model=%s axis=%s",
-                reason,
-                raw[:160],
-                getattr(result, "provider", "unknown"),
-                getattr(result, "model", "unknown"),
-                selected_axis_name or "none",
-            )
-            return None
-
-        if len(candidate) > _TOPIC_MAX_LEN:
-            candidate = candidate[:_TOPIC_MAX_LEN].rstrip()
-
-        logger.info(
-            "TopicSelector: Direction-generated topic='%s' axis='%s' "
-            "provider=%s model=%s",
-            candidate[:80],
-            selected_axis_name or "none",
-            getattr(result, "provider", "unknown"),
-            getattr(result, "model", "unknown"),
-        )
-        return candidate
-
-    # ------------------------------------------------------------------
-    # Selection (unchanged)
+    # Selection
     # ------------------------------------------------------------------
 
     def pick(self, category: Optional[str] = None) -> tuple[str, str]:
