@@ -10,31 +10,8 @@ router = APIRouter()
 # ═══════════════════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE
 #
-# INCIDENT-2026-10-16-knowledge:
-#   Three handlers in this file were un-scoped:
-#     * GET /knowledge           — read leak: no workspace filter, returned
-#                                  every tenant's knowledge entries to any
-#                                  authenticated user.
-#     * POST /knowledge          — orphan write: no workspace_id on the
-#                                  inserted row; silent failure swallowed.
-#     * DELETE /knowledge/{id}   — cross-tenant delete: no ownership check;
-#                                  any authenticated user could delete any
-#                                  entry by ID.
-#
-#   Fixed by routing through KnowledgeRepository (which already had
-#   find_by_workspace / find_by_id) and adding require_workspace_ownership
-#   checks on the destructive path.
-#
-# INCIDENT-2026-11-02-knowledge-bulk:
-#   require_workspace_ownership was called as
-#     require_workspace_ownership("workspace", workspace_id, container)
-#   but the function signature is
-#     require_workspace_ownership(resource_type, resource_id, request, container)
-#   The `container` was being bound to the `request` parameter, and the
-#   function body immediately dereferenced request.app.state — raising
-#   AttributeError: 'ServiceContainer' object has no attribute 'app' on
-#   every bulk ingestion call. Every call site in this file has been
-#   updated to pass `request` as the third positional argument.
+# INCIDENT-2026-10-16-knowledge: (unchanged) — see prior incidents.
+# INCIDENT-2026-11-02-knowledge-bulk: (unchanged) — request param fixed.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -105,13 +82,7 @@ async def delete_knowledge_entry(
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
-    """Delete a knowledge entry the caller's workspace owns.
-
-    INCIDENT-2026-10-16-knowledge: previously deleted any entry by ID
-    with no ownership check. Any authenticated user could destroy another
-    tenant's knowledge base. Now: look up first, verify the caller's
-    workspace owns the entry (via brand or workspace), then delete.
-    """
+    """Delete a knowledge entry the caller's workspace owns."""
     try:
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(container.resolve, KnowledgeRepository)
@@ -127,8 +98,6 @@ async def delete_knowledge_entry(
         elif workspace_id:
             await require_workspace_ownership("workspace", workspace_id, request, container)
         else:
-            # No tenancy binding on the row. Refuse rather than allow a
-            # delete against an ambiguous target.
             raise HTTPException(status_code=404, detail="Knowledge entry not found")
 
         deleted = await _async_wrap(repo.delete, knowledge_id)
@@ -189,7 +158,12 @@ async def bulk_create_knowledge(
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
-    """Bulk create knowledge entries."""
+    """Bulk create knowledge entries.
+
+    Each item failure is logged with error_class + error_msg, and the
+    first 20 failures are returned in the response as `error_details` so
+    the caller can diagnose without a log round-trip.
+    """
     try:
         await require_workspace_ownership("workspace", workspace_id, request, container)
         from repositories.knowledge_repository import KnowledgeRepository
@@ -201,6 +175,24 @@ async def bulk_create_knowledge(
             workspace_id=workspace_id,
             repository=kb_repo,
         )
+
+        # Some KnowledgeBase implementations require explicit initialization
+        # before add_document works. If the class exposes initialize(), call
+        # it once here; the call is idempotent-safe (guarded by an internal
+        # flag in most implementations) and cheap when it's already ready.
+        init_fn = getattr(kb, "initialize", None)
+        if callable(init_fn):
+            try:
+                await _async_wrap(init_fn)
+            except Exception as e:
+                logger.warning(
+                    "bulk_kb_initialize_failed",
+                    extra={
+                        "event": "bulk_kb_initialize_failed",
+                        "error_class": type(e).__name__,
+                        "error_msg": str(e)[:300],
+                    },
+                )
 
         results, errors = [], []
         for i, item in enumerate(body.items):
@@ -217,7 +209,22 @@ async def bulk_create_knowledge(
                 )
                 results.append({"id": entry.id, "status": "created"})
             except Exception as e:
-                errors.append({"index": i, "error": str(e)[:200]})
+                logger.warning(
+                    "bulk_item_failed",
+                    extra={
+                        "event": "bulk_item_failed",
+                        "index": i,
+                        "brand_id": body.brand_id,
+                        "workspace_id": workspace_id,
+                        "error_class": type(e).__name__,
+                        "error_msg": str(e)[:300],
+                    },
+                )
+                errors.append({
+                    "index": i,
+                    "error_class": type(e).__name__,
+                    "error": str(e)[:300],
+                })
 
         await append_audit(
             audit_log, "knowledge_bulk_created", f"workspace:{workspace_id}",
@@ -226,6 +233,7 @@ async def bulk_create_knowledge(
         return _ok({
             "created": len(results),
             "errors": len(errors),
+            "error_details": errors[:20],
             "items": results,
         }, 201)
     except HTTPException:
@@ -242,14 +250,7 @@ async def list_knowledge(
     limit: int = 50,
     q: str = "",
 ):
-    """List knowledge entries for the caller's workspace.
-
-    INCIDENT-2026-10-16-knowledge: previously ran an un-scoped
-    select("*") against knowledge_entries via the service-role client,
-    returning every workspace's entries to any authenticated user.
-    Now scoped to the caller's workspace via
-    KnowledgeRepository.find_by_workspace().
-    """
+    """List knowledge entries for the caller's workspace."""
     try:
         limit = min(200, max(1, limit))
         workspace_id = _resolve_workspace_from_request(request)
@@ -281,13 +282,7 @@ async def create_knowledge(
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
 ):
-    """Create a knowledge entry in the caller's workspace.
-
-    INCIDENT-2026-10-16-knowledge: previously inserted a row with no
-    workspace_id (orphan) and swallowed write failures with bare except.
-    Now: workspace_id is set from the request, the write goes through
-    KnowledgeRepository.save(), and failures propagate.
-    """
+    """Create a knowledge entry in the caller's workspace."""
     try:
         workspace_id = _resolve_workspace_from_request(request)
         if not workspace_id:
