@@ -196,12 +196,12 @@ class PostgresEngineeringBuildQueue:
             if scoped:
                 cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
                     WHERE status='queued' AND tenant_id=%s AND workspace_id=%s
-                    ORDER BY created_at,job_id
-                    FOR UPDATE SKIP LOCKED LIMIT 1""", (tenant_id, workspace_id))
+                    ORDER BY created_at,job_id LIMIT 1
+                    FOR UPDATE SKIP LOCKED""", (tenant_id, workspace_id))
             else:
                 cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
-                    WHERE status='queued' ORDER BY created_at,job_id
-                    FOR UPDATE SKIP LOCKED LIMIT 1""")
+                    WHERE status='queued' ORDER BY created_at,job_id LIMIT 1
+                    FOR UPDATE SKIP LOCKED""")
             selected = self._record(_row_dict(cur, cur.fetchone()))
             if selected is None:
                 return None
