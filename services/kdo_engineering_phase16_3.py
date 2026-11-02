@@ -141,7 +141,7 @@ class SQLiteEngineeringBuildQueue:
     def claim_next(self, *, worker_id: str, lease_seconds: int = 300) -> EngineeringBuildJob | None:
         if not isinstance(worker_id, str) or not worker_id.strip():
             raise Phase163Error("worker_identity_required")
-        if not 30 <= lease_seconds <= 3600:
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
             raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
