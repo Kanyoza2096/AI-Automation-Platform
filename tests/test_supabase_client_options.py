@@ -1,7 +1,7 @@
 """Regression test for the public Supabase ClientOptions import."""
 
 import sys
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 from services import supabase as supabase_module
 
@@ -27,9 +27,5 @@ def test_supabase_client_uses_public_client_options_export(monkeypatch):
 
     assert result == "client"
     assert seen["options"] == {"httpx_client": "custom-httpx"}
-    assert seen["client"] == (
-        "https://example.test",
-        "key",
-        seen["client"][2],
-    )
+    assert seen["client"][0:2] == ("https://example.test", "key")
     assert isinstance(seen["client"][2], ClientOptions)
