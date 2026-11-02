@@ -356,6 +356,7 @@ class GenerateContentStep(Step):
             ai_profile=self._ai_profile,
             topic=topic,
             base_prompt=base_prompt,
+            verified_evidence=knowledge_context or None,
         )
         if not result:
             raise AIValidationError(
