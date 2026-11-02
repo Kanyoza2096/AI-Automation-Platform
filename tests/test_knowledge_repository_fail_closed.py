@@ -68,7 +68,7 @@ def test_save_raises_when_upsert_is_not_confirmed():
     entity.id = "kb-unconfirmed-record"
     entity.model_dump.return_value = {"id": entity.id}
 
-    with pytest.raises(RuntimeError, match="was not confirmed"):
+    with pytest.raises(RuntimeError, match="could not be persisted"):
         repo.save(entity)
 
     assert entity.id not in repo._in_memory
