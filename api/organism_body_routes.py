@@ -11,6 +11,24 @@ Read-only API that surfaces the living organism:
 
 All data comes from UnifiedEventBus store, OrganismRegistry, SynapseMatrix,
 DecisionGate, Metabolism — not from fake fixtures.
+
+Phase E.1 (2026-11-02) — hands/sleep event categorization fix:
+
+  /organism/hands previously classified events by substring:
+
+      publishes = [e for e in events if "published" in e["event_name"]]
+      failures  = [e for e in events if "fail" in e["event_name"]]
+
+  HANDS_EVENTS includes task_completed and job.completed, but neither
+  of those contains the substring "published". The result was that
+  successful Director tasks were invisible to the publishes counter —
+  the console showed "publishes: 0" while five tasks had completed.
+
+  Fixed by explicit set membership. Same problem in /organism/sleep
+  (substring filters that happen to match today but will silently break
+  if event names change).
+
+  /organism/mind was already using explicit tuples — no change needed.
 """
 
 from __future__ import annotations
@@ -269,9 +287,37 @@ async def organism_hands(
     ws = _resolve_workspace(request, workspace_id)
     bus = _get_bus()
     events = _filter_events(bus, HANDS_EVENTS, ws, limit=limit)
-    publishes = [e for e in events if "published" in e["event_name"]]
-    failures = [e for e in events if "fail" in e["event_name"]]
-    reflexes = [e for e in events if "reflex" in e["event_name"]]
+
+    # Categorize by explicit event name, NOT substring.
+    #
+    # The previous version used substring filters:
+    #   publishes = [e for e in events if "published" in e["event_name"]]
+    #   failures  = [e for e in events if "fail" in e["event_name"]]
+    #
+    # HANDS_EVENTS includes task_completed and job.completed, neither
+    # of which contains "published". Successful Director tasks were
+    # invisible to the counter: the console showed "publishes: 0"
+    # while five tasks had completed.
+    #
+    # The sets below must stay in sync with HANDS_EVENTS above. If a
+    # new event is added to HANDS_EVENTS without being categorized
+    # here, it will appear in recent_events but in none of the counts.
+    _PUBLISH_NAMES = frozenset({
+        "post.published", "post_published",
+        "job.completed", "task_completed",
+    })
+    _FAILURE_NAMES = frozenset({
+        "job.failed", "task_failed",
+        "content.failed", "content_failed",
+    })
+    _REFLEX_NAMES = frozenset({
+        "reflex.fired", "reflex.triggered",
+    })
+
+    publishes = [e for e in events if e["event_name"] in _PUBLISH_NAMES]
+    failures = [e for e in events if e["event_name"] in _FAILURE_NAMES]
+    reflexes = [e for e in events if e["event_name"] in _REFLEX_NAMES]
+
     return {
         "section": "hands",
         "workspace_id": ws,
@@ -299,8 +345,21 @@ async def organism_sleep(
     ws = _resolve_workspace(request, workspace_id)
     bus = _get_bus()
     events = _filter_events(bus, SLEEP_EVENTS, ws, limit=limit)
-    dreams = [e for e in events if "dream" in e["event_name"] or "learning" in e["event_name"] or "pattern" in e["event_name"]]
-    memories = [e for e in events if "memory" in e["event_name"]]
+
+    # Same fix pattern as hands — explicit sets, not substrings. The
+    # current event names happen to match the substring filters, but
+    # a future rename ("dream.insight" → "sleep.insight") would silently
+    # break the count. Explicit membership fails loudly if a new event
+    # name is added to SLEEP_EVENTS but not to these categorizations.
+    _DREAM_NAMES = frozenset({
+        "dream.insight", "learning_opportunity", "pattern_discovered",
+    })
+    _MEMORY_NAMES = frozenset({
+        "memory.stored",
+    })
+
+    dreams = [e for e in events if e["event_name"] in _DREAM_NAMES]
+    memories = [e for e in events if e["event_name"] in _MEMORY_NAMES]
     org = _organism_vitals(ws)
     return {
         "section": "sleep",
