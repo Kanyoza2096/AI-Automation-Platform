@@ -18,6 +18,15 @@ Architecture §5  — MediaArtifact Integration
 Architecture §6  — Synchronous Rendering
 Architecture §21 — AI Pipeline Hardening
 
+V1.15 — AXIS PERSISTENCE MATCHES THE RIGHT COLUMN:
+
+  automation_jobs has two identifiers: `id` (primary key, job_*) and
+  `job_id` (secondary, pub_*). The workflow context carries the `job_id`
+  value, but _record_job_axis filtered on `id`, matched zero rows, and
+  failed silently, so topic / topic_axis were never saved and rotation had
+  no memory. It now matches `job_id` first, falls back to `id`, and logs a
+  WARNING when neither matches.
+
 V1.14 — KB-DRIVEN AXIS ROTATION WIRING:
 
   prompt_builder V2.6 draws the rotation pool from the themes in the
@@ -782,18 +791,42 @@ class PublishStep(Step):
                     "unavailable (job=%s axis=%s)", job_id, axis,
                 )
                 return
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: (
+            loop = asyncio.get_running_loop()
+
+            def _update_where(column: str):
+                return (
                     client.table("automation_jobs")
                     .update(update)
-                    .eq("id", job_id)
+                    .eq(column, job_id)
                     .execute()
-                ),
-            )
+                )
+
+            # automation_jobs has TWO identifiers: `job_id` (pub_*, the value
+            # the workflow context carries) and `id` (job_*, the primary
+            # key). Match `job_id` first; fall back to `id` so callers that
+            # pass the primary key still work.
+            matched_column: str | None = None
+            for column in ("job_id", "id"):
+                response = await loop.run_in_executor(
+                    None, _update_where, column
+                )
+                if getattr(response, "data", None):
+                    matched_column = column
+                    break
+
+            if matched_column is None:
+                logger.warning(
+                    "PostWorkflow: axis recording matched 0 rows for "
+                    "job_id=%s (brand='%s' axis=%s topic=%s) — checked "
+                    "columns job_id and id; verify the job row exists",
+                    job_id, self._brand.name, axis or "none", topic or "none",
+                )
+                return
+
             logger.info(
-                "PostWorkflow: recorded topic_axis='%s' for job=%s",
-                axis or "none", job_id,
+                "PostWorkflow: recorded topic_axis='%s' topic='%s' for "
+                "%s=%s",
+                axis or "none", topic or "none", matched_column, job_id,
             )
         except Exception as exc:
             logger.warning(
