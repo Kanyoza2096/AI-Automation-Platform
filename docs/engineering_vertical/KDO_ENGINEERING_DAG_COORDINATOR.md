@@ -41,10 +41,16 @@ single-host development/staging adapter, not the production shared queue.
 
 ### Scoped worker claims
 
-The build queue's `claim_next` accepts optional `tenant_id` and
-`workspace_id` together. When both are supplied, the claim query selects only
-queued jobs in that exact tenant/workspace scope. Supplying only one value or an
-empty scope fails closed. Omitting both retains the global claim behavior for
-trusted central schedulers; tenant-bound workers should always provide both.
-Scope-filtered claiming reduces cross-tenant work capture, while execution still
-revalidates actor authorization, the lease fence, and approved-plan evidence.
+Both the Phase 16.3 SQLite queue and Phase 16.4 PostgreSQL queue accept optional
+`tenant_id` and `workspace_id` together. When supplied, the claim query filters
+to that exact scope before leasing the job; partial or empty scope fails closed.
+The persisted-workflow entry point
+`claim_tenant_scoped_engineering_build_job(...)` requires both values and passes
+them through to the selected queue. Tenant-bound workers should use this entry
+point rather than calling the queue directly. Omitting scope on the lower-level
+queue API remains available only for trusted central schedulers.
+
+Scope-filtered claiming reduces accidental cross-tenant work capture; it is not
+a replacement for actor authorization, database grants/RLS, lease fencing, or
+approved-plan evidence. The PostgreSQL adapter and its locking SQL have only
+fake-DB unit coverage until executed against a real supported PostgreSQL instance.
