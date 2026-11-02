@@ -35,9 +35,13 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
                 return KnowledgeEntry(**res.data[0])
             return entity
         except Exception as e:
+            # A production ingestion must not report success when Supabase
+            # persistence failed. In-memory fallback would disappear across
+            # requests/restarts and create a false-positive indexed record.
             logger.error("Failed to save knowledge entry %s: %s", entity.id, e)
-            self._in_memory[entity.id] = entity
-            return entity
+            raise RuntimeError(
+                f"Knowledge entry {entity.id} could not be persisted"
+            ) from e
 
     def delete(self, record_id: str) -> bool:
         if not self.supabase:
