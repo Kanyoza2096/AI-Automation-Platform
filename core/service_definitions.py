@@ -77,7 +77,10 @@ define_service("content_engine", _resolve_content_engine, critical=True)
 
 
 def _resolve_director(container):
-    from services.director import director
+    # Import from the owning API module at resolution time. The package
+    # re-export in services.director is a snapshot of the initial None value
+    # and does not update when init_director assigns api.director.
+    from services.director.api import director
     return director
 
 define_service("director", _resolve_director, critical=True)

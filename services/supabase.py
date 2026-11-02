@@ -132,9 +132,12 @@ def _create_supabase_client(url: str, key: str):
     from supabase import create_client
 
     try:
-        from supabase.lib.client_options import ClientOptions
+        # Use the public synchronous client options export. Importing the
+        # internal abstract ClientOptions class can reject httpx_client even
+        # when the installed supabase-py version supports SyncClientOptions.
+        from supabase import ClientOptions
     except Exception:
-        # Older supabase-py — no ClientOptions path available.
+        # Older supabase-py — no compatible public options export available.
         return create_client(url, key)
 
     try:

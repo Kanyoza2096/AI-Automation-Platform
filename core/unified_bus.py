@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+from utils.ids import correlation_id_ctx
 
 logger = logging.getLogger("kanyoza.unified_bus")
 
@@ -529,7 +530,8 @@ class UnifiedEventBus:
         correlation_id: Optional[str] = None,
         parent_event_id: Optional[str] = None,
     ) -> None:
-        """Invoke handler with full event context."""
+        """Invoke handler with full event context and scoped correlation ID."""
+        correlation_token = correlation_id_ctx.set(correlation_id or event_id)
         try:
             event_data = {
                 "event_name": event_name,
@@ -566,6 +568,8 @@ class UnifiedEventBus:
                 event_id, event_name, payload, exc,
                 getattr(handler, "__qualname__", str(handler)),
             )
+        finally:
+            correlation_id_ctx.reset(correlation_token)
 
     # ═══════════════════════════════════════════════════════════════════
     # PERSISTENCE

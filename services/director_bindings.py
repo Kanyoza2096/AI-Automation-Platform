@@ -79,6 +79,16 @@ CRITICAL_CAPABILITIES = frozenset({
     "change_access_control",
 })
 
+# These capabilities are deliberately present in the Director's capability
+# catalogue but must not be bound to autonomous Director execution.
+# Scheduled content generation and publishing belong exclusively to the
+# Brand Scheduler; binding this handler caused duplicate publishes and quota
+# exhaustion. Keep the capability visible for governance/compatibility, but
+# exclude it from the "unbound handler" defect report.
+INTENTIONALLY_UNBOUND_CAPABILITIES = frozenset({
+    "publish_scheduled_content",
+})
+
 
 def _ok(service: str, result: Any = None, **extra) -> Dict[str, Any]:
     out: Dict[str, Any] = {"ok": True, "status": "executed", "service": service}
@@ -348,6 +358,35 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
             logger.warning("calculate_brand_health unavailable: %s", exc)
         return _soft_fail("condition_engine", "brand_health_unavailable", brand_id=brand_id)
 
+    async def review_content_quality(params: dict) -> dict:
+        """Return evidence-backed quality signals; this is advisory-only."""
+        brand_id = str((params or {}).get("brand_id") or "").strip()
+        if not brand_id:
+            return _soft_fail("autonomous_content", "brand_id_required")
+        try:
+            from core.autonomous_content import get_autonomous_content
+            engine = await get_autonomous_content()
+            if engine is None or not getattr(engine, "_running", False):
+                return _soft_fail("autonomous_content", "engine_unavailable", brand_id=brand_id)
+            health = engine.check_health()
+            metrics = health.get("metrics", {}) if isinstance(health, dict) else {}
+            signals = metrics.get("director_signals", [])
+            matching = [
+                s for s in signals
+                if isinstance(s, dict)
+                and s.get("capability") == "review_content_quality"
+                and str((s.get("params") or {}).get("brand_id") or "") == brand_id
+            ]
+            return _ok(
+                "autonomous_content",
+                {"brand_id": brand_id, "advisory": bool(matching), "signals": matching},
+                advisory_only=True,
+                execution_performed=False,
+            )
+        except Exception as exc:
+            logger.warning("review_content_quality unavailable: %s", exc)
+            return _soft_fail("autonomous_content", "quality_review_unavailable", brand_id=brand_id)
+
     async def queue_brand_revival(params: dict) -> dict:
         """Route bounded brand revival through the same governed action boundary."""
         params = dict(params or {})
@@ -540,6 +579,7 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
         "web_fetch": web_fetch,
         "ask_with_tools": ask_with_tools,
         "optimize_content_schedule": optimize_content_schedule,
+        "review_content_quality": review_content_quality,
         "update_brand_posting_schedule": update_brand_posting_schedule,
         "scale_worker_pool": scale_worker_pool,
         "calculate_brand_health": calculate_brand_health,
@@ -668,9 +708,15 @@ def bind_director_capabilities(director, container=None) -> Dict[str, str]:
 
 
 def assert_no_unbound_capabilities(director) -> List[str]:
+    """Return genuinely missing handlers, excluding governed non-bindings.
+
+    Some capabilities remain in the catalogue for visibility and policy
+    validation while execution is intentionally owned by another subsystem.
+    Those must not be reported as broken bindings.
+    """
     unbound: List[str] = []
     for name, cap in getattr(director, "capabilities", {}).items():
-        if name in CRITICAL_CAPABILITIES:
+        if name in CRITICAL_CAPABILITIES or name in INTENTIONALLY_UNBOUND_CAPABILITIES:
             continue
         handler = getattr(cap, "handler", None)
         hname = getattr(handler, "__name__", str(handler))
@@ -683,4 +729,5 @@ __all__ = [
     "bind_director_capabilities",
     "assert_no_unbound_capabilities",
     "CRITICAL_CAPABILITIES",
+    "INTENTIONALLY_UNBOUND_CAPABILITIES",
 ]

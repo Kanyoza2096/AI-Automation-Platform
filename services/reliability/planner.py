@@ -24,8 +24,10 @@ CAUSE_PLAYBOOK = {
     "stale_idle_engines_inflating_health": RemediationAction.CLEAR_STALE_STATE,
     "engine_degradation": RemediationAction.RESTART_WORKER,
     "offline_engines": RemediationAction.RESTART_WORKER,
-    "degraded_engines": RemediationAction.REFRESH_CONNECTION,
-    "service_health_degraded": RemediationAction.REFRESH_CONNECTION,
+    # Generic connection refresh has no executor yet. Escalate rather than
+    # repeatedly scheduling a known-unimplemented remediation.
+    "degraded_engines": RemediationAction.ESCALATE_HUMAN,
+    "service_health_degraded": RemediationAction.ESCALATE_HUMAN,
     "nerve_event_scope_mismatch": RemediationAction.RECONCILE_HEALTH_SCOPE,
     "activity_stagnation": RemediationAction.ESCALATE_HUMAN,
     "connector_auth_failure": RemediationAction.ESCALATE_HUMAN,
@@ -39,15 +41,21 @@ class RepairPlanner:
         self._memory = memory or IncidentMemory()
 
     def plan(self, incident: Incident, diagnosis: Diagnosis) -> RemediationPlan:
-        # Memory can override default playbook with prior success
-        remembered = self._memory.best_action_for(diagnosis.probable_cause)
-        if remembered:
-            try:
-                action = RemediationAction(remembered)
-            except ValueError:
-                action = CAUSE_PLAYBOOK.get(diagnosis.probable_cause, RemediationAction.OBSERVE_ONLY)
+        # These generic diagnoses currently have no connection-refresh adapter.
+        # Do not let historical memory resurrect the unsupported action; require
+        # human review until a component-specific, tested executor exists.
+        if diagnosis.probable_cause in {"degraded_engines", "service_health_degraded"}:
+            action = RemediationAction.ESCALATE_HUMAN
         else:
-            action = CAUSE_PLAYBOOK.get(diagnosis.probable_cause, RemediationAction.OBSERVE_ONLY)
+            # Memory can override the default playbook for supported actions.
+            remembered = self._memory.best_action_for(diagnosis.probable_cause)
+            if remembered:
+                try:
+                    action = RemediationAction(remembered)
+                except ValueError:
+                    action = CAUSE_PLAYBOOK.get(diagnosis.probable_cause, RemediationAction.OBSERVE_ONLY)
+            else:
+                action = CAUSE_PLAYBOOK.get(diagnosis.probable_cause, RemediationAction.OBSERVE_ONLY)
 
         risk = "low"
         if action in (RemediationAction.DISABLE_CONNECTOR, RemediationAction.ROLLBACK_RELEASE):

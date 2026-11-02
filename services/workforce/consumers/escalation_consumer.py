@@ -37,7 +37,12 @@ class EscalationConsumer:
 
     async def _on_escalation(self, event: Any = None, payload: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         try:
-            data = payload or (event if isinstance(event, dict) else {})
+            raw = payload if isinstance(payload, dict) else (event if isinstance(event, dict) else {})
+            nested = raw.get("payload") if isinstance(raw, dict) else None
+            # UnifiedEventBus supplies an envelope with the domain payload nested
+            # under "payload". Merge it over the envelope so engine and reason
+            # are preserved while correlation/workspace metadata remains available.
+            data = {**raw, **nested} if isinstance(nested, dict) else raw
             if not data:
                 return
 
@@ -82,7 +87,9 @@ class EscalationConsumer:
                     "title": task["title"],
                     "severity": task["severity"],
                     "workspace_id": workspace_id,
-                }, source="escalation_consumer")
+                    "engine": engine,
+                    "correlation_id": correlation_id,
+                }, source="escalation_consumer", correlation_id=correlation_id)
             except Exception:
                 pass
         except Exception as exc:
