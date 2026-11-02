@@ -1862,7 +1862,7 @@ class AutonomousLoop:
             })
         elif action == "escalate":
             await self._publish_event("escalation_request", {
-                "engine": engine, "reason": status, "correlation_id": uuid.uuid4().hex,
+                "engine": engine, "reason": status, "correlation_id": correlation_id,
             })
 
     async def _handle_anomaly(self, payload: Dict[str, Any]) -> None:
