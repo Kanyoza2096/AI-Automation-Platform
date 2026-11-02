@@ -356,7 +356,7 @@ class GenerateContentStep(Step):
             ai_profile=self._ai_profile,
             topic=topic,
             base_prompt=base_prompt,
-            verified_evidence=knowledge_context or None,
+            verified_evidence=context.get("verified_evidence"),
         )
         if not result:
             raise AIValidationError(
@@ -415,7 +415,7 @@ class GenerateContentStep(Step):
         # caller-supplied caption must not bypass the factual-claim gate.
         from services.content_engine import ContentEngine
         claims_ok, claims_reason = ContentEngine._validate_factual_claims(
-            caption_to_check, knowledge_context or None
+            caption_to_check, context.get("verified_evidence")
         )
         if not claims_ok:
             logger.warning(
