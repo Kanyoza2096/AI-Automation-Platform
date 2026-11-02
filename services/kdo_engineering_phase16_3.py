@@ -138,15 +138,37 @@ class SQLiteEngineeringBuildQueue:
             raise Phase163Error("engineering_build_job_not_found")
         return self._record(row)
 
-    def claim_next(self, *, worker_id: str, lease_seconds: int = 300) -> EngineeringBuildJob | None:
+    def claim_next(
+        self, *, worker_id: str, lease_seconds: int = 300,
+        tenant_id: str | None = None, workspace_id: str | None = None,
+    ) -> EngineeringBuildJob | None:
         if not isinstance(worker_id, str) or not worker_id.strip():
             raise Phase163Error("worker_identity_required")
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
             raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
+        if (tenant_id is None) != (workspace_id is None):
+            raise Phase163Error("tenant_and_workspace_scope_must_be_provided_together")
+        scoped = tenant_id is not None
+        if scoped and (
+            not isinstance(tenant_id, str) or not tenant_id.strip()
+            or not isinstance(workspace_id, str) or not workspace_id.strip()
+        ):
+            raise Phase163Error("tenant_and_workspace_scope_required")
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
-                row = self._db.execute("SELECT * FROM kdo_engineering_build_jobs WHERE status='queued' ORDER BY created_at,job_id LIMIT 1").fetchone()
+                if scoped:
+                    row = self._db.execute(
+                        "SELECT * FROM kdo_engineering_build_jobs "
+                        "WHERE status='queued' AND tenant_id=? AND workspace_id=? "
+                        "ORDER BY created_at,job_id LIMIT 1",
+                        (tenant_id, workspace_id),
+                    ).fetchone()
+                else:
+                    row = self._db.execute(
+                        "SELECT * FROM kdo_engineering_build_jobs WHERE status='queued' "
+                        "ORDER BY created_at,job_id LIMIT 1"
+                    ).fetchone()
                 if row is None:
                     self._db.execute("COMMIT")
                     return None
