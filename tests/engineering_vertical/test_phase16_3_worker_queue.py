@@ -301,3 +301,16 @@ def test_scoped_claim_requires_complete_scope(tmp_path, tenant_id, workspace_id)
     with pytest.raises(Phase163Error, match="scope"):
         queue.claim_next(worker_id="worker-a", tenant_id=tenant_id, workspace_id=workspace_id)
     queue.close()
+
+
+def test_worker_claim_wrapper_requires_scope(monkeypatch):
+    from services.kdo_engineering_persisted_workflow import claim_tenant_scoped_engineering_build_job
+    from services.kdo_engineering_phase16_3 import Phase163Error
+    class Queue:
+        def claim_next(self, **kwargs):
+            return kwargs
+    result = claim_tenant_scoped_engineering_build_job(queue=Queue(), worker_id='w1', tenant_id='t1', workspace_id='s1')
+    assert result['tenant_id'] == 't1'
+    assert result['workspace_id'] == 's1'
+    with pytest.raises(Phase163Error, match='scope'):
+        claim_tenant_scoped_engineering_build_job(queue=Queue(), worker_id='w1', tenant_id='', workspace_id='s1')
