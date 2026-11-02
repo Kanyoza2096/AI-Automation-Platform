@@ -37,6 +37,7 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, runtime_checkable
 from statistics import mean, median, stdev
+from utils.ids import get_current_correlation_id
 
 # HealthReport and HealthStatus are canonical in lifecycle. They were
 # previously redefined in this module as local classes, which made
@@ -1803,6 +1804,15 @@ class AutonomousLoop:
                 "status": getattr(payload, "status", "unknown"),
                 "message": str(payload),
             }
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            payload = {**payload, **nested}
+        correlation_id = (
+            str(payload.get("correlation_id") or "").strip()
+            or get_current_correlation_id()
+            or uuid.uuid4().hex
+        )
+        payload = {**payload, "correlation_id": correlation_id}
         engine = payload.get("engine", "")
         status = payload.get("status", "")
         message = payload.get("message", "")
@@ -1848,7 +1858,7 @@ class AutonomousLoop:
 
         if action == "heal_service":
             await self._publish_event("heal_command", {
-                "engine": engine, "reason": status, "correlation_id": uuid.uuid4().hex,
+                "engine": engine, "reason": status, "correlation_id": correlation_id,
             })
         elif action == "escalate":
             await self._publish_event("escalation_request", {
