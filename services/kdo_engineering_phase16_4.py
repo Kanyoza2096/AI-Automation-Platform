@@ -174,16 +174,34 @@ class PostgresEngineeringBuildQueue:
             return row
         return self._run(op)
 
-    def claim_next(self, *, worker_id: str, lease_seconds: int = 300) -> EngineeringBuildJob | None:
+    def claim_next(
+        self, *, worker_id: str, lease_seconds: int = 300,
+        tenant_id: str | None = None, workspace_id: str | None = None,
+    ) -> EngineeringBuildJob | None:
         if not isinstance(worker_id, str) or not worker_id.strip():
             raise Phase163Error("worker_identity_required")
-        if not 30 <= lease_seconds <= 3600:
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
             raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
+        if (tenant_id is None) != (workspace_id is None):
+            raise Phase163Error("tenant_and_workspace_scope_must_be_provided_together")
+        scoped = tenant_id is not None
+        if scoped and (
+            not isinstance(tenant_id, str) or not tenant_id.strip()
+            or not isinstance(workspace_id, str) or not workspace_id.strip()
+        ):
+            raise Phase163Error("tenant_and_workspace_scope_required")
         def op(_conn: Any, cur: Any) -> EngineeringBuildJob | None:
             # SKIP LOCKED permits multiple workers to claim independent jobs.
-            cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
-                WHERE status='queued' ORDER BY created_at,job_id
-                FOR UPDATE SKIP LOCKED LIMIT 1""")
+            # Tenant-bound workers use a predicate in the locked selection itself.
+            if scoped:
+                cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                    WHERE status='queued' AND tenant_id=%s AND workspace_id=%s
+                    ORDER BY created_at,job_id
+                    FOR UPDATE SKIP LOCKED LIMIT 1""", (tenant_id, workspace_id))
+            else:
+                cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                    WHERE status='queued' ORDER BY created_at,job_id
+                    FOR UPDATE SKIP LOCKED LIMIT 1""")
             selected = self._record(_row_dict(cur, cur.fetchone()))
             if selected is None:
                 return None
