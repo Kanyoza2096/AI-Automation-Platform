@@ -24,8 +24,10 @@ CAUSE_PLAYBOOK = {
     "stale_idle_engines_inflating_health": RemediationAction.CLEAR_STALE_STATE,
     "engine_degradation": RemediationAction.RESTART_WORKER,
     "offline_engines": RemediationAction.RESTART_WORKER,
-    "degraded_engines": RemediationAction.REFRESH_CONNECTION,
-    "service_health_degraded": RemediationAction.REFRESH_CONNECTION,
+    # Generic connection refresh has no executor yet. Escalate rather than
+    # repeatedly scheduling a known-unimplemented remediation.
+    "degraded_engines": RemediationAction.ESCALATE_HUMAN,
+    "service_health_degraded": RemediationAction.ESCALATE_HUMAN,
     "nerve_event_scope_mismatch": RemediationAction.RECONCILE_HEALTH_SCOPE,
     "activity_stagnation": RemediationAction.ESCALATE_HUMAN,
     "connector_auth_failure": RemediationAction.ESCALATE_HUMAN,
