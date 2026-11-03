@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from services.execution_ledger import _workspace_uuid
 
 
 class DurableReceiptVerificationError(RuntimeError):
@@ -84,7 +83,7 @@ class DurableActionReceiptVerifier:
                 return False
 
             execution = _single_row(self._db, "external_execution_ledger", {
-                "workspace_id": _workspace_uuid(workspace_id),
+                "workspace_id": workspace_id,
                 "execution_id": execution_id,
             })
             if execution is None:
