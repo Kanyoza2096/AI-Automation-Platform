@@ -151,3 +151,32 @@ def test_dynamic_quality_loop_stops_before_diagnosis_or_patch_when_cancelled():
     assert result.status == "cancelled"
     assert calls == []
     assert result.release_authorized is False
+
+
+def test_dynamic_quality_loop_does_not_apply_patch_if_cancelled_during_repair():
+    import threading
+    cancellation = threading.Event()
+    registry = AgentRegistry()
+    registry.register_adapter("debugging_engineer", lambda a: {
+        "agent_id": "debugger-1", "status": "succeeded", "summary": "diagnosed",
+        "evidence": {"root_cause": "failure"},
+    })
+    def repair(_assignment):
+        cancellation.set()
+        return {"agent_id": "repair-1", "status": "succeeded", "summary": "patch proposed",
+                "evidence": {"patch_text": "diff --git a/x b/x\n"}}
+    registry.register_adapter("backend_engineer", repair)
+    registry.register_adapter("independent_reviewer", lambda a: {
+        "agent_id": "reviewer-1", "status": "succeeded", "summary": "reviewed",
+        "evidence": {"verification_status": "approved", "verification_id": "verify-1"},
+    })
+    patches = []
+    result = run_dynamic_quality_loop(
+        task=_task(), registry=registry,
+        test_runner=lambda i: {"status": "failed", "exit_code": 1},
+        apply_patch=lambda patch: patches.append(patch) or {"status": "passed"},
+        authorize=_auth, repair_capabilities={"backend"},
+        cancellation_event=cancellation,
+    )
+    assert result.status == "cancelled"
+    assert patches == []
