@@ -15,6 +15,7 @@ from services.kdo_engineering_postgres_repositories import (
     PostgresEngineeringRepositoryError,
 )
 from services.kdo_engineering_task_repository import EngineeringTaskConflict, EngineeringTaskNotFound
+from services.kdo_engineering_phase16_2 import KDOPhase162Workflow
 from services.kdo_engineering_vertical_contracts import EngineeringTaskContract, EngineeringTaskStatus
 
 
@@ -185,3 +186,42 @@ def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(reposit
     )
     assert ledger["reviewer_id"] == "reviewer-existing"
     assert ledger["decision"] == "rejected"
+
+
+def test_phase162_workflow_uses_atomic_postgres_plan_approval(repositories, tmp_path):
+    tasks, workspaces, tenant, workspace = repositories
+    workflow = KDOPhase162Workflow(
+        task_repository=tasks,
+        workspace_repository=workspaces,
+        source_repository_path=tmp_path,
+        managed_root=tmp_path / "managed",
+        authorize=lambda actor, action, tenant_id, workspace_id: True,
+    )
+    task = make_task(tenant, workspace, task_id="workflow-task")
+    created = workflow.create_task(task, actor_id="author-1")
+    submitted = workflow.submit_plan(
+        created.task_id,
+        tenant_id=tenant,
+        workspace_id=workspace,
+        actor_id="author-1",
+        plan=["inspect repository", "implement change", "run tests"],
+    )
+    assert submitted.evidence["plan_review"]["state"] == "submitted"
+
+    approved = workflow.review_plan(
+        submitted.task_id,
+        tenant_id=tenant,
+        workspace_id=workspace,
+        reviewer_id="reviewer-2",
+        approve=True,
+        reason="independent review passed",
+    )
+
+    assert approved.status == EngineeringTaskStatus.PLANNED
+    assert approved.evidence["plan_review"]["state"] == "approved"
+    ledger = workspaces.get_plan_review(
+        approved.task_id, tenant_id=tenant, workspace_id=workspace
+    )
+    assert ledger["decision"] == "approved"
+    assert ledger["reviewer_id"] == "reviewer-2"
+    assert workspaces.list_scope(tenant_id=tenant, workspace_id=workspace) == []
