@@ -41,4 +41,4 @@ REVOKE UPDATE, DELETE ON TABLE public.kdo_engineering_job_reconciliation_events
 -- application-level audit history is append-only; database owners remain trusted.
 
 COMMENT ON TABLE public.kdo_engineering_job_reconciliation_events IS
-  'Append-only audit history for confirmed worker death and human-authorized uncertain job replay; no automatic replay.';
+  'Append-only audit history for confirmed worker death and human-authorized uncertain job replay with no automatic replay.';
