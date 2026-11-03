@@ -192,6 +192,67 @@ class PostgresEngineeringTaskRepository(_PostgresRepository):
             return updated
         return self._run(op, write=True)
 
+    def review_plan_atomically(self, task_id: str, *, tenant_id: str, workspace_id: str,
+                               expected_revision: int, reviewer_id: str, approve: bool,
+                               reason: str = "") -> EngineeringTaskContract:
+        """Atomically transition the task and append its immutable approval ledger row."""
+        if not tenant_id or not workspace_id or not reviewer_id:
+            raise EngineeringTaskScopeError("tenant_workspace_and_reviewer_required")
+        if not isinstance(approve, bool):
+            raise ValueError("approve_must_be_boolean")
+
+        def op(_conn: Any, cur: Any) -> EngineeringTaskContract:
+            cur.execute(
+                f"SELECT * FROM {self.TABLE} WHERE task_id=%s AND tenant_id=%s AND workspace_id=%s FOR UPDATE",
+                (task_id, tenant_id, workspace_id),
+            )
+            row = _row_dict(cur, cur.fetchone())
+            if row is None:
+                raise EngineeringTaskNotFound("engineering_task_not_found")
+            current = self._task(row)
+            if current.revision != expected_revision:
+                raise EngineeringTaskConflict("stale_revision")
+            review = dict(current.evidence.get("plan_review", {}))
+            if current.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
+                raise Phase162Error("submitted_plan_required")
+            if review.get("submitted_by") == reviewer_id:
+                raise Phase162Error("independent_plan_reviewer_required")
+
+            decision = "approved" if approve else "rejected"
+            review.update({
+                "state": decision,
+                "reviewed_by": reviewer_id,
+                "reason": str(reason)[:1000],
+                "approved_digest": review["digest"] if approve else None,
+            })
+            next_status = EngineeringTaskStatus.PLANNED if approve else EngineeringTaskStatus.BLOCKED
+            updated = transition_engineering_task(
+                current, next_status, evidence={"plan_review": review},
+                tenant_id=tenant_id, workspace_id=workspace_id,
+            )
+            encoded = _encode(updated)
+            cur.execute(
+                f"""UPDATE {self.TABLE}
+                    SET status=%s, revision=%s, evidence=%s::jsonb, fingerprint=%s, updated_at=now()
+                    WHERE task_id=%s AND tenant_id=%s AND workspace_id=%s AND revision=%s""",
+                (encoded["status"], encoded["revision"], encoded["evidence"], encoded["fingerprint"],
+                 task_id, tenant_id, workspace_id, expected_revision),
+            )
+            if cur.rowcount != 1:
+                raise EngineeringTaskConflict("compare_and_swap_failed")
+
+            # Approval is recorded before a build workspace exists. The ledger FK
+            # therefore binds to the task scope, not to the later-created worktree.
+            cur.execute(
+                """INSERT INTO public.kdo_engineering_plan_reviews
+                   (tenant_id, workspace_id, task_id, plan_digest, reviewer_id, decision, reason)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (tenant_id, workspace_id, task_id, review["digest"], reviewer_id, decision, str(reason)[:1000]),
+            )
+            return updated
+
+        return self._run(op, write=True)
+
     def transition(self, task_id: str, next_status: EngineeringTaskStatus, *, tenant_id: str,
                    workspace_id: str, expected_revision: int, evidence: dict | None = None) -> EngineeringTaskContract:
         return self._mutate_task(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
