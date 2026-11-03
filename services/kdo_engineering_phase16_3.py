@@ -432,6 +432,7 @@ def run_claimed_build_job(
             if lease_lost.is_set():
                 raise Phase162Error("worker_lease_lost")
             if not execution_done.is_set() and time.monotonic() >= deadline:
+                execution_cancelled.set()
                 raise Phase162Error("worker_execution_timeout")
             verify_current_lease()
             yield
