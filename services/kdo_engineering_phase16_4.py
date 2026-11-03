@@ -257,35 +257,141 @@ class PostgresEngineeringBuildQueue:
             return row
         return self._run(op, write=True)
 
-    def reconcile_expired(self, *, worker_is_alive: Callable[[EngineeringBuildJob], bool],
-                          limit: int = 100) -> list[EngineeringBuildJob]:
-        if not 1 <= limit <= 500:
+    def reconcile_expired(
+        self, *, worker_is_alive: Callable[[EngineeringBuildJob], bool],
+        limit: int = 100, tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[EngineeringBuildJob]:
+        """Fence expired jobs only after an authoritative worker-death check.
+
+        A status-provider error or an alive/unknown worker never changes state.
+        The uncertainty transition and append-only audit event commit atomically.
+        """
+        if not callable(worker_is_alive):
+            raise Phase163Error("worker_status_provider_required")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
             raise Phase163Error("limit_must_be_between_1_and_500")
+        if (tenant_id is None) != (workspace_id is None):
+            raise Phase163Error("tenant_and_workspace_scope_must_be_provided_together")
+        if tenant_id is not None and (
+            not isinstance(tenant_id, str) or not tenant_id.strip()
+            or not isinstance(workspace_id, str) or not workspace_id.strip()
+        ):
+            raise Phase163Error("tenant_and_workspace_scope_required")
+
         def read_expired(_conn: Any, cur: Any) -> list[EngineeringBuildJob]:
-            cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
-                WHERE status='running' AND lease_expires_at<=now()
-                ORDER BY lease_expires_at,job_id LIMIT %s""", (limit,))
+            if tenant_id is None:
+                cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                    WHERE status='running' AND lease_expires_at<=now()
+                    ORDER BY lease_expires_at,job_id LIMIT %s""", (limit,))
+            else:
+                cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                    WHERE status='running' AND lease_expires_at<=now()
+                      AND tenant_id=%s AND workspace_id=%s
+                    ORDER BY lease_expires_at,job_id LIMIT %s""",
+                    (tenant_id, workspace_id, limit))
             return [self._record(_row_dict(cur, row)) for row in cur.fetchall()]
+
         candidates = self._run(read_expired)
         reconciled: list[EngineeringBuildJob] = []
         for job in candidates:
             try:
                 alive = worker_is_alive(job)
             except Exception:
-                alive = None
+                # An unavailable control plane is not proof of worker death.
+                continue
             if alive is not False:
                 continue
+
+            event_id = "kdoevt_" + secrets.token_hex(16)
             def mark_uncertain(_conn: Any, cur: Any) -> EngineeringBuildJob | None:
                 cur.execute("""UPDATE public.kdo_engineering_build_jobs
-                    SET status='uncertain',lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=now()
-                    WHERE job_id=%s AND tenant_id=%s AND workspace_id=%s AND status='running'
-                      AND lease_token=%s AND lease_expires_at<=now() RETURNING *""",
+                    SET status='uncertain',lease_owner=NULL,lease_token=NULL,
+                        lease_expires_at=NULL,updated_at=now()
+                    WHERE job_id=%s AND tenant_id=%s AND workspace_id=%s
+                      AND status='running' AND lease_token=%s
+                      AND lease_expires_at<=now() RETURNING *""",
                     (job.job_id, job.tenant_id, job.workspace_id, job.lease_token))
-                return self._record(_row_dict(cur, cur.fetchone()))
+                updated = self._record(_row_dict(cur, cur.fetchone()))
+                if updated is None:
+                    return None
+                cur.execute("""INSERT INTO public.kdo_engineering_job_reconciliation_events
+                    (event_id,job_id,tenant_id,workspace_id,event_type,from_status,to_status,
+                     actor_id,approval_ref,evidence_digest,details)
+                    VALUES (%s,%s,%s,%s,'worker_death_confirmed','running','uncertain',
+                            'system:reconciler',NULL,NULL,%s::jsonb)""",
+                    (event_id, job.job_id, job.tenant_id, job.workspace_id,
+                     '{"reason":"worker_control_plane_confirmed_dead","automatic_replay":false}'))
+                return updated
             updated = self._run(mark_uncertain, write=True)
             if updated is not None:
                 reconciled.append(updated)
         return reconciled
+
+    def list_uncertain(self, *, tenant_id: str, workspace_id: str,
+                       limit: int = 100) -> list[EngineeringBuildJob]:
+        if not isinstance(tenant_id, str) or not tenant_id.strip() or not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise Phase163Error("tenant_and_workspace_scope_required")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise Phase163Error("limit_must_be_between_1_and_500")
+        def op(_conn: Any, cur: Any) -> list[EngineeringBuildJob]:
+            cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                WHERE status='uncertain' AND tenant_id=%s AND workspace_id=%s
+                ORDER BY updated_at,job_id LIMIT %s""", (tenant_id, workspace_id, limit))
+            return [self._record(_row_dict(cur, row)) for row in cur.fetchall()]
+        return self._run(op)
+
+    def authorize_uncertain_replay(
+        self, job_id: str, *, tenant_id: str, workspace_id: str,
+        actor_id: str, approval_ref: str, evidence_digest: str,
+        authorization_verifier: Callable[..., Any],
+    ) -> EngineeringBuildJob:
+        """Requeue uncertain work only after an external human-approval verifier accepts.
+
+        The verifier must validate the approval against the canonical governance
+        system and confirm the supplied evidence records old-worker termination,
+        workspace quarantine/inspection, and replay safety. This method itself
+        never infers that replay is safe.
+        """
+        values = (job_id, tenant_id, workspace_id, actor_id, approval_ref)
+        if not all(isinstance(value, str) and value.strip() for value in values) or actor_id == "system:reconciler":
+            raise Phase163Error("replay_scope_actor_and_approval_required")
+        if not isinstance(evidence_digest, str) or len(evidence_digest) != 64 or any(
+            char not in "0123456789abcdef" for char in evidence_digest.lower()
+        ):
+            raise Phase163Error("replay_evidence_digest_invalid")
+        if not callable(authorization_verifier):
+            raise Phase163Error("replay_authorization_verifier_required")
+        try:
+            accepted = authorization_verifier(
+                action="kdo_engineering_uncertain_job_replay",
+                tenant_id=tenant_id, workspace_id=workspace_id, job_id=job_id,
+                actor_id=actor_id, approval_ref=approval_ref,
+                evidence_digest=evidence_digest,
+            )
+        except Exception as exc:
+            raise Phase163Error("replay_authorization_verification_failed") from exc
+        if accepted is not True:
+            raise Phase163Error("replay_authorization_denied")
+        event_id = "kdoevt_" + secrets.token_hex(16)
+        def op(_conn: Any, cur: Any) -> EngineeringBuildJob:
+            cur.execute("""UPDATE public.kdo_engineering_build_jobs
+                SET status='queued',updated_at=now()
+                WHERE job_id=%s AND tenant_id=%s AND workspace_id=%s
+                  AND status='uncertain' RETURNING *""",
+                (job_id, tenant_id, workspace_id))
+            updated = self._record(_row_dict(cur, cur.fetchone()))
+            if updated is None:
+                raise Phase163Error("uncertain_job_not_found_or_already_decided")
+            cur.execute("""INSERT INTO public.kdo_engineering_job_reconciliation_events
+                (event_id,job_id,tenant_id,workspace_id,event_type,from_status,to_status,
+                 actor_id,approval_ref,evidence_digest,details)
+                VALUES (%s,%s,%s,%s,'replay_authorized','uncertain','queued',
+                        %s,%s,%s,%s::jsonb)""",
+                (event_id, job_id, tenant_id, workspace_id, actor_id, approval_ref,
+                 evidence_digest, '{"authorization":"external_verifier_accepted","attempt_count_preserved":true}'))
+            return updated
+        return self._run(op, write=True)
 
     def close(self) -> None:
         """Compatibility with the SQLite adapter; connections are per-operation."""

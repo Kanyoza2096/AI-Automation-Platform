@@ -50,8 +50,14 @@ def postgres_queue_scope():
 
     yield queue, tenant_id, workspace_id, connect
 
-    # Scope-limited cleanup only; no TRUNCATE or table reset.
+    # Scope-limited cleanup only; audit rows are removed first in this
+    # disposable integration database to satisfy the job foreign key.
     with connect() as connection:
+        connection.execute(
+            "DELETE FROM public.kdo_engineering_job_reconciliation_events "
+            "WHERE tenant_id=%s AND workspace_id=%s",
+            (tenant_id, workspace_id),
+        )
         connection.execute(
             "DELETE FROM public.kdo_engineering_build_jobs "
             "WHERE tenant_id=%s AND workspace_id=%s",
@@ -183,3 +189,84 @@ def test_real_postgres_expired_dead_worker_becomes_uncertain(postgres_queue_scop
     assert reconciled[0].status == "uncertain"
     assert reconciled[0].lease_owner is None
     assert reconciled[0].lease_token is None
+
+
+
+def test_real_postgres_reconciliation_writes_audit_and_never_marks_unknown_worker_dead(postgres_queue_scope):
+    queue, tenant_id, workspace_id, connect = postgres_queue_scope
+    queued = enqueue(queue, tenant_id, workspace_id, "audit-reconcile-task")
+    claimed = queue.claim_next(
+        worker_id="worker-audit", lease_seconds=60,
+        tenant_id=tenant_id, workspace_id=workspace_id,
+    )
+    assert claimed and claimed.job_id == queued.job_id
+    expire_job(connect, claimed.job_id)
+
+    # An unavailable worker control plane is not proof of death.
+    assert queue.reconcile_expired(
+        worker_is_alive=lambda _job: (_ for _ in ()).throw(RuntimeError("control plane down")),
+        tenant_id=tenant_id, workspace_id=workspace_id,
+    ) == []
+    assert queue.get(claimed.job_id, tenant_id=tenant_id, workspace_id=workspace_id).status == "running"
+
+    reconciled = queue.reconcile_expired(
+        worker_is_alive=lambda _job: False,
+        tenant_id=tenant_id, workspace_id=workspace_id,
+    )
+    assert [job.job_id for job in reconciled] == [claimed.job_id]
+    with connect() as connection:
+        event = connection.execute(
+            """SELECT event_type,from_status,to_status,actor_id,approval_ref,evidence_digest
+               FROM public.kdo_engineering_job_reconciliation_events
+               WHERE job_id=%s AND tenant_id=%s AND workspace_id=%s""",
+            (claimed.job_id, tenant_id, workspace_id),
+        ).fetchone()
+    assert event == ("worker_death_confirmed", "running", "uncertain",
+                     "system:reconciler", None, None)
+
+
+def test_real_postgres_uncertain_replay_requires_human_approval_and_records_evidence(postgres_queue_scope):
+    queue, tenant_id, workspace_id, connect = postgres_queue_scope
+    queued = enqueue(queue, tenant_id, workspace_id, "authorized-replay-task")
+    claimed = queue.claim_next(
+        worker_id="worker-replay", lease_seconds=60,
+        tenant_id=tenant_id, workspace_id=workspace_id,
+    )
+    assert claimed and claimed.job_id == queued.job_id
+    expire_job(connect, claimed.job_id)
+    queue.reconcile_expired(worker_is_alive=lambda _job: False,
+                            tenant_id=tenant_id, workspace_id=workspace_id)
+
+    with pytest.raises(Phase163Error, match="replay_authorization_denied"):
+        queue.authorize_uncertain_replay(
+            claimed.job_id, tenant_id=tenant_id, workspace_id=workspace_id,
+            actor_id="reviewer-1", approval_ref="approval-123",
+            evidence_digest="c" * 64, authorization_verifier=lambda **_: False,
+        )
+
+    verified = {}
+    def verifier(**claims):
+        verified.update(claims)
+        return True
+
+    replayed = queue.authorize_uncertain_replay(
+        claimed.job_id, tenant_id=tenant_id, workspace_id=workspace_id,
+        actor_id="reviewer-1", approval_ref="approval-123",
+        evidence_digest="c" * 64, authorization_verifier=verifier,
+    )
+    assert replayed.status == "queued"
+    assert replayed.attempts == claimed.attempts
+    assert verified["action"] == "kdo_engineering_uncertain_job_replay"
+    assert verified["evidence_digest"] == "c" * 64
+    with connect() as connection:
+        events = connection.execute(
+            """SELECT event_type,from_status,to_status,actor_id,approval_ref,evidence_digest
+               FROM public.kdo_engineering_job_reconciliation_events
+               WHERE job_id=%s AND tenant_id=%s AND workspace_id=%s
+               ORDER BY created_at,event_id""",
+            (claimed.job_id, tenant_id, workspace_id),
+        ).fetchall()
+    assert events == [
+        ("worker_death_confirmed", "running", "uncertain", "system:reconciler", None, None),
+        ("replay_authorized", "uncertain", "queued", "reviewer-1", "approval-123", "c" * 64),
+    ]

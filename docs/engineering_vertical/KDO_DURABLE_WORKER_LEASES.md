@@ -30,7 +30,7 @@ The Phase 16.3 supervisor supports a bounded caller deadline. On timeout it atte
 - **Authorization:** actor scope and action checks remain in the governed Phase 16.2 workflow and Council/Action Kernel admission path. A lease is not permission.
 - **Execution isolation:** the host must supply a bounded, isolated executor. The worker service does not grant arbitrary shell, network, secret, or repository-write authority.
 - **Review and release:** successful worker execution ends at `awaiting_review`. It does not approve patches, merge branches, deploy applications, or authorize release.
-- **Recovery:** interrupted or timed-out tasks are preserved for explicit inspection/reconciliation. There is no blind retry or automatic cleanup.
+- **Recovery:** expired jobs require an authoritative worker-death result before being marked `uncertain`; control-plane errors and unknown status leave state unchanged. The uncertainty transition and audit record are atomic. Replay requires an injected canonical human-approval verifier plus evidence digest; no blind retry or automatic cleanup occurs.
 - **Production activation:** the host must explicitly supply the canonical PostgreSQL connection factory, repositories, authorized workflow actor, tenant/workspace scope, and sandboxed executor. No credentials are discovered by these adapters and no SQLite fallback is performed.
 
 ## Verified integration coverage
@@ -51,10 +51,10 @@ The PR #18 integration run passed 81 tests against ephemeral PostgreSQL 16; the 
 
 1. Implement and validate a process/container-backed executor with hard cancellation, CPU/memory/time limits, restricted filesystem and network access, and explicit secret policy.
 2. Add an explicit, opt-in worker host/bootstrap that validates all required dependencies and fails closed; do not enable it by default.
-3. Add operational reconciliation tooling for `uncertain` jobs, with audit events and human authorization before any replay or cleanup.
+3. Phase 17.5 adds scoped uncertain-job listing, worker-death-confirmed reconciliation, atomic append-only application audit events, and verifier-gated human-authorized replay. A production control-plane adapter, evidence store, and approval-service integration still need staging validation.
 4. Complete staging validation with the actual deployment topology, PostgreSQL role grants/RLS behavior, worker shutdown/restart, and multi-worker contention.
 5. Verify observability and alerting for queue depth, lease renewal failures, uncertain jobs, worker health, and execution duration.
-6. Keep merge, deployment, and release approvals separate from build execution.
+6. Keep merge, deployment, and release approvals separate from build execution. Phase 17.5 replay authorization only requeues a build; it grants no review, merge, deployment, or release authority.
 
 ## Deployment note
 
