@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Callable, Mapping, Iterable
 import hashlib
 import json
+import inspect
 import threading
 
 from services.kdo_engineering_agent_team import AgentAssignment
@@ -343,7 +344,17 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
     if not isinstance(max_repair_attempts, int) or not 0 <= max_repair_attempts <= 5:
         raise DynamicQualityLoopError("max_repair_attempts_must_be_between_0_and_5")
     def execute(workspace_path: str, task_contract: Any, steps: tuple[str, ...], *, cancellation_event: threading.Event | None = None) -> Mapping[str, Any]:
-        build_output = build_executor(workspace_path, task_contract, steps)
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise DynamicQualityLoopError("execution_cancelled_before_build")
+        build_parameters = inspect.signature(build_executor).parameters
+        build_accepts_cancellation = "cancellation_event" in build_parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in build_parameters.values()
+        )
+        if cancellation_event is not None and build_accepts_cancellation:
+            build_output = build_executor(workspace_path, task_contract, steps, cancellation_event=cancellation_event)
+        else:
+            build_output = build_executor(workspace_path, task_contract, steps)
         if not isinstance(build_output, Mapping):
             raise DynamicQualityLoopError("build_executor_must_return_mapping")
         task_data = {"task_id": task_contract.task_id, "tenant_id": task_contract.tenant_id,
