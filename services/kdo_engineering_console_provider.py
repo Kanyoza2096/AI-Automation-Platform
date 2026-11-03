@@ -22,7 +22,37 @@ class EngineeringConsoleProviderError(RuntimeError):
     pass
 
 
-def _task_payload(task: EngineeringTaskContract) -> dict[str, Any]:
+def _active_agents_for_job(job: dict[str, Any] | None, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Project only a currently leased worker as active; stale leases are not activity."""
+    if not job or job.get("status") != "running" or not job.get("lease_owner"):
+        return []
+    expiry = job.get("lease_expires_at")
+    if isinstance(expiry, str):
+        try:
+            expiry = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        except ValueError:
+            return []
+    if not isinstance(expiry, datetime):
+        return []
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if expiry <= current:
+        return []
+    return [{
+        "agent_id": str(job["lease_owner"]),
+        "name": str(job["lease_owner"]),
+        "role": "Build Worker",
+        "status": "running",
+        "activity": "Executing a lease-held engineering build job",
+        "job_id": job.get("job_id"),
+        "lease_expires_at": expiry.isoformat(),
+    }]
+
+
+def _task_payload(task: EngineeringTaskContract, *, build_job: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = dict(task.evidence or {})
     return {
         "task_id": task.task_id,
@@ -38,6 +68,8 @@ def _task_payload(task: EngineeringTaskContract) -> dict[str, Any]:
         "metadata": dict(task.metadata or {}),
         "evidence": evidence,
         "approval_required": task.status == EngineeringTaskStatus.PROPOSED and evidence.get("plan_review", {}).get("state") == "submitted",
+        "build_job": build_job,
+        "active_agents": _active_agents_for_job(build_job),
         "created_at": None,
         "updated_at": None,
     }
@@ -119,6 +151,8 @@ class PostgresEngineeringConsoleProvider:
             "database_connected": db_ok,
             "task_persistence": True,
             "persisted_events": True,
+            "authoritative_build_job_projection": True,
+            "lease_aware_worker_presence": True,
             "plan_submission": True,
             "governed_plan_review": True,
             "dynamic_agent_planning": self._plan_generator is not None,
@@ -134,9 +168,46 @@ class PostgresEngineeringConsoleProvider:
             ],
         }
 
+    def _load_build_jobs(self, *, tenant_id: str, workspace_id: str,
+                         task_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Read authoritative queue/lease state for the task board in one scoped query."""
+        if not task_ids:
+            return {}
+        conn = cur = None
+        try:
+            conn = self._connect()
+            cur = conn.cursor()
+            cur.execute("""SELECT job_id,task_id,status,attempts,lease_owner,lease_expires_at,
+                                  created_at,updated_at
+                FROM public.kdo_engineering_build_jobs
+                WHERE tenant_id=%s AND workspace_id=%s AND task_id = ANY(%s)""",
+                (tenant_id, workspace_id, task_ids))
+            result = {}
+            for row in cur.fetchall():
+                job_id, task_id, status, attempts, lease_owner, lease_expires_at, created_at, updated_at = row
+                result[str(task_id)] = {
+                    "job_id": str(job_id), "task_id": str(task_id), "status": str(status),
+                    "attempts": int(attempts), "lease_owner": lease_owner,
+                    "lease_expires_at": lease_expires_at.isoformat() if hasattr(lease_expires_at, "isoformat") else lease_expires_at,
+                    "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                    "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at),
+                }
+            return result
+        except Exception as exc:
+            raise EngineeringConsoleProviderError("engineering_build_job_projection_unavailable") from exc
+        finally:
+            if cur is not None:
+                try: cur.close()
+                except Exception: pass
+            if conn is not None:
+                try: conn.close()
+                except Exception: pass
+
     def list_tasks(self, *, workspace_id: str, limit: int) -> dict[str, Any]:
         items = self.tasks.list_scope(tenant_id=workspace_id, workspace_id=workspace_id, limit=min(max(int(limit), 1), 100))
-        return {"tasks": [_task_payload(item) for item in items]}
+        jobs = self._load_build_jobs(tenant_id=workspace_id, workspace_id=workspace_id,
+                                     task_ids=[item.task_id for item in items])
+        return {"tasks": [_task_payload(item, build_job=jobs.get(item.task_id)) for item in items]}
 
     def submit_task(self, *, workspace_id: str, user_id: str, objective: str,
                     acceptance_criteria: list[str], idempotency_key: str | None) -> dict[str, Any]:
@@ -170,7 +241,8 @@ class PostgresEngineeringConsoleProvider:
             task = self.tasks.get(task_id, tenant_id=workspace_id, workspace_id=workspace_id)
         except EngineeringTaskNotFound:
             return None
-        return _task_payload(task)
+        jobs = self._load_build_jobs(tenant_id=workspace_id, workspace_id=workspace_id, task_ids=[task_id])
+        return _task_payload(task, build_job=jobs.get(task_id))
 
     def list_events(self, *, task_id: str, workspace_id: str, after_sequence: int, limit: int) -> dict[str, Any]:
         conn = cur = None
