@@ -108,7 +108,7 @@ class WorkerHealth:
     status: str = "starting"
     worker_id: str = ""
     started_at: str | None = None
-    last_heartbeat_at: str | None = None
+    last_job_result_at: str | None = None
     last_job_id: str | None = None
     last_error_code: str | None = None
     stopped_at: str | None = None
@@ -118,7 +118,7 @@ class WorkerHealth:
             "status": self.status,
             "worker_id": self.worker_id,
             "started_at": self.started_at,
-            "last_heartbeat_at": self.last_heartbeat_at,
+            "last_job_result_at": self.last_job_result_at,
             "last_job_id": self.last_job_id,
             "last_error_code": self.last_error_code,
             "stopped_at": self.stopped_at,
@@ -194,7 +194,7 @@ def run_production_engineering_worker(
 
     def on_result(job: Any, result: Mapping[str, Any]) -> None:
         health.last_job_id = str(getattr(job, "job_id", "")) or None
-        health.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
+        health.last_job_result_at = datetime.now(timezone.utc).isoformat()
         health.last_error_code = None if result.get("status") in {"awaiting_review", "completed"} else str(result.get("status", "execution_result"))
         publish()
 
