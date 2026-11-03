@@ -111,26 +111,27 @@ def test_real_postgres_scope_filter_does_not_claim_another_tenant(postgres_queue
     other_workspace = workspace_id + "-other"
     foreign = enqueue(queue, other_tenant, other_workspace, "foreign-task")
 
-    claimed = queue.claim_next(
-        worker_id="scoped-worker",
-        lease_seconds=60,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-    )
-
-    assert claimed is None
-    assert queue.get(
-        foreign.job_id, tenant_id=other_tenant, workspace_id=other_workspace
-    ).status == "queued"
-
-    # The foreign fixture row is outside the primary fixture scope; clean it
-    # explicitly without touching any unrelated tenant/workspace.
-    with _connect() as connection:
-        connection.execute(
-            "DELETE FROM public.kdo_engineering_build_jobs "
-            "WHERE tenant_id=%s AND workspace_id=%s",
-            (other_tenant, other_workspace),
+    try:
+        claimed = queue.claim_next(
+            worker_id="scoped-worker",
+            lease_seconds=60,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
+
+        assert claimed is None
+        assert queue.get(
+            foreign.job_id, tenant_id=other_tenant, workspace_id=other_workspace
+        ).status == "queued"
+    finally:
+        # The foreign fixture row is outside the primary fixture scope; clean
+        # its exact tenant/workspace pair even if an assertion fails.
+        with _connect() as connection:
+            connection.execute(
+                "DELETE FROM public.kdo_engineering_build_jobs "
+                "WHERE tenant_id=%s AND workspace_id=%s",
+                (other_tenant, other_workspace),
+            )
 
 
 def test_real_postgres_lease_expiry_fences_renewal_and_completion(postgres_queue_scope):
