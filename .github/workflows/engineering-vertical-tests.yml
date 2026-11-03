@@ -21,6 +21,22 @@ jobs:
   focused-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kdo_engineering_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kdo_engineering_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      KDO_ENGINEERING_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/kdo_engineering_test
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -38,10 +54,72 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+      - name: Prepare disposable PostgreSQL queue schema
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import psycopg
+
+          dsn = "postgresql://postgres:postgres@localhost:5432/kdo_engineering_test"
+          with psycopg.connect(dsn, autocommit=True) as connection:
+              for role in ("service_role", "anon", "authenticated"):
+                  exists = connection.execute(
+                      "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
+                  ).fetchone()
+                  if not exists:
+                      connection.execute(f"CREATE ROLE {role} NOLOGIN")
+              migration = Path(
+                  "migrations/140_kdo_engineering_shared_build_queue.sql"
+              ).read_text(encoding="utf-8")
+              migration_sql = "\n".join(
+                  line for line in migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              comment_marker = (
+                  "COMMENT ON TABLE public.kdo_engineering_build_jobs IS"
+              )
+              schema_sql, marker, comment_sql = migration_sql.partition(
+                  comment_marker
+              )
+              if not marker:
+                  raise RuntimeError("queue migration comment statement not found")
+              for statement in schema_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
+              # Keep the COMMENT statement whole: its quoted text contains a
+              # semicolon, so it must not be split as if it were SQL syntax.
+              connection.execute(comment_marker + comment_sql)
+
+              task_workspace_migration = Path(
+                  "migrations/150_kdo_engineering_shared_task_workspace_repositories.sql"
+              ).read_text(encoding="utf-8")
+              task_workspace_sql = "\n".join(
+                  line for line in task_workspace_migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in task_workspace_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
+
+              approval_migration = Path(
+                  "migrations/151_kdo_engineering_plan_approval_task_scope.sql"
+              ).read_text(encoding="utf-8")
+              approval_sql = "\n".join(
+                  line for line in approval_migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in approval_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
+          PY
       - name: Run focused engineering vertical tests
         run: |
           python -m pytest -q \
             tests/engineering_vertical/test_phase16_2_workflow.py \
             tests/engineering_vertical/test_phase16_3_worker_queue.py \
+            tests/engineering_vertical/test_worker_runtime.py \
+            tests/engineering_vertical/test_worker_service.py \
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
+            tests/engineering_vertical/test_phase16_4_postgres_integration.py \
+            tests/engineering_vertical/test_phase16_5_postgres_repositories.py \
             tests/engineering_vertical/test_dag_coordinator.py
