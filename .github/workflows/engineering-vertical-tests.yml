@@ -43,4 +43,5 @@ jobs:
           python -m pytest -q \
             tests/engineering_vertical/test_phase16_3_worker_queue.py \
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
+            tests/engineering_vertical/test_phase16_4_postgres_integration.py \
             tests/engineering_vertical/test_dag_coordinator.py
