@@ -14,8 +14,10 @@ workspace metadata, and plan-review repository contracts.
   enablement, and server-role grants.
 - `migrations/151_kdo_engineering_plan_approval_task_scope.sql` binds approval
   records to their task scope because approval precedes worktree creation.
-- The connection factory is injected. The adapter does not load secrets,
-  select a database, or silently fall back to SQLite.
+- `create_postgres_phase162_workflow` explicitly composes the existing governed
+  Phase 16.2 workflow with both PostgreSQL repositories.
+- The connection factory and authorization policy are injected. The adapter
+  does not load secrets, select a database, or silently fall back to SQLite.
 
 ## Safety and current boundary
 
@@ -26,9 +28,11 @@ The PostgreSQL task repository implements `review_plan_atomically`: the task
 lifecycle transition and immutable approval-ledger insert commit in one
 transaction. The ledger references the task scope rather than a workspace row,
 because the workflow approves a plan before it creates the execution worktree.
-The existing Phase 16.2 workflow remains explicitly composed with the local
-SQLite adapters until a separate, reviewed production bootstrap wires the
-shared repositories and validates every dependent component.
+The existing application/default workflow remains explicitly composed with the
+local SQLite adapters. A host may opt into PostgreSQL by calling
+`create_postgres_phase162_workflow` with its managed connection factory,
+authorization policy, and workspace paths. This is dependency composition only,
+not a production worker bootstrap or activation of a deployment.
 
 The migration enables RLS and revokes browser-role access. Production use must
 come from the server-side service role through the host's secret-management
