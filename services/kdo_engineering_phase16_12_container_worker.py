@@ -7,7 +7,7 @@ authority. The authoritative lifecycle must provide an approved task and workspa
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-import os, re, shutil, subprocess, time
+import os, re, shutil, subprocess, time, uuid
 from typing import Callable, Sequence, Mapping, Any
 
 class ContainerWorkerError(RuntimeError):
@@ -71,6 +71,34 @@ class DockerWorkspaceRunner:
         if candidate == self.workspace_root: raise ContainerWorkerError("workspace_must_be_task_scoped_child")
         return candidate
 
+    def _remove_timed_out_container(self, container_name: str) -> None:
+        """Stop and remove the daemon-side container after the client deadline.
+
+        subprocess.run(timeout=...) only terminates the local Docker CLI process;
+        it does not guarantee that the Docker daemon stopped the container.
+        Explicit removal is therefore part of the hard-timeout contract.
+        """
+        try:
+            cleanup = self.process_runner(
+                [self.docker_binary, "rm", "--force", container_name],
+                cwd=str(self.workspace_root),
+                env={"PATH": os.environ.get("PATH", ""), "CI": "1"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                timeout=10,
+                shell=False,
+                close_fds=True,
+            )
+        except Exception as exc:
+            raise ContainerWorkerError("container_timeout_cleanup_failed") from exc
+        if getattr(cleanup, "returncode", 1) != 0:
+            stderr = str(getattr(cleanup, "stderr", "") or "").lower()
+            if "no such container" not in stderr and "not found" not in stderr:
+                raise ContainerWorkerError("container_timeout_cleanup_failed")
+
     def run_tests(self, workspace: str | Path, test_profile: str = "pytest") -> dict[str, Any]:
         if test_profile not in self.ALLOWED_TESTS:
             raise ContainerWorkerError("test_profile_not_allowlisted")
@@ -79,7 +107,8 @@ class DockerWorkspaceRunner:
             raise ContainerWorkerError("workspace_path_not_mount_safe")
         if self.process_runner is subprocess.run and not Path(self.docker_binary).is_absolute() and shutil.which(self.docker_binary) is None:
             raise ContainerWorkerError("docker_runtime_unavailable")
-        cmd = [self.docker_binary, "run", "--rm", "--network", "none", "--read-only",
+        container_name = "kdo-engineering-" + uuid.uuid4().hex
+        cmd = [self.docker_binary, "run", "--rm", "--name", container_name, "--network", "none", "--read-only",
                "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                "--pids-limit", str(self.pids_limit), "--memory", self.memory_limit,
                "--cpus", self.cpu_limit, "--user", "65532:65532",
@@ -99,9 +128,12 @@ class DockerWorkspaceRunner:
             status = "passed" if code == 0 else "failed"
             return ContainerTestResult(status, code, time.monotonic()-start, out, err, False, tuple(cmd)).to_dict()
         except subprocess.TimeoutExpired as exc:
+            self._remove_timed_out_container(container_name)
             def decode(v): return v.decode(errors="replace") if isinstance(v, bytes) else (v or "")
-            return ContainerTestResult("timed_out", None, time.monotonic()-start,
+            result = ContainerTestResult("timed_out", None, time.monotonic()-start,
                 decode(exc.stdout)[-self.max_output_chars:], decode(exc.stderr)[-self.max_output_chars:], True, tuple(cmd)).to_dict()
+            result["container_cleanup"] = "confirmed"
+            return result
         except ContainerWorkerError: raise
         except Exception as exc:
             raise ContainerWorkerError("container_test_execution_failed") from exc
