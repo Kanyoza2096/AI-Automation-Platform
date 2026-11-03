@@ -266,3 +266,15 @@ def test_postgres_complete_rejects_missing_worker_or_lease_token_before_database
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
         queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
         main
+
+
+
+def test_reconciliation_audit_migration_is_scoped_and_application_append_only():
+    root = Path(__file__).resolve().parents[2]
+    sql = (root / "migrations" / "152_kdo_engineering_job_reconciliation_audit.sql").read_text(encoding="utf-8")
+    assert "ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE public.kdo_engineering_job_reconciliation_events" in sql
+    assert "GRANT SELECT, INSERT ON TABLE public.kdo_engineering_job_reconciliation_events" in sql
+    assert "REVOKE UPDATE, DELETE ON TABLE public.kdo_engineering_job_reconciliation_events" in sql
+    assert "worker_death_confirmed" in sql and "replay_authorized" in sql
+    assert "evidence_digest" in sql and "approval_ref" in sql
