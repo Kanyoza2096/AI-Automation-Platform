@@ -204,3 +204,46 @@ def test_postgres_claim_rejects_invalid_lease_duration(lease_seconds):
     queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row()))
     with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
         queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
+
+
+def test_postgres_renew_rejects_invalid_lease_duration_and_credentials():
+    queue = PostgresEngineeringBuildQueue(
+        lambda: (_ for _ in ()).throw(AssertionError("DB must not be opened"))
+    )
+    row = job_row("running")
+    row["lease_owner"] = "worker-a"
+    row["lease_token"] = "token-a"
+    row["lease_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
+    job = EngineeringBuildJob(**{
+        **row,
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    })
+
+    for invalid in (True, 29, 3601, 30.5, "60"):
+        with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
+            queue.renew(job, worker_id="worker-a", lease_token="token-a", lease_seconds=invalid)
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.renew(job, worker_id="", lease_token="token-a", lease_seconds=60)
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.renew(job, worker_id="worker-a", lease_token="", lease_seconds=60)
+
+
+def test_postgres_complete_rejects_missing_worker_or_lease_token_before_database_access():
+    queue = PostgresEngineeringBuildQueue(
+        lambda: (_ for _ in ()).throw(AssertionError("DB must not be opened"))
+    )
+    row = job_row("running")
+    row["lease_owner"] = "worker-a"
+    row["lease_token"] = "token-a"
+    row["lease_expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
+    job = EngineeringBuildJob(**{
+        **row,
+        "created_at": row["created_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+    })
+
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.complete(job, worker_id="", lease_token="token-a", status="awaiting_review")
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
