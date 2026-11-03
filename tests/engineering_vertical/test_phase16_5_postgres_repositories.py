@@ -12,6 +12,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from services.kdo_engineering_postgres_repositories import (
     PostgresEngineeringTaskRepository, PostgresEngineeringWorkspaceRepository,
+    PostgresEngineeringRepositoryError,
 )
 from services.kdo_engineering_task_repository import EngineeringTaskConflict, EngineeringTaskNotFound
 from services.kdo_engineering_vertical_contracts import EngineeringTaskContract, EngineeringTaskStatus
@@ -135,3 +136,52 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
             reviewer_id="reviewer-3",
             approve=False,
         )
+
+
+def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(repositories):
+    tasks, workspaces, tenant, workspace = repositories
+    task = tasks.create(make_task(tenant, workspace))
+    plan_digest = "f" * 64
+    submitted = tasks.update_evidence(
+        task.task_id,
+        tenant_id=tenant,
+        workspace_id=workspace,
+        expected_revision=task.revision,
+        evidence={
+            "plan_review": {
+                "state": "submitted",
+                "steps": ["inspect", "test"],
+                "digest": plan_digest,
+                "submitted_by": "author-1",
+            }
+        },
+    )
+    # Simulate a pre-existing ledger collision. The task update in the atomic
+    # method must roll back when the immutable ledger insert cannot succeed.
+    with psycopg.connect(DSN) as conn:
+        conn.execute(
+            """INSERT INTO public.kdo_engineering_plan_reviews
+               (tenant_id, workspace_id, task_id, plan_digest, reviewer_id, decision, reason)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (tenant, workspace, task.task_id, plan_digest, "reviewer-existing", "rejected", "fixture"),
+        )
+
+    with pytest.raises(PostgresEngineeringRepositoryError):
+        tasks.review_plan_atomically(
+            task.task_id,
+            tenant_id=tenant,
+            workspace_id=workspace,
+            expected_revision=submitted.revision,
+            reviewer_id="reviewer-new",
+            approve=True,
+        )
+
+    current = tasks.get(task.task_id, tenant_id=tenant, workspace_id=workspace)
+    assert current.status == EngineeringTaskStatus.PROPOSED
+    assert current.revision == submitted.revision
+    assert current.evidence["plan_review"]["state"] == "submitted"
+    ledger = workspaces.get_plan_review(
+        task.task_id, tenant_id=tenant, workspace_id=workspace
+    )
+    assert ledger["reviewer_id"] == "reviewer-existing"
+    assert ledger["decision"] == "rejected"
