@@ -90,8 +90,7 @@ class PostgresEngineeringTaskRepository(_PostgresRepository):
             raise EngineeringTaskNotFound("engineering_task_not_found")
         row = dict(row)
         for key in ("acceptance_criteria", "metadata", "evidence"):
-            row[key] = _json_value(row[key])
-        row["acceptance_criteria"] = json.dumps(row["acceptance_criteria"], sort_keys=True, separators=(",", ":"))
+            row[key] = json.dumps(_json_value(row[key]), sort_keys=True, separators=(",", ":"))
         # Reuse the canonical SQLite decoder after normalizing the row shape.
         class Row(dict):
             def __getitem__(self, key: str) -> Any:
