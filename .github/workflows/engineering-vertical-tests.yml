@@ -122,4 +122,7 @@ jobs:
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
             tests/engineering_vertical/test_phase16_4_postgres_integration.py \
             tests/engineering_vertical/test_phase16_5_postgres_repositories.py \
+            tests/engineering_vertical/test_phase16_7_dynamic_quality_loop.py \
+            tests/engineering_vertical/test_phase16_12_container_worker.py \
+            tests/engineering_vertical/test_phase16_13_pipeline_composition.py \
             tests/engineering_vertical/test_dag_coordinator.py
