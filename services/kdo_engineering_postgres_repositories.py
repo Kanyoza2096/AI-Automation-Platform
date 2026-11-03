@@ -115,7 +115,7 @@ class PostgresEngineeringTaskRepository(_PostgresRepository):
             cur.execute(f"""INSERT INTO {self.TABLE}
                 (task_id,tenant_id,workspace_id,objective,acceptance_criteria,idempotency_key,status,
                  revision,repository_ref,base_revision,metadata,evidence,fingerprint)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)""",
+                VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)""",
                 (row["task_id"], row["tenant_id"], row["workspace_id"], row["objective"],
                  row["acceptance_criteria"], row["idempotency_key"], row["status"], row["revision"],
                  row["repository_ref"], row["base_revision"], row["metadata"], row["evidence"], row["fingerprint"]))
