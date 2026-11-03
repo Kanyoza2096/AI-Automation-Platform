@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
+import sys
+import os
 import pytest
 from services.kdo_engineering_phase16_12_container_worker import (
     ContainerWorkerError, DockerWorkspaceRunner, make_docker_workspace_test_runner,
@@ -145,3 +147,26 @@ def test_cancellation_before_start_does_not_launch_container(tmp_path):
     result = runner.run_tests(task, cancellation_event=cancellation)
     assert result["status"] == "cancelled"
     assert not calls
+
+
+def test_default_docker_cli_capture_is_bounded_in_memory(tmp_path):
+    from services.kdo_engineering_phase16_12_container_worker import _bounded_subprocess_run
+
+    result = _bounded_subprocess_run(
+        [sys.executable, "-c", "import sys; print('x' * 200000); print('y' * 200000, file=sys.stderr)"],
+        output_limit=128,
+        cwd=str(tmp_path),
+        env={"PATH": os.environ.get("PATH", "")},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        timeout=5,
+        shell=False,
+        close_fds=True,
+    )
+    assert len(result.stdout) <= 128
+    assert len(result.stderr) <= 128
+    assert result.stdout.endswith("x" * 128)
+    assert result.stderr.endswith("y" * 128)
