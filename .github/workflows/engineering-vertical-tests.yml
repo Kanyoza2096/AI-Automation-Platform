@@ -75,9 +75,20 @@ jobs:
                   line for line in migration.splitlines()
                   if not line.lstrip().startswith("--")
               )
-              for statement in migration_sql.split(";"):
+              comment_marker = (
+                  "COMMENT ON TABLE public.kdo_engineering_build_jobs IS"
+              )
+              schema_sql, marker, comment_sql = migration_sql.partition(
+                  comment_marker
+              )
+              if not marker:
+                  raise RuntimeError("queue migration comment statement not found")
+              for statement in schema_sql.split(";"):
                   if statement.strip():
                       connection.execute(statement)
+              # Keep the COMMENT statement whole: its quoted text contains a
+              # semicolon, so it must not be split as if it were SQL syntax.
+              connection.execute(comment_marker + comment_sql)
           PY
       - name: Run focused engineering vertical tests
         run: |
