@@ -19,6 +19,12 @@ def test_container_command_has_isolation_and_resource_controls(tmp_path):
     assert "--network" in cmd and cmd[cmd.index("--network") + 1] == "none"
     assert "--read-only" in cmd and "--cap-drop" in cmd and "ALL" in cmd
     assert "--pids-limit" in cmd and "--memory" in cmd and "--cpus" in cmd
+    assert cmd[cmd.index("--memory-swap") + 1] == cmd[cmd.index("--memory") + 1]
+    assert cmd[cmd.index("--log-driver") + 1] == "local"
+    assert cmd[cmd.index("--log-opt") + 1] == "max-size=10m"
+    assert cmd[cmd.index("--ulimit") + 1] == "nofile=1024:1024"
+    assert "--init" in cmd and "--ipc" in cmd and "--shm-size" in cmd
+    assert "nodev" in cmd[cmd.index("--tmpfs") + 1]
     assert seen["kwargs"]["shell"] is False
     assert seen["kwargs"]["env"].keys() == {"PATH", "CI"}
     assert "--mount" in cmd and str(task.resolve()) in cmd[cmd.index("--mount") + 1]
