@@ -97,3 +97,43 @@ def test_durable_claim_never_falls_back_to_local_memory_on_empty_rpc():
     import pytest
     with pytest.raises(RuntimeError, match="claim"):
         ledger.claim(record)
+
+
+
+def test_durable_begin_preserves_canonical_text_workspace_id():
+    class Resp:
+        data = [{
+            "execution_id": "exe-text-scope",
+            "workspace_id": "workspace_alpha",
+            "action": "build",
+            "idempotency_key": "exec-text-scope",
+            "status": "started",
+            "attempt": 0,
+        }]
+
+    class RPC:
+        def __init__(self, db):
+            self.db = db
+
+        def execute(self):
+            return Resp()
+
+    class DB:
+        def __init__(self):
+            self.args = None
+
+        def rpc(self, name, args):
+            assert name == "begin_external_execution"
+            self.args = args
+            return RPC(self)
+
+    db = DB()
+    ledger = ExecutionLedger(db=db)
+    record = ledger.begin(
+        workspace_id="workspace_alpha",
+        action="build",
+        idempotency_key="exec-text-scope",
+    )
+
+    assert db.args["p_workspace_id"] == "workspace_alpha"
+    assert record.workspace_id == "workspace_alpha"
