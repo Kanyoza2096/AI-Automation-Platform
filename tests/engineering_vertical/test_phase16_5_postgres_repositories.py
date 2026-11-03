@@ -84,3 +84,54 @@ def test_postgres_workspace_and_plan_review_are_scope_bound_and_first_write_wins
             plan_digest="d" * 64, reviewer_id="reviewer-2", decision="rejected")
     with pytest.raises(EngineeringTaskNotFound):
         workspaces.get(task.task_id, tenant_id=tenant + "-other", workspace_id=workspace)
+
+
+def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(repositories):
+    tasks, workspaces, tenant, workspace = repositories
+    task = tasks.create(make_task(tenant, workspace))
+    plan_digest = "e" * 64
+    submitted = tasks.update_evidence(
+        task.task_id,
+        tenant_id=tenant,
+        workspace_id=workspace,
+        expected_revision=task.revision,
+        evidence={
+            "plan_review": {
+                "state": "submitted",
+                "steps": ["inspect", "implement", "test"],
+                "digest": plan_digest,
+                "submitted_by": "author-1",
+            }
+        },
+    )
+
+    approved = tasks.review_plan_atomically(
+        task.task_id,
+        tenant_id=tenant,
+        workspace_id=workspace,
+        expected_revision=submitted.revision,
+        reviewer_id="reviewer-2",
+        approve=True,
+        reason="independent review passed",
+    )
+
+    assert approved.status == EngineeringTaskStatus.PLANNED
+    assert approved.evidence["plan_review"]["approved_digest"] == plan_digest
+    assert approved.evidence["plan_review"]["reviewed_by"] == "reviewer-2"
+    # Approval must persist before execution creates its worktree.
+    assert workspaces.list_scope(tenant_id=tenant, workspace_id=workspace) == []
+    ledger = workspaces.get_plan_review(
+        task.task_id, tenant_id=tenant, workspace_id=workspace
+    )
+    assert ledger["decision"] == "approved"
+    assert ledger["plan_digest"] == plan_digest
+    assert ledger["reviewer_id"] == "reviewer-2"
+    with pytest.raises(EngineeringTaskConflict, match="stale_revision"):
+        tasks.review_plan_atomically(
+            task.task_id,
+            tenant_id=tenant,
+            workspace_id=workspace,
+            expected_revision=submitted.revision,
+            reviewer_id="reviewer-3",
+            approve=False,
+        )
