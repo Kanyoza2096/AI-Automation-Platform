@@ -71,7 +71,11 @@ jobs:
               migration = Path(
                   "migrations/140_kdo_engineering_shared_build_queue.sql"
               ).read_text(encoding="utf-8")
-              for statement in migration.split(";"):
+              migration_sql = "\\n".join(
+                  line for line in migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in migration_sql.split(";"):
                   if statement.strip():
                       connection.execute(statement)
           PY
