@@ -103,23 +103,27 @@ class PostgresEngineeringTaskRepository(_PostgresRepository):
     def create(self, task: EngineeringTaskContract) -> EngineeringTaskContract:
         row = _encode(task)
         def op(_conn: Any, cur: Any) -> EngineeringTaskContract:
-            cur.execute(
-                f"SELECT * FROM {self.TABLE} WHERE tenant_id=%s AND workspace_id=%s AND idempotency_key=%s FOR UPDATE",
-                (task.tenant_id, task.workspace_id, task.idempotency_key),
-            )
-            existing = self._task(_row_dict(cur, cur.fetchone())) if cur.rowcount else None
-            if existing is not None:
-                if existing.fingerprint() == task.fingerprint():
-                    return existing
-                raise EngineeringTaskConflict("idempotency_key_reused_with_different_task")
             cur.execute(f"""INSERT INTO {self.TABLE}
                 (task_id,tenant_id,workspace_id,objective,acceptance_criteria,idempotency_key,status,
                  revision,repository_ref,base_revision,metadata,evidence,fingerprint)
-                VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)""",
+                VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s)
+                ON CONFLICT (tenant_id,workspace_id,idempotency_key) DO NOTHING
+                RETURNING task_id""",
                 (row["task_id"], row["tenant_id"], row["workspace_id"], row["objective"],
                  row["acceptance_criteria"], row["idempotency_key"], row["status"], row["revision"],
                  row["repository_ref"], row["base_revision"], row["metadata"], row["evidence"], row["fingerprint"]))
-            return task
+            inserted = cur.fetchone()
+            if inserted is not None:
+                return task
+            cur.execute(f"SELECT * FROM {self.TABLE} WHERE tenant_id=%s AND workspace_id=%s AND idempotency_key=%s",
+                        (task.tenant_id, task.workspace_id, task.idempotency_key))
+            existing_row = _row_dict(cur, cur.fetchone())
+            if existing_row is None:
+                raise EngineeringTaskConflict("task_id_already_exists")
+            existing = self._task(existing_row)
+            if existing.fingerprint() == task.fingerprint():
+                return existing
+            raise EngineeringTaskConflict("idempotency_key_reused_with_different_task")
         return self._run(op, write=True)
 
     def get(self, task_id: str, *, tenant_id: str, workspace_id: str) -> EngineeringTaskContract:
