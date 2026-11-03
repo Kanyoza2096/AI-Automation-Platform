@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Callable, Mapping, Iterable
 import hashlib
 import json
+import threading
 
 from services.kdo_engineering_agent_team import AgentAssignment
 from services.kdo_engineering_agent_registry import AgentRegistry
@@ -310,7 +311,7 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
         repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
         authorize: Callable[[str, Mapping[str, Any]], bool],
         max_repair_attempts: int = 2, test_timeout_seconds: int = 60,
-        test_runner_factory: Callable[[str, Any, tuple[str, ...]], Callable[[int], Mapping[str, Any]]] | None = None) -> Callable[..., Mapping[str, Any]]:
+        test_runner_factory: Callable[..., Callable[[int], Mapping[str, Any]]] | None = None) -> Callable[..., Mapping[str, Any]]:
     """Wrap an existing Phase 16.2 build executor with dynamic QA and repair.
 
     Pass the returned callable as ``executor=`` to ``KDOPhase162Workflow``. The
@@ -323,7 +324,7 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
         raise DynamicQualityLoopError("dynamic_quality_executor_dependencies_required")
     if not isinstance(max_repair_attempts, int) or not 0 <= max_repair_attempts <= 5:
         raise DynamicQualityLoopError("max_repair_attempts_must_be_between_0_and_5")
-    def execute(workspace_path: str, task_contract: Any, steps: tuple[str, ...]) -> Mapping[str, Any]:
+    def execute(workspace_path: str, task_contract: Any, steps: tuple[str, ...], *, cancellation_event: threading.Event | None = None) -> Mapping[str, Any]:
         build_output = build_executor(workspace_path, task_contract, steps)
         if not isinstance(build_output, Mapping):
             raise DynamicQualityLoopError("build_executor_must_return_mapping")
@@ -337,7 +338,7 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
         if test_runner_factory is not None:
             # A sandboxed runner owns command selection; do not even ask the legacy
             # host-command factory to construct a command in this execution mode.
-            test_runner = test_runner_factory(workspace_path, task_contract, steps)
+            test_runner = test_runner_factory(workspace_path, task_contract, steps, cancellation_event=cancellation_event)
         else:
             command = test_command_factory(task_contract, workspace_path, steps)
             test_runner = make_workspace_test_runner(workspace_path, command, timeout_seconds=test_timeout_seconds)
