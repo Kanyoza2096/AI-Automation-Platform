@@ -53,3 +53,21 @@ Scoped claiming reduces accidental cross-tenant work capture; it does not replac
 actor authorization, database grants/RLS, lease fencing, or approved-plan
 evidence. PostgreSQL behavior still requires execution against a real supported
 PostgreSQL instance; fake-DB tests alone do not verify production locking.
+
+
+### Lease heartbeat supervisor
+
+`services/kdo_engineering_worker_runtime.py` adds an opt-in worker supervisor
+around the governed `run_claimed_build_job(...)` path. It periodically renews
+the existing owner/token-fenced lease while the build execution is running and
+stops heartbeats immediately before terminal queue completion. Both the SQLite
+and PostgreSQL adapters expose the required `get`, `renew`, and `complete`
+operations.
+
+A renewal or heartbeat-shutdown failure is fail-closed: terminal completion is
+not accepted through the supervisor. The supervisor does not kill an already
+running executor, automatically retry a build, or grant release authority.
+Therefore the host must still enforce bounded, cancellable isolated execution
+and use the expired-lease reconciliation path to handle uncertain work. A real
+PostgreSQL integration test and production worker-bootstrap wiring remain
+separate acceptance requirements.
