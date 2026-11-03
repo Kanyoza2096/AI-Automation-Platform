@@ -28,9 +28,10 @@ python -m pytest -q tests/engineering_vertical/test_phase16_4_postgres_integrati
 ```
 
 Without the variable, the four live-database tests are skipped. The focused
-engineering GitHub Actions workflow includes this file, so ordinary PR CI
-verifies collection and reports skips without needing a database secret.
-A dedicated secured CI environment can run the same suite with the DSN set.
+engineering GitHub Actions workflow provisions an ephemeral PostgreSQL 16
+service, creates the expected non-login roles, applies the migration, and sets
+the DSN for the test step. Thus the focused PR workflow runs the real database
+tests rather than treating skips as integration evidence.
 
 ## Coverage
 
