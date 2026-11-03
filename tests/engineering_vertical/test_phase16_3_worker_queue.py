@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -336,3 +337,93 @@ def test_worker_claim_wrapper_rejects_missing_scope(tenant_id, workspace_id):
             queue=object(), worker_id="worker-a",
             tenant_id=tenant_id, workspace_id=workspace_id,
         )
+
+
+
+def test_claimed_worker_renews_lease_during_long_running_executor(tmp_path):
+    from services.kdo_engineering_phase16_3 import run_claimed_build_job
+    from services.kdo_engineering_vertical_contracts import EngineeringTaskStatus
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+    digest = stored.evidence["plan_review"]["digest"]
+    queue.enqueue(tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
+                  plan_digest=digest, idempotency_key="heartbeat-build-1")
+    claimed = queue.claim_next(worker_id="worker-1", lease_seconds=30,
+                               tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+
+    class CountingQueue:
+        def __init__(self, inner):
+            self.inner = inner
+            self.renewals = 0
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+        def renew(self, *args, **kwargs):
+            self.renewals += 1
+            return self.inner.renew(*args, **kwargs)
+
+    counted = CountingQueue(queue)
+    def executor(_path, _contract, _plan):
+        time.sleep(0.08)
+        return {"changed": [], "tests": "delegated"}
+
+    result = run_claimed_build_job(
+        workflow=workflow, queue=counted, job=claimed, worker_id="worker-1",
+        lease_token=claimed.lease_token, actor_id="builder", executor=executor,
+        lease_seconds=30, max_runtime_seconds=2, heartbeat_interval_seconds=0.01,
+    )
+    assert counted.renewals >= 1
+    assert result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW
+    assert queue.get(claimed.job_id, tenant_id=task.tenant_id,
+                     workspace_id=task.workspace_id).status == "awaiting_review"
+    queue.close()
+
+
+def test_claimed_worker_timeout_marks_job_uncertain_and_blocks_late_finalization(tmp_path):
+    from services.kdo_engineering_phase16_3 import run_claimed_build_job
+    from services.kdo_engineering_vertical_contracts import EngineeringTaskStatus
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+    digest = stored.evidence["plan_review"]["digest"]
+    queue.enqueue(tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
+                  plan_digest=digest, idempotency_key="timeout-build-1")
+    claimed = queue.claim_next(worker_id="worker-1", lease_seconds=30,
+                               tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+
+    def slow_executor(_path, _contract, _plan):
+        time.sleep(0.15)
+        return {"changed": [], "tests": "delegated"}
+
+    with pytest.raises(Phase163Error, match="worker_execution_timeout_marked_uncertain"):
+        run_claimed_build_job(
+            workflow=workflow, queue=queue, job=claimed, worker_id="worker-1",
+            lease_token=claimed.lease_token, actor_id="builder", executor=slow_executor,
+            lease_seconds=30, max_runtime_seconds=0.03, heartbeat_interval_seconds=0.01,
+        )
+    assert queue.get(claimed.job_id, tenant_id=task.tenant_id,
+                     workspace_id=task.workspace_id).status == "uncertain"
+    # The executor cannot be forcibly killed; once it returns, the execution guard
+    # prevents the late worker from publishing an awaiting_review task state.
+    time.sleep(0.25)
+    stored_after = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id,
+                                      workspace_id=task.workspace_id)
+    assert stored_after.status == EngineeringTaskStatus.BLOCKED
+    queue.close()
+
+
+@pytest.mark.parametrize("max_runtime_seconds", [True, 0, -1, float("nan"), 86401])
+def test_claimed_worker_rejects_invalid_execution_deadline(tmp_path, max_runtime_seconds):
+    from services.kdo_engineering_phase16_3 import run_claimed_build_job
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    with pytest.raises(Phase163Error, match="max_runtime_seconds"):
+        run_claimed_build_job(
+            workflow=workflow, queue=queue, job=None, worker_id="worker",
+            lease_token="token", actor_id="builder", executor=lambda *_: {},
+            max_runtime_seconds=max_runtime_seconds,
+        )
+    queue.close()

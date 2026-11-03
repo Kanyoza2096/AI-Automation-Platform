@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -224,8 +225,18 @@ class KDOPhase162Workflow:
         return updated
 
     def execute_approved_build(self, task_id: str, *, tenant_id: str, workspace_id: str,
-                               actor_id: str, executor: Callable[[str, EngineeringTaskContract, Sequence[str]], Mapping[str, Any]]) -> dict[str, Any]:
-        """Execute callback only inside an approved task worktree; never merges/releases."""
+                               actor_id: str, executor: Callable[[str, EngineeringTaskContract, Sequence[str]], Mapping[str, Any]],
+                               execution_guard: Callable[[], Any] | None = None) -> dict[str, Any]:
+        """Execute only in an approved task worktree; guard lease-sensitive checkpoints.
+
+        execution_guard is a context-manager factory supplied by a durable worker.
+        It is entered before execution and around final lifecycle/workspace writes so a
+        worker whose lease has been lost cannot publish a review-ready task state.
+        It is not an authorization grant and does not sandbox the executor.
+        """
+        guard = execution_guard or nullcontext
+        with guard():
+            pass
         self._require(actor_id, "execute_build", tenant_id, workspace_id)
         task = self.tasks.get(task_id, tenant_id=tenant_id, workspace_id=workspace_id)
         review = task.evidence.get("plan_review", {})
@@ -255,40 +266,48 @@ class KDOPhase162Workflow:
             tenant_id=tenant_id, workspace_id=workspace_id, expected_revision=queued.revision,
             evidence={"build_execution": {"state": "running", "requested_by": actor_id}})
         try:
+            with guard():
+                pass
             wt = create_task_worktree(self.source_repository_path, self.managed_root,
                 tenant_id=tenant_id, workspace_id=workspace_id, task_id=task_id,
                 base_ref=task.base_revision or "HEAD")
             record = self.workspaces.put(tenant_id=tenant_id, workspace_id=workspace_id, task_id=task_id,
                 path=wt.path, branch=wt.branch, base_revision=wt.base_revision,
                 head_revision=wt.head_revision, status="active")
+            with guard():
+                pass
             output = executor(record.path, running, tuple(steps))
             if not isinstance(output, Mapping):
                 raise Phase162Error("build_executor_must_return_mapping")
+            with guard():
+                pass
             snapshot = inspect_task_worktree(record.path, managed_root=self.managed_root)
             quality = output.get("quality_loop")
             if isinstance(quality, Mapping) and quality.get("status") != "awaiting_authorization":
                 # A dynamic QA/repair loop that is blocked or inconclusive must not
                 # be presented as an ordinary review-ready build. Preserve workspace
                 # and evidence for diagnosis; never auto-resume or release.
-                self.workspaces.mark_status(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
-                    status="quality_blocked", head_revision=snapshot["revision"])
-                blocked = self.tasks.transition(task_id, EngineeringTaskStatus.BLOCKED,
-                    tenant_id=tenant_id, workspace_id=workspace_id, expected_revision=running.revision,
-                    evidence={"build_execution": {"state": "quality_blocked",
-                        "workspace_path": record.path, "branch": record.branch,
-                        "base_revision": record.base_revision, "head_revision": snapshot["revision"],
-                        "output": dict(output), "release_authorized": False,
-                        "automatic_resume": False, "workspace_cleanup_required": True}})
+                with guard():
+                    self.workspaces.mark_status(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
+                        status="quality_blocked", head_revision=snapshot["revision"])
+                    blocked = self.tasks.transition(task_id, EngineeringTaskStatus.BLOCKED,
+                        tenant_id=tenant_id, workspace_id=workspace_id, expected_revision=running.revision,
+                        evidence={"build_execution": {"state": "quality_blocked",
+                            "workspace_path": record.path, "branch": record.branch,
+                            "base_revision": record.base_revision, "head_revision": snapshot["revision"],
+                            "output": dict(output), "release_authorized": False,
+                            "automatic_resume": False, "workspace_cleanup_required": True}})
                 return {"task": blocked, "workspace": self.workspaces.get(task_id, tenant_id=tenant_id, workspace_id=workspace_id),
                         "inspection": snapshot, "quality_loop": dict(quality)}
-            self.workspaces.mark_status(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
-                status="awaiting_review", head_revision=snapshot["revision"])
-            final = self.tasks.transition(task_id, EngineeringTaskStatus.AWAITING_REVIEW,
-                tenant_id=tenant_id, workspace_id=workspace_id, expected_revision=running.revision,
-                evidence={"build_execution": {"state": "awaiting_review", "workspace_path": record.path,
-                    "branch": record.branch, "base_revision": record.base_revision,
-                    "head_revision": snapshot["revision"], "output": dict(output),
-                    "release_authorized": False}})
+            with guard():
+                self.workspaces.mark_status(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
+                    status="awaiting_review", head_revision=snapshot["revision"])
+                final = self.tasks.transition(task_id, EngineeringTaskStatus.AWAITING_REVIEW,
+                    tenant_id=tenant_id, workspace_id=workspace_id, expected_revision=running.revision,
+                    evidence={"build_execution": {"state": "awaiting_review", "workspace_path": record.path,
+                        "branch": record.branch, "base_revision": record.base_revision,
+                        "head_revision": snapshot["revision"], "output": dict(output),
+                        "release_authorized": False}})
             return {"task": final, "workspace": self.workspaces.get(task_id, tenant_id=tenant_id, workspace_id=workspace_id),
                     "inspection": snapshot}
         except Exception as exc:

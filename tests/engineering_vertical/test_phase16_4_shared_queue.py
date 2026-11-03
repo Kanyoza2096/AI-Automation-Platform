@@ -206,6 +206,26 @@ def test_postgres_claim_rejects_invalid_lease_duration(lease_seconds):
         queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
 
 
+    feat/engineering-worker-heartbeat-timeout
+
+def test_postgres_lease_mutations_reject_missing_worker_token_and_invalid_duration():
+    queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row("running")))
+    now = datetime.now(timezone.utc)
+    job = EngineeringBuildJob(**{
+        **job_row("running"),
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "lease_owner": "worker-a",
+        "lease_token": "token-a",
+        "lease_expires_at": (now + timedelta(seconds=60)).isoformat(),
+    })
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.renew(job, worker_id="", lease_token="token-a")
+    with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
+        queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
+    with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
+        queue.renew(job, worker_id="worker-a", lease_token="token-a", lease_seconds=True)
+
 def test_postgres_renew_rejects_invalid_lease_duration_and_credentials():
     queue = PostgresEngineeringBuildQueue(
         lambda: (_ for _ in ()).throw(AssertionError("DB must not be opened"))
@@ -247,3 +267,4 @@ def test_postgres_complete_rejects_missing_worker_or_lease_token_before_database
         queue.complete(job, worker_id="", lease_token="token-a", status="awaiting_review")
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
         queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
+        main
