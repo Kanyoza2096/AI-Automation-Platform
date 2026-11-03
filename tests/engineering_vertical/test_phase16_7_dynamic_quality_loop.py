@@ -134,3 +134,20 @@ def test_dynamic_executor_wraps_existing_build_and_uses_current_registry(tmp_pat
     assert output["build_status"] == "completed"
     assert output["quality_loop"]["status"] == "awaiting_authorization"
     assert output["quality_loop"]["release_authorized"] is False
+
+
+def test_dynamic_quality_loop_stops_before_diagnosis_or_patch_when_cancelled():
+    import threading
+    cancellation = threading.Event()
+    cancellation.set()
+    calls = []
+    result = run_dynamic_quality_loop(
+        task=_task(), registry=_registry(),
+        test_runner=lambda i: calls.append("test") or {"status": "failed", "exit_code": 1},
+        apply_patch=lambda patch: calls.append("patch") or {"status": "passed"},
+        authorize=_auth, repair_capabilities={"backend"},
+        cancellation_event=cancellation,
+    )
+    assert result.status == "cancelled"
+    assert calls == []
+    assert result.release_authorized is False
