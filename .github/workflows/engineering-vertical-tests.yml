@@ -119,6 +119,7 @@ jobs:
             tests/engineering_vertical/test_phase16_3_worker_queue.py \
             tests/engineering_vertical/test_worker_runtime.py \
             tests/engineering_vertical/test_worker_service.py \
+            tests/engineering_vertical/test_worker_bootstrap.py \
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
             tests/engineering_vertical/test_phase16_4_postgres_integration.py \
             tests/engineering_vertical/test_phase16_5_postgres_repositories.py \
