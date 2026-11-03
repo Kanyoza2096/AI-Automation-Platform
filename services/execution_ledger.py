@@ -21,30 +21,6 @@ from typing import Any, Optional
 logger = logging.getLogger("kanyoza.execution_ledger")
 
 
-# ── Workspace → UUID adapter ──────────────────────────────────────────────
-#
-# The durable ledger column `workspace_id` is text, but the durable RPCs
-# (`begin_external_execution`, `claim_external_execution`, etc.) currently
-# declare `p_workspace_id` as uuid. Sending the raw workspace string trips
-# Postgres 22P02 before the value ever reaches the table.
-#
-# To keep both ends happy we map any workspace string to a stable UUID v5.
-# The mapping is deterministic (same input → same UUID) and fully reversible:
-# any read that filters by workspace_id can use the same helper.
-#
-def _workspace_uuid(workspace_id: str) -> str:
-    """Map a workspace string to a stable UUID v5.
-
-    If the value already parses as a UUID it is returned unchanged; otherwise
-    a namespace-scoped UUID v5 is derived from the original string so the
-    same workspace always produces the same UUID.
-    """
-    try:
-        return str(uuid.UUID(str(workspace_id)))
-    except (ValueError, AttributeError, TypeError):
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(workspace_id)))
-
-
 @dataclass(frozen=True)
 class ExecutionRecord:
     execution_id: str
@@ -85,7 +61,7 @@ class ExecutionLedger:
         if self._db:
             try:
                 res = self._db.rpc("begin_external_execution", {
-                    "p_workspace_id": _workspace_uuid(workspace_id),
+                    "p_workspace_id": workspace_id,
                     "p_action": action,
                     "p_idempotency_key": idempotency_key,
                     "p_provider": provider,
