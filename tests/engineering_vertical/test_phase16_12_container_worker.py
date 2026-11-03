@@ -153,7 +153,7 @@ def test_default_docker_cli_capture_is_bounded_in_memory(tmp_path):
     from services.kdo_engineering_phase16_12_container_worker import _bounded_subprocess_run
 
     result = _bounded_subprocess_run(
-        [sys.executable, "-c", "import sys; print('x' * 200000); print('y' * 200000, file=sys.stderr)"],
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 200000); sys.stderr.write('y' * 200000)"],
         output_limit=128,
         cwd=str(tmp_path),
         env={"PATH": os.environ.get("PATH", "")},
