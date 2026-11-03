@@ -84,6 +84,7 @@ def run_dynamic_quality_loop(
     authorize: Callable[[str, Mapping[str, Any]], bool],
     repair_capabilities: Iterable[str],
     max_repair_attempts: int = 2,
+    cancellation_event: threading.Event | None = None,
     diagnostic_capability_sets: Iterable[Iterable[str]] = (("debugging", "root_cause"), ("diagnostics",)),
     verification_capability_sets: Iterable[Iterable[str]] = (("independent_review", "review"), ("verification",)),
 ) -> QualityLoopResult:
@@ -131,7 +132,12 @@ def run_dynamic_quality_loop(
     status = "blocked"
     attempts = 0
 
+    def cancelled() -> bool:
+        return cancellation_event is not None and cancellation_event.is_set()
+
     def allowed(action: str) -> bool:
+        if cancelled():
+            return False
         try:
             return authorize(action, task) is True
         except Exception:
@@ -157,7 +163,10 @@ def run_dynamic_quality_loop(
         return normalized
 
     initial = run_test(0)
-    if initial is None:
+    if cancelled() or (initial is not None and initial.get("status") == "cancelled"):
+        status = "cancelled"
+        test_runs.append(dict(initial) if initial is not None else {"status": "cancelled", "iteration": 0})
+    elif initial is None:
         status = "blocked"
         test_runs.append({"status": "blocked", "reason": "test_execution_not_authorized", "iteration": 0})
     else:
@@ -168,6 +177,9 @@ def run_dynamic_quality_loop(
         else:
             for attempt in range(1, max_repair_attempts + 1):
                 attempts = attempt
+                if cancelled():
+                    status = "cancelled"
+                    break
                 if not allowed("diagnose_failure"):
                     status = "blocked"
                     repairs.append({"attempt": attempt, "status": "blocked", "reason": "diagnosis_not_authorized"})
@@ -210,6 +222,10 @@ def run_dynamic_quality_loop(
                                     "reason": "patch_text_missing"})
                     status = "blocked"
                     break
+                if cancelled():
+                    repairs.append({"attempt": attempt, "status": "cancelled", "reason": "execution_cancelled"})
+                    status = "cancelled"
+                    break
                 if not allowed("apply_patch"):
                     repairs.append({"attempt": attempt, "status": "blocked", "repair_agent_id": current_repair_id,
                                     "reason": "patch_application_not_authorized"})
@@ -241,6 +257,8 @@ def run_dynamic_quality_loop(
             else:
                 status = "repair_exhausted"
 
+    if status == "verification_pending" and cancelled():
+        status = "cancelled"
     if status == "verification_pending":
         if not allowed("independent_verify"):
             status = "blocked"
@@ -347,6 +365,7 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
         quality = run_dynamic_quality_loop(task=task_data, registry=registry,
             test_runner=test_runner,
             apply_patch=make_workspace_patch_applier(workspace_path), authorize=authorize,
-            repair_capabilities=capabilities, max_repair_attempts=max_repair_attempts)
+            repair_capabilities=capabilities, max_repair_attempts=max_repair_attempts,
+            cancellation_event=cancellation_event)
         return {**dict(build_output), "quality_loop": quality.to_dict()}
     return execute
