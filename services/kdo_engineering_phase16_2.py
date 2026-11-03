@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import inspect
+import threading
 import sqlite3
 import threading
 from contextlib import nullcontext
@@ -226,7 +228,8 @@ class KDOPhase162Workflow:
 
     def execute_approved_build(self, task_id: str, *, tenant_id: str, workspace_id: str,
                                actor_id: str, executor: Callable[[str, EngineeringTaskContract, Sequence[str]], Mapping[str, Any]],
-                               execution_guard: Callable[[], Any] | None = None) -> dict[str, Any]:
+                               execution_guard: Callable[[], Any] | None = None,
+                               execution_cancelled: threading.Event | None = None) -> dict[str, Any]:
         """Execute only in an approved task worktree; guard lease-sensitive checkpoints.
 
         execution_guard is a context-manager factory supplied by a durable worker.
@@ -276,7 +279,15 @@ class KDOPhase162Workflow:
                 head_revision=wt.head_revision, status="active")
             with guard():
                 pass
-            output = executor(record.path, running, tuple(steps))
+            parameters = inspect.signature(executor).parameters
+            accepts_cancellation = "cancellation_event" in parameters or any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            if execution_cancelled is not None and accepts_cancellation:
+                output = executor(record.path, running, tuple(steps), cancellation_event=execution_cancelled)
+            else:
+                output = executor(record.path, running, tuple(steps))
             if not isinstance(output, Mapping):
                 raise Phase162Error("build_executor_must_return_mapping")
             with guard():
