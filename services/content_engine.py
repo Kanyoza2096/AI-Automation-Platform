@@ -1,10 +1,32 @@
 """
 Kanyoza Systems
-Content Engine v15.9 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+Content Engine v15.9.1 — Brand-Aware Multimodal Content Pipeline (Async-Native)
 
-v15.9 CHANGES — TOPIC AXIS ROTATION:
+v15.9.1 CHANGES — QUALITY GATE FIX:
 
-  Wires prompt_builder V2.4 topic axes into the pipeline.
+  1. WORD-COUNT CAP REPLACES SENTENCE-COUNT CAP.
+     v15.6's gate capped captions at 6 sentences. That made sense when the
+     target length was 60-120 words (6 sentences × 15 words ≈ 90 words).
+     When V3.3 raised the target to 180-200 words, the 6-sentence cap
+     became incompatible: 180 words at 15 words/sentence is 12 sentences.
+     The gate was rejecting captions that met the length target, which
+     then surfaced as CONTENT_PIPELINE_FAILED with "too long: 8 sentences".
+
+     The gate now enforces word count (80-250) — the same metric the
+     prompt controls. A caption can be 8-12 sentences if it is 180-200
+     words. Both the length target and the gate now agree.
+
+  2. FIRST-PERSON GATE ADDED.
+     V3.4 removed the brand charter (which had permitted "first-person
+     plural") and made third person absolute in the prompt. But the
+     quality gate never enforced that rule. On captions where the model
+     drifted into "I" or "we" despite the prompt, the caption still
+     published. The gate now rejects any caption containing first-person
+     pronouns (I, me, my, we, our, us) before publish.
+
+v15.9 CHANGES — TOPIC AXIS ROTATION (preserved):
+
+  Wires prompt_builder topic axes into the pipeline.
 
   - _get_last_used_axis(brand_id): last axis of the most recent PUBLISHED
     job for the brand (automation_jobs.topic_axis).
@@ -21,45 +43,13 @@ v15.9 CHANGES — TOPIC AXIS ROTATION:
   - Requires a nullable text column automation_jobs.topic_axis.
 
 v15.8 CHANGES (2026-10-27) — ROUTE TO 70B + HARD LENGTH CAP + FREE-FORM DEFAULT:
-
-  Three config-level fixes that close the content-quality gap the v15.6/v15.7
-  patches exposed but could not fully resolve:
-
   1. PROSE ROUTES TO content_generation (70B), NOT chat (8B).
-     _llm_generate_text was requesting capability="chat", which the AI
-     policy routes to Llama 3.1 8B — a small, fast model that does not
-     reliably follow fine-grained length constraints. Every prose caption
-     was 1.5-2× the requested length (60-120 words requested, 120-180
-     delivered). The fix is to request capability="content_generation",
-     which the policy routes to Llama 3.3 70B. Same prompt, better
-     instruction-following.
-
   2. PROSE max_tokens CAPPED AT 400.
-     The default was 8192 — ~6000 words. A model that ignores the length
-     prompt could produce a 9-sentence essay within the token budget, and
-     the only defense was the quality gate downstream (which correctly
-     rejected it, but produced zero published content). 400 tokens ≈ 300
-     words, giving the model room for 60-120 words + buffer, and forcing
-     finish_reason="length" if it ignores the prompt. The truncation
-     rejection in _llm_generate_text then fails cleanly.
-
   3. FREE-FORM ROUTING DEFAULTS TO True.
-     _prefers_free_form previously returned True only when the brand had
-     content_style="free_form" in a direct attribute — but the brands
-     table has no content_style column, so the flag never fired and every
-     brand went through the structured path (which produced LinkedIn
-     essays). Now: default is free-form; a brand opts out via
-     content_style="structured" (still checked, for future brands that
-     genuinely need structured TechPost comparison cards).
-
-  No schema migration needed. No metadata SQL needed. The 70B model was
-  already provisioned via the content_generation policy — it was simply
-  never requested by this file.
 
 v15.7 CHANGES (2026-10-27) — HASHTAG POLICY:
   Model no longer produces hashtags. CaptionBuilder._get_hashtags returns
-  brand.formatted_hashtags only. Prompt does not request hashtags. See
-  prompt_builder V2.3 and models/content.py V2.3 for the full rationale.
+  brand.formatted_hashtags only.
 
 v15.6 CHANGES (2026-10-27) — STYLE-AWARE GENERATION:
   - _prefers_free_form() helper + prose-first routing
@@ -148,7 +138,7 @@ THEME_ALIASES = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# v15.6 — CAPTION QUALITY GATE
+# CAPTION QUALITY GATE
 # ═══════════════════════════════════════════════════════════════════════════
 #
 _FORBIDDEN_OPENERS = (
@@ -180,6 +170,22 @@ _FORBIDDEN_CLOSES = (
     "in summary",
     "at the end of the day",
 )
+
+# v15.9.1 — first-person gate. Word-boundary regex so "I" matches
+# standalone "I" but not "INTEGRATION"; "us" matches "us" but not "used".
+_FIRST_PERSON_PATTERNS = (
+    re.compile(r"\b(I)\b"),
+    re.compile(r"\b(we)\b", re.IGNORECASE),
+    re.compile(r"\b(our)\b", re.IGNORECASE),
+    re.compile(r"\b(us)\b", re.IGNORECASE),
+    re.compile(r"\b(my)\b", re.IGNORECASE),
+    re.compile(r"\b(me)\b", re.IGNORECASE),
+)
+
+# v15.9.1 — word-count bounds. Set to accommodate the 180-200 word target
+# while rejecting clear violations (tweets that pass as captions, essays).
+_MIN_WORDS = 80
+_MAX_WORDS = 250
 
 
 class VisualStrategy(str, Enum):
@@ -309,11 +315,13 @@ class ContentEngine:
         placement_drift = VALID_THEME_VALUES - (_CARD_THEMES | _AI_IMAGE_THEMES)
         return {
             "status": "healthy" if not drift and not placement_drift else "degraded",
-            "version": "15.9.0",
+            "version": "15.9.1",
             "prompt_cache_size": len(self._prompt_cache),
             "redis_available": self._redis is not None,
             "theme_enum_drift": sorted(drift) if drift else None,
             "themes_not_routed": sorted(placement_drift) if placement_drift else None,
+            "first_person_gate": True,
+            "word_count_gate": [_MIN_WORDS, _MAX_WORDS],
         }
 
     # ═══════════════════════════════════════════════════════════════
@@ -365,7 +373,7 @@ class ContentEngine:
         return None
 
     # ═══════════════════════════════════════════════════════════════
-    # v15.9 — TOPIC AXIS PERSISTENCE
+    # TOPIC AXIS PERSISTENCE
     # ═══════════════════════════════════════════════════════════════
 
     async def _get_last_used_axis(self, brand_id: str) -> Optional[str]:
@@ -452,7 +460,7 @@ class ContentEngine:
         return str(getattr(brand, "name", None) or getattr(brand, "brand_name", None) or "Default")
 
     # ═══════════════════════════════════════════════════════════════
-    # v15.8 — FREE-FORM DETECTION (default True)
+    # FREE-FORM DETECTION (default True)
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
@@ -461,22 +469,12 @@ class ContentEngine:
 
         v15.8 — DEFAULT IS FREE-FORM. Only an explicit opt-out via
         content_style="structured" (direct attribute or metadata) changes
-        the behavior. This matches the actual content strategy: every
-        brand on the platform produces caption-format content, not
-        structured TechPost comparison cards.
-
-        Rationale: the previous default (opt-in via direct attribute)
-        required the brands table to have a content_style column, which
-        it doesn't. Free-form routing never fired, every brand went
-        through the structured path, and the structured path produced
-        LinkedIn-essay captions — the exact failure the quality gate
-        rejects. Inverting the default removes the flag dependency.
+        the behavior.
         """
         for source in (brand, ai_profile):
             if source is None:
                 continue
 
-            # Direct attribute opt-out (works if a future schema adds the column)
             for attr in ("content_style", "caption_style", "post_style"):
                 val = getattr(source, attr, None)
                 if isinstance(val, str) and val.strip().lower() in (
@@ -484,8 +482,6 @@ class ContentEngine:
                 ):
                     return False
 
-            # Metadata opt-out (works with the current schema; harmless if
-            # no metadata key is set)
             metadata = getattr(source, "metadata", None) or {}
             if isinstance(metadata, dict):
                 style = metadata.get("content_style") or metadata.get("caption_style")
@@ -834,35 +830,16 @@ class ContentEngine:
         """Returns (text|None, mode).
 
         v15.8 — Routes to content_generation (70B model), not chat (8B).
-
-        The previous version requested capability="chat", which the AI
-        policy routes to Llama 3.1 8B — a small, fast model that does not
-        reliably follow fine-grained length constraints. Every prose
-        caption was 1.5-2× the requested length (60-120 words requested,
-        120-180 delivered, 9 sentences instead of 6). The 70B model
-        (llama-3.3-70b-instruct-fp8-fast) follows the same prompt
-        correctly.
-
         v15.8 — Default max_tokens reduced from 8192 to 400.
-
-        8192 tokens is ~6000 words — an order of magnitude more than the
-        150-word hard ceiling. A model that ignores the length prompt
-        could produce a full essay within the token budget. 400 tokens
-        ≈ 300 words, giving room for 60-120 words + buffer. If the model
-        exceeds that, finish_reason="length" triggers the truncation
-        rejection below. The truncation rejection fails the caption
-        cleanly rather than producing overlong output.
-
         v15.4 — Checks finish_reason and returns (None, mode) when it
-        indicates truncation. The truncated text is logged for diagnosis
-        but not returned as usable content.
+        indicates truncation.
         """
         try:
             from ai.gateway import get_llm_gateway
             result = get_llm_gateway().complete(
                 prompt,
                 workspace_id=workspace_id or "platform",
-                capability="content_generation",   # v15.8 — was "chat" (8B model)
+                capability="content_generation",
                 temperature=temperature,
                 max_tokens=max_tokens,
                 caller="content",
@@ -888,12 +865,7 @@ class ContentEngine:
     async def _generate_structured_content(
         self, topic: str, prompt: str, *, workspace_id: str = "platform"
     ) -> Optional[TechPost]:
-        """Generate structured content through the governed AI Gateway.
-
-        v15.7 — POST_SCHEMA_REQUIRED_KEYS is now ("caption",). Titles
-        and hashtags are optional. The gateway will reject a payload
-        without a caption but will accept one without a title.
-        """
+        """Generate structured content through the governed AI Gateway."""
         try:
             from ai.gateway import get_llm_gateway
             from services.prompt_builder import POST_SCHEMA_REQUIRED_KEYS
@@ -983,23 +955,44 @@ class ContentEngine:
             return None
 
     # ═══════════════════════════════════════════════════════════════
-    # v15.6 — CAPTION QUALITY GATE
+    # CAPTION QUALITY GATE
     # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
     def _validate_caption_quality(caption: str) -> tuple[bool, str]:
-        """Reject the "professional-boilerplate" style.
+        """Reject low-quality captions before publish.
 
-        Returns (ok, reason). When ok=False, the caller should route the
+        v15.9.1 — Three changes vs. v15.6:
+
+        1. Word-count bound replaces sentence-count bound. The sentence
+           cap of 6 was incompatible with the 180-200 word target: at
+           15 words/sentence, 180 words is 12 sentences. The gate was
+           rejecting captions that met the length target.
+
+        2. First-person gate added. V3.4 removed the brand charter and
+           made third person absolute in the prompt. But the quality
+           gate never enforced that rule. Any caption containing "I",
+           "me", "my", "we", "our", "us" is now rejected.
+
+        3. Sentence splitting retained for openers/closers — the
+           forbidden lists still apply to sentence starts and ends.
+
+        Returns (ok, reason). When ok=False, the caller must route the
         generation through _failed_generation_result — NOT publish the
-        caption. The rejected caption is still passed through the DLQ
-        for inspection.
+        caption.
         """
         if not caption or not caption.strip():
             return False, "empty caption"
 
         if "**" in caption or "__" in caption:
             return False, "caption contains markdown bold/italic"
+
+        # v15.9.1 — First-person gate. Word-boundary regex so "I" matches
+        # standalone "I" but not "INTEGRATION"; "us" matches "us" but not
+        # "used".
+        for pattern in _FIRST_PERSON_PATTERNS:
+            if pattern.search(caption):
+                return False, f"first_person_violation: {pattern.pattern}"
 
         lower = caption.strip().lower()
 
@@ -1011,9 +1004,12 @@ class ContentEngine:
             if lower.rstrip("?.! ").endswith(closer.rstrip("?.! ")):
                 return False, f"forbidden close: {closer!r}"
 
-        sentences = [s for s in re.split(r"[.!?]+", caption) if s.strip()]
-        if len(sentences) > 6:
-            return False, f"too long: {len(sentences)} sentences (max 6)"
+        # v15.9.1 — Word-count bound replaces the sentence-count bound.
+        words = caption.split()
+        if len(words) > _MAX_WORDS:
+            return False, f"too long: {len(words)} words (max {_MAX_WORDS})"
+        if len(words) < _MIN_WORDS:
+            return False, f"too short: {len(words)} words (min {_MIN_WORDS})"
 
         return True, "ok"
 
@@ -1045,15 +1041,9 @@ class ContentEngine:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
-            # v15.9 — Axis rotation state. `axis_used` always holds the axis
-            # of the MOST RECENT prompt build in this call; it is captured
-            # synchronously right after each build (see _axis_from_builder).
             last_used_axis = await self._get_last_used_axis(brand_id)
             axis_used: Optional[str] = None
 
-            # ═════════════════════════════════════════════════════════
-            # v15.6 — PROSE-FIRST PATH FOR FREE-FORM BRANDS
-            # ═════════════════════════════════════════════════════════
             if self._prefers_free_form(brand, ai_profile):
                 logger.info(
                     "Pipeline: '%s' opts into free-form caption — prose-first",
@@ -1096,9 +1086,6 @@ class ContentEngine:
                         brand_name,
                     )
 
-            # ═════════════════════════════════════════════════════════
-            # STRUCTURED PATH (default, or fallback from prose-first)
-            # ═════════════════════════════════════════════════════════
             prompt_structured = self._build_prompt(
                 brand=brand,
                 ai_profile=ai_profile,
@@ -1204,7 +1191,6 @@ class ContentEngine:
                     caption=caption,
                 )
 
-            # v15.9 — Caption passed the quality gate; record its axis.
             await self._record_used_axis(brand_id, axis_used)
 
             strategy = self._resolve_visual_strategy(post, brand=brand)
