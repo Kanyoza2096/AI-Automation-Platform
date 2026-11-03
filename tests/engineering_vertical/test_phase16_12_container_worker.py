@@ -43,3 +43,47 @@ def test_quality_loop_adapter_preserves_iteration_and_evidence(tmp_path):
     callback = make_docker_workspace_test_runner(runner, str(task))
     result = callback(2)
     assert result["iteration"] == 2 and result["exit_code"] == 0 and result["sandbox"].startswith("docker_")
+
+
+def test_timeout_removes_daemon_container_after_docker_cli_deadline(tmp_path):
+    root = tmp_path / "workspaces"; root.mkdir()
+    task = root / "task-timeout"; task.mkdir()
+    calls = []
+
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd, timeout=1, output="partial", stderr="deadline")
+        return SimpleNamespace(returncode=0, stdout="removed", stderr="")
+
+    runner = DockerWorkspaceRunner(
+        workspace_root=root,
+        image="python:3.12-slim@sha256:" + "a" * 64,
+        timeout_seconds=1,
+        process_runner=fake,
+    )
+    result = runner.run_tests(task)
+    assert result["status"] == "timed_out"
+    assert result["container_cleanup"] == "confirmed"
+    assert "--name" in calls[0]
+    container_name = calls[0][calls[0].index("--name") + 1]
+    assert calls[1] == ["docker", "rm", "--force", container_name]
+
+
+def test_timeout_fails_closed_when_daemon_container_cleanup_fails(tmp_path):
+    root = tmp_path / "workspaces"; root.mkdir()
+    task = root / "task-timeout"; task.mkdir()
+
+    def fake(cmd, **kwargs):
+        if cmd[1] == "run":
+            raise subprocess.TimeoutExpired(cmd, timeout=1)
+        return SimpleNamespace(returncode=1, stdout="", stderr="daemon unavailable")
+
+    runner = DockerWorkspaceRunner(
+        workspace_root=root,
+        image="python:3.12-slim@sha256:" + "a" * 64,
+        timeout_seconds=1,
+        process_runner=fake,
+    )
+    with pytest.raises(ContainerWorkerError, match="container_timeout_cleanup_failed"):
+        runner.run_tests(task)
