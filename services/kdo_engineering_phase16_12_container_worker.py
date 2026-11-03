@@ -6,9 +6,67 @@ authority. The authoritative lifecycle must provide an approved task and workspa
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from collections import deque
 from pathlib import Path
 import os, re, shutil, subprocess, time, uuid, threading
 from typing import Callable, Sequence, Mapping, Any
+
+
+def _bounded_subprocess_run(cmd: Sequence[str], *, output_limit: int, **kwargs: Any) -> Any:
+    """Run the Docker CLI while retaining only a bounded tail of each stream."""
+    timeout = kwargs.pop("timeout")
+    kwargs.pop("text", None)
+    kwargs.pop("errors", None)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, **kwargs)
+    buffers = {"stdout": deque(), "stderr": deque()}
+    sizes = {"stdout": 0, "stderr": 0}
+    lock = threading.Lock()
+    byte_limit = max(4096, output_limit * 4)
+
+    def drain(name: str, stream: Any) -> None:
+        while True:
+            chunk = stream.read(8192)
+            if not chunk:
+                return
+            with lock:
+                buffers[name].append(chunk)
+                sizes[name] += len(chunk)
+                while sizes[name] > byte_limit and buffers[name]:
+                    excess = sizes[name] - byte_limit
+                    first = buffers[name][0]
+                    if len(first) <= excess:
+                        sizes[name] -= len(buffers[name].popleft())
+                    else:
+                        buffers[name][0] = first[excess:]
+                        sizes[name] -= excess
+
+    readers = [
+        threading.Thread(target=drain, args=("stdout", proc.stdout), daemon=True),
+        threading.Thread(target=drain, args=("stderr", proc.stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        for reader in readers:
+            reader.join()
+        def tail(name: str) -> str:
+            with lock:
+                return b"".join(buffers[name]).decode(errors="replace")[-output_limit:]
+        raise subprocess.TimeoutExpired(cmd, timeout, output=tail("stdout"), stderr=tail("stderr"))
+    for reader in readers:
+        reader.join()
+    def tail(name: str) -> str:
+        with lock:
+            return b"".join(buffers[name]).decode(errors="replace")[-output_limit:]
+    return type("BoundedProcessResult", (), {
+        "returncode": proc.returncode,
+        "stdout": tail("stdout"),
+        "stderr": tail("stderr"),
+    })()
 
 class ContainerWorkerError(RuntimeError):
     pass
@@ -158,9 +216,13 @@ class DockerWorkspaceRunner:
             watchdog = threading.Thread(target=watch_cancellation, name="kdo-container-cancellation", daemon=True)
             watchdog.start()
         try:
-            proc = self.process_runner(cmd, cwd=str(self.workspace_root), env={"PATH": os.environ.get("PATH", ""), "CI": "1"},
+            run_kwargs = dict(cwd=str(self.workspace_root), env={"PATH": os.environ.get("PATH", ""), "CI": "1"},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", timeout=self.timeout_seconds, shell=False, close_fds=True)
+            if self.process_runner is subprocess.run:
+                proc = _bounded_subprocess_run(cmd, output_limit=self.max_output_chars, **run_kwargs)
+            else:
+                proc = self.process_runner(cmd, **run_kwargs)
             if watchdog is not None:
                 stop_watchdog.set()
                 watchdog.join(timeout=11)
