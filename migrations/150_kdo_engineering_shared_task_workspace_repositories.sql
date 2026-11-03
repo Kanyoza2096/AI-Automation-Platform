@@ -60,6 +60,3 @@ REVOKE ALL ON TABLE public.kdo_engineering_tasks,
 GRANT SELECT, INSERT, UPDATE ON TABLE public.kdo_engineering_tasks,
   public.kdo_engineering_workspaces, public.kdo_engineering_plan_reviews
   TO service_role;
- scope-keyed and revision-fenced; no execution or release authority.';
- paths are metadata, not authorization.';
- does not authorize release.';
