@@ -100,6 +100,17 @@ jobs:
               for statement in task_workspace_sql.split(";"):
                   if statement.strip():
                       connection.execute(statement)
+
+              approval_migration = Path(
+                  "migrations/151_kdo_engineering_plan_approval_task_scope.sql"
+              ).read_text(encoding="utf-8")
+              approval_sql = "\n".join(
+                  line for line in approval_migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in approval_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
           PY
       - name: Run focused engineering vertical tests
         run: |
