@@ -93,7 +93,7 @@ jobs:
               task_workspace_migration = Path(
                   "migrations/150_kdo_engineering_shared_task_workspace_repositories.sql"
               ).read_text(encoding="utf-8")
-              task_workspace_sql = "\\n".join(
+              task_workspace_sql = "\n".join(
                   line for line in task_workspace_migration.splitlines()
                   if not line.lstrip().startswith("--")
               )
