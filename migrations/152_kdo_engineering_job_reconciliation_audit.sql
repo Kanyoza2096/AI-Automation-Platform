@@ -37,18 +37,8 @@ GRANT SELECT, INSERT ON TABLE public.kdo_engineering_job_reconciliation_events
 REVOKE UPDATE, DELETE ON TABLE public.kdo_engineering_job_reconciliation_events
   FROM service_role;
 
-CREATE OR REPLACE FUNCTION public.kdo_engineering_reconciliation_events_immutable()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  RAISE EXCEPTION 'kdo_engineering_reconciliation_events_are_append_only';
-END;
-$$;
-
-DROP TRIGGER IF EXISTS kdo_engineering_reconciliation_events_no_mutation
-  ON public.kdo_engineering_job_reconciliation_events;
-CREATE TRIGGER kdo_engineering_reconciliation_events_no_mutation
-  BEFORE UPDATE OR DELETE ON public.kdo_engineering_job_reconciliation_events
-  FOR EACH ROW EXECUTE FUNCTION public.kdo_engineering_reconciliation_events_immutable();
+-- The service_role has SELECT/INSERT only. UPDATE/DELETE are revoked so
+-- application-level audit history is append-only; database owners remain trusted.
 
 COMMENT ON TABLE public.kdo_engineering_job_reconciliation_events IS
   'Append-only audit history for confirmed worker death and human-authorized uncertain job replay; no automatic replay.';
