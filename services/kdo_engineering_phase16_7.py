@@ -373,9 +373,16 @@ def make_dynamic_quality_executor(*, build_executor: Callable[..., Mapping[str, 
             test_runner = make_workspace_test_runner(workspace_path, command, timeout_seconds=test_timeout_seconds)
         if not callable(test_runner):
             raise DynamicQualityLoopError("test_runner_factory_must_return_callable")
+        patch_applier = make_workspace_patch_applier(workspace_path)
+
+        def guarded_patch_applier(patch_text: str) -> Mapping[str, Any]:
+            if cancellation_event is not None and cancellation_event.is_set():
+                return {"status": "blocked", "reason": "execution_cancelled"}
+            return patch_applier(patch_text)
+
         quality = run_dynamic_quality_loop(task=task_data, registry=registry,
             test_runner=test_runner,
-            apply_patch=make_workspace_patch_applier(workspace_path), authorize=authorize,
+            apply_patch=guarded_patch_applier, authorize=authorize,
             repair_capabilities=capabilities, max_repair_attempts=max_repair_attempts,
             cancellation_event=cancellation_event)
         return {**dict(build_output), "quality_loop": quality.to_dict()}
