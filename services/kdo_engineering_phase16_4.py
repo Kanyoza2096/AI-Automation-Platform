@@ -354,7 +354,7 @@ class PostgresEngineeringBuildQueue:
         never infers that replay is safe.
         """
         values = (job_id, tenant_id, workspace_id, actor_id, approval_ref)
-        if not all(isinstance(value, str) and value.strip() for value in values):
+        if not all(isinstance(value, str) and value.strip() for value in values) or actor_id == "system:reconciler":
             raise Phase163Error("replay_scope_actor_and_approval_required")
         if not isinstance(evidence_digest, str) or len(evidence_digest) != 64 or any(
             char not in "0123456789abcdef" for char in evidence_digest.lower()
