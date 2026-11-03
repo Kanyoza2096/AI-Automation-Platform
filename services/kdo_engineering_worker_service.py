@@ -132,8 +132,7 @@ def run_engineering_build_worker(
         ):
             # A malformed or unexpectedly scoped claim must never reach execution.
             claim_errors += 1
-            logger.error("Engineering queue returned a claim outside worker scope")
-            continue
+            raise Phase163Error("queue_returned_out_of_scope_claim")
 
         claimed += 1
         try:
@@ -148,9 +147,14 @@ def run_engineering_build_worker(
                 lease_seconds=lease_seconds,
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
             )
-            if on_result is not None:
-                on_result(job, result)
             completed += 1
+            if on_result is not None:
+                try:
+                    on_result(job, result)
+                except Exception:
+                    # Observability callbacks must not rewrite a completed job
+                    # into an execution failure or trigger a retry.
+                    logger.exception("Engineering worker result callback failed (job=%s)", job.job_id)
         except Exception:
             # No blind retry: the governed path may have modified a worktree or
             # reached an uncertain state. Queue reconciliation owns recovery.
