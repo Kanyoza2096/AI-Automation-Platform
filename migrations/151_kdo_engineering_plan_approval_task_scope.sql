@@ -6,6 +6,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_kdo_engineering_tasks_scope_task_id_uq
 
 ALTER TABLE public.kdo_engineering_plan_reviews
   DROP CONSTRAINT IF EXISTS kdo_engineering_plan_reviews_tenant_id_workspace_id_task_id_fkey;
+ALTER TABLE public.kdo_engineering_plan_reviews
+  DROP CONSTRAINT IF EXISTS kdo_engineering_plan_reviews_task_scope_fkey;
 
 ALTER TABLE public.kdo_engineering_plan_reviews
   ADD CONSTRAINT kdo_engineering_plan_reviews_task_scope_fkey
