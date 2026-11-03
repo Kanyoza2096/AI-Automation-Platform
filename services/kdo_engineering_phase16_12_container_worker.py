@@ -17,6 +17,8 @@ def _bounded_subprocess_run(cmd: Sequence[str], *, output_limit: int, **kwargs: 
     timeout = kwargs.pop("timeout")
     kwargs.pop("text", None)
     kwargs.pop("errors", None)
+    kwargs.pop("stdout", None)
+    kwargs.pop("stderr", None)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False, **kwargs)
     buffers = {"stdout": deque(), "stderr": deque()}
     sizes = {"stdout": 0, "stderr": 0}
