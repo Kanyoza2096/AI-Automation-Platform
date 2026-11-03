@@ -146,6 +146,7 @@ def run_engineering_build_worker(
                 executor=executor,
                 lease_seconds=lease_seconds,
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
+                cancellation_event=stopping,
             )
             completed += 1
             if on_result is not None:

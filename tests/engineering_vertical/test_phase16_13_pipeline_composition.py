@@ -23,12 +23,12 @@ def test_pipeline_composition_uses_sandbox_runner_and_never_host_command_factory
     class FakeDockerRunner:
         ALLOWED_TESTS = {"pytest", "unittest", "compileall"}
         def __init__(self, **kwargs): calls.append(("runner_init", kwargs))
-        def run_tests(self, workspace, test_profile="pytest"):
-            calls.append(("sandbox_test", str(workspace), test_profile))
+        def run_tests(self, workspace, test_profile="pytest", cancellation_event=None):
+            calls.append(("sandbox_test", str(workspace), test_profile, cancellation_event))
             return {"status":"passed", "exit_code":0, "stdout":"ok", "stderr":"", "authoritative":True}
     monkeypatch.setattr("services.kdo_engineering_phase16_13_pipeline.DockerWorkspaceRunner", FakeDockerRunner)
     monkeypatch.setattr("services.kdo_engineering_phase16_13_pipeline.make_docker_workspace_test_runner",
-        lambda runner, path, test_profile="pytest": lambda i: runner.run_tests(path, test_profile))
+        lambda runner, path, test_profile="pytest", cancellation_event=None: lambda i: runner.run_tests(path, test_profile, cancellation_event))
     task = SimpleNamespace(task_id="task-1", tenant_id="tenant-1", workspace_id="workspace-1",
         objective="validate change", acceptance_criteria=("tests pass",))
     executor = make_containerized_dynamic_quality_executor(
@@ -67,3 +67,34 @@ def test_pipeline_rejects_workspace_outside_managed_root(tmp_path, monkeypatch):
         repair_capabilities_factory=lambda *a: {"backend"}, authorize=lambda *a: True)
     with pytest.raises(EngineeringPipelineCompositionError, match="workspace_outside_managed_root"):
         executor(str(outside), task, ("inspect",))
+
+
+def test_containerized_executor_forwards_cancellation_to_test_runner(tmp_path, monkeypatch):
+    import threading
+    root = tmp_path / "managed"; root.mkdir()
+    task_dir = root / "task-cancel"; task_dir.mkdir()
+    captured = {}
+
+    class FakeDockerRunner:
+        ALLOWED_TESTS = {"pytest", "unittest", "compileall"}
+        def __init__(self, **kwargs): pass
+        def run_tests(self, workspace, test_profile="pytest", cancellation_event=None):
+            captured["event"] = cancellation_event
+            return {"status": "passed", "exit_code": 0, "authoritative": True}
+
+    monkeypatch.setattr("services.kdo_engineering_phase16_13_pipeline.DockerWorkspaceRunner", FakeDockerRunner)
+    monkeypatch.setattr(
+        "services.kdo_engineering_phase16_13_pipeline.make_docker_workspace_test_runner",
+        lambda runner, path, test_profile="pytest", cancellation_event=None:
+            lambda i: runner.run_tests(path, test_profile, cancellation_event),
+    )
+    task = SimpleNamespace(task_id="task-1", tenant_id="tenant-1", workspace_id="workspace-1",
+        objective="validate change", acceptance_criteria=("tests pass",))
+    executor = make_containerized_dynamic_quality_executor(
+        workspace_root=root, pinned_worker_image="python:3.12@sha256:" + "a"*64,
+        build_executor=lambda *a: {"build_status": "completed"},
+        registry_factory=lambda *a: _registry(),
+        repair_capabilities_factory=lambda *a: {"backend"}, authorize=lambda *a: True)
+    cancellation = threading.Event()
+    executor(str(task_dir), task, ("inspect",), cancellation_event=cancellation)
+    assert captured["event"] is cancellation

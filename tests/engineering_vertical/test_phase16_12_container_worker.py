@@ -87,3 +87,55 @@ def test_timeout_fails_closed_when_daemon_container_cleanup_fails(tmp_path):
     )
     with pytest.raises(ContainerWorkerError, match="container_timeout_cleanup_failed"):
         runner.run_tests(task)
+
+
+def test_lease_or_shutdown_cancellation_removes_running_container(tmp_path):
+    import threading
+
+    root = tmp_path / "workspaces"; root.mkdir()
+    task = root / "task-cancel"; task.mkdir()
+    cancellation = threading.Event()
+    cleanup_started = threading.Event()
+    calls = []
+
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "run":
+            assert cleanup_started.wait(2), "container cleanup was not requested"
+            return SimpleNamespace(returncode=137, stdout="", stderr="container stopped")
+        cleanup_started.set()
+        return SimpleNamespace(returncode=0, stdout="removed", stderr="")
+
+    runner = DockerWorkspaceRunner(
+        workspace_root=root,
+        image="python:3.12-slim@sha256:" + "a" * 64,
+        timeout_seconds=5,
+        process_runner=fake,
+    )
+    timer = threading.Timer(0.05, cancellation.set)
+    timer.start()
+    try:
+        result = runner.run_tests(task, cancellation_event=cancellation)
+    finally:
+        timer.cancel()
+    assert result["status"] == "cancelled"
+    assert result["container_cleanup"] == "confirmed"
+    assert calls[1][1:3] == ["rm", "--force"]
+
+
+def test_cancellation_before_start_does_not_launch_container(tmp_path):
+    import threading
+
+    root = tmp_path / "workspaces"; root.mkdir()
+    task = root / "task-cancel"; task.mkdir()
+    cancellation = threading.Event()
+    cancellation.set()
+    calls = []
+    runner = DockerWorkspaceRunner(
+        workspace_root=root,
+        image="python:3.12-slim@sha256:" + "a" * 64,
+        process_runner=lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=0),
+    )
+    result = runner.run_tests(task, cancellation_event=cancellation)
+    assert result["status"] == "cancelled"
+    assert not calls

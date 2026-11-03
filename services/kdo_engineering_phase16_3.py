@@ -343,6 +343,7 @@ def run_claimed_build_job(
     lease_seconds: int = 300,
     max_runtime_seconds: float = 1800,
     heartbeat_interval_seconds: float | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run one approved build under a renewable, fenced lease.
 
@@ -386,6 +387,9 @@ def run_claimed_build_job(
         raise Phase163Error("durable_plan_approval_mismatch")
 
     fence_lock = threading.RLock()
+    execution_cancelled = cancellation_event if cancellation_event is not None else threading.Event()
+    if not isinstance(execution_cancelled, threading.Event):
+        raise Phase163Error("execution_cancellation_event_invalid")
     stop_heartbeat = threading.Event()
     lease_lost = threading.Event()
     timed_out = threading.Event()
@@ -400,15 +404,18 @@ def run_claimed_build_job(
             fresh = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
         except Exception as exc:
             lease_lost.set()
+            execution_cancelled.set()
             raise Phase162Error("worker_lease_fence_rejected") from exc
         if (fresh.status != "running" or fresh.lease_owner != worker_id
                 or fresh.lease_token != lease_token or fresh.task_id != job.task_id
                 or fresh.plan_digest != job.plan_digest or fresh.idempotency_key != job.idempotency_key):
             lease_lost.set()
+            execution_cancelled.set()
             raise Phase162Error("worker_lease_fence_rejected")
         fresh_expiry = _parse_time(fresh.lease_expires_at)
         if fresh_expiry is None or fresh_expiry <= _utcnow():
             lease_lost.set()
+            execution_cancelled.set()
             raise Phase162Error("worker_lease_expired")
         latest_job[0] = fresh
         return fresh
@@ -418,11 +425,14 @@ def run_claimed_build_job(
         # This lock serializes timeout/lease-loss with short finalization writes.
         # It is never held while the executor runs.
         with fence_lock:
+            if execution_cancelled.is_set():
+                raise Phase162Error("worker_execution_cancelled")
             if timed_out.is_set():
                 raise Phase162Error("worker_execution_timeout")
             if lease_lost.is_set():
                 raise Phase162Error("worker_lease_lost")
             if not execution_done.is_set() and time.monotonic() >= deadline:
+                execution_cancelled.set()
                 raise Phase162Error("worker_execution_timeout")
             verify_current_lease()
             yield
@@ -440,6 +450,7 @@ def run_claimed_build_job(
                 except BaseException as exc:
                     heartbeat_error.append(exc)
                     lease_lost.set()
+                    execution_cancelled.set()
                     stop_heartbeat.set()
                     return
 
@@ -448,6 +459,7 @@ def run_claimed_build_job(
             outcome["result"] = workflow.execute_approved_build(
                 job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
                 actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+                execution_cancelled=execution_cancelled,
             )
         except BaseException as exc:
             outcome["error"] = exc
@@ -471,6 +483,7 @@ def run_claimed_build_job(
             # prefer its completed result over a spurious timeout.
             if not execution_done.is_set():
                 timed_out.set()
+                execution_cancelled.set()
                 stop_heartbeat.set()
                 try:
                     queue.complete(latest_job[0], worker_id=worker_id,

@@ -109,3 +109,25 @@ def test_worker_runtime_rejects_invalid_heartbeat_intervals(interval):
             executor=lambda **_: {}, lease_seconds=30,
             heartbeat_interval_seconds=interval,
         )
+
+
+def test_worker_runtime_forwards_shutdown_cancellation_event(monkeypatch):
+    import threading
+    import services.kdo_engineering_worker_runtime as runtime
+
+    cancellation = threading.Event()
+    captured = {}
+
+    def fake_run_claimed_build_job(**kwargs):
+        captured.update(kwargs)
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(runtime, "run_claimed_build_job", fake_run_claimed_build_job)
+    result = run_claimed_build_job_with_heartbeat(
+        workflow=object(), queue=FakeQueue(), job=make_job(), worker_id="worker-a",
+        lease_token="lease-token", actor_id="builder", executor=lambda **_: {},
+        lease_seconds=30, heartbeat_interval_seconds=1,
+        cancellation_event=cancellation,
+    )
+    assert result == {"status": "cancelled"}
+    assert captured["cancellation_event"] is cancellation
