@@ -109,7 +109,7 @@ def test_rejects_cross_scope_graph():
     coordinator, _ = make_coordinator([task])
     with pytest.raises(EngineeringDagError, match="scope_mismatch"):
         coordinator.reconcile([replace(task, workspace_id="other-workspace")],
-                              tenant_id="tenant-a", workspace_id="other-workspace")
+                              tenant_id="tenant-a", workspace_id="workspace-a")
 
 
 def test_rejects_stale_task_revision():
