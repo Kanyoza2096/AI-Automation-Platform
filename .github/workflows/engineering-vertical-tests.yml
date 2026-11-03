@@ -89,6 +89,17 @@ jobs:
               # Keep the COMMENT statement whole: its quoted text contains a
               # semicolon, so it must not be split as if it were SQL syntax.
               connection.execute(comment_marker + comment_sql)
+
+              task_workspace_migration = Path(
+                  "migrations/150_kdo_engineering_shared_task_workspace_repositories.sql"
+              ).read_text(encoding="utf-8")
+              task_workspace_sql = "\\n".join(
+                  line for line in task_workspace_migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in task_workspace_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
           PY
       - name: Run focused engineering vertical tests
         run: |
