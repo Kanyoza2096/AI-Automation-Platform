@@ -7,7 +7,7 @@ authority. The authoritative lifecycle must provide an approved task and workspa
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
-import os, re, shutil, subprocess, time, uuid
+import os, re, shutil, subprocess, time, uuid, threading
 from typing import Callable, Sequence, Mapping, Any
 
 class ContainerWorkerError(RuntimeError):
@@ -99,7 +99,7 @@ class DockerWorkspaceRunner:
             if "no such container" not in stderr and "not found" not in stderr:
                 raise ContainerWorkerError("container_timeout_cleanup_failed")
 
-    def run_tests(self, workspace: str | Path, test_profile: str = "pytest") -> dict[str, Any]:
+    def run_tests(self, workspace: str | Path, test_profile: str = "pytest", *, cancellation_event: threading.Event | None = None) -> dict[str, Any]:
         if test_profile not in self.ALLOWED_TESTS:
             raise ContainerWorkerError("test_profile_not_allowlisted")
         cwd = self._workspace(workspace)
@@ -117,32 +117,94 @@ class DockerWorkspaceRunner:
                "--workdir", "/workspace", "--env", "CI=1", "--env", "HOME=/tmp",
                "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTEST_ADDOPTS=-p no:cacheprovider",
                self.image, *self.ALLOWED_TESTS[test_profile]]
+        if cancellation_event is not None and not isinstance(cancellation_event, threading.Event):
+            raise ContainerWorkerError("cancellation_event_invalid")
+        if cancellation_event is not None and cancellation_event.is_set():
+            return ContainerTestResult("cancelled", None, 0.0, "", "cancelled_before_start", False, tuple(cmd)).to_dict()
         start = time.monotonic()
+        cleanup_lock = threading.Lock()
+        cleanup_done = threading.Event()
+        cleanup_error: list[BaseException] = []
+
+        def cleanup_once() -> None:
+            with cleanup_lock:
+                if cleanup_done.is_set():
+                    if cleanup_error:
+                        raise ContainerWorkerError("container_timeout_cleanup_failed") from cleanup_error[0]
+                    return
+                try:
+                    self._remove_timed_out_container(container_name)
+                except BaseException as exc:
+                    cleanup_error.append(exc)
+                    cleanup_done.set()
+                    raise
+                cleanup_done.set()
+
+        stop_watchdog = threading.Event()
+        watchdog = None
+        if cancellation_event is not None:
+            def watch_cancellation() -> None:
+                while not stop_watchdog.wait(0.05):
+                    if cancellation_event.is_set():
+                        try:
+                            cleanup_once()
+                        except BaseException:
+                            return
+                        return
+            watchdog = threading.Thread(target=watch_cancellation, name="kdo-container-cancellation", daemon=True)
+            watchdog.start()
         try:
             proc = self.process_runner(cmd, cwd=str(self.workspace_root), env={"PATH": os.environ.get("PATH", ""), "CI": "1"},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", timeout=self.timeout_seconds, shell=False, close_fds=True)
+            if watchdog is not None:
+                stop_watchdog.set()
+                watchdog.join(timeout=11)
+                if watchdog.is_alive():
+                    raise ContainerWorkerError("container_cancellation_cleanup_timeout")
+            if cleanup_error:
+                raise ContainerWorkerError("container_timeout_cleanup_failed") from cleanup_error[0]
             out = str(getattr(proc, "stdout", "") or "")[-self.max_output_chars:]
             err = str(getattr(proc, "stderr", "") or "")[-self.max_output_chars:]
             code = getattr(proc, "returncode", None)
+            if cancellation_event is not None and cancellation_event.is_set():
+                if not cleanup_done.is_set():
+                    cleanup_once()
+                result = ContainerTestResult("cancelled", code, time.monotonic()-start, out, err, False, tuple(cmd)).to_dict()
+                result["container_cleanup"] = "confirmed"
+                return result
             status = "passed" if code == 0 else "failed"
             return ContainerTestResult(status, code, time.monotonic()-start, out, err, False, tuple(cmd)).to_dict()
         except subprocess.TimeoutExpired as exc:
-            self._remove_timed_out_container(container_name)
+            stop_watchdog.set()
+            if watchdog is not None:
+                watchdog.join(timeout=11)
+            if not cleanup_done.is_set():
+                cleanup_once()
+            if cleanup_error:
+                raise ContainerWorkerError("container_timeout_cleanup_failed") from cleanup_error[0]
             def decode(v): return v.decode(errors="replace") if isinstance(v, bytes) else (v or "")
-            result = ContainerTestResult("timed_out", None, time.monotonic()-start,
-                decode(exc.stdout)[-self.max_output_chars:], decode(exc.stderr)[-self.max_output_chars:], True, tuple(cmd)).to_dict()
+            if cancellation_event is not None and cancellation_event.is_set():
+                result = ContainerTestResult("cancelled", None, time.monotonic()-start,
+                    decode(exc.stdout)[-self.max_output_chars:], decode(exc.stderr)[-self.max_output_chars:], False, tuple(cmd)).to_dict()
+            else:
+                result = ContainerTestResult("timed_out", None, time.monotonic()-start,
+                    decode(exc.stdout)[-self.max_output_chars:], decode(exc.stderr)[-self.max_output_chars:], True, tuple(cmd)).to_dict()
             result["container_cleanup"] = "confirmed"
             return result
         except ContainerWorkerError: raise
         except Exception as exc:
             raise ContainerWorkerError("container_test_execution_failed") from exc
+        finally:
+            stop_watchdog.set()
+            if watchdog is not None:
+                watchdog.join(timeout=11)
 
-def make_docker_workspace_test_runner(runner: DockerWorkspaceRunner, workspace_path: str, *, test_profile: str = "pytest"):
+def make_docker_workspace_test_runner(runner: DockerWorkspaceRunner, workspace_path: str, *, test_profile: str = "pytest", cancellation_event: threading.Event | None = None):
     """Adapt DockerWorkspaceRunner to the bounded quality-loop test callback."""
     if not isinstance(runner, DockerWorkspaceRunner): raise ContainerWorkerError("docker_workspace_runner_required")
     if test_profile not in runner.ALLOWED_TESTS: raise ContainerWorkerError("test_profile_not_allowlisted")
     def run(iteration: int) -> Mapping[str, Any]:
-        result = runner.run_tests(workspace_path, test_profile=test_profile)
+        result = runner.run_tests(workspace_path, test_profile=test_profile, cancellation_event=cancellation_event)
         return {**result, "iteration": iteration}
     return run
