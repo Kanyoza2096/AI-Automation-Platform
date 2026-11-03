@@ -410,6 +410,7 @@ def run_claimed_build_job(
                 or fresh.lease_token != lease_token or fresh.task_id != job.task_id
                 or fresh.plan_digest != job.plan_digest or fresh.idempotency_key != job.idempotency_key):
             lease_lost.set()
+            execution_cancelled.set()
             raise Phase162Error("worker_lease_fence_rejected")
         fresh_expiry = _parse_time(fresh.lease_expires_at)
         if fresh_expiry is None or fresh_expiry <= _utcnow():
