@@ -135,5 +135,5 @@ def test_bootstrap_runs_scoped_worker_and_publishes_lifecycle_health(monkeypatch
     assert captured["max_jobs"] == 1
     assert result["health"]["status"] == "stopped"
     assert result["health"]["last_job_id"] == "job-42"
-    assert [event["status"] for event in health_events] == ["running", "stopped"]
+    assert [event["status"] for event in health_events] == ["running", "running", "stopped"]
     assert connection.closed
