@@ -188,3 +188,68 @@ def test_tampered_signed_gateway_context_is_rejected():
     headers["x-kcpg-context-workspace-id"] = "workspace-evil"
     response = client.get("/api/v1/engineering/console/capabilities", headers=headers)
     assert response.status_code == 403
+
+
+def test_task_board_only_projects_a_worker_with_a_live_lease():
+    from datetime import datetime, timedelta, timezone
+    from services.kdo_engineering_console_provider import _active_agents_for_job
+
+    now = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
+    active = _active_agents_for_job({
+        "job_id": "job-1", "status": "running", "lease_owner": "worker-7",
+        "lease_expires_at": now + timedelta(seconds=45),
+    }, now=now)
+    assert len(active) == 1
+    assert active[0]["agent_id"] == "worker-7"
+    assert active[0]["role"] == "Build Worker"
+
+    expired = _active_agents_for_job({
+        "job_id": "job-1", "status": "running", "lease_owner": "worker-7",
+        "lease_expires_at": now - timedelta(seconds=1),
+    }, now=now)
+    assert expired == []
+    assert _active_agents_for_job({
+        "job_id": "job-2", "status": "queued", "lease_owner": None,
+        "lease_expires_at": None,
+    }, now=now) == []
+
+
+def test_task_board_build_job_projection_is_tenant_and_workspace_scoped():
+    from datetime import datetime, timezone
+    from services.kdo_engineering_console_provider import PostgresEngineeringConsoleProvider
+
+    class Cursor:
+        def __init__(self):
+            self.query = None
+            self.params = None
+        def execute(self, query, params):
+            self.query, self.params = query, params
+        def fetchall(self):
+            return [(
+                "job-1", "task-1", "running", 2, "worker-7",
+                datetime(2026, 11, 3, 12, 5, tzinfo=timezone.utc),
+                datetime(2026, 11, 3, 11, 0, tzinfo=timezone.utc),
+                datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc),
+            )]
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.cur = Cursor()
+            self.closed = False
+        def cursor(self):
+            return self.cur
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    provider = PostgresEngineeringConsoleProvider(lambda: connection)
+    jobs = provider._load_build_jobs(
+        tenant_id="tenant-1", workspace_id="workspace-9", task_ids=["task-1"]
+    )
+    assert jobs["task-1"]["job_id"] == "job-1"
+    assert jobs["task-1"]["attempts"] == 2
+    assert connection.cur.params == ("tenant-1", "workspace-9", ["task-1"])
+    assert "tenant_id=%s AND workspace_id=%s" in connection.cur.query
+    assert connection.closed is True
