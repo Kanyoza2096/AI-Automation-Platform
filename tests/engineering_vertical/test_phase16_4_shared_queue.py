@@ -221,6 +221,6 @@ def test_postgres_lease_mutations_reject_missing_worker_token_and_invalid_durati
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
         queue.renew(job, worker_id="", lease_token="token-a")
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
-        queue.complete(job, worker_id="worker-a", lease_token="")
+        queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
     with pytest.raises(Phase163Error, match="lease_seconds_must_be_between_30_and_3600"):
         queue.renew(job, worker_id="worker-a", lease_token="token-a", lease_seconds=True)
