@@ -248,16 +248,56 @@ class SpeciesAuth:
         except Exception as exc:
             logger.debug("api_token_manager validate failed: %s", exc)
 
-        # Legacy api_keys table — OFF unless ALLOW_LEGACY_API_KEYS=1 (all environments).
-        # Canonical: api_tokens via APITokenManager (kny_).
+        # Canonical DB fallback for kny_ tokens. This must run before the
+        # legacy-key feature gate: the gate controls only api_keys, never api_tokens.
+        try:
+            from services.supabase import supabase_service
+
+            if supabase_service and supabase_service.client:
+                res = (
+                    supabase_service.client.table("api_tokens")
+                    .select("*")
+                    .eq("token_hash", token_hash)
+                    .eq("revoked", False)
+                    .maybe_single()
+                    .execute()
+                )
+                if res and res.data:
+                    found = res.data
+        except Exception as exc:
+            logger.warning("Canonical api_tokens lookup failed: %s", exc)
+
+        if found and not found.get("revoked", False):
+            expires = found.get("expires_at")
+            if expires:
+                try:
+                    exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+                    if exp < datetime.now(timezone.utc):
+                        return AuthIdentity(valid=False, error="API key expired")
+                except (TypeError, ValueError):
+                    return AuthIdentity(valid=False, error="API key has invalid expiry")
+
+            workspace_id = found.get("workspace_id") or found.get("tenant_id")
+            if not workspace_id:
+                return AuthIdentity(valid=False, error="API key has no workspace scope")
+            return AuthIdentity(
+                valid=True,
+                method="workspace_token",
+                workspace_id=workspace_id,
+                permissions=list(found.get("permissions") or ["read"]),
+                name=found.get("name") or "Scoped Token",
+                is_species=False,
+            )
+
+        # Legacy api_keys table — OFF unless explicitly enabled.
+        # This gate must never prevent canonical api_tokens validation above.
         import os as _os_leg
-        if (not (_os_leg.getenv("ALLOW_LEGACY_API_KEYS") or "").strip().lower() in ("1", "true", "yes")):
+        if not (_os_leg.getenv("ALLOW_LEGACY_API_KEYS") or "").strip().lower() in ("1", "true", "yes"):
             return AuthIdentity(valid=False, error="Legacy api_keys disabled — use api_tokens (kny_)")
 
-        found: Optional[dict] = None
+        found = None
         if key_store is not None:
             try:
-                # sync or async store — try common patterns
                 if hasattr(key_store, "find_by_hash_sync"):
                     found = key_store.find_by_hash_sync(token_hash)
                 elif hasattr(key_store, "_store"):
@@ -286,62 +326,6 @@ class SpeciesAuth:
                 workspace_id=workspace_id,
                 permissions=list(found.get("permissions") or ["read"]),
                 name=found.get("label") or found.get("name") or "API Key",
-                is_species=False,
-            )
-
-        # DB fallback for kz_ keys
-        try:
-            from services.supabase import supabase_service
-
-            if supabase_service and supabase_service.client:
-                for col in ("hashed", "key_hash", "token_hash"):
-                    try:
-                        res = (
-                            supabase_service.client.table("api_keys")
-                            .select("*")
-                            .eq(col, token_hash)
-                            .eq("revoked", False)
-                            .maybe_single()
-                            .execute()
-                        )
-                        if res and res.data:
-                            found = res.data
-                            break
-                    except Exception:
-                        continue
-                if not found:
-                    res = (
-                        supabase_service.client.table("api_tokens")
-                        .select("*")
-                        .eq("token_hash", token_hash)
-                        .eq("revoked", False)
-                        .maybe_single()
-                        .execute()
-                    )
-                    if res and res.data:
-                        found = res.data
-        except Exception as exc:
-            logger.debug("DB key lookup failed: %s", exc)
-
-        if found and not found.get("revoked", False):
-            expires = found.get("expires_at")
-            if expires:
-                try:
-                    exp = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-                    if exp < datetime.now(timezone.utc):
-                        return AuthIdentity(valid=False, error="API key expired")
-                except Exception:
-                    pass
-
-            workspace_id = found.get("workspace_id") or found.get("tenant_id")
-            if not workspace_id:
-                return AuthIdentity(valid=False, error="API key has no workspace scope")
-            return AuthIdentity(
-                valid=True,
-                method="user_api_key",
-                workspace_id=workspace_id,
-                permissions=list(found.get("permissions") or ["read"]),
-                name=found.get("name") or found.get("label") or "API Key",
                 is_species=False,
             )
 
