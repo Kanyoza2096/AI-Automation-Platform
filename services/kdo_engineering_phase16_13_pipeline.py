@@ -8,6 +8,7 @@ still applied only through the existing checked Git patch primitive in the task 
 from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
+import threading
 
 from services.kdo_engineering_phase16_7 import make_dynamic_quality_executor, DynamicQualityLoopError
 from services.kdo_engineering_phase16_12_container_worker import DockerWorkspaceRunner, make_docker_workspace_test_runner
@@ -43,7 +44,7 @@ def make_containerized_dynamic_quality_executor(
         docker_binary=docker_binary, timeout_seconds=test_timeout_seconds,
         memory_limit=memory_limit, cpu_limit=cpu_limit, pids_limit=pids_limit)
 
-    def sandboxed_runner_factory(workspace_path: str, task_contract: Any, steps: tuple[str, ...]):
+    def sandboxed_runner_factory(workspace_path: str, task_contract: Any, steps: tuple[str, ...], cancellation_event: threading.Event | None = None):
         # Validate scope at composition and again inside run_tests for each iteration.
         root = Path(workspace_root).resolve()
         workspace = Path(workspace_path).resolve()
@@ -53,7 +54,7 @@ def make_containerized_dynamic_quality_executor(
             raise EngineeringPipelineCompositionError("workspace_outside_managed_root") from exc
         if workspace == root or not workspace.is_dir():
             raise EngineeringPipelineCompositionError("task_scoped_workspace_required")
-        return make_docker_workspace_test_runner(runner, str(workspace), test_profile=test_profile)
+        return make_docker_workspace_test_runner(runner, str(workspace), test_profile=test_profile, cancellation_event=cancellation_event)
 
     try:
         return make_dynamic_quality_executor(
