@@ -111,6 +111,7 @@ def run_claimed_build_job_with_heartbeat(
     executor: Callable[..., Mapping[str, Any]],
     lease_seconds: int = 300,
     heartbeat_interval_seconds: float | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run the governed build path while renewing its lease in the background.
 
@@ -152,6 +153,7 @@ def run_claimed_build_job_with_heartbeat(
             lease_token=lease_token,
             actor_id=actor_id,
             executor=executor,
+            cancellation_event=cancellation_event,
         )
         proxy.stop()
         proxy.raise_if_failed()
