@@ -71,7 +71,7 @@ jobs:
               migration = Path(
                   "migrations/140_kdo_engineering_shared_build_queue.sql"
               ).read_text(encoding="utf-8")
-              migration_sql = "\\n".join(
+              migration_sql = "\n".join(
                   line for line in migration.splitlines()
                   if not line.lstrip().startswith("--")
               )
