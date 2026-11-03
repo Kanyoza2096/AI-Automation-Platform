@@ -50,8 +50,14 @@ def postgres_queue_scope():
 
     yield queue, tenant_id, workspace_id, connect
 
-    # Scope-limited cleanup only; no TRUNCATE or table reset.
+    # Scope-limited cleanup only; audit rows are removed first in this
+    # disposable integration database to satisfy the job foreign key.
     with connect() as connection:
+        connection.execute(
+            "DELETE FROM public.kdo_engineering_job_reconciliation_events "
+            "WHERE tenant_id=%s AND workspace_id=%s",
+            (tenant_id, workspace_id),
+        )
         connection.execute(
             "DELETE FROM public.kdo_engineering_build_jobs "
             "WHERE tenant_id=%s AND workspace_id=%s",
