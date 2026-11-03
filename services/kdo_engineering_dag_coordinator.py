@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from services.kdo_engineering_agent_registry import AgentRegistry
 from services.kdo_engineering_task_repository import (
     EngineeringTaskConflict,
+    EngineeringTaskNotFound,
     SQLiteEngineeringTaskRepository,
 )
 from services.kdo_engineering_vertical_contracts import (
@@ -123,9 +124,14 @@ class EngineeringDagCoordinator:
                 raise EngineeringDagError("task_graph_scope_mismatch")
             if task.task_id in specs:
                 raise EngineeringDagError(f"duplicate_task_id:{task.task_id}")
-            stored = self._tasks.get(
-                task.task_id, tenant_id=tenant_id, workspace_id=workspace_id
-            )
+            try:
+                stored = self._tasks.get(
+                    task.task_id, tenant_id=tenant_id, workspace_id=workspace_id
+                )
+            except EngineeringTaskNotFound as exc:
+                # Keep cross-scope existence opaque at the repository boundary,
+                # while exposing the coordinator's stable scope error contract.
+                raise EngineeringDagError("task_graph_scope_mismatch") from exc
             if stored.fingerprint() != task.fingerprint():
                 raise EngineeringTaskConflict(
                     f"stale_supplied_task_revision:{task.task_id}"
