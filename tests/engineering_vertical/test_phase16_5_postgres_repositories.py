@@ -15,7 +15,7 @@ from services.kdo_engineering_postgres_repositories import (
     PostgresEngineeringRepositoryError,
 )
 from services.kdo_engineering_task_repository import EngineeringTaskConflict, EngineeringTaskNotFound
-from services.kdo_engineering_phase16_2 import KDOPhase162Workflow
+from services.kdo_engineering_phase16_2_postgres import create_postgres_phase162_workflow
 from services.kdo_engineering_vertical_contracts import EngineeringTaskContract, EngineeringTaskStatus
 
 
@@ -190,9 +190,8 @@ def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(reposit
 
 def test_phase162_workflow_uses_atomic_postgres_plan_approval(repositories, tmp_path):
     tasks, workspaces, tenant, workspace = repositories
-    workflow = KDOPhase162Workflow(
-        task_repository=tasks,
-        workspace_repository=workspaces,
+    workflow = create_postgres_phase162_workflow(
+        connection_factory=lambda: psycopg.connect(DSN),
         source_repository_path=tmp_path,
         managed_root=tmp_path / "managed",
         authorize=lambda actor, action, tenant_id, workspace_id: True,
