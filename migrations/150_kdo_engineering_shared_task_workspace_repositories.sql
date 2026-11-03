@@ -60,9 +60,6 @@ REVOKE ALL ON TABLE public.kdo_engineering_tasks,
 GRANT SELECT, INSERT, UPDATE ON TABLE public.kdo_engineering_tasks,
   public.kdo_engineering_workspaces, public.kdo_engineering_plan_reviews
   TO service_role;
-COMMENT ON TABLE public.kdo_engineering_tasks IS
-  'KDO Phase 16.5 shared task contracts; scope-keyed and revision-fenced; no execution or release authority.';
-COMMENT ON TABLE public.kdo_engineering_workspaces IS
-  'KDO Phase 16.5 durable metadata for isolated task worktrees; paths are metadata, not authorization.';
-COMMENT ON TABLE public.kdo_engineering_plan_reviews IS
-  'KDO Phase 16.5 immutable first plan decision per task scope; does not authorize release.';
+ scope-keyed and revision-fenced; no execution or release authority.';
+ paths are metadata, not authorization.';
+ does not authorize release.';
