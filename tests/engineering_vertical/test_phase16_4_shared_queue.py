@@ -206,8 +206,6 @@ def test_postgres_claim_rejects_invalid_lease_duration(lease_seconds):
         queue.claim_next(worker_id="worker-a", lease_seconds=lease_seconds)
 
 
-    feat/engineering-worker-heartbeat-timeout
-
 def test_postgres_lease_mutations_reject_missing_worker_token_and_invalid_duration():
     queue = PostgresEngineeringBuildQueue(lambda: FakeConnection(next_job=job_row("running")))
     now = datetime.now(timezone.utc)
