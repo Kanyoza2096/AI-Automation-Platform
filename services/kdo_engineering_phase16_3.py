@@ -7,9 +7,12 @@ This module never merges, pushes, deploys, or authorizes a release.
 from __future__ import annotations
 
 import hashlib
+import math
 import json
 import sqlite3
 import threading
+import time
+from contextlib import contextmanager
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -333,10 +336,33 @@ async def admit_approved_build(*, workflow: KDOPhase162Workflow, action_kernel: 
     return result
 
 
-def run_claimed_build_job(*, workflow: KDOPhase162Workflow, queue: SQLiteEngineeringBuildQueue,
-                          job: EngineeringBuildJob, worker_id: str, lease_token: str,
-                          actor_id: str, executor: Callable[..., Mapping[str, Any]]) -> dict[str, Any]:
-    """Execute a claimed job only after scope, lease, approval and plan digest revalidation."""
+def run_claimed_build_job(
+    *, workflow: KDOPhase162Workflow, queue: Any, job: EngineeringBuildJob,
+    worker_id: str, lease_token: str, actor_id: str,
+    executor: Callable[..., Mapping[str, Any]],
+    lease_seconds: int = 300,
+    max_runtime_seconds: float = 1800,
+    heartbeat_interval_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Run one approved build under a renewable, fenced lease.
+
+    The deadline is a soft execution bound: on timeout the durable job is marked
+    uncertain and no automatic replay occurs. Python cannot safely kill an arbitrary
+    executor thread; the lease guard prevents it from publishing a final review state
+    when it eventually returns. Executors should still impose their own process-level
+    command/container timeouts.
+    """
+    if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
+        raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
+    if isinstance(max_runtime_seconds, bool) or not isinstance(max_runtime_seconds, (int, float)) \
+            or not math.isfinite(max_runtime_seconds) or not 0 < max_runtime_seconds <= 86400:
+        raise Phase163Error("max_runtime_seconds_must_be_between_0_and_86400")
+    if heartbeat_interval_seconds is None:
+        heartbeat_interval_seconds = lease_seconds / 3
+    if isinstance(heartbeat_interval_seconds, bool) or not isinstance(heartbeat_interval_seconds, (int, float)) \
+            or not math.isfinite(heartbeat_interval_seconds) or not 0 < heartbeat_interval_seconds < lease_seconds / 2:
+        raise Phase163Error("heartbeat_interval_must_be_positive_and_less_than_half_lease")
+
     workflow._require(actor_id, "execute_build_worker", job.tenant_id, job.workspace_id)
     current = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
     if (current.status != "running" or current.lease_owner != worker_id
@@ -358,16 +384,135 @@ def run_claimed_build_job(*, workflow: KDOPhase162Workflow, queue: SQLiteEnginee
     if (approval.get("decision") != "approved" or approval.get("plan_digest") != digest
             or approval.get("reviewer_id") != review.get("reviewed_by")):
         raise Phase163Error("durable_plan_approval_mismatch")
-    try:
-        result = workflow.execute_approved_build(job.task_id, tenant_id=job.tenant_id,
-            workspace_id=job.workspace_id, actor_id=actor_id, executor=executor)
-    except Exception:
-        # Preserve uncertainty if the queue lease has been lost; do not blindly retry.
+
+    fence_lock = threading.RLock()
+    stop_heartbeat = threading.Event()
+    lease_lost = threading.Event()
+    timed_out = threading.Event()
+    execution_done = threading.Event()
+    latest_job = [current]
+    outcome: dict[str, Any] = {}
+    heartbeat_error: list[BaseException] = []
+    deadline = time.monotonic() + float(max_runtime_seconds)
+
+    def verify_current_lease() -> EngineeringBuildJob:
         try:
-            queue.complete(current, worker_id=worker_id, lease_token=lease_token, status="uncertain")
-        except Phase163Error:
-            pass
-        raise
+            fresh = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
+        except Exception as exc:
+            lease_lost.set()
+            raise Phase162Error("worker_lease_fence_rejected") from exc
+        if (fresh.status != "running" or fresh.lease_owner != worker_id
+                or fresh.lease_token != lease_token or fresh.task_id != job.task_id
+                or fresh.plan_digest != job.plan_digest or fresh.idempotency_key != job.idempotency_key):
+            lease_lost.set()
+            raise Phase162Error("worker_lease_fence_rejected")
+        fresh_expiry = _parse_time(fresh.lease_expires_at)
+        if fresh_expiry is None or fresh_expiry <= _utcnow():
+            lease_lost.set()
+            raise Phase162Error("worker_lease_expired")
+        latest_job[0] = fresh
+        return fresh
+
+    @contextmanager
+    def execution_guard():
+        # This lock serializes timeout/lease-loss with short finalization writes.
+        # It is never held while the executor runs.
+        with fence_lock:
+            if timed_out.is_set():
+                raise Phase162Error("worker_execution_timeout")
+            if lease_lost.is_set():
+                raise Phase162Error("worker_lease_lost")
+            if not execution_done.is_set() and time.monotonic() >= deadline:
+                raise Phase162Error("worker_execution_timeout")
+            verify_current_lease()
+            yield
+
+    def heartbeat_loop() -> None:
+        while not stop_heartbeat.wait(float(heartbeat_interval_seconds)):
+            with fence_lock:
+                if stop_heartbeat.is_set():
+                    return
+                try:
+                    latest_job[0] = queue.renew(
+                        latest_job[0], worker_id=worker_id, lease_token=lease_token,
+                        lease_seconds=lease_seconds,
+                    )
+                except BaseException as exc:
+                    heartbeat_error.append(exc)
+                    lease_lost.set()
+                    stop_heartbeat.set()
+                    return
+
+    def execute() -> None:
+        try:
+            outcome["result"] = workflow.execute_approved_build(
+                job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
+                actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+            )
+        except BaseException as exc:
+            outcome["error"] = exc
+        finally:
+            execution_done.set()
+            stop_heartbeat.set()
+
+    heartbeat = threading.Thread(
+        target=heartbeat_loop, name=f"kdo-lease-heartbeat-{job.job_id}", daemon=True
+    )
+    worker = threading.Thread(
+        target=execute, name=f"kdo-engineering-worker-{job.job_id}", daemon=True
+    )
+    heartbeat.start()
+    worker.start()
+
+    if not execution_done.wait(float(max_runtime_seconds)):
+        timeout_error: BaseException | None = None
+        with fence_lock:
+            # If execution completed while the supervisor waited for the fence lock,
+            # prefer its completed result over a spurious timeout.
+            if not execution_done.is_set():
+                timed_out.set()
+                stop_heartbeat.set()
+                try:
+                    queue.complete(latest_job[0], worker_id=worker_id,
+                                   lease_token=lease_token, status="uncertain")
+                except BaseException as exc:
+                    timeout_error = exc
+        heartbeat.join(timeout=max(1.0, min(5.0, float(heartbeat_interval_seconds) * 2)))
+        if not execution_done.is_set():
+            if timeout_error is not None:
+                raise Phase163Error(
+                    "worker_execution_timeout_reconciliation_required"
+                ) from timeout_error
+            raise Phase163Error("worker_execution_timeout_marked_uncertain")
+
+    stop_heartbeat.set()
+    heartbeat.join(timeout=max(1.0, min(5.0, float(heartbeat_interval_seconds) * 2)))
+    if heartbeat.is_alive():
+        raise Phase163Error("worker_heartbeat_shutdown_timeout_reconciliation_required")
+
+    if lease_lost.is_set():
+        completion_error: BaseException | None = None
+        with fence_lock:
+            try:
+                queue.complete(latest_job[0], worker_id=worker_id,
+                               lease_token=lease_token, status="uncertain")
+            except BaseException as exc:
+                completion_error = exc
+        cause = heartbeat_error[0] if heartbeat_error else completion_error
+        raise Phase163Error("worker_lease_lost_during_execution") from cause
+
+    if "error" in outcome:
+        with fence_lock:
+            try:
+                queue.complete(latest_job[0], worker_id=worker_id,
+                               lease_token=lease_token, status="uncertain")
+            except BaseException:
+                pass
+        raise outcome["error"]
+
+    result = outcome["result"]
     terminal = "awaiting_review" if result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW else "failed"
-    queue.complete(current, worker_id=worker_id, lease_token=lease_token, status=terminal)
+    with fence_lock:
+        verify_current_lease()
+        queue.complete(latest_job[0], worker_id=worker_id, lease_token=lease_token, status=terminal)
     return result
