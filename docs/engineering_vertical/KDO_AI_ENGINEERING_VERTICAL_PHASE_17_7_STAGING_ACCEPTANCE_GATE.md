@@ -10,6 +10,8 @@ The Engineering Vertical focused workflow now also runs:
 
 - `tests/engineering_vertical/test_phase16_8_console.py`: task-board/console projection and authorization regression coverage.
 - `tests/engineering_vertical/test_staging_lifecycle.py`: governed approval/denial, receipt verification, idempotency, uncertain outcome, and read-only schema-preflight coverage.
+- `tests/engineering_vertical/test_worker_entrypoint.py` and `test_worker_composition.py`: disabled-by-default worker startup and fail-closed PostgreSQL/container composition.
+- `tests/engineering_vertical/test_gateway_agents.py` and `test_gateway_build_executor.py`: existing LLM Gateway adapters, dynamic diagnosis/repair/verification handoff, bounded patch validation, workspace scope, and policy-before-mutation behavior.
 
 The existing workflow provisions disposable PostgreSQL 16 and applies migrations 140, 150, 151, and 152 before the PostgreSQL integration tests. The local fixture-based staging lifecycle tests are deliberately labeled as deterministic tests; they do not establish live staging readiness.
 
@@ -52,9 +54,26 @@ The following external/runtime evidence is still required before this phase can 
 
 1. A staging project URL and securely provisioned staging credentials.
 2. A deployed staging web endpoint and RLS-aware test identities for two isolated tenants.
-3. A concrete production composition adapter that constructs the governed workflow, canonical approval verifier, PostgreSQL queue/repositories, and container executor for the worker bootstrap.
+3. A concrete production composition adapter that constructs the governed workflow, canonical Council/DecisionGate/Action Kernel authorization and receipt verifier, PostgreSQL queue/repositories, and container executor for the worker bootstrap. The current gateway builder and worker composition still expose injected authorization callbacks; they are not yet a verified Action Kernel integration.
 4. A supervised dedicated worker process/container with hard cancellation and host-level isolation controls.
 5. Live Council/Action Kernel/receipt-verifier evidence and independent operator/reviewer sign-off.
 6. Operational dashboards/alerts and retained staging test artifacts.
 
 No staging deployment or production-readiness certification is claimed by this PR. The production worker remains disabled. Do not mark Phase 17.7 complete until all required live evidence is attached and independently reviewed.
+
+
+## Latest adapter implementation note
+
+PR #35 adds a gateway-backed builder using the existing KDO
+`LLMGateway.complete_structured` and versioned prompt assembler, plus
+task-aware debugging, backend repair, and AI quality-verification adapters.
+The model cannot issue human review IDs or release authorization. Focused CI
+run #64 passed on commit `f6d5164`; a subsequent test was added to exercise the
+complete gateway-backed diagnose/repair/verify handoff and is awaiting its own
+CI result. These repository tests do not satisfy the live acceptance gates.
+
+The host policy callback remains an injection seam. No engineering-specific
+canonical Action Kernel contract/adapter has been verified for build patch,
+test execution, repair, and review transitions. Keep the worker disabled until
+the canonical Council / DecisionGate / Action Kernel / receipt chain is
+implemented, tested, and evidenced in staging.
