@@ -1,6 +1,8 @@
 """Real PostgreSQL integration coverage for shared task/workspace repositories."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import uuid
 
@@ -136,6 +138,42 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
             expected_revision=submitted.revision,
             reviewer_id="reviewer-3",
             approve=False,
+        )
+
+
+def test_postgres_plan_approval_rejects_tampered_specialist_assignments(repositories):
+    tasks, _workspaces, tenant, workspace = repositories
+    task = tasks.create(make_task(tenant, workspace))
+    steps = ["inspect", "implement", "test"]
+    assignments = [{"task_id": "backend", "role": "backend_engineer"}]
+    step_digest = hashlib.sha256(
+        json.dumps(steps, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assignments_digest = hashlib.sha256(
+        json.dumps(assignments, sort_keys=True, ensure_ascii=False,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    submitted = tasks.update_evidence(
+        task.task_id, tenant_id=tenant, workspace_id=workspace,
+        expected_revision=task.revision,
+        evidence={"plan_review": {
+            "state": "submitted", "steps": steps, "digest": step_digest,
+            "submitted_by": "author-1", "assignments": assignments,
+            "assignments_digest": assignments_digest,
+        }},
+    )
+    tampered_review = dict(submitted.evidence["plan_review"])
+    tampered_review["assignments"] = [{"task_id": "backend", "role": "security_engineer"}]
+    tampered = tasks.update_evidence(
+        task.task_id, tenant_id=tenant, workspace_id=workspace,
+        expected_revision=submitted.revision,
+        evidence={"plan_review": tampered_review},
+    )
+    with pytest.raises(Exception, match="assignment_digest_mismatch"):
+        tasks.review_plan_atomically(
+            task.task_id, tenant_id=tenant, workspace_id=workspace,
+            expected_revision=tampered.revision, reviewer_id="author-1",
+            approve=True, reason="must reject altered assignment evidence",
         )
 
 
