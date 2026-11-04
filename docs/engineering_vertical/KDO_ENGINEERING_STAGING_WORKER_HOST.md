@@ -83,3 +83,17 @@ The approved calculator task
 `8cdcab6d6fd7445d9b1f3568565b5e32` remains in `planned` state. No build job is
 currently enqueued for it. No calculator code has been generated and no tests have
 been run. The worker has not been enabled or deployed.
+
+## Render staging service observation — 2026-11-04
+
+The existing Render service is `kdo-engineering-staging` on the `staging`
+branch, Free plan, one instance, Docker runtime, and auto-deploy disabled. Its
+IP allowlist currently contains `0.0.0.0/0`, so the web service has public
+ingress; it must not be described as a private service. This observation does
+not establish that every route is exposed without authentication. Engineering
+routes must continue to enforce canonical authentication and workspace scope.
+
+The service configuration does not show a dedicated worker host or a configured
+Docker daemon/socket. Docker CLI and daemon availability must be tested in the
+actual runtime before worker activation. No Render settings were changed, no
+deployment was triggered, and no additional paid service was created.
