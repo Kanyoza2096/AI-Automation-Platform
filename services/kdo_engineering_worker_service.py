@@ -49,6 +49,7 @@ def run_engineering_build_worker(
     workspace_id: str,
     actor_id: str,
     executor: Callable[..., Mapping[str, Any]],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     stopping: threading.Event,
     lease_seconds: int = 300,
     heartbeat_interval_seconds: float | None = None,
@@ -72,6 +73,8 @@ def run_engineering_build_worker(
         raise Phase163Error("engineering_build_queue_claim_api_required")
     if not callable(executor):
         raise Phase163Error("engineering_worker_executor_required")
+    if not callable(admission_receipt_verifier):
+        raise Phase163Error("authoritative_admission_receipt_verifier_required")
     if not isinstance(stopping, threading.Event):
         raise Phase163Error("engineering_worker_stop_event_required")
     if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
@@ -144,6 +147,7 @@ def run_engineering_build_worker(
                 lease_token=job.lease_token,
                 actor_id=actor_id,
                 executor=executor,
+                admission_receipt_verifier=admission_receipt_verifier,
                 lease_seconds=lease_seconds,
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
                 cancellation_event=stopping,
