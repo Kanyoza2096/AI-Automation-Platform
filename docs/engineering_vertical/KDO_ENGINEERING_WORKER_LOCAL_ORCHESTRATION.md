@@ -47,9 +47,11 @@ The dynamic QA registry installs task-aware debugging, backend repair, and
 independent-review adapters from the existing role catalogue. The backend
 adapter may propose a repair diff, but the quality loop still authorizes patch
 application and executes tests only through the digest-pinned Docker runner.
-The model reviewer is deliberately unable to create a durable review ID or
-approve itself: it can return findings only, and the task remains pending
-human review until a separate review decision is recorded.
+The model reviewer cannot create a durable human review ID or authorize release.
+It may provide an AI quality-verification result tied to the observed gateway
+request ID after inspecting machine test evidence; this only allows the workflow
+to hand the workspace to the separate human code-review stage. The human review
+decision remains pending and must be recorded independently.
 
 The adapter integration is covered by
 `test_gateway_agents.py` and `test_gateway_build_executor.py`. A passing CI
