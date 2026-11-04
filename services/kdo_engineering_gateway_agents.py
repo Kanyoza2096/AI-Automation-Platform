@@ -314,7 +314,11 @@ def make_gateway_quality_registry_factory(*, gateway: Any, workspace_id: str):
 
     def factory(task_contract: Any, workspace_path: str, steps: tuple[str, ...]) -> AgentRegistry:
         registry = AgentRegistry()
-        role_ids = ("debugging_engineer", "frontend_engineer", "backend_engineer",\n                    "database_engineer", "integration_engineer", "refactoring_engineer",\n                    "independent_reviewer")
+        role_ids = (
+            "debugging_engineer", "frontend_engineer", "backend_engineer",
+            "database_engineer", "integration_engineer", "refactoring_engineer",
+            "independent_reviewer",
+        )
         for role_id in role_ids:
             base = make_gateway_agent(
                 gateway=gateway, role=role_id, agent_id=f"kdo-gateway:{role_id}",
@@ -330,7 +334,10 @@ def make_gateway_quality_registry_factory(*, gateway: Any, workspace_id: str):
                 normalized = dict(evidence)
                 # The repair loop consumes patch_text directly; it remains
                 # untrusted and is still checked/applied only after authorization.
-                if _role in {"frontend_engineer", "backend_engineer", "database_engineer",\n                             "integration_engineer", "refactoring_engineer"} and isinstance(reported.get("patch_text"), str):
+                if _role in {
+                    "frontend_engineer", "backend_engineer", "database_engineer",
+                    "integration_engineer", "refactoring_engineer",
+                } and isinstance(reported.get("patch_text"), str):
                     normalized["patch_text"] = reported["patch_text"]
                 if _role == "independent_reviewer":
                     # This is an AI quality verification only. The workflow still
