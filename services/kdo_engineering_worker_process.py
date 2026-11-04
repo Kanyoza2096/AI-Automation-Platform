@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from services.kdo_engineering_worker_bootstrap import ProductionWorkerConfig
+from services.kdo_engineering_phase16_12_container_worker import docker_cli_environment
 from services.kdo_engineering_trusted_worker_host import build_trusted_gateway_worker_host
 
 logger = logging.getLogger("kdo.engineering.worker.process")
@@ -26,6 +27,7 @@ def validate_docker_runtime(
     *,
     which: Callable[[str], str | None] = shutil.which,
     runner: Callable[..., Any] = subprocess.run,
+    environ: Mapping[str, str] | None = None,
 ) -> None:
     """Fail closed unless both the Docker CLI and its daemon are reachable."""
     if not isinstance(docker_binary, str) or not docker_binary.strip():
@@ -39,7 +41,7 @@ def validate_docker_runtime(
             text=True,
             timeout=8,
             check=False,
-            env={"PATH": os.environ.get("PATH", "")},
+            env=docker_cli_environment(os.environ if environ is None else environ),
         )
     except Exception as exc:
         raise RuntimeError("docker_daemon_unavailable") from exc
@@ -74,7 +76,7 @@ def run_worker(environ: Mapping[str, str] | None = None) -> int:
     host_factory = _load_factory(factory_spec)
 
     # Verify the execution runtime before constructing DB clients or claiming jobs.
-    validate_docker_runtime(env.get("KDO_ENGINEERING_DOCKER_BINARY", "docker"))
+    validate_docker_runtime(env.get("KDO_ENGINEERING_DOCKER_BINARY", "docker"), environ=env)
 
     import psycopg
 
