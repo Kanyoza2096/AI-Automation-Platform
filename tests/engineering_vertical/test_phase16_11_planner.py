@@ -94,3 +94,49 @@ def test_planner_rejects_invalid_specialist_assignment_graph(mutator, error):
     gw = Gateway(good_data(mutator(assignments())))
     with pytest.raises(EngineeringPlannerError, match=error):
         make_engineering_plan_generator(gw)(task=TASK, workspace_id="workspace-1")
+
+
+def test_planner_retries_once_when_model_returns_invalid_assignment_graph():
+    class SequenceGateway:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                SimpleNamespace(ok=True, data=good_data(assignments()[:2]),
+                                provider="test-provider", model="test-model", request_id="req-bad"),
+                SimpleNamespace(ok=True, data=good_data(),
+                                provider="test-provider", model="test-model", request_id="req-good"),
+            ]
+
+        def complete_structured(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return self.results.pop(0)
+
+    gw = SequenceGateway()
+    proposal = make_engineering_plan_generator(gw)(task=TASK, workspace_id="workspace-1")
+    assert len(gw.calls) == 2
+    assert "REPAIR REQUIRED" in gw.calls[1][0]
+    assert proposal["planner"]["request_id"] == "req-good"
+    assert proposal["approval_required"] is True
+
+
+def test_planner_retries_once_after_structured_json_parse_failure():
+    class SequenceGateway:
+        def __init__(self):
+            self.calls = []
+            self.results = [
+                SimpleNamespace(ok=False, data=None, text='{"status":',
+                                reason="structured_parse_failed", provider="gemini",
+                                model="gemini-2.5-flash", request_id="req-bad"),
+                SimpleNamespace(ok=True, data=good_data(),
+                                provider="gemini", model="gemini-2.5-flash", request_id="req-good"),
+            ]
+
+        def complete_structured(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return self.results.pop(0)
+
+    gw = SequenceGateway()
+    proposal = make_engineering_plan_generator(gw)(task=TASK, workspace_id="workspace-1")
+    assert len(gw.calls) == 2
+    assert "CANDIDATE RESPONSE" in gw.calls[1][0]
+    assert proposal["planner"]["request_id"] == "req-good"
