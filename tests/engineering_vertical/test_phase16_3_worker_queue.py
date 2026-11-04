@@ -45,6 +45,21 @@ def test_queue_is_idempotent_and_rejects_conflicting_payload(tmp_path):
     queue.close()
 
 
+def test_admission_receipt_recording_is_idempotent_but_rejects_conflicts(tmp_path):
+    queue = make_queue(tmp_path)
+    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task-receipt",
+                  plan_digest=DIGEST, idempotency_key="idem-receipt")
+    values = dict(tenant_id="t1", workspace_id="w1", task_id="task-receipt",
+                  decision_id="decision-1", intent_id="intent-1", execution_id="execution-1")
+    first = queue.record_admission_receipt(**values)
+    repeated = queue.record_admission_receipt(**values)
+    assert first.admission_receipt_verified is True
+    assert repeated.admission_execution_id == "execution-1"
+    with pytest.raises(Phase163Error, match="admission_receipt_conflict"):
+        queue.record_admission_receipt(**{**values, "execution_id": "forged-execution"})
+    queue.close()
+
+
 def test_unverified_queue_job_cannot_be_claimed(tmp_path):
     queue = make_queue(tmp_path)
     job = queue.enqueue( tenant_id="t1", workspace_id="w1", task_id="task-unverified",
