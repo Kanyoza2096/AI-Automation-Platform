@@ -150,25 +150,58 @@ def test_authorizer_binds_job_plan_and_lease_digest_into_governed_request(monkey
 
     async def fake_governed_action(**kwargs):
         captured.update(kwargs)
+        receipt = {"intent_id": "intent-a", "execution_id": "execution-a"}
+        captured["verified_scope"] = kwargs["receipt_verifier"](
+            {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "task_id": "task-a",
+                "decision_id": "decision-a",
+                "action_type": ACTION_TYPE,
+            },
+            receipt,
+        )
         return {
             "status": "succeeded",
             "ok": True,
             "receipt_verified": True,
-            "receipt": {"intent_id": "intent-a", "execution_id": "execution-a"},
+            "receipt": receipt,
         }
 
     monkeypatch.setattr(module, "execute_council_governed_engineering_action", fake_governed_action)
     kernel = FakeKernel(FakeDatabase())
     authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
     context = _context()
+    verified_scopes = []
+    authorizer._receipt_verifier.verify = lambda scope, receipt: verified_scopes.append(dict(scope)) or True
 
     with authorizer.bind_execution_context(context, lambda: True):
         assert authorizer.authorize("run_tests", _task()) is True
 
     params = captured["parameters"]
+    assert verified_scopes[0]["job_id"] == "job-a"
+    assert verified_scopes[0]["plan_digest"] == "a" * 64
+    assert verified_scopes[0]["payload_digest"] == params["payload_digest"]
+    assert verified_scopes[0]["lease_token_digest"] == params["lease_token_digest"]
     assert params["job_id"] == "job-a"
     assert params["plan_digest"] == "a" * 64
     assert params["lease_token_digest"] == __import__("hashlib").sha256(
         b"lease-secret"
     ).hexdigest()
     assert "lease-secret" not in str(params)
+
+
+
+def test_action_kernel_handler_rechecks_lease_after_council_approval():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    context = _context()
+    with authorizer.bind_execution_context(context, lambda: False):
+        handler = kernel.contracts[ACTION_TYPE].handler
+        params = {
+            **{key: context[key] for key in ("job_id", "plan_digest", "tenant_id", "workspace_id", "task_id")},
+            "lease_token_digest": __import__("hashlib").sha256(b"lease-secret").hexdigest(),
+            "authorization_request_id": "request-a",
+        }
+        with pytest.raises(GovernedWorkerAuthorizationError, match="worker_lease_not_active"):
+            handler(params, None)
