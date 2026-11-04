@@ -75,8 +75,11 @@ def main() -> int:
         raise RuntimeError("composition_factory_must_return_postgres_engineering_queue")
     workflow = dependencies.get("workflow")
     executor = dependencies.get("executor")
+    admission_receipt_verifier = dependencies.get("admission_receipt_verifier")
     if workflow is None or not callable(executor):
         raise RuntimeError("composition_factory_must_supply_governed_workflow_and_executor")
+    if not callable(admission_receipt_verifier):
+        raise RuntimeError("composition_factory_must_supply_authoritative_admission_receipt_verifier")
     health_sink = dependencies.get("health_sink", _health_sink)
     cleanup = dependencies.get("cleanup")
     if cleanup is not None and not callable(cleanup):
@@ -100,6 +103,7 @@ def main() -> int:
             queue=queue,
             workflow=workflow,
             executor=executor,
+            admission_receipt_verifier=admission_receipt_verifier,
             stopping=stopping,
             health_sink=health_sink,
             max_jobs=_max_jobs_from_env(),
