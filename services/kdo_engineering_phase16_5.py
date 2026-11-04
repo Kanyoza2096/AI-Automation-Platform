@@ -6,6 +6,7 @@ or create schema at runtime. They do not grant execution/release authority.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from typing import Any, Callable, Mapping
