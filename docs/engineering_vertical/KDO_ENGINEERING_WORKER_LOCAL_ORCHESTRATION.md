@@ -24,3 +24,34 @@ The factory is operator-owned code and is called with `config` and a psycopg con
 This is process orchestration, not a sandbox. Honcho does not isolate child processes, constrain resources, block network access, or guarantee hard cancellation. Do not point this worker at production. Do not enable generated-code execution until the injected executor runs inside the approved isolated-container design with digest pinning, hard timeout/cancellation, resource limits, no network, read-only root filesystem, non-root identity, dropped capabilities, task-scoped writable storage, and host-level supervision. The existing acceptance gate remains authoritative.
 
 No Render service, Supabase project, production Procfile, or deployment setting is changed by this local setup.
+
+
+## Existing KDO gateway adapters
+
+The worker composition now has a concrete adapter path through KDO's existing
+`LLMGateway.complete_structured` and versioned `EngineeringPromptAssembler`.
+A trusted host factory can call
+`build_gateway_worker_dependencies(...)` from
+`services.kdo_engineering_worker_composition` instead of inventing a second
+model-provider integration.
+
+The gateway-backed builder receives the approved task contract, approved plan,
+and a bounded text-only snapshot of the task worktree. It can propose one
+unified diff. The host rejects unsafe paths and symlink targets, checks the
+task-scoped workspace, and calls the injected Action Kernel policy callback
+for `build_patch` before applying the patch through the checked Git patch
+primitive. This is a host filesystem mutation, not a sandbox; it is only valid
+inside the disposable task worktree.
+
+The dynamic QA registry installs task-aware debugging, backend repair, and
+independent-review adapters from the existing role catalogue. The backend
+adapter may propose a repair diff, but the quality loop still authorizes patch
+application and executes tests only through the digest-pinned Docker runner.
+The model reviewer is deliberately unable to create a durable review ID or
+approve itself: it can return findings only, and the task remains pending
+human review until a separate review decision is recorded.
+
+The adapter integration is covered by
+`test_gateway_agents.py` and `test_gateway_build_executor.py`. A passing CI
+run is still required before merge. No worker is enabled by this change, and
+no live calculator build has been executed.
