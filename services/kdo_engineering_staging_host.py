@@ -155,7 +155,7 @@ def build_host_arguments(
     token_hash = hashlib.sha256(worker_token.encode("utf-8")).hexdigest()
     token = _one_row(
         db.table("api_tokens")
-        .select("id,workspace_id,permissions,revoked")
+        .select("id,workspace_id,permissions,expires_at,revoked")
         .eq("token_hash", token_hash)
         .eq("revoked", False)
         .maybe_single()
@@ -168,6 +168,22 @@ def build_host_arguments(
     permissions = {str(item).strip().lower() for item in (token.get("permissions") or [])}
     if not permissions.intersection({"write", "operator", "admin", "owner"}):
         raise StagingWorkerHostConfigurationError("worker_token_requires_write_permission")
+    expiry = token.get("expires_at")
+    if expiry:
+        parsed_expiry = datetime.fromisoformat(str(expiry).replace("Z", "+00:00"))
+        if parsed_expiry.tzinfo is None:
+            parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) >= parsed_expiry:
+            raise StagingWorkerHostConfigurationError("worker_token_expired")
+    workspace = _one_row(
+        db.table("workspaces")
+        .select("id,status")
+        .eq("id", config.workspace_id)
+        .maybe_single()
+        .execute()
+    )
+    if not workspace or workspace.get("status") != "active":
+        raise StagingWorkerHostConfigurationError("worker_workspace_not_active")
 
     from services.action_kernel import build_default_action_kernel
     action_kernel = build_default_action_kernel(db=db, allow_in_memory=False)
