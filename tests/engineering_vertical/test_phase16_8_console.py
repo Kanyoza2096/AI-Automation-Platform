@@ -57,6 +57,10 @@ class FakeEngineeringConsoleProvider:
         self.calls.append(("list_events", task_id, workspace_id, after_sequence, limit))
         return {"events": self.events if task_id == "task-1" and workspace_id == "workspace-1" else []}
 
+    def generate_plan(self, *, task_id, workspace_id):
+        self.calls.append(("generate_plan", task_id, workspace_id))
+        return {"task_id": task_id, "revision": 1, "summary": "A bounded calculator implementation plan", "steps": ["Inspect repository", "Implement calculator operations", "Add unit tests", "Run tests"]}
+
     def submit_plan(self, *, task_id, workspace_id, user_id, steps):
         self.calls.append(("submit_plan", task_id, workspace_id, user_id, steps))
         task = self.get_task(task_id=task_id, workspace_id=workspace_id)
@@ -97,6 +101,9 @@ def test_console_html_is_served_and_uses_live_provider_not_mock_data():
     assert response.status_code == 200
     assert "AI Software Engineering" in response.text
     assert "No simulated tasks or agent messages" in response.text
+    assert "Generate implementation plan" in response.text
+    assert "/plan/generate" in response.text
+    assert "Submit plan for review" in response.text
     assert "setInterval(refreshAll,2500)" in response.text
 
 
@@ -152,6 +159,15 @@ def test_approval_rejects_missing_or_invalid_revision():
     response = client.post("/api/v1/engineering/console/tasks/task-1/decision", headers={"x-test-workspace": "workspace-1"}, json={"decision": "approve"})
     assert response.status_code == 422
     assert response.json()["detail"] == "expected_revision_required"
+
+
+def test_plan_generation_is_workspace_scoped_and_proposal_only():
+    provider = FakeEngineeringConsoleProvider()
+    client = make_client(provider)
+    response = client.post("/api/v1/engineering/console/tasks/task-1/plan/generate", headers={"x-test-workspace": "workspace-1"})
+    assert response.status_code == 200
+    assert response.json()["steps"][0] == "Inspect repository"
+    assert provider.calls[-1] == ("generate_plan", "task-1", "workspace-1")
 
 
 def test_plan_submission_is_validated_and_delegated_to_provider():
