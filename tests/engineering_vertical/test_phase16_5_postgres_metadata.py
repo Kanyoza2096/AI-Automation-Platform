@@ -168,7 +168,7 @@ def test_atomic_review_allows_submitter_to_approve_plan():
     assert connection.commits == 1 and connection.rollbacks == 0
 
 
-def test_atomic_review_allows_submitter_in_single_member_workspace():
+def test_atomic_review_submitter_approval_does_not_depend_on_member_count():
     from services.kdo_engineering_task_repository import _encode
     from services.kdo_engineering_phase16_2 import _plan_digest
     steps=["Edit app.py"]
@@ -184,7 +184,7 @@ def test_atomic_review_allows_submitter_in_single_member_workspace():
         expected_revision=1,reviewer_id="same-person",approve=True,reason="Single operator approval")
     assert approved.status == EngineeringTaskStatus.PLANNED
     assert approved.evidence["plan_review"]["reviewed_by"] == "same-person"
-    assert any("SELECT COUNT(*) FROM public.workspace_members" in sql for sql in cursor.sql)
+    assert not any("workspace_members" in sql for sql in cursor.sql)
     assert connection.commits == 1 and connection.rollbacks == 0
 
 
