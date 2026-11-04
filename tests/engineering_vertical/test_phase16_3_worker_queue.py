@@ -45,6 +45,15 @@ def test_queue_is_idempotent_and_rejects_conflicting_payload(tmp_path):
     queue.close()
 
 
+def test_unverified_queue_job_cannot_be_claimed(tmp_path):
+    queue = make_queue(tmp_path)
+    job = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task-unverified",
+                        plan_digest=DIGEST, idempotency_key="idem-unverified")
+    assert job.admission_receipt_verified is False
+    assert queue.claim_next(worker_id="worker-a", lease_seconds=60) is None
+    queue.close()
+
+
 def test_claim_lease_is_fenced_and_second_worker_cannot_claim_same_job(tmp_path):
     queue = make_queue(tmp_path)
     queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
