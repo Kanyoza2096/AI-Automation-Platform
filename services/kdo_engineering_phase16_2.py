@@ -193,10 +193,10 @@ class KDOPhase162Workflow:
         if not isinstance(plan, (list, tuple)) or not plan or any(not isinstance(s, str) or not s.strip() for s in plan):
             raise Phase162Error("plan_must_contain_nonempty_steps")
         task = self.tasks.get(task_id, tenant_id=tenant_id, workspace_id=workspace_id)
-        if task.status != EngineeringTaskStatus.PROPOSED:
-            raise Phase162Error("plan_submission_requires_proposed_task")
         if task.evidence.get("plan_review", {}).get("state") in {"submitted", "approved", "rejected"}:
             raise Phase162Error("plan_already_submitted")
+        if task.status != EngineeringTaskStatus.PROPOSED:
+            raise Phase162Error("plan_submission_requires_proposed_task")
         plan_record = {"state": "submitted", "steps": [s.strip() for s in plan],
                        "digest": _plan_digest(plan), "submitted_by": actor_id}
         return self.tasks.update_evidence(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
