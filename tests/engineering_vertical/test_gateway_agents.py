@@ -63,7 +63,10 @@ def test_dynamic_gateway_registry_installs_specialists_without_model_review_auth
     }))
     factory = make_gateway_quality_registry_factory(gateway=gateway, workspace_id="w1")
     registry = factory(SimpleNamespace(task_id="t1"), "/tmp/task-workspace", ())
-    assert {"debugging_engineer", "frontend_engineer", "backend_engineer", "database_engineer",\n            "integration_engineer", "refactoring_engineer", "independent_reviewer"}.issubset(
+    assert {
+        "debugging_engineer", "frontend_engineer", "backend_engineer", "database_engineer",
+        "integration_engineer", "refactoring_engineer", "independent_reviewer",
+    }.issubset(
         set(registry.installed_roles())
     )
 
