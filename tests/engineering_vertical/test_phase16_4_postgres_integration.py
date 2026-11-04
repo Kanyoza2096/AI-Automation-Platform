@@ -89,6 +89,27 @@ def expire_job(connect, job_id):
         )
 
 
+def test_postgres_claim_requires_verified_admission_receipt(postgres_queue_scope):
+    queue, tenant_id, workspace_id, _connect = postgres_queue_scope
+    task_id = "receipt-gate-" + uuid.uuid4().hex
+    job = queue.enqueue(tenant_id=tenant_id, workspace_id=workspace_id, task_id=task_id,
+        plan_digest=DIGEST, idempotency_key="idem-" + task_id)
+    assert job.admission_receipt_verified is False
+    assert queue.claim_next(worker_id="worker-unverified", tenant_id=tenant_id,
+                            workspace_id=workspace_id) is None
+    receipt = dict(tenant_id=tenant_id, workspace_id=workspace_id, task_id=task_id,
+        decision_id="decision-" + task_id, intent_id="intent-" + task_id,
+        execution_id="execution-" + task_id)
+    admitted = queue.record_admission_receipt(**receipt)
+    repeated = queue.record_admission_receipt(**receipt)
+    assert admitted.admission_receipt_verified is True
+    assert repeated.admission_execution_id == receipt["execution_id"]
+    claimed = queue.claim_next(worker_id="worker-verified", tenant_id=tenant_id,
+                               workspace_id=workspace_id)
+    assert claimed is not None and claimed.job_id == job.job_id
+    assert claimed.admission_decision_id == receipt["decision_id"]
+
+
 def test_real_postgres_concurrent_claims_are_unique_and_scope_bound(postgres_queue_scope):
     queue, tenant_id, workspace_id, _connect = postgres_queue_scope
     expected = {
