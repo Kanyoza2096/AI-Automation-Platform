@@ -210,6 +210,24 @@ def test_council_and_action_kernel_admission_creates_durable_job_only_after_appr
     queue.close()
 
 
+def test_admission_refuses_to_enqueue_without_authoritative_receipt_verifier(tmp_path):
+    import asyncio
+    from services.kdo_engineering_phase16_3 import admit_approved_build
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    kernel = ActionKernel(allow_in_memory=True)
+    register_engineering_build_enqueue_contract(kernel, queue)
+    with pytest.raises(Phase163Error, match="authoritative_admission_receipt_verifier_required"):
+        asyncio.run(admit_approved_build(workflow=workflow, action_kernel=kernel,
+            task_id=task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+            actor_id="builder", agent_id="kdo-agent",
+            council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "decision-no-verifier"}))
+    assert queue.claim_next(worker_id="worker-1") is None
+    assert queue._db.execute("SELECT COUNT(*) FROM kdo_engineering_build_jobs").fetchone()[0] == 0
+    queue.close()
+
+
 def test_receipt_verification_failure_leaves_enqueued_job_unclaimable(tmp_path):
     import asyncio
     from services.kdo_engineering_phase16_3 import admit_approved_build
