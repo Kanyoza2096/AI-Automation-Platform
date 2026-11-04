@@ -9,6 +9,7 @@ the operation's own result/evidence must still be collected independently.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import threading
@@ -67,7 +68,7 @@ class CouncilActionKernelWorkerAuthorizer:
         self._event_store = event_store
         self._receipt_verifier = build_durable_action_receipt_verifier(db)
         self._lock = threading.RLock()
-        self._execution_context = threading.local()
+        self._execution_context = contextvars.ContextVar("kdo_worker_execution_context", default=None)
         self._register_contract()
 
     def _register_contract(self) -> None:
@@ -76,7 +77,7 @@ class CouncilActionKernelWorkerAuthorizer:
             def authorize_handler(parameters: Mapping[str, Any], _intent: Any) -> dict[str, Any]:
                 # Revalidate the exact active lease inside Action Kernel execution,
                 # after Council deliberation and immediately before recording approval.
-                bound = getattr(self._execution_context, "value", None)
+                bound = self._execution_context.get()
                 if not bound:
                     raise GovernedWorkerAuthorizationError("worker_execution_context_missing")
                 context, lease_check = bound
@@ -135,12 +136,11 @@ class CouncilActionKernelWorkerAuthorizer:
             raise GovernedWorkerAuthorizationError("complete_worker_execution_context_required")
         if not callable(lease_check):
             raise GovernedWorkerAuthorizationError("active_lease_validator_required")
-        previous = getattr(self._execution_context, "value", None)
-        self._execution_context.value = (dict(context), lease_check)
+        token = self._execution_context.set((dict(context), lease_check))
         try:
             yield
         finally:
-            self._execution_context.value = previous
+            self._execution_context.reset(token)
 
     def authorize(self, action: str, task: Mapping[str, Any]) -> bool:
         """Authorize only while the exact job/plan/lease remains active."""
@@ -150,7 +150,7 @@ class CouncilActionKernelWorkerAuthorizer:
         if any(not _valid_text(task.get(key)) for key in scope_keys):
             return False
 
-        bound = getattr(self._execution_context, "value", None)
+        bound = self._execution_context.get()
         if not bound:
             return False
         context, lease_check = bound
