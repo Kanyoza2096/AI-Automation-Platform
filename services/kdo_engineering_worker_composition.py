@@ -155,6 +155,13 @@ def build_gateway_worker_dependencies(
         except Exception as exc:
             raise EngineeringWorkerCompositionError("council_action_kernel_authorizer_unavailable") from exc
         pipeline_authorize = worker_authorizer.authorize
+    else:
+        candidate = getattr(pipeline_authorize, "__self__", pipeline_authorize)
+        if not callable(getattr(candidate, "bind_execution_context", None)):
+            raise EngineeringWorkerCompositionError(
+                "scoped_council_action_kernel_authorizer_required"
+            )
+        worker_authorizer = candidate
     if not callable(pipeline_authorize):
         raise EngineeringWorkerCompositionError("pipeline_authorizer_required")
     workspace_id = config.workspace_id
