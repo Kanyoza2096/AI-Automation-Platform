@@ -288,7 +288,7 @@ class PostgresEngineeringConsoleProvider:
             raise EngineeringConsoleProviderError("invalid_planner_response")
         return {"task_id": task.task_id, "revision": task.revision, **proposal}
 
-    def submit_plan(self, *, task_id: str, workspace_id: str, user_id: str, steps: list[str]) -> dict[str, Any]:
+    def submit_plan(self, *, task_id: str, workspace_id: str, user_id: str, steps: list[str], assignments: list[dict[str, Any]] | None = None, summary: str | None = None, planner: dict[str, Any] | None = None) -> dict[str, Any]:
         if not steps or any(not isinstance(step, str) or not step.strip() for step in steps):
             raise ValueError("plan_must_contain_nonempty_steps")
         task = self.tasks.get(task_id, tenant_id=workspace_id, workspace_id=workspace_id)
