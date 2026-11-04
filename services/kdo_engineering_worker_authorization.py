@@ -74,6 +74,26 @@ class CouncilActionKernelWorkerAuthorizer:
         metadata = self._kernel.get_contract_metadata(ACTION_TYPE)
         if metadata is None:
             def authorize_handler(parameters: Mapping[str, Any], _intent: Any) -> dict[str, Any]:
+                # Revalidate the exact active lease inside Action Kernel execution,
+                # after Council deliberation and immediately before recording approval.
+                bound = getattr(self._execution_context, "value", None)
+                if not bound:
+                    raise GovernedWorkerAuthorizationError("worker_execution_context_missing")
+                context, lease_check = bound
+                expected = {
+                    "job_id": context.get("job_id"),
+                    "plan_digest": context.get("plan_digest"),
+                    "tenant_id": context.get("tenant_id"),
+                    "workspace_id": context.get("workspace_id"),
+                    "task_id": context.get("task_id"),
+                    "lease_token_digest": hashlib.sha256(
+                        str(context.get("lease_token", "")).encode("utf-8")
+                    ).hexdigest(),
+                }
+                if any(str(parameters.get(key, "")) != str(value) for key, value in expected.items()):
+                    raise GovernedWorkerAuthorizationError("worker_execution_scope_mismatch")
+                if lease_check() is not True:
+                    raise GovernedWorkerAuthorizationError("worker_lease_not_active")
                 # This is an authorization-record action, not the filesystem or
                 # test-runner operation itself. Its output is independently verified.
                 request_id = parameters.get("authorization_request_id")
