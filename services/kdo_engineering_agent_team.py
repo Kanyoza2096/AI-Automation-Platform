@@ -105,3 +105,124 @@ def coordinate_engineering_team(*, task_id: str, objective: str,
         "release_authorized": False}, sort_keys=True, separators=(",", ":"), default=str)
     return EngineeringTeamReport(task_id, final_status, tuple(contributions),
                                  hashlib.sha256(serial.encode()).hexdigest(), False)
+
+
+def coordinate_planned_assignments(*, assignments, agents):
+    """Execute model-proposed specialist analysis in dependency order.
+
+    Assignments are proposal data, not authorization. Missing adapters or failed
+    dependencies block downstream work; the report never authorizes release.
+    """
+    import hashlib
+    import json
+
+    if not isinstance(assignments, (list, tuple)) or not assignments:
+        raise AgentTeamError("planned_assignments_required")
+    by_id = {}
+    for item in assignments:
+        if not isinstance(item, Mapping):
+            raise AgentTeamError("invalid_planned_assignment")
+        task_id, role, objective = item.get("task_id"), item.get("role"), item.get("objective")
+        if any(not isinstance(x, str) or not x.strip() for x in (task_id, role, objective)):
+            raise AgentTeamError("invalid_planned_assignment")
+        if task_id in by_id:
+            raise AgentTeamError("duplicate_planned_assignment_id")
+        by_id[task_id] = item
+    for task_id, item in by_id.items():
+        deps = item.get("depends_on", [])
+        if not isinstance(deps, (list, tuple)) or any(dep not in by_id or dep == task_id for dep in deps):
+            raise AgentTeamError("invalid_planned_assignment_dependencies")
+    ordered, visiting, visited = [], set(), set()
+    def visit(task_id):
+        if task_id in visiting:
+            raise AgentTeamError("planned_assignment_dependency_cycle")
+        if task_id in visited:
+            return
+        visiting.add(task_id)
+        for dep in by_id[task_id].get("depends_on", []):
+            visit(dep)
+        visiting.remove(task_id)
+        visited.add(task_id)
+        ordered.append(task_id)
+    for task_id in by_id:
+        visit(task_id)
+
+    outputs, contributions = {}, []
+    for task_id in ordered:
+        item = by_id[task_id]
+        role = item["role"]
+        adapter = agents.get(role) if isinstance(agents, Mapping) else None
+        if not callable(adapter):
+            status, summary, evidence, agent_id = "failed", "specialist adapter unavailable", {"error": "missing_role_adapter"}, "unavailable"
+        elif any(outputs[dep]["status"] != "succeeded" for dep in item.get("depends_on", [])):
+            status, summary, evidence, agent_id = "blocked", "dependency did not succeed", {"error": "dependency_blocked"}, "not_invoked"
+        else:
+            context = {
+                "acceptance_criteria": list(item.get("acceptance_criteria", [])),
+                "deliverables": list(item.get("deliverables", [])),
+                "policy_refs": list(item.get("policy_refs", [])),
+                "requested_capabilities": list(item.get("requested_capabilities", [])),
+                "prior_contributions": {dep: outputs[dep] for dep in item.get("depends_on", [])},
+            }
+            assignment = AgentAssignment(task_id, role, item["objective"], context,
+                                          tuple(item.get("depends_on", [])))
+            try:
+                raw = adapter(assignment)
+            except Exception as exc:
+                raw = {"agent_id": "unknown", "status": "failed",
+                       "summary": "specialist invocation failed",
+                       "evidence": {"error_type": type(exc).__name__}}
+            if not isinstance(raw, Mapping):
+                raw = {"agent_id": "unknown", "status": "failed",
+                       "summary": "specialist returned invalid output", "evidence": {}}
+            agent_id = str(raw.get("agent_id") or "unknown")
+            status = str(raw.get("status") or "failed").lower()
+            summary = str(raw.get("summary") or "No summary supplied")
+            evidence = raw.get("evidence", {})
+            if status != "succeeded" or not isinstance(evidence, Mapping) or not summary.strip():
+                status = "failed"
+            evidence = dict(evidence) if isinstance(evidence, Mapping) else {"error": "invalid_evidence"}
+        outputs[task_id] = {"task_id": task_id, "role": role, "agent_id": agent_id,
+                            "status": status, "summary": summary, "evidence": evidence}
+        contributions.append(outputs[task_id])
+    blocked = any(x["status"] != "succeeded" for x in contributions)
+    serial = json.dumps(contributions, sort_keys=True, separators=(",", ":"), default=str)
+    return {
+        "status": "blocked" if blocked else "proposal_complete",
+        "contributions": contributions,
+        "evidence_fingerprint": hashlib.sha256(serial.encode()).hexdigest(),
+        "approval_required": True,
+        "execution_started": False,
+        "release_authorized": False,
+    }
+
+
+def plan_and_coordinate_engineering_task(*, plan_generator, task, workspace_id, agents):
+    """Compose planner proposal generation with dependency-aware specialist dispatch.
+
+    This is a proposal/analysis workflow only. It never invokes the build executor,
+    mutates a repository, approves a plan, or authorizes release.
+    """
+    if not callable(plan_generator):
+        raise AgentTeamError("plan_generator_required")
+    try:
+        proposal = plan_generator(task=task, workspace_id=workspace_id)
+    except Exception as exc:
+        raise AgentTeamError("engineering_planning_failed:" + type(exc).__name__) from exc
+    if not isinstance(proposal, Mapping):
+        raise AgentTeamError("invalid_planner_proposal")
+    if (proposal.get("approval_required") is not True
+            or proposal.get("execution_started") is not False
+            or proposal.get("release_authorized") is not False):
+        raise AgentTeamError("planner_proposal_authority_invariant_failed")
+    assignments = proposal.get("assignments")
+    if not isinstance(assignments, (list, tuple)) or not assignments:
+        raise AgentTeamError("planner_assignments_required")
+    coordination = coordinate_planned_assignments(assignments=assignments, agents=agents)
+    return {
+        "plan": dict(proposal),
+        "coordination": coordination,
+        "approval_required": True,
+        "execution_started": False,
+        "release_authorized": False,
+    }

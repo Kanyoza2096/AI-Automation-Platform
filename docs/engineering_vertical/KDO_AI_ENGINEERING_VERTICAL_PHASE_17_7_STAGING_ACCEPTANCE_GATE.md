@@ -10,8 +10,10 @@ The Engineering Vertical focused workflow now also runs:
 
 - `tests/engineering_vertical/test_phase16_8_console.py`: task-board/console projection and authorization regression coverage.
 - `tests/engineering_vertical/test_staging_lifecycle.py`: governed approval/denial, receipt verification, idempotency, uncertain outcome, and read-only schema-preflight coverage.
+- `tests/engineering_vertical/test_worker_entrypoint.py` and `test_worker_composition.py`: disabled-by-default worker startup and fail-closed PostgreSQL/container composition.
+- `tests/engineering_vertical/test_gateway_agents.py` and `test_gateway_build_executor.py`: existing LLM Gateway adapters, dynamic diagnosis/repair/verification handoff, bounded patch validation, workspace scope, and policy-before-mutation behavior.
 
-The existing workflow provisions disposable PostgreSQL 16 and applies migrations 140, 150, 151, and 152 before the PostgreSQL integration tests. The local fixture-based staging lifecycle tests are deliberately labeled as deterministic tests; they do not establish live staging readiness.
+The existing workflow provisions disposable PostgreSQL 16 and applies migrations 140, 150, 151, 152, and 153 before the PostgreSQL integration tests. The local fixture-based staging lifecycle tests are deliberately labeled as deterministic tests; they do not establish live staging readiness.
 
 ## Required live staging run
 
@@ -20,7 +22,7 @@ Use a dedicated staging Supabase project, isolated tenant/workspace pairs, non-p
 1. Configure secrets from `deployment/staging/.env.staging.example` through a secret manager/operator channel. Keep `.env.staging` untracked.
 2. Run `python scripts/kdo_engineering_staging_gate.py` and retain its redacted configuration report.
 3. Run `python scripts/kdo_engineering_staging_gate.py --live-read-only`. This is only a zero-row receipt-schema/read-access probe; it is not proof of tenant row isolation.
-4. Apply and verify all current engineering migrations, including 140, 150, 151, and 152, against the staging PostgreSQL project. Record migration versions and database role grants.
+4. Apply and verify all current engineering migrations, including 140, 150, 151, 152, and 153, against the staging PostgreSQL project. Record migration versions and database role grants.
 5. Deploy the staging web service using `deployment/staging/docker-compose.yml`. Verify liveness/readiness from the host and confirm public ingress is not exposed.
 6. Provision the dedicated worker host separately. Keep `KDO_ENGINEERING_WORKER_ENABLED=false` until the worker process/container executor, its supervision and hard cancellation, and the staging approval gates are verified. Do not start a worker by importing it into the web process.
 7. Execute the governed lifecycle with a disposable staging task: plan submission, independent Council approval, durable job enqueue, scoped worker claim, lease heartbeat, isolated container build/test, cancellation/timeout, review-ready boundary, reviewer decision, and separately authorized release decision.
@@ -52,9 +54,34 @@ The following external/runtime evidence is still required before this phase can 
 
 1. A staging project URL and securely provisioned staging credentials.
 2. A deployed staging web endpoint and RLS-aware test identities for two isolated tenants.
-3. A concrete production composition adapter that constructs the governed workflow, canonical approval verifier, PostgreSQL queue/repositories, and container executor for the worker bootstrap.
+3. A concrete production composition adapter that constructs the governed workflow, canonical Council/DecisionGate/Action Kernel authorization and receipt verifier, PostgreSQL queue/repositories, and container executor for the worker bootstrap. The current gateway builder and worker composition still expose injected authorization callbacks; they are not yet a verified Action Kernel integration.
 4. A supervised dedicated worker process/container with hard cancellation and host-level isolation controls.
 5. Live Council/Action Kernel/receipt-verifier evidence and independent operator/reviewer sign-off.
 6. Operational dashboards/alerts and retained staging test artifacts.
 
 No staging deployment or production-readiness certification is claimed by this PR. The production worker remains disabled. Do not mark Phase 17.7 complete until all required live evidence is attached and independently reviewed.
+
+
+## Latest adapter implementation note
+
+PR #35 adds a gateway-backed builder using the existing KDO
+`LLMGateway.complete_structured` and versioned prompt assembler, plus
+task-aware debugging, backend repair, and AI quality-verification adapters.
+The model cannot issue human review IDs or release authorization. Focused CI
+run #64 passed on commit `f6d5164`; a subsequent test was added to exercise the
+complete gateway-backed diagnose/repair/verify handoff and is awaiting its own
+CI result. These repository tests do not satisfy the live acceptance gates.
+
+The canonical Council + Action Kernel path for approved build admission already
+exists (`admit_approved_build` plus the PostgreSQL enqueue contract). The separate
+trusted worker-host integration (production factory, canonical runtime
+authorization/receipt wiring, and policy mapping for patch, test, repair, and
+review actions) is explicitly deferred from the current implementation phase,
+as agreed. It is not a blocker for continuing planner, specialist-agent, prompt,
+and workflow development. The worker must remain disabled until that deferred
+integration is revisited, implemented, and evidenced in staging.
+
+
+## Durable admission receipt enforcement
+
+The shared build queue now stores the Council decision ID and the Action Kernel intent/execution receipt IDs for each admitted job. New queue rows default to unverified; SQLite and PostgreSQL claim queries only return rows whose admission receipt has been verified. The enqueue path records those identifiers only after the configured canonical receipt verifier confirms the matching tenant/workspace/task/action/decision/intent/execution scope. The worker independently calls the same host-supplied authoritative receipt read-back verifier again immediately before task execution; a missing verifier, false result, mismatched scope, or verifier error blocks execution. The trusted worker factory must return admission_receipt_verifier alongside queue, workflow, and executor. A boolean queue flag alone is not accepted as proof of authority.

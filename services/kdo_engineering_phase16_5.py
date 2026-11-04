@@ -6,6 +6,7 @@ or create schema at runtime. They do not grant execution/release authority.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from typing import Any, Callable, Mapping
@@ -192,19 +193,15 @@ class PostgresEngineeringTaskRepository(_PostgresAdapter):
             review = dict(current.evidence.get("plan_review", {}))
             if current.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
                 raise Phase162Error("submitted_plan_required")
-            # Permit self-approval only for a workspace with exactly one accepted
-            # member. This check is made under the same transaction as the task
-            # row lock and immutable review-ledger insert.
-            if review.get("submitted_by") == reviewer_id:
-                cur.execute(
-                    "SELECT COUNT(*) FROM public.workspace_members "
-                    "WHERE workspace_id=%s AND accepted_at IS NOT NULL",
-                    (workspace_id,),
-                )
-                membership_row = cur.fetchone()
-                accepted_member_count = int(membership_row[0]) if membership_row else 0
-                if accepted_member_count != 1:
-                    raise Phase162Error("independent_plan_reviewer_required")
+            # The authenticated workspace operator may approve their own submitted plan.
+            assignments = review.get("assignments")
+            if assignments is not None:
+                assignment_digest = hashlib.sha256(
+                    json.dumps(assignments, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if assignment_digest != review.get("assignments_digest"):
+                    raise Phase162Error("submitted_assignments_fingerprint_mismatch")
             steps = review.get("steps", [])
             digest = _plan_digest(steps) if isinstance(steps, list) and steps else ""
             if not digest or digest != review.get("digest"):

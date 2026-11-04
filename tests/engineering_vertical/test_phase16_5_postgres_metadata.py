@@ -147,9 +147,9 @@ def test_plan_approval_and_ledger_commit_in_one_postgres_transaction():
     assert connections[0].commits == 1 and connections[0].rollbacks == 0
 
 
-def test_atomic_review_rejects_self_approval_before_any_write():
+def test_atomic_review_allows_submitter_to_approve_plan():
     from services.kdo_engineering_task_repository import _encode
-    from services.kdo_engineering_phase16_2 import _plan_digest, Phase162Error
+    from services.kdo_engineering_phase16_2 import _plan_digest
     steps=["Edit app.py"]
     task=EngineeringTaskContract(task_id="task-self",tenant_id="tenant-1",workspace_id="ws-1",
         objective="Change app",acceptance_criteria=("checks pass",),idempotency_key="idem-self",
@@ -158,15 +158,38 @@ def test_atomic_review_rejects_self_approval_before_any_write():
     row={**data,"acceptance_criteria":json.loads(data["acceptance_criteria"]),
          "metadata":json.loads(data["metadata"]),"evidence":json.loads(data["evidence"])}
     cursor=AtomicReviewCursor(row); connection=FakeConnection(cursor)
-    with pytest.raises(Phase162Error, match="independent_plan_reviewer_required"):
+    approved=PostgresEngineeringTaskRepository(lambda: connection).review_plan_atomically(
+        task.task_id,tenant_id=task.tenant_id,workspace_id=task.workspace_id,
+        expected_revision=1,reviewer_id="same-person",approve=True)
+    assert approved.status == EngineeringTaskStatus.PLANNED
+    assert approved.evidence["plan_review"]["reviewed_by"] == "same-person"
+    assert any(sql.startswith("UPDATE public.kdo_engineering_tasks") for sql in cursor.sql)
+    assert any(sql.startswith("INSERT INTO public.kdo_engineering_plan_reviews") for sql in cursor.sql)
+    assert connection.commits == 1 and connection.rollbacks == 0
+
+
+def test_atomic_review_rejects_tampered_specialist_assignments():
+    from services.kdo_engineering_task_repository import _encode
+    from services.kdo_engineering_phase16_2 import _plan_digest, Phase162Error
+    steps=["Inspect", "Implement", "Test"]
+    assignments=[{"task_id":"build","role":"backend_engineer","objective":"Implement"}]
+    task=EngineeringTaskContract(task_id="task-assignment-digest",tenant_id="tenant-1",workspace_id="ws-1",
+        objective="Change app",acceptance_criteria=("checks pass",),idempotency_key="idem-assignment-digest",
+        evidence={"plan_review":{"state":"submitted","steps":steps,"digest":_plan_digest(steps),
+            "submitted_by":"author","assignments":assignments,"assignments_digest":"0"*64}})
+    data=_encode(task)
+    row={**data,"acceptance_criteria":json.loads(data["acceptance_criteria"]),
+         "metadata":json.loads(data["metadata"]),"evidence":json.loads(data["evidence"])}
+    cursor=AtomicReviewCursor(row); connection=FakeConnection(cursor)
+    with pytest.raises(Phase162Error, match="submitted_assignments_fingerprint_mismatch"):
         PostgresEngineeringTaskRepository(lambda: connection).review_plan_atomically(
             task.task_id,tenant_id=task.tenant_id,workspace_id=task.workspace_id,
-            expected_revision=1,reviewer_id="same-person",approve=True)
+            expected_revision=1,reviewer_id="author",approve=True)
     assert not any(sql.startswith("UPDATE ") or sql.startswith("INSERT ") for sql in cursor.sql)
     assert connection.rollbacks == 1
 
 
-def test_atomic_review_allows_submitter_in_single_member_workspace():
+def test_atomic_review_submitter_approval_does_not_depend_on_member_count():
     from services.kdo_engineering_task_repository import _encode
     from services.kdo_engineering_phase16_2 import _plan_digest
     steps=["Edit app.py"]
@@ -182,7 +205,7 @@ def test_atomic_review_allows_submitter_in_single_member_workspace():
         expected_revision=1,reviewer_id="same-person",approve=True,reason="Single operator approval")
     assert approved.status == EngineeringTaskStatus.PLANNED
     assert approved.evidence["plan_review"]["reviewed_by"] == "same-person"
-    assert any("SELECT COUNT(*) FROM public.workspace_members" in sql for sql in cursor.sql)
+    assert not any("workspace_members" in sql for sql in cursor.sql)
     assert connection.commits == 1 and connection.rollbacks == 0
 
 

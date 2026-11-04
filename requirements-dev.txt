@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Local multi-process development only; not required by Render production services.
+honcho>=2.0,<3

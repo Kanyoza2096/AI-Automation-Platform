@@ -5,6 +5,7 @@ this module never discovers credentials or falls back to local SQLite.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from typing import Any, Callable
@@ -216,19 +217,31 @@ class PostgresEngineeringTaskRepository(_PostgresRepository):
             if current.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
                 raise Phase162Error("submitted_plan_required")
 
-            # Self-approval is permitted only when exactly one accepted member
-            # belongs to this workspace. Count and decision happen under the
-            # same transaction as the task row lock and immutable review insert.
-            if review.get("submitted_by") == reviewer_id:
-                cur.execute(
-                    "SELECT COUNT(*) FROM public.workspace_members "
-                    "WHERE workspace_id=%s AND accepted_at IS NOT NULL",
-                    (workspace_id,),
-                )
-                membership_row = cur.fetchone()
-                accepted_member_count = int(membership_row[0]) if membership_row else 0
-                if accepted_member_count != 1:
-                    raise Phase162Error("independent_plan_reviewer_required")
+            # The authenticated workspace operator may approve their own
+            # submitted plan. This is a plan-review decision only; execution
+            # remains behind the separate governed build admission controls.
+            steps = review.get("steps")
+            if not isinstance(steps, list) or not steps or any(
+                not isinstance(step, str) or not step.strip() for step in steps
+            ):
+                raise Phase162Error("submitted_plan_steps_invalid")
+            normalized_steps = [step.strip() for step in steps]
+            expected_digest = hashlib.sha256(
+                json.dumps(normalized_steps, ensure_ascii=False, separators=(",", ":")).encode()
+            ).hexdigest()
+            if review.get("digest") != expected_digest:
+                raise Phase162Error("plan_digest_mismatch")
+
+            assignments = review.get("assignments")
+            if assignments is not None:
+                if not isinstance(assignments, list):
+                    raise Phase162Error("submitted_plan_assignments_invalid")
+                expected_assignments_digest = hashlib.sha256(
+                    json.dumps(assignments, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if review.get("assignments_digest") != expected_assignments_digest:
+                    raise Phase162Error("assignment_digest_mismatch")
 
             decision = "approved" if approve else "rejected"
             review.update({

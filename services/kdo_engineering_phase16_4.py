@@ -94,8 +94,9 @@ class PostgresEngineeringBuildQueue:
     def _record(row: dict[str, Any] | None) -> EngineeringBuildJob | None:
         if row is None:
             return None
-        for key in ("created_at", "updated_at", "lease_expires_at"):
+        for key in ("created_at", "updated_at", "lease_expires_at", "admitted_at"):
             row[key] = _iso(row.get(key))
+        row["admission_receipt_verified"] = row.get("admission_receipt_verified") is True
         return EngineeringBuildJob(**row)
 
     def enqueue(self, *, tenant_id: str, workspace_id: str, task_id: str,
@@ -149,6 +150,35 @@ class PostgresEngineeringBuildQueue:
                 return found
             raise Phase163Error("idempotency_key_payload_conflict") from exc
 
+    def record_admission_receipt(self, *, tenant_id: str, workspace_id: str, task_id: str,
+                                 decision_id: str, intent_id: str, execution_id: str) -> EngineeringBuildJob:
+        values = (tenant_id, workspace_id, task_id, decision_id, intent_id, execution_id)
+        if not all(isinstance(v, str) and v.strip() for v in values):
+            raise Phase163Error("complete_admission_receipt_scope_required")
+        def op(_conn: Any, cur: Any) -> EngineeringBuildJob:
+            cur.execute("""UPDATE public.kdo_engineering_build_jobs
+                SET admission_decision_id=%s, admission_intent_id=%s, admission_execution_id=%s,
+                    admission_receipt_verified=TRUE, admitted_at=now(), updated_at=now()
+                WHERE tenant_id=%s AND workspace_id=%s AND task_id=%s
+                  AND status='queued' AND admission_receipt_verified=FALSE RETURNING *""",
+                (decision_id, intent_id, execution_id, tenant_id, workspace_id, task_id))
+            row = self._record(_row_dict(cur, cur.fetchone()))
+            if row is not None:
+                return row
+            cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                WHERE tenant_id=%s AND workspace_id=%s AND task_id=%s""",
+                (tenant_id, workspace_id, task_id))
+            existing = self._record(_row_dict(cur, cur.fetchone()))
+            if existing is None:
+                raise Phase163Error("queued_job_not_found_or_receipt_already_recorded")
+            expected = (decision_id, intent_id, execution_id)
+            actual = (existing.admission_decision_id, existing.admission_intent_id,
+                      existing.admission_execution_id)
+            if existing.admission_receipt_verified is not True or actual != expected:
+                raise Phase163Error("admission_receipt_conflict_or_job_not_queued")
+            return existing
+        return self._run(op, write=True)
+
     def get_by_idempotency(self, *, tenant_id: str, workspace_id: str,
                            idempotency_key: str) -> EngineeringBuildJob:
         def op(_conn: Any, cur: Any) -> EngineeringBuildJob:
@@ -195,12 +225,12 @@ class PostgresEngineeringBuildQueue:
             # Tenant-bound workers filter scope in the row-locking query itself.
             if scoped:
                 cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
-                    WHERE status='queued' AND tenant_id=%s AND workspace_id=%s
+                    WHERE status='queued' AND admission_receipt_verified=TRUE AND tenant_id=%s AND workspace_id=%s
                     ORDER BY created_at,job_id LIMIT 1
                     FOR UPDATE SKIP LOCKED""", (tenant_id, workspace_id))
             else:
                 cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
-                    WHERE status='queued' ORDER BY created_at,job_id LIMIT 1
+                    WHERE status='queued' AND admission_receipt_verified=TRUE ORDER BY created_at,job_id LIMIT 1
                     FOR UPDATE SKIP LOCKED""")
             selected = self._record(_row_dict(cur, cur.fetchone()))
             if selected is None:

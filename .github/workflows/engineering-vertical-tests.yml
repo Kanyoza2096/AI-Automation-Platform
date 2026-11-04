@@ -7,6 +7,9 @@ on:
       - "tests/engineering_vertical/**"
       - "migrations/*engineering*"
       - "requirements.txt"
+      - "requirements-dev.txt"
+      - "Procfile.dev"
+      - "scripts/run_kdo_engineering_worker.py"
       - ".github/workflows/engineering-vertical-tests.yml"
       - "core/species_auth.py"
       - "core/api_tokens.py"
@@ -125,6 +128,17 @@ jobs:
               for statement in reconciliation_sql.split(";"):
                   if statement.strip():
                       connection.execute(statement)
+
+              admission_receipt_migration = Path(
+                  "migrations/153_kdo_engineering_admission_receipt_gate.sql"
+              ).read_text(encoding="utf-8")
+              admission_receipt_sql = "\n".join(
+                  line for line in admission_receipt_migration.splitlines()
+                  if not line.lstrip().startswith("--")
+              )
+              for statement in admission_receipt_sql.split(";"):
+                  if statement.strip():
+                      connection.execute(statement)
           PY
       - name: Run focused engineering vertical tests
         run: |
@@ -134,7 +148,9 @@ jobs:
             tests/engineering_vertical/test_worker_runtime.py \
             tests/engineering_vertical/test_worker_service.py \
             tests/engineering_vertical/test_worker_bootstrap.py \
+            tests/engineering_vertical/test_worker_entrypoint.py \
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
+            tests/engineering_vertical/test_durable_receipts.py \
             tests/engineering_vertical/test_phase16_4_postgres_integration.py \
             tests/engineering_vertical/test_phase16_5_postgres_repositories.py \
             tests/engineering_vertical/test_phase16_7_dynamic_quality_loop.py \
@@ -143,5 +159,9 @@ jobs:
             tests/engineering_vertical/test_phase16_8_console.py \
             tests/engineering_vertical/test_staging_lifecycle.py \
             tests/engineering_vertical/test_dag_coordinator.py \
+            tests/engineering_vertical/test_worker_composition.py \
+            tests/engineering_vertical/test_worker_authorization.py \
+            tests/engineering_vertical/test_gateway_agents.py \
+            tests/engineering_vertical/test_gateway_build_executor.py \
             tests/security/test_phase6_production_tenant_hardening.py \
             tests/tenancy/test_request_context.py

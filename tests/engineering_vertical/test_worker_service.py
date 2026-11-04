@@ -69,6 +69,7 @@ def test_worker_claims_only_configured_scope_and_runs_governed_heartbeat_path(mo
         workspace_id="workspace-a",
         actor_id="engineering-worker",
         executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
         stopping=stop,
         max_jobs=1,
         on_result=lambda claimed_job, output: observed.append((claimed_job, output)),
@@ -109,6 +110,7 @@ def test_worker_fails_closed_on_out_of_scope_claim(monkeypatch):
             workspace_id="workspace-a",
             actor_id="engineering-worker",
             executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
             stopping=threading.Event(),
             max_jobs=1,
         )
@@ -133,6 +135,7 @@ def test_execution_error_is_not_retried(monkeypatch):
         workspace_id="workspace-a",
         actor_id="engineering-worker",
         executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
         stopping=threading.Event(),
         max_jobs=1,
     )
@@ -163,6 +166,7 @@ def test_worker_rejects_invalid_configuration(overrides, message):
         workspace_id="workspace-a",
         actor_id="engineering-worker",
         executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
         stopping=threading.Event(),
         max_jobs=1,
     )
@@ -183,6 +187,7 @@ def test_worker_does_not_claim_after_stop_is_requested():
         workspace_id="workspace-a",
         actor_id="engineering-worker",
         executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
         stopping=stop,
     )
 

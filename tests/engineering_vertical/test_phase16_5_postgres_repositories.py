@@ -1,6 +1,8 @@
 """Real PostgreSQL integration coverage for shared task/workspace repositories."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import uuid
 
@@ -91,7 +93,10 @@ def test_postgres_workspace_and_plan_review_are_scope_bound_and_first_write_wins
 def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(repositories):
     tasks, workspaces, tenant, workspace = repositories
     task = tasks.create(make_task(tenant, workspace))
-    plan_digest = "e" * 64
+    plan_steps = ["inspect", "implement", "test"]
+    plan_digest = hashlib.sha256(
+        json.dumps(plan_steps, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     submitted = tasks.update_evidence(
         task.task_id,
         tenant_id=tenant,
@@ -100,7 +105,7 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
         evidence={
             "plan_review": {
                 "state": "submitted",
-                "steps": ["inspect", "implement", "test"],
+                "steps": plan_steps,
                 "digest": plan_digest,
                 "submitted_by": "author-1",
             }
@@ -112,14 +117,14 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
         tenant_id=tenant,
         workspace_id=workspace,
         expected_revision=submitted.revision,
-        reviewer_id="reviewer-2",
+        reviewer_id="author-1",
         approve=True,
-        reason="independent review passed",
+        reason="submitter reviewed the plan",
     )
 
     assert approved.status == EngineeringTaskStatus.PLANNED
     assert approved.evidence["plan_review"]["approved_digest"] == plan_digest
-    assert approved.evidence["plan_review"]["reviewed_by"] == "reviewer-2"
+    assert approved.evidence["plan_review"]["reviewed_by"] == "author-1"
     # Approval must persist before execution creates its worktree.
     assert workspaces.list_scope(tenant_id=tenant, workspace_id=workspace) == []
     ledger = workspaces.get_plan_review(
@@ -127,7 +132,7 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
     )
     assert ledger["decision"] == "approved"
     assert ledger["plan_digest"] == plan_digest
-    assert ledger["reviewer_id"] == "reviewer-2"
+    assert ledger["reviewer_id"] == "author-1"
     with pytest.raises(EngineeringTaskConflict, match="stale_revision"):
         tasks.review_plan_atomically(
             task.task_id,
@@ -139,10 +144,49 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
         )
 
 
+def test_postgres_plan_approval_rejects_tampered_specialist_assignments(repositories):
+    tasks, _workspaces, tenant, workspace = repositories
+    task = tasks.create(make_task(tenant, workspace))
+    steps = ["inspect", "implement", "test"]
+    assignments = [{"task_id": "backend", "role": "backend_engineer"}]
+    step_digest = hashlib.sha256(
+        json.dumps(steps, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assignments_digest = hashlib.sha256(
+        json.dumps(assignments, sort_keys=True, ensure_ascii=False,
+                   separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    submitted = tasks.update_evidence(
+        task.task_id, tenant_id=tenant, workspace_id=workspace,
+        expected_revision=task.revision,
+        evidence={"plan_review": {
+            "state": "submitted", "steps": steps, "digest": step_digest,
+            "submitted_by": "author-1", "assignments": assignments,
+            "assignments_digest": assignments_digest,
+        }},
+    )
+    tampered_review = dict(submitted.evidence["plan_review"])
+    tampered_review["assignments"] = [{"task_id": "backend", "role": "security_engineer"}]
+    tampered = tasks.update_evidence(
+        task.task_id, tenant_id=tenant, workspace_id=workspace,
+        expected_revision=submitted.revision,
+        evidence={"plan_review": tampered_review},
+    )
+    with pytest.raises(Exception, match="assignment_digest_mismatch"):
+        tasks.review_plan_atomically(
+            task.task_id, tenant_id=tenant, workspace_id=workspace,
+            expected_revision=tampered.revision, reviewer_id="author-1",
+            approve=True, reason="must reject altered assignment evidence",
+        )
+
+
 def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(repositories):
     tasks, workspaces, tenant, workspace = repositories
     task = tasks.create(make_task(tenant, workspace))
-    plan_digest = "f" * 64
+    plan_steps = ["inspect", "test"]
+    plan_digest = hashlib.sha256(
+        json.dumps(plan_steps, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     submitted = tasks.update_evidence(
         task.task_id,
         tenant_id=tenant,
@@ -151,7 +195,7 @@ def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(reposit
         evidence={
             "plan_review": {
                 "state": "submitted",
-                "steps": ["inspect", "test"],
+                "steps": plan_steps,
                 "digest": plan_digest,
                 "submitted_by": "author-1",
             }

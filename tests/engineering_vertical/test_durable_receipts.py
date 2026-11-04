@@ -76,3 +76,18 @@ def test_durable_verifier_rejects_nonterminal_or_missing_provider_receipt():
 def test_durable_verifier_fails_closed_on_database_error_and_duplicate_rows():
     assert DurableActionReceiptVerifier(DB(error=True)).verify(SCOPE, RECEIPT) is False
     assert DurableActionReceiptVerifier(DB(intent_rows=[deepcopy(INTENT), deepcopy(INTENT)])).verify(SCOPE, RECEIPT) is False
+
+
+def test_durable_verifier_binds_queue_receipt_to_approved_plan_and_idempotency_key():
+    row = deepcopy(INTENT)
+    row["parameters"]["plan_digest"] = "a" * 64
+    row["parameters"]["job_idempotency_key"] = "kdo-build:tenant-a:workspace-a:task-a:" + "a" * 64
+    scope = {**SCOPE, "plan_digest": "a" * 64,
+             "job_idempotency_key": row["parameters"]["job_idempotency_key"]}
+    verifier = DurableActionReceiptVerifier(DB(intent_rows=[row]))
+    assert verifier.verify(scope, RECEIPT) is True
+
+    wrong_digest = {**scope, "plan_digest": "b" * 64}
+    assert verifier.verify(wrong_digest, RECEIPT) is False
+    wrong_key = {**scope, "job_idempotency_key": "different-job-key"}
+    assert verifier.verify(wrong_key, RECEIPT) is False

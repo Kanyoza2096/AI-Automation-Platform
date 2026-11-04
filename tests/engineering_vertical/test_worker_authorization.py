@@ -1,0 +1,242 @@
+import asyncio
+import hashlib
+import json
+import pytest
+
+from services.action_kernel import ActionContract
+from services.kdo_engineering_worker_authorization import (
+    ACTION_TYPE,
+    CouncilActionKernelWorkerAuthorizer,
+    GovernedWorkerAuthorizationError,
+)
+
+
+class FakeDatabase:
+    def table(self, _name):
+        raise AssertionError("constructor must not perform a receipt read")
+
+
+class FakeKernel:
+    def __init__(self, db=None, allow_in_memory=False):
+        self.db = db
+        self.execute_calls = []
+        self.allow_in_memory = allow_in_memory
+        self.contracts = {}
+
+    def execute(self, **kwargs):
+        self.execute_calls.append(kwargs)
+        raise AssertionError("unexpected Action Kernel execution in this test")
+
+    def get_contract_metadata(self, action_type):
+        contract = self.contracts.get(action_type)
+        if contract is None:
+            return None
+        return {
+            "action_type": contract.action_type,
+            "risk_level": contract.risk_level,
+            "required_parameters": list(contract.required_parameters),
+            "requires_approval": contract.requires_approval,
+            "inline_with_decision": contract.inline_with_decision,
+        }
+
+    def register(self, contract):
+        if contract.action_type in self.contracts:
+            raise ValueError("duplicate contract")
+        self.contracts[contract.action_type] = contract
+
+
+def test_authorizer_requires_database_backed_action_kernel():
+    with pytest.raises(GovernedWorkerAuthorizationError, match="durable_action_kernel_database_required"):
+        CouncilActionKernelWorkerAuthorizer(FakeKernel())
+
+
+def test_authorizer_rejects_in_memory_kernel_even_with_database():
+    with pytest.raises(GovernedWorkerAuthorizationError, match="in_memory_action_kernel_forbidden"):
+        CouncilActionKernelWorkerAuthorizer(FakeKernel(FakeDatabase(), allow_in_memory=True))
+
+
+def test_authorizer_registers_high_risk_approval_required_contract():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+
+    assert isinstance(authorizer, CouncilActionKernelWorkerAuthorizer)
+    contract = kernel.contracts[ACTION_TYPE]
+    assert isinstance(contract, ActionContract)
+    assert contract.risk_level == "high"
+    assert contract.requires_approval is True
+    assert contract.inline_with_decision is True
+    assert set(contract.required_parameters) == {
+        "tenant_id", "workspace_id", "task_id", "requested_action",
+        "payload_digest", "authorization_request_id", "job_id",
+        "plan_digest", "lease_token_digest",
+    }
+
+
+def test_authorizer_rejects_pre_registered_weak_contract():
+    kernel = FakeKernel(FakeDatabase())
+    kernel.register(ActionContract(
+        action_type=ACTION_TYPE,
+        risk_level="low",
+        required_parameters=("task_id",),
+        requires_approval=False,
+        inline_with_decision=True,
+        handler=lambda *_: {"status": "succeeded"},
+    ))
+    with pytest.raises(GovernedWorkerAuthorizationError, match="worker_authorization_contract_mismatch"):
+        CouncilActionKernelWorkerAuthorizer(kernel)
+
+
+
+def _task():
+    return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "task_id": "task-a",
+        "acceptance_criteria": ["tests pass"],
+    }
+
+
+def _context():
+    return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "task_id": "task-a",
+        "job_id": "job-a",
+        "plan_digest": "a" * 64,
+        "lease_token": "lease-secret",
+    }
+
+
+def _handler_parameters(context):
+    task = {
+        "tenant_id": context["tenant_id"],
+        "workspace_id": context["workspace_id"],
+        "task_id": context["task_id"],
+        "job_id": context["job_id"],
+        "plan_digest": context["plan_digest"],
+        "lease_token_digest": hashlib.sha256(context["lease_token"].encode()).hexdigest(),
+        "acceptance_criteria": ["tests pass"],
+    }
+    action = "run_tests"
+    canonical = json.dumps(
+        {"action": action, "task": task},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    return {
+        **task,
+        "requested_action": action,
+        "payload_digest": hashlib.sha256(canonical.encode()).hexdigest(),
+        "authorization_request_id": "request-a",
+    }
+
+
+def test_authorizer_fails_closed_without_claimed_job_context():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+
+    assert authorizer.authorize("run_tests", _task()) is False
+    assert kernel.contracts[ACTION_TYPE]
+
+
+def test_authorizer_rejects_expired_or_lost_lease_before_governance():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+
+    with authorizer.bind_execution_context(_context(), lambda: False):
+        assert authorizer.authorize("run_tests", _task()) is False
+
+    # No Action Kernel execution occurred when the lease validator denied access.
+    assert kernel.execute_calls == []
+
+
+def test_authorizer_rejects_task_scope_mismatch_before_governance():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    wrong_task = {**_task(), "task_id": "different-task"}
+
+    with authorizer.bind_execution_context(_context(), lambda: True):
+        assert authorizer.authorize("apply_patch", wrong_task) is False
+
+
+def test_authorizer_requires_context_with_job_plan_and_lease_fields():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    incomplete = {key: value for key, value in _context().items() if key != "plan_digest"}
+
+    with pytest.raises(GovernedWorkerAuthorizationError, match="complete_worker_execution_context_required"):
+        with authorizer.bind_execution_context(incomplete, lambda: True):
+            pass
+
+
+
+def test_authorizer_binds_job_plan_and_lease_digest_into_governed_request(monkeypatch):
+    import services.kdo_engineering_worker_authorization as module
+
+    captured = {}
+
+    async def fake_governed_action(**kwargs):
+        captured.update(kwargs)
+        receipt = {"intent_id": "intent-a", "execution_id": "execution-a"}
+        captured["verified_scope"] = kwargs["receipt_verifier"](
+            {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "task_id": "task-a",
+                "decision_id": "decision-a",
+                "action_type": ACTION_TYPE,
+            },
+            receipt,
+        )
+        return {
+            "status": "succeeded",
+            "ok": True,
+            "receipt_verified": True,
+            "receipt": receipt,
+        }
+
+    monkeypatch.setattr(module, "execute_council_governed_engineering_action", fake_governed_action)
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    context = _context()
+    verified_scopes = []
+    authorizer._receipt_verifier.verify = lambda scope, receipt: verified_scopes.append(dict(scope)) or True
+
+    with authorizer.bind_execution_context(context, lambda: True):
+        assert authorizer.authorize("run_tests", _task()) is True
+
+    params = captured["parameters"]
+    assert verified_scopes[0]["job_id"] == "job-a"
+    assert verified_scopes[0]["plan_digest"] == "a" * 64
+    assert verified_scopes[0]["payload_digest"] == params["payload_digest"]
+    assert verified_scopes[0]["lease_token_digest"] == params["lease_token_digest"]
+    assert params["job_id"] == "job-a"
+    assert params["plan_digest"] == "a" * 64
+    assert params["lease_token_digest"] == __import__("hashlib").sha256(
+        b"lease-secret"
+    ).hexdigest()
+    assert "lease-secret" not in str(params)
+
+
+
+def test_action_kernel_handler_rechecks_lease_after_council_approval():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    context = _context()
+    with authorizer.bind_execution_context(context, lambda: False):
+        handler = kernel.contracts[ACTION_TYPE].handler
+        params = _handler_parameters(context)
+        with pytest.raises(GovernedWorkerAuthorizationError, match="worker_lease_not_active"):
+            asyncio.run(asyncio.to_thread(handler, params, None))
+
+
+
+@pytest.mark.parametrize("field,value", [("job_id", "other-job"), ("plan_digest", "b" * 64)])
+def test_action_kernel_handler_rejects_job_or_plan_mismatch(field, value):
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    context = _context()
+    params = _handler_parameters(context)
+    params[field] = value
+    with authorizer.bind_execution_context(context, lambda: True):
+        with pytest.raises(GovernedWorkerAuthorizationError, match="worker_execution_scope_mismatch"):
+            kernel.contracts[ACTION_TYPE].handler(params, None)

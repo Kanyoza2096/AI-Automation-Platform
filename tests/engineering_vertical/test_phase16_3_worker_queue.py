@@ -20,22 +20,58 @@ def make_queue(tmp_path):
     return SQLiteEngineeringBuildQueue(tmp_path / "build-jobs.sqlite")
 
 
+def _enqueue_verified(queue, **kwargs):
+    job = queue.enqueue(**kwargs)
+    current = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
+    if not current.admission_receipt_verified:
+        queue.record_admission_receipt(
+            tenant_id=job.tenant_id, workspace_id=job.workspace_id, task_id=job.task_id,
+            decision_id="test-council-decision", intent_id="test-intent-" + job.task_id,
+            execution_id="test-execution-" + job.task_id,
+        )
+    return job
+
+
 def test_queue_is_idempotent_and_rejects_conflicting_payload(tmp_path):
     queue = make_queue(tmp_path)
-    first = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    first = _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                           plan_digest=DIGEST, idempotency_key="idem1")
-    repeated = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    repeated = _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                              plan_digest=DIGEST, idempotency_key="idem1")
     assert first.job_id == repeated.job_id
     with pytest.raises(Phase163Error, match="payload_conflict"):
-        queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+        queue.enqueue( tenant_id="t1", workspace_id="w1", task_id="task1",
                       plan_digest="b" * 64, idempotency_key="idem1")
+    queue.close()
+
+
+def test_admission_receipt_recording_is_idempotent_but_rejects_conflicts(tmp_path):
+    queue = make_queue(tmp_path)
+    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task-receipt",
+                  plan_digest=DIGEST, idempotency_key="idem-receipt")
+    values = dict(tenant_id="t1", workspace_id="w1", task_id="task-receipt",
+                  decision_id="decision-1", intent_id="intent-1", execution_id="execution-1")
+    first = queue.record_admission_receipt(**values)
+    repeated = queue.record_admission_receipt(**values)
+    assert first.admission_receipt_verified is True
+    assert repeated.admission_execution_id == "execution-1"
+    with pytest.raises(Phase163Error, match="admission_receipt_conflict"):
+        queue.record_admission_receipt(**{**values, "execution_id": "forged-execution"})
+    queue.close()
+
+
+def test_unverified_queue_job_cannot_be_claimed(tmp_path):
+    queue = make_queue(tmp_path)
+    job = queue.enqueue( tenant_id="t1", workspace_id="w1", task_id="task-unverified",
+                        plan_digest=DIGEST, idempotency_key="idem-unverified")
+    assert job.admission_receipt_verified is False
+    assert queue.claim_next(worker_id="worker-a", lease_seconds=60) is None
     queue.close()
 
 
 def test_claim_lease_is_fenced_and_second_worker_cannot_claim_same_job(tmp_path):
     queue = make_queue(tmp_path)
-    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                   plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a", lease_seconds=60)
     assert claimed and claimed.status == "running" and claimed.lease_token
@@ -49,7 +85,7 @@ def test_claim_lease_is_fenced_and_second_worker_cannot_claim_same_job(tmp_path)
 
 def test_expired_lease_is_uncertain_only_when_worker_absence_confirmed(tmp_path):
     queue = make_queue(tmp_path)
-    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                   plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
     expired = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
@@ -66,7 +102,7 @@ def test_expired_lease_is_uncertain_only_when_worker_absence_confirmed(tmp_path)
 
 def test_queue_metadata_is_tenant_scoped(tmp_path):
     queue = make_queue(tmp_path)
-    job = queue.enqueue(tenant_id="tenant-a", workspace_id="workspace-a", task_id="task-a",
+    job = _enqueue_verified(queue, tenant_id="tenant-a", workspace_id="workspace-a", task_id="task-a",
                         plan_digest=DIGEST, idempotency_key="idem-a")
     with pytest.raises(Phase163Error, match="not_found"):
         queue.get(job.job_id, tenant_id="tenant-b", workspace_id="workspace-a")
@@ -75,7 +111,7 @@ def test_queue_metadata_is_tenant_scoped(tmp_path):
 
 def test_queue_persists_across_repository_reopen(tmp_path):
     queue = make_queue(tmp_path)
-    job = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    job = _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                         plan_digest=DIGEST, idempotency_key="idem1")
     queue.close()
     reopened = make_queue(tmp_path)
@@ -161,9 +197,58 @@ def test_council_and_action_kernel_admission_creates_durable_job_only_after_appr
         council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-1"},
         receipt_verifier=lambda scope, receipt: True))
     assert result["ok"] is True
+    queued = queue._record(queue._db.execute(
+        "SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
+        (task.tenant_id, task.workspace_id, task.task_id),
+    ).fetchone())
+    assert queued.admission_receipt_verified is True
+    assert queued.admission_decision_id == "council-decision-1"
+    assert queued.admission_intent_id and queued.admission_execution_id
     job = queue.claim_next(worker_id="worker-1")
     assert job is not None and job.status == "running"
     assert job.task_id == task.task_id
+    queue.close()
+
+
+def test_admission_refuses_to_enqueue_without_authoritative_receipt_verifier(tmp_path):
+    import asyncio
+    from services.kdo_engineering_phase16_3 import admit_approved_build
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    kernel = ActionKernel(allow_in_memory=True)
+    register_engineering_build_enqueue_contract(kernel, queue)
+    with pytest.raises(Phase163Error, match="authoritative_admission_receipt_verifier_required"):
+        asyncio.run(admit_approved_build(workflow=workflow, action_kernel=kernel,
+            task_id=task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+            actor_id="builder", agent_id="kdo-agent",
+            council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "decision-no-verifier"}))
+    assert queue.claim_next(worker_id="worker-1") is None
+    assert queue._db.execute("SELECT COUNT(*) FROM kdo_engineering_build_jobs").fetchone()[0] == 0
+    queue.close()
+
+
+def test_receipt_verification_failure_leaves_enqueued_job_unclaimable(tmp_path):
+    import asyncio
+    from services.kdo_engineering_phase16_3 import admit_approved_build
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    kernel = ActionKernel(allow_in_memory=True)
+    register_engineering_build_enqueue_contract(kernel, queue)
+    from services.kdo_engineering_governed_actions import GovernedEngineeringActionError
+    with pytest.raises(GovernedEngineeringActionError, match="build_admission_receipt_not_verified"):
+        asyncio.run(admit_approved_build(workflow=workflow, action_kernel=kernel,
+            task_id=task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+            actor_id="builder", agent_id="kdo-agent",
+            council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-rejected"},
+            receipt_verifier=lambda scope, receipt: False))
+    queued = queue._record(queue._db.execute(
+        "SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
+        (task.tenant_id, task.workspace_id, task.task_id),
+    ).fetchone())
+    assert queued.admission_receipt_verified is False
+    assert queue.claim_next(worker_id="worker-1") is None
     queue.close()
 
 
@@ -173,7 +258,7 @@ def test_claimed_worker_runs_approved_task_and_finishes_at_review_boundary(tmp_p
 
     workflow, task, source = _make_approved_workflow(tmp_path)
     queue = make_queue(tmp_path)
-    job = queue.enqueue(tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+    job = _enqueue_verified(queue, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
         task_id=task.task_id, plan_digest=workflow.tasks.get(task.task_id,
             tenant_id=task.tenant_id, workspace_id=task.workspace_id).evidence["plan_review"]["digest"],
         idempotency_key="approved-build-1")
@@ -184,10 +269,32 @@ def test_claimed_worker_runs_approved_task_and_finishes_at_review_boundary(tmp_p
         (path / "app.py").write_text("print('changed')\n", encoding="utf-8")
         return {"changed": ["app.py"], "tests": "not-run-by-test-executor"}
     result = run_claimed_build_job(workflow=workflow, queue=queue, job=claimed,
-        worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder", executor=executor)
+        worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder", executor=executor,
+        admission_receipt_verifier=lambda scope, receipt: True)
     assert result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW
     assert queue.get(job.job_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id).status == "awaiting_review"
     assert (source / "app.py").read_text(encoding="utf-8") == "print('base')\n"
+    queue.close()
+
+
+def test_worker_rechecks_authoritative_receipt_before_executor(tmp_path):
+    from services.kdo_engineering_phase16_3 import run_claimed_build_job
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+    job = _enqueue_verified(queue, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+        task_id=task.task_id, plan_digest=stored.evidence["plan_review"]["digest"],
+        idempotency_key="receipt-recheck-build")
+    claimed = queue.claim_next(worker_id="worker-1")
+    executed = []
+    with pytest.raises(Phase163Error, match="authoritative_admission_receipt_not_confirmed"):
+        run_claimed_build_job(workflow=workflow, queue=queue, job=claimed,
+            worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder",
+            executor=lambda *args, **kwargs: executed.append(True),
+            admission_receipt_verifier=lambda scope, receipt: False)
+    assert executed == []
+    assert queue.get(job.job_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id).status == "running"
     queue.close()
 
 
@@ -216,7 +323,7 @@ def test_claimed_job_cannot_be_relabelled_to_another_task(tmp_path):
     from dataclasses import replace
 
     queue = make_queue(tmp_path)
-    job = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    job = _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                         plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a")
     forged = replace(claimed, task_id="task-other")
@@ -227,7 +334,7 @@ def test_claimed_job_cannot_be_relabelled_to_another_task(tmp_path):
 
 def test_lease_renewal_extends_expiry_and_preserves_fencing(tmp_path):
     queue = make_queue(tmp_path)
-    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                   plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
     assert claimed is not None
@@ -244,7 +351,7 @@ def test_lease_renewal_extends_expiry_and_preserves_fencing(tmp_path):
 
 def test_expired_lease_cannot_be_renewed_or_completed(tmp_path):
     queue = make_queue(tmp_path)
-    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                   plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
     expired = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
@@ -264,7 +371,7 @@ def test_expired_lease_cannot_be_renewed_or_completed(tmp_path):
 @pytest.mark.parametrize("worker_id,lease_token", [("", "token"), ("worker", ""), (None, "token")])
 def test_lease_mutations_require_worker_identity_and_token(tmp_path, worker_id, lease_token):
     queue = make_queue(tmp_path)
-    queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                   plan_digest=DIGEST, idempotency_key="idem1")
     claimed = queue.claim_next(worker_id="worker-a", lease_seconds=30)
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
@@ -282,9 +389,9 @@ def test_claim_rejects_invalid_lease_duration_types_and_bounds(tmp_path, lease_s
 
 def test_scoped_claim_skips_jobs_outside_tenant_and_workspace(tmp_path):
     queue = make_queue(tmp_path)
-    other = queue.enqueue(tenant_id="tenant-b", workspace_id="workspace-b", task_id="other-task",
+    other = _enqueue_verified(queue, tenant_id="tenant-b", workspace_id="workspace-b", task_id="other-task",
                           plan_digest=DIGEST, idempotency_key="other-idem")
-    expected = queue.enqueue(tenant_id="tenant-a", workspace_id="workspace-a", task_id="target-task",
+    expected = _enqueue_verified(queue, tenant_id="tenant-a", workspace_id="workspace-a", task_id="target-task",
                              plan_digest=DIGEST, idempotency_key="target-idem")
     claimed = queue.claim_next(worker_id="worker-a", tenant_id="tenant-a", workspace_id="workspace-a")
     assert claimed is not None
@@ -348,7 +455,7 @@ def test_claimed_worker_renews_lease_during_long_running_executor(tmp_path):
     queue = make_queue(tmp_path)
     stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
     digest = stored.evidence["plan_review"]["digest"]
-    queue.enqueue(tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
+    _enqueue_verified(queue, tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
                   plan_digest=digest, idempotency_key="heartbeat-build-1")
     claimed = queue.claim_next(worker_id="worker-1", lease_seconds=30,
                                tenant_id=task.tenant_id, workspace_id=task.workspace_id)
@@ -371,6 +478,7 @@ def test_claimed_worker_renews_lease_during_long_running_executor(tmp_path):
     result = run_claimed_build_job(
         workflow=workflow, queue=counted, job=claimed, worker_id="worker-1",
         lease_token=claimed.lease_token, actor_id="builder", executor=executor,
+        admission_receipt_verifier=lambda scope, receipt: True,
         lease_seconds=30, max_runtime_seconds=2, heartbeat_interval_seconds=0.01,
     )
     assert counted.renewals >= 1
@@ -388,7 +496,7 @@ def test_claimed_worker_timeout_marks_job_uncertain_and_blocks_late_finalization
     queue = make_queue(tmp_path)
     stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
     digest = stored.evidence["plan_review"]["digest"]
-    queue.enqueue(tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
+    _enqueue_verified(queue, tenant_id=task.tenant_id, workspace_id=task.workspace_id, task_id=task.task_id,
                   plan_digest=digest, idempotency_key="timeout-build-1")
     claimed = queue.claim_next(worker_id="worker-1", lease_seconds=30,
                                tenant_id=task.tenant_id, workspace_id=task.workspace_id)
@@ -401,6 +509,7 @@ def test_claimed_worker_timeout_marks_job_uncertain_and_blocks_late_finalization
         run_claimed_build_job(
             workflow=workflow, queue=queue, job=claimed, worker_id="worker-1",
             lease_token=claimed.lease_token, actor_id="builder", executor=slow_executor,
+            admission_receipt_verifier=lambda scope, receipt: True,
             lease_seconds=30, max_runtime_seconds=0.03, heartbeat_interval_seconds=0.01,
         )
     assert queue.get(claimed.job_id, tenant_id=task.tenant_id,
@@ -424,6 +533,7 @@ def test_claimed_worker_rejects_invalid_execution_deadline(tmp_path, max_runtime
         run_claimed_build_job(
             workflow=workflow, queue=queue, job=None, worker_id="worker",
             lease_token="token", actor_id="builder", executor=lambda *_: {},
+            admission_receipt_verifier=lambda scope, receipt: True,
             max_runtime_seconds=max_runtime_seconds,
         )
     queue.close()

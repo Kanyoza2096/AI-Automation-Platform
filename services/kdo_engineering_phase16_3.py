@@ -48,6 +48,11 @@ class EngineeringBuildJob:
     lease_expires_at: str | None
     created_at: str
     updated_at: str
+    admission_decision_id: str | None = None
+    admission_intent_id: str | None = None
+    admission_execution_id: str | None = None
+    admission_receipt_verified: bool = False
+    admitted_at: str | None = None
 
 
 def _utcnow() -> datetime:
@@ -84,6 +89,8 @@ class SQLiteEngineeringBuildQueue:
             lease_owner TEXT, lease_token TEXT, lease_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            admission_decision_id TEXT, admission_intent_id TEXT, admission_execution_id TEXT,
+            admission_receipt_verified INTEGER NOT NULL DEFAULT 0, admitted_at TEXT,
             UNIQUE(tenant_id, workspace_id, idempotency_key),
             UNIQUE(tenant_id, workspace_id, task_id)
           );
@@ -92,10 +99,27 @@ class SQLiteEngineeringBuildQueue:
           CREATE INDEX IF NOT EXISTS idx_kdo_build_jobs_scope
             ON kdo_engineering_build_jobs(tenant_id, workspace_id, status);
         """)
+        # Additive upgrade for durable local queues created before receipt gating.
+        existing = {row[1] for row in self._db.execute(
+            "PRAGMA table_info(kdo_engineering_build_jobs)"
+        ).fetchall()}
+        for name, declaration in (
+            ("admission_decision_id", "TEXT"),
+            ("admission_intent_id", "TEXT"),
+            ("admission_execution_id", "TEXT"),
+            ("admission_receipt_verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("admitted_at", "TEXT"),
+        ):
+            if name not in existing:
+                self._db.execute(
+                    f"ALTER TABLE kdo_engineering_build_jobs ADD COLUMN {name} {declaration}"
+                )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> EngineeringBuildJob:
-        return EngineeringBuildJob(**dict(row))
+        values = dict(row)
+        values["admission_receipt_verified"] = values.get("admission_receipt_verified") == 1
+        return EngineeringBuildJob(**values)
 
     def enqueue(self, *, tenant_id: str, workspace_id: str, task_id: str,
                 plan_digest: str, idempotency_key: str) -> EngineeringBuildJob:
@@ -125,6 +149,38 @@ class SQLiteEngineeringBuildQueue:
                 self._db.execute("INSERT INTO kdo_engineering_build_jobs(job_id,tenant_id,workspace_id,task_id,plan_digest,idempotency_key,status) VALUES(?,?,?,?,?,?, 'queued')",
                     (job_id, tenant_id, workspace_id, task_id, plan_digest, idempotency_key))
                 row = self._db.execute("SELECT * FROM kdo_engineering_build_jobs WHERE job_id=?", (job_id,)).fetchone()
+                self._db.execute("COMMIT")
+                return self._record(row)
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def record_admission_receipt(self, *, tenant_id: str, workspace_id: str, task_id: str,
+                                 decision_id: str, intent_id: str, execution_id: str) -> EngineeringBuildJob:
+        values = (tenant_id, workspace_id, task_id, decision_id, intent_id, execution_id)
+        if not all(isinstance(v, str) and v.strip() for v in values):
+            raise Phase163Error("complete_admission_receipt_scope_required")
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._db.execute("""UPDATE kdo_engineering_build_jobs
+                    SET admission_decision_id=?, admission_intent_id=?, admission_execution_id=?,
+                        admission_receipt_verified=1, admitted_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+                    WHERE tenant_id=? AND workspace_id=? AND task_id=? AND status='queued'
+                      AND admission_receipt_verified=0""",
+                    (decision_id, intent_id, execution_id, tenant_id, workspace_id, task_id))
+                row = self._db.execute("SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
+                    (tenant_id, workspace_id, task_id)).fetchone()
+                if row is None:
+                    raise Phase163Error("queued_job_not_found_or_receipt_already_recorded")
+                recorded = dict(row)
+                expected = (decision_id, intent_id, execution_id)
+                actual = (recorded.get("admission_decision_id"), recorded.get("admission_intent_id"),
+                          recorded.get("admission_execution_id"))
+                if result.rowcount != 1 and not (
+                    recorded.get("admission_receipt_verified") == 1 and actual == expected
+                ):
+                    raise Phase163Error("admission_receipt_conflict_or_job_not_queued")
                 self._db.execute("COMMIT")
                 return self._record(row)
             except Exception:
@@ -163,13 +219,13 @@ class SQLiteEngineeringBuildQueue:
                 if scoped:
                     row = self._db.execute(
                         "SELECT * FROM kdo_engineering_build_jobs "
-                        "WHERE status='queued' AND tenant_id=? AND workspace_id=? "
+                        "WHERE status='queued' AND admission_receipt_verified=1 AND tenant_id=? AND workspace_id=? "
                         "ORDER BY created_at,job_id LIMIT 1",
                         (tenant_id, workspace_id),
                     ).fetchone()
                 else:
                     row = self._db.execute(
-                        "SELECT * FROM kdo_engineering_build_jobs WHERE status='queued' "
+                        "SELECT * FROM kdo_engineering_build_jobs WHERE status='queued' AND admission_receipt_verified=1 "
                         "ORDER BY created_at,job_id LIMIT 1"
                     ).fetchone()
                 if row is None:
@@ -287,6 +343,8 @@ def register_engineering_build_enqueue_contract(action_kernel: Any, queue: SQLit
     if action_type in action_kernel.registered_action_types():
         raise Phase163Error("build_enqueue_contract_already_registered")
 
+    setattr(action_kernel, "_kdo_engineering_build_queue", queue)
+
     def enqueue_handler(parameters: Mapping[str, Any], _intent: Any) -> dict[str, Any]:
         job = queue.enqueue(tenant_id=str(parameters.get("tenant_id", "")),
             workspace_id=str(parameters.get("workspace_id", "")), task_id=str(parameters.get("task_id", "")),
@@ -323,13 +381,36 @@ async def admit_approved_build(*, workflow: KDOPhase162Workflow, action_kernel: 
         raise Phase163Error("durable_plan_approval_record_required") from exc
     if approval.get("decision") != "approved" or approval.get("plan_digest") != digest or approval.get("reviewer_id") != review.get("reviewed_by"):
         raise Phase163Error("durable_plan_approval_mismatch")
+    queue = getattr(action_kernel, "_kdo_engineering_build_queue", None)
+    if queue is None or not callable(getattr(queue, "record_admission_receipt", None)):
+        raise Phase163Error("governed_build_queue_receipt_recorder_required")
+    if not callable(receipt_verifier):
+        raise Phase163Error("authoritative_admission_receipt_verifier_required")
+
+    job_idempotency_key = f"kdo-build:{tenant_id}:{workspace_id}:{task_id}:{digest}"
+
+    async def verify_and_persist_receipt(scope: Mapping[str, Any], receipt: Mapping[str, Any]) -> bool:
+        if receipt_verifier is None:
+            return False
+        receipt_scope = {**dict(scope), "plan_digest": digest,
+                         "job_idempotency_key": job_idempotency_key}
+        verified = receipt_verifier(receipt_scope, receipt)
+        if hasattr(verified, "__await__"):
+            verified = await verified
+        if verified is not True:
+            return False
+        queue.record_admission_receipt(tenant_id=tenant_id, workspace_id=workspace_id, task_id=task_id,
+            decision_id=str(scope.get("decision_id", "")), intent_id=str(receipt.get("intent_id", "")),
+            execution_id=str(receipt.get("execution_id", "")))
+        return True
+
     result = await execute_council_governed_engineering_action(
         task={"tenant_id": tenant_id, "workspace_id": workspace_id, "task_id": task_id},
         action_type=action_type,
-        parameters={"plan_digest": digest, "job_idempotency_key": f"kdo-build:{tenant_id}:{workspace_id}:{task_id}:{digest}"},
+        parameters={"plan_digest": digest, "job_idempotency_key": job_idempotency_key},
         agent_id=agent_id, tool_name=tool_name, objective=f"Queue approved engineering build for task {task_id}",
         action_kernel=action_kernel, event_store=event_store,
-        council_deliberate=council_deliberate, receipt_verifier=receipt_verifier,
+        council_deliberate=council_deliberate, receipt_verifier=verify_and_persist_receipt,
         idempotency_key=f"kdo-build-admission:{tenant_id}:{workspace_id}:{task_id}:{digest}")
     if result.get("status") != "succeeded" or result.get("ok") is not True:
         raise GovernedEngineeringActionError("build_admission_receipt_not_verified")
@@ -340,6 +421,7 @@ def run_claimed_build_job(
     *, workflow: KDOPhase162Workflow, queue: Any, job: EngineeringBuildJob,
     worker_id: str, lease_token: str, actor_id: str,
     executor: Callable[..., Mapping[str, Any]],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     lease_seconds: int = 300,
     max_runtime_seconds: float = 1800,
     heartbeat_interval_seconds: float | None = None,
@@ -353,6 +435,8 @@ def run_claimed_build_job(
     when it eventually returns. Executors should still impose their own process-level
     command/container timeouts.
     """
+    if not callable(admission_receipt_verifier):
+        raise Phase163Error("authoritative_admission_receipt_verifier_required")
     if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
         raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
     if isinstance(max_runtime_seconds, bool) or not isinstance(max_runtime_seconds, (int, float)) \
@@ -366,6 +450,27 @@ def run_claimed_build_job(
 
     workflow._require(actor_id, "execute_build_worker", job.tenant_id, job.workspace_id)
     current = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
+    if (current.admission_receipt_verified is not True or not current.admission_decision_id
+            or not current.admission_intent_id or not current.admission_execution_id):
+        raise Phase163Error("verified_governed_admission_receipt_required")
+    admission_scope = {"tenant_id": current.tenant_id, "workspace_id": current.workspace_id,
+                       "task_id": current.task_id, "decision_id": current.admission_decision_id,
+                       "action_type": "kdo_engineering_build_enqueue",
+                       "plan_digest": current.plan_digest,
+                       "job_idempotency_key": current.idempotency_key}
+    admission_receipt = {"intent_id": current.admission_intent_id,
+                         "execution_id": current.admission_execution_id,
+                         "status": "succeeded", "action_type": "kdo_engineering_build_enqueue"}
+    try:
+        receipt_valid = admission_receipt_verifier(admission_scope, admission_receipt)
+        if hasattr(receipt_valid, "__await__"):
+            raise Phase163Error("async_admission_receipt_verifier_not_supported_in_sync_worker")
+    except Phase163Error:
+        raise
+    except Exception as exc:
+        raise Phase163Error("admission_receipt_verification_failed_closed") from exc
+    if receipt_valid is not True:
+        raise Phase163Error("authoritative_admission_receipt_not_confirmed")
     if (current.status != "running" or current.lease_owner != worker_id
             or current.lease_token != lease_token or current.task_id != job.task_id
             or current.plan_digest != job.plan_digest or current.idempotency_key != job.idempotency_key):
@@ -456,11 +561,31 @@ def run_claimed_build_job(
 
     def execute() -> None:
         try:
-            outcome["result"] = workflow.execute_approved_build(
-                job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
-                actor_id=actor_id, executor=executor, execution_guard=execution_guard,
-                execution_cancelled=execution_cancelled,
-            )
+            worker_authorizer = getattr(executor, "worker_authorizer", None)
+            if worker_authorizer is not None:
+                binder = getattr(worker_authorizer, "bind_execution_context", None)
+                if not callable(binder):
+                    raise Phase163Error("worker_authorizer_context_binding_required")
+                execution_context = {
+                    "job_id": current.job_id,
+                    "tenant_id": current.tenant_id,
+                    "workspace_id": current.workspace_id,
+                    "task_id": current.task_id,
+                    "plan_digest": current.plan_digest,
+                    "lease_token": lease_token,
+                }
+                with binder(execution_context, lambda: (verify_current_lease() is not None)):
+                    outcome["result"] = workflow.execute_approved_build(
+                        job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
+                        actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+                        execution_cancelled=execution_cancelled,
+                    )
+            else:
+                outcome["result"] = workflow.execute_approved_build(
+                    job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
+                    actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+                    execution_cancelled=execution_cancelled,
+                )
         except BaseException as exc:
             outcome["error"] = exc
         finally:

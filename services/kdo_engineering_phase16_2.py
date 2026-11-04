@@ -193,10 +193,10 @@ class KDOPhase162Workflow:
         if not isinstance(plan, (list, tuple)) or not plan or any(not isinstance(s, str) or not s.strip() for s in plan):
             raise Phase162Error("plan_must_contain_nonempty_steps")
         task = self.tasks.get(task_id, tenant_id=tenant_id, workspace_id=workspace_id)
-        if task.status != EngineeringTaskStatus.PROPOSED:
-            raise Phase162Error("plan_submission_requires_proposed_task")
         if task.evidence.get("plan_review", {}).get("state") in {"submitted", "approved", "rejected"}:
             raise Phase162Error("plan_already_submitted")
+        if task.status != EngineeringTaskStatus.PROPOSED:
+            raise Phase162Error("plan_submission_requires_proposed_task")
         plan_record = {"state": "submitted", "steps": [s.strip() for s in plan],
                        "digest": _plan_digest(plan), "submitted_by": actor_id}
         return self.tasks.update_evidence(task_id, tenant_id=tenant_id, workspace_id=workspace_id,
@@ -209,12 +209,8 @@ class KDOPhase162Workflow:
         review = dict(task.evidence.get("plan_review", {}))
         if task.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
             raise Phase162Error("submitted_plan_required")
-        # The PostgreSQL repository evaluates the workspace's accepted-member
-        # count inside the approval transaction. Keep the independent-review
-        # rule for the local SQLite adapter, which has no membership authority.
+        # The authenticated workspace operator may approve their own submitted plan.
         atomic_review = getattr(self.tasks, "review_plan_atomically", None)
-        if not callable(atomic_review) and review.get("submitted_by") == reviewer_id:
-            raise Phase162Error("independent_plan_reviewer_required")
         review.update({"state": "approved" if approve else "rejected", "reviewed_by": reviewer_id,
                        "reason": str(reason)[:1000], "approved_digest": review["digest"] if approve else None})
         # PostgreSQL adapters atomically persist task state and the immutable approval ledger.

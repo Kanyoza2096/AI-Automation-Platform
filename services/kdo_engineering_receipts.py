@@ -82,6 +82,18 @@ class DurableActionReceiptVerifier:
                 and str(params.get("task_id", "")) == task_id
             ):
                 return False
+            # When supplied by the engineering queue gate, also bind the
+            # authoritative intent to the exact approved plan and queue key.
+            if "plan_digest" in scope and params.get("plan_digest") != scope.get("plan_digest"):
+                return False
+            if ("job_idempotency_key" in scope
+                    and params.get("job_idempotency_key") != scope.get("job_idempotency_key")):
+                return False
+            # Worker action receipts may bind a live job, lease token digest and
+            # canonical action payload in addition to the approved plan.
+            for binding in ("job_id", "lease_token_digest", "payload_digest"):
+                if binding in scope and params.get(binding) != scope.get(binding):
+                    return False
 
             execution = _single_row(self._db, "external_execution_ledger", {
                 "workspace_id": _workspace_uuid(workspace_id),

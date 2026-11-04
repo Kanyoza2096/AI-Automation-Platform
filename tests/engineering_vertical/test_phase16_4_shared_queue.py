@@ -71,7 +71,9 @@ class FakeConnection:
     def description_for_job():
         return [(name,) for name in (
             "job_id", "tenant_id", "workspace_id", "task_id", "plan_digest", "idempotency_key",
-            "status", "attempts", "lease_owner", "lease_token", "lease_expires_at", "created_at", "updated_at")]
+            "status", "attempts", "lease_owner", "lease_token", "lease_expires_at", "created_at", "updated_at",
+            "admission_decision_id", "admission_intent_id", "admission_execution_id",
+            "admission_receipt_verified", "admitted_at")]
 
     def cursor(self):
         return FakeCursor(self)
@@ -93,6 +95,9 @@ def job_row(status="queued"):
         "task_id": "task-a", "plan_digest": DIGEST, "idempotency_key": "idem-a",
         "status": status, "attempts": 0, "lease_owner": None, "lease_token": None,
         "lease_expires_at": None, "created_at": now, "updated_at": now,
+        "admission_decision_id": "decision-a", "admission_intent_id": "intent-a",
+        "admission_execution_id": "execution-a", "admission_receipt_verified": True,
+        "admitted_at": now,
     }
 
 
@@ -140,6 +145,14 @@ def test_bootstrap_readiness_is_fail_closed_and_never_claims_release_authority()
     assert result["release_authorized"] is False
     assert result["checks"]["postgres_queue_adapter"] is True
     assert result["checks"]["receipt_verifier_configured"] is False
+
+
+def test_admission_receipt_migration_defaults_old_jobs_to_unverified():
+    root = Path(__file__).resolve().parents[2]
+    sql = (root / "migrations" / "153_kdo_engineering_admission_receipt_gate.sql").read_text(encoding="utf-8")
+    assert "admission_receipt_verified BOOLEAN NOT NULL DEFAULT FALSE" in sql
+    assert "admission_execution_id" in sql and "admission_intent_id" in sql
+    assert "kdo_build_jobs_verified_receipt_consistency" in sql
 
 
 def test_migration_enables_rls_and_restricts_browser_roles():
