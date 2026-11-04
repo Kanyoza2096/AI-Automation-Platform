@@ -246,19 +246,33 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
         blocked = (re.compile(r"(^|/)\.git(/|$)"), re.compile(r"(^|/)\.github/workflows/"),
                    re.compile(r"(^|/)(Procfile|render\.yaml|render\.yml|Dockerfile)$", re.I),
                    re.compile(r"(^|/)(\.env(?:\.|$)|.*\.pem$|.*\.key$|.*credentials.*)", re.I))
+        candidate = Path(workspace_path).resolve()
+        def validate_target(raw_target: str) -> None:
+            target = raw_target.strip().split("\t", 1)[0]
+            if target == "/dev/null":
+                return
+            target = target[2:] if target.startswith(("a/", "b/")) else target
+            path = Path(target)
+            if (path.is_absolute() or ".." in path.parts or not target
+                    or any(p.search(target) for p in blocked)):
+                raise GatewayAgentError("patch_path_not_allowed")
+            probe = candidate
+            for part in path.parts:
+                probe = probe / part
+                if probe.is_symlink():
+                    raise GatewayAgentError("patch_symlink_path_not_allowed")
+
         for line in patch.splitlines():
-            if line.startswith(("+++ ", "--- ")) and line[4:].strip() != "/dev/null":
-                target = line[4:].split("\t", 1)[0]
-                target = target[2:] if target.startswith(("a/", "b/")) else target
-                path = Path(target)
-                if path.is_absolute() or ".." in path.parts or any(p.search(target) for p in blocked):
+            if line.startswith("diff --git "):
+                parts = line[len("diff --git "):].split()
+                if len(parts) != 2:
                     raise GatewayAgentError("patch_path_not_allowed")
-                candidate = Path(workspace_path).resolve()
-                probe = candidate
-                for part in path.parts:
-                    probe = probe / part
-                    if probe.is_symlink():
-                        raise GatewayAgentError("patch_symlink_path_not_allowed")
+                validate_target(parts[0])
+                validate_target(parts[1])
+            elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+                validate_target(line.split(" ", 2)[2])
+            elif line.startswith(("+++ ", "--- ")):
+                validate_target(line[4:])
         if cancellation_event is not None and cancellation_event.is_set():
             return {"status": "cancelled", "execution_started": False, "release_authorized": False}
         task_scope = {"task_id": task_id, "tenant_id": tenant_id, "workspace_id": workspace_id,
