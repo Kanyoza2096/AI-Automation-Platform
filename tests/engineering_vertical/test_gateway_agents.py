@@ -101,6 +101,8 @@ def test_gateway_specialists_complete_test_repair_verify_handoff_without_release
                  "evidence": {"patch_text": "diff --git a/calculator.py b/calculator.py"}}),
         _result({"status": "succeeded", "summary": "Machine evidence satisfies verification",
                  "evidence": {"verification_status": "approved", "review_id": "forged"}}),
+        _result({"status": "succeeded", "summary": "Frontend repair proposal",
+                 "evidence": {"patch_text": "diff --git a/x b/x"}}),
     ]
 
     def complete_structured(prompt, **kwargs):
@@ -142,3 +144,4 @@ def test_gateway_specialists_complete_test_repair_verify_handoff_without_release
         {"acceptance_criteria": ["Fix visible error"], "workspace_id": "w1"}, (),
     ))
     assert frontend_proposal["evidence"]["patch_text"] == "diff --git a/x b/x"
+    assert len(gateway.calls) == 4
