@@ -17,6 +17,7 @@ def test_shared_bus_does_not_mark_unhandled_events_processed(monkeypatch):
         def is_(self, *args): return self
         def order(self, *args, **kwargs): return self
         def limit(self, *args): return self
+        def range(self, *args): return self
         def execute(self):
             class R: data = [{"id": "e1", "event_type": "handled_elsewhere", "processed": False}]
             return R()
