@@ -37,6 +37,7 @@ def build_worker_dependencies(
     registry_factory: Callable[[Any, str, tuple[str, ...]], Any],
     repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
     pipeline_authorize: Callable[[str, Mapping[str, Any]], bool],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     docker_binary: str = "docker",
     test_profile: str = "pytest",
     test_timeout_seconds: int = 120,
@@ -60,6 +61,7 @@ def build_worker_dependencies(
         "registry_factory": registry_factory,
         "repair_capabilities_factory": repair_capabilities_factory,
         "pipeline_authorize": pipeline_authorize,
+        "admission_receipt_verifier": admission_receipt_verifier,
     }
     missing = [name for name, callback in required_callbacks.items() if not callable(callback)]
     if missing:
@@ -97,6 +99,7 @@ def build_worker_dependencies(
         "queue": queue,
         "workflow": workflow,
         "executor": executor,
+        "admission_receipt_verifier": admission_receipt_verifier,
         "cleanup": lambda: None,
     }
 
@@ -112,6 +115,7 @@ def build_gateway_worker_dependencies(
     gateway: Any,
     workflow_authorize: Callable[[str, str, str, str], bool],
     pipeline_authorize: Callable[[str, Mapping[str, Any]], bool],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
     docker_binary: str = "docker",
     test_profile: str = "pytest",
@@ -154,6 +158,7 @@ def build_gateway_worker_dependencies(
         registry_factory=registry_factory,
         repair_capabilities_factory=repair_capabilities_factory,
         pipeline_authorize=pipeline_authorize,
+        admission_receipt_verifier=admission_receipt_verifier,
         docker_binary=docker_binary,
         test_profile=test_profile,
         test_timeout_seconds=test_timeout_seconds,
