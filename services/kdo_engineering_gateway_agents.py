@@ -318,8 +318,17 @@ def make_gateway_quality_registry_factory(*, gateway: Any, workspace_id: str):
                 if _role == "backend_engineer" and isinstance(reported.get("patch_text"), str):
                     normalized["patch_text"] = reported["patch_text"]
                 if _role == "independent_reviewer":
+                    # This is an AI quality verification only. The workflow still
+                    # transitions to AWAITING_REVIEW for a separate human decision.
+                    # Never accept a model-supplied review_id or release decision.
                     normalized.pop("review_id", None)
                     normalized["review_status"] = "pending_human_review"
+                    if reported.get("verification_status") == "approved" and normalized.get("gateway_request_id"):
+                        normalized["verification_status"] = "approved"
+                        normalized["verification_id"] = normalized["gateway_request_id"]
+                    else:
+                        normalized["verification_status"] = "rejected"
+                        normalized.pop("verification_id", None)
                 result["evidence"] = normalized
                 return result
 
