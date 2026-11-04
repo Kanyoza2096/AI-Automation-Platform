@@ -60,6 +60,7 @@ def test_composition_wires_postgres_workflow_and_containerized_quality_executor(
         registry_factory=registry_factory,
         repair_capabilities_factory=repair_capabilities_factory,
         pipeline_authorize=authorize_pipeline,
+        admission_receipt_verifier=lambda scope, receipt: True,
     )
 
     assert isinstance(deps["queue"], PostgresEngineeringBuildQueue)
@@ -87,6 +88,7 @@ def test_composition_rejects_missing_host_owned_authority_callbacks(tmp_path):
             registry_factory=lambda *args: object(),
             repair_capabilities_factory=lambda *args: {"python"},
             pipeline_authorize=None,
+            admission_receipt_verifier=lambda scope, receipt: True,
         )
 
 
@@ -108,6 +110,7 @@ def test_composition_rejects_non_digest_pinned_image(tmp_path):
             registry_factory=lambda *args: object(),
             repair_capabilities_factory=lambda *args: {"python"},
             pipeline_authorize=lambda *args: True,
+            admission_receipt_verifier=lambda scope, receipt: True,
         )
 
 
@@ -129,6 +132,7 @@ def test_composition_rejects_worker_not_explicitly_enabled(tmp_path):
             registry_factory=lambda *args: object(),
             repair_capabilities_factory=lambda *args: {"python"},
             pipeline_authorize=lambda *args: True,
+            admission_receipt_verifier=lambda scope, receipt: True,
         )
 
 
@@ -152,6 +156,7 @@ def test_gateway_composition_requires_and_wires_task_aware_repair_capabilities(t
         gateway=Gateway(),
         workflow_authorize=lambda *_: True,
         pipeline_authorize=lambda *_: True,
+        admission_receipt_verifier=lambda scope, receipt: True,
         repair_capabilities_factory=lambda task, steps: {"backend", "api"},
     )
     assert isinstance(deps["queue"], PostgresEngineeringBuildQueue)
@@ -178,5 +183,6 @@ def test_gateway_composition_rejects_missing_task_aware_repair_capabilities(tmp_
             gateway=Gateway(),
             workflow_authorize=lambda *_: True,
             pipeline_authorize=lambda *_: True,
+        admission_receipt_verifier=lambda scope, receipt: True,
             repair_capabilities_factory=None,
         )
