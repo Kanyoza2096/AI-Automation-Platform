@@ -2,6 +2,7 @@
 
 import pytest
 
+from core.species_auth import _workspace_token_role
 from core.request_context import (
     RequestContext,
     bind_from_auth_identity,
@@ -96,3 +97,46 @@ def test_bind_from_auth_identity():
     assert ctx.workspace_id == "ws-9"
     assert ctx.correlation_id == "corr-1"
     clear_request_context()
+
+
+@pytest.mark.parametrize(
+    ("permissions", "expected_role"),
+    [
+        (["read"], "viewer"),
+        (["read", "write"], "operator"),
+        (["read", "admin"], "admin"),
+        (["read", "owner"], "owner"),
+    ],
+)
+def test_workspace_token_permissions_map_to_authority_role(permissions, expected_role):
+    clear_request_context()
+    identity = FakeIdentity(
+        is_species=False,
+        workspace_id="ws-token",
+        role=_workspace_token_role(permissions),
+        permissions=permissions,
+        method="workspace_token",
+        name="Scoped Token",
+    )
+    ctx = bind_from_auth_identity(identity)
+    assert ctx.role == expected_role
+    clear_request_context()
+
+
+def test_workspace_api_token_auth_maps_write_scope_to_operator(monkeypatch):
+    from core.api_tokens import api_token_manager
+    from core.species_auth import SpeciesAuth
+
+    monkeypatch.setattr(
+        api_token_manager,
+        "validate_token",
+        lambda _token: {
+            "workspace_id": "ws-token",
+            "permissions": ["read", "write"],
+            "name": "Scoped Token",
+        },
+    )
+    identity = SpeciesAuth()._validate_workspace_token("kny_test_token")
+    assert identity.valid is True
+    assert identity.role == "operator"
+    assert identity.permissions == ["read", "write"]
