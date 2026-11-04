@@ -169,7 +169,7 @@ class SharedEventBus:
             result = self.supabase.table("events") \
                 .select("*") \
                 .order("created_at") \
-                .limit(self.MAX_EVENTS_PER_POLL) \
+                .range(0, self.MAX_EVENTS_PER_POLL - 1) \
                 .execute()
 
             delivered = 0
