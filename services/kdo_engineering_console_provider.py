@@ -297,10 +297,29 @@ class PostgresEngineeringConsoleProvider:
         if task.evidence.get("plan_review", {}).get("state") in {"submitted", "approved", "rejected"}:
             raise EngineeringConsoleProviderError("plan_already_submitted")
         normalized = [step.strip() for step in steps]
+        normalized_assignments = None
+        if assignments is not None:
+            try:
+                from services.kdo_engineering_phase16_11_planner import _validate_assignments
+                normalized_assignments = _validate_assignments(assignments)
+            except Exception as exc:
+                raise EngineeringConsoleProviderError("invalid_specialist_assignments") from exc
+        if summary is not None and (not isinstance(summary, str) or len(summary) > 4000):
+            raise EngineeringConsoleProviderError("invalid_plan_summary")
+        if planner is not None and not isinstance(planner, dict):
+            raise EngineeringConsoleProviderError("invalid_planner_evidence")
         digest = hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+        plan_review = {"state": "submitted", "steps": normalized,
+            "digest": digest, "submitted_by": user_id}
+        if normalized_assignments is not None:
+            plan_review["assignments"] = normalized_assignments
+        if summary:
+            plan_review["summary"] = summary.strip()
+        if planner:
+            # Planner metadata is retained as unverified proposal evidence.
+            plan_review["planner"] = {**planner, "trust": "model_proposal_unverified"}
         updated = self.tasks.update_evidence(task_id, tenant_id=workspace_id, workspace_id=workspace_id,
-            expected_revision=task.revision, evidence={"plan_review": {"state": "submitted", "steps": normalized,
-                "digest": digest, "submitted_by": user_id}})
+            expected_revision=task.revision, evidence={"plan_review": plan_review})
         self._append_event(task_id=task_id, workspace_id=workspace_id, event_type="plan_submitted", actor_id=user_id,
             payload={"revision": updated.revision, "step_count": len(normalized), "plan_digest": digest})
         return _task_payload(updated)
