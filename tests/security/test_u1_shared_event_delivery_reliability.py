@@ -125,3 +125,23 @@ def test_successful_delivery_is_acknowledged_with_claim_fencing():
     assert name == "complete_shared_event_delivery"
     assert params["p_success"] is True
     assert params["p_claim_token"] == "worker:claim-2"
+
+
+def test_delivery_claim_returns_fencing_token_and_updates_lease():
+    db = Database([])
+    db.deliveries[("event-claim", "director")] = {
+        "id": "delivery-claim",
+        "event_id": "event-claim",
+        "consumer_group": "director",
+        "processed": False,
+        "dead_lettered_at": None,
+    }
+    bus = SharedEventBus(db, source_service="director")
+
+    claimed = bus._claim_delivery("event-claim")
+
+    assert claimed is not None
+    delivery_id, claim_token = claimed
+    assert delivery_id == "delivery-claim"
+    assert claim_token.startswith(bus.instance_id + ":")
+    assert db.deliveries[("event-claim", "director")]["claimed_by"] == claim_token
