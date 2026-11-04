@@ -236,7 +236,9 @@ def test_claimed_worker_runs_approved_task_and_finishes_at_review_boundary(tmp_p
         (path / "app.py").write_text("print('changed')\n", encoding="utf-8")
         return {"changed": ["app.py"], "tests": "not-run-by-test-executor"}
     result = run_claimed_build_job(workflow=workflow, queue=queue, job=claimed,
-        worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder", executor=executor)
+        worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder", executor=executor,
+        admission_receipt_verifier=lambda scope, receipt: True,
+        admission_receipt_verifier=lambda scope, receipt: True)
     assert result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW
     assert queue.get(job.job_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id).status == "awaiting_review"
     assert (source / "app.py").read_text(encoding="utf-8") == "print('base')\n"
@@ -423,6 +425,7 @@ def test_claimed_worker_renews_lease_during_long_running_executor(tmp_path):
     result = run_claimed_build_job(
         workflow=workflow, queue=counted, job=claimed, worker_id="worker-1",
         lease_token=claimed.lease_token, actor_id="builder", executor=executor,
+        admission_receipt_verifier=lambda scope, receipt: True,
         lease_seconds=30, max_runtime_seconds=2, heartbeat_interval_seconds=0.01,
     )
     assert counted.renewals >= 1
@@ -453,6 +456,7 @@ def test_claimed_worker_timeout_marks_job_uncertain_and_blocks_late_finalization
         run_claimed_build_job(
             workflow=workflow, queue=queue, job=claimed, worker_id="worker-1",
             lease_token=claimed.lease_token, actor_id="builder", executor=slow_executor,
+            admission_receipt_verifier=lambda scope, receipt: True,
             lease_seconds=30, max_runtime_seconds=0.03, heartbeat_interval_seconds=0.01,
         )
     assert queue.get(claimed.job_id, tenant_id=task.tenant_id,
@@ -476,6 +480,7 @@ def test_claimed_worker_rejects_invalid_execution_deadline(tmp_path, max_runtime
         run_claimed_build_job(
             workflow=workflow, queue=queue, job=None, worker_id="worker",
             lease_token="token", actor_id="builder", executor=lambda *_: {},
+            admission_receipt_verifier=lambda scope, receipt: True,
             max_runtime_seconds=max_runtime_seconds,
         )
     queue.close()
