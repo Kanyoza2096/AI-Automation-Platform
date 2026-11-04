@@ -8,6 +8,9 @@ on:
       - "migrations/*engineering*"
       - "requirements.txt"
       - ".github/workflows/engineering-vertical-tests.yml"
+      - "core/species_auth.py"
+      - "core/api_tokens.py"
+      - "tests/security/**"
   workflow_dispatch:
 
 permissions:
@@ -139,4 +142,5 @@ jobs:
             tests/engineering_vertical/test_phase16_13_pipeline_composition.py \
             tests/engineering_vertical/test_phase16_8_console.py \
             tests/engineering_vertical/test_staging_lifecycle.py \
-            tests/engineering_vertical/test_dag_coordinator.py
+            tests/engineering_vertical/test_dag_coordinator.py \
+            tests/security/test_phase6_production_tenant_hardening.py
