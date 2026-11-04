@@ -385,10 +385,14 @@ async def admit_approved_build(*, workflow: KDOPhase162Workflow, action_kernel: 
     if queue is None or not callable(getattr(queue, "record_admission_receipt", None)):
         raise Phase163Error("governed_build_queue_receipt_recorder_required")
 
+    job_idempotency_key = f"kdo-build:{tenant_id}:{workspace_id}:{task_id}:{digest}"
+
     async def verify_and_persist_receipt(scope: Mapping[str, Any], receipt: Mapping[str, Any]) -> bool:
         if receipt_verifier is None:
             return False
-        verified = receipt_verifier(scope, receipt)
+        receipt_scope = {**dict(scope), "plan_digest": digest,
+                         "job_idempotency_key": job_idempotency_key}
+        verified = receipt_verifier(receipt_scope, receipt)
         if hasattr(verified, "__await__"):
             verified = await verified
         if verified is not True:
@@ -401,7 +405,7 @@ async def admit_approved_build(*, workflow: KDOPhase162Workflow, action_kernel: 
     result = await execute_council_governed_engineering_action(
         task={"tenant_id": tenant_id, "workspace_id": workspace_id, "task_id": task_id},
         action_type=action_type,
-        parameters={"plan_digest": digest, "job_idempotency_key": f"kdo-build:{tenant_id}:{workspace_id}:{task_id}:{digest}"},
+        parameters={"plan_digest": digest, "job_idempotency_key": job_idempotency_key},
         agent_id=agent_id, tool_name=tool_name, objective=f"Queue approved engineering build for task {task_id}",
         action_kernel=action_kernel, event_store=event_store,
         council_deliberate=council_deliberate, receipt_verifier=verify_and_persist_receipt,
@@ -449,7 +453,9 @@ def run_claimed_build_job(
         raise Phase163Error("verified_governed_admission_receipt_required")
     admission_scope = {"tenant_id": current.tenant_id, "workspace_id": current.workspace_id,
                        "task_id": current.task_id, "decision_id": current.admission_decision_id,
-                       "action_type": "kdo_engineering_build_enqueue"}
+                       "action_type": "kdo_engineering_build_enqueue",
+                       "plan_digest": current.plan_digest,
+                       "job_idempotency_key": current.idempotency_key}
     admission_receipt = {"intent_id": current.admission_intent_id,
                          "execution_id": current.admission_execution_id,
                          "status": "succeeded", "action_type": "kdo_engineering_build_enqueue"}
