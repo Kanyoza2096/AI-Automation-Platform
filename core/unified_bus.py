@@ -565,11 +565,24 @@ class UnifiedEventBus:
             handlers = list(self._subscribers.get(event_name, []))
             wildcards = list(self._wildcard)
 
-        for handler in handlers + wildcards:
-            asyncio.create_task(
-                self._invoke_handler(handler, event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id),
-                name=f"handler-{event_name}-{event_id[:8]}",
+        # Await the complete handler set before acknowledging this dispatch
+        # item. Detached create_task calls allowed shutdown to abandon handlers
+        # and made their completion/failure invisible to queue accounting.
+        await asyncio.gather(*[
+            self._invoke_handler(
+                handler,
+                event_name,
+                payload,
+                source,
+                event_id,
+                workspace_id,
+                brand_id,
+                decision_id,
+                correlation_id,
+                parent_event_id,
             )
+            for handler in handlers + wildcards
+        ])
 
     async def _invoke_handler(
         self,
@@ -624,6 +637,50 @@ class UnifiedEventBus:
             )
         finally:
             correlation_id_ctx.reset(correlation_token)
+
+    async def replay_dead_letter(
+        self,
+        event_id: str,
+        handler_name: Optional[str] = None,
+    ) -> int:
+        """Retry matching in-memory dead letters and remove successful retries."""
+        candidates = [
+            letter for letter in list(self._dead_letters)
+            if letter.event_id == event_id
+            and (handler_name is None or letter.handler_name == handler_name)
+        ]
+        replayed = 0
+        async with self._lock:
+            registered = {
+                getattr(handler, "__qualname__", str(handler)): (event_name, handler)
+                for event_name, handlers in self._subscribers.items()
+                for handler in handlers
+            }
+            registered.update({
+                getattr(handler, "__qualname__", str(handler)): (event_name, handler)
+                for event_name, handler in self._wildcard
+            })
+
+        for letter in candidates:
+            registration = registered.get(letter.handler_name)
+            if registration is None:
+                continue
+            event_name, handler = registration
+            failures_before = self._handler_errors
+            await self._invoke_handler(
+                handler,
+                event_name,
+                letter.payload,
+                "dead_letter_replay",
+                letter.event_id,
+            )
+            if self._handler_errors == failures_before:
+                try:
+                    self._dead_letters.remove(letter)
+                except ValueError:
+                    pass
+                replayed += 1
+        return replayed
 
     # ═══════════════════════════════════════════════════════════════════
     # PERSISTENCE
