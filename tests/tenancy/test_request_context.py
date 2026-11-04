@@ -2,6 +2,7 @@
 
 import pytest
 
+from core.species_auth import _workspace_token_role
 from core.request_context import (
     RequestContext,
     bind_from_auth_identity,
@@ -95,4 +96,28 @@ def test_bind_from_auth_identity():
     assert get_request_context() is ctx
     assert ctx.workspace_id == "ws-9"
     assert ctx.correlation_id == "corr-1"
+    clear_request_context()
+
+
+@pytest.mark.parametrize(
+    ("permissions", "expected_role"),
+    [
+        (["read"], "viewer"),
+        (["read", "write"], "operator"),
+        (["read", "admin"], "admin"),
+        (["read", "owner"], "owner"),
+    ],
+)
+def test_workspace_token_permissions_map_to_authority_role(permissions, expected_role):
+    clear_request_context()
+    identity = FakeIdentity(
+        is_species=False,
+        workspace_id="ws-token",
+        role=_workspace_token_role(permissions),
+        permissions=permissions,
+        method="workspace_token",
+        name="Scoped Token",
+    )
+    ctx = bind_from_auth_identity(identity)
+    assert ctx.role == expected_role
     clear_request_context()
