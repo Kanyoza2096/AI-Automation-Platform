@@ -68,7 +68,6 @@ def test_worker_runtime_renews_lease_during_governed_execution(monkeypatch):
         workflow=object(), queue=queue, job=job, worker_id="worker-a",
         lease_token="lease-token", actor_id="builder", executor=lambda **_: {},
             admission_receipt_verifier=lambda scope, receipt: True,
-        admission_receipt_verifier=lambda scope, receipt: True,
         lease_seconds=30, heartbeat_interval_seconds=0.005,
     )
 
@@ -111,8 +110,7 @@ def test_worker_runtime_rejects_invalid_heartbeat_intervals(interval):
             workflow=object(), queue=FakeQueue(), job=make_job(),
             worker_id="worker-a", lease_token="lease-token", actor_id="builder",
             executor=lambda **_: {},
-            admission_receipt_verifier=lambda scope, receipt: True,
-        admission_receipt_verifier=lambda scope, receipt: True, lease_seconds=30,
+            admission_receipt_verifier=lambda scope, receipt: True, lease_seconds=30,
             heartbeat_interval_seconds=interval,
         )
 
