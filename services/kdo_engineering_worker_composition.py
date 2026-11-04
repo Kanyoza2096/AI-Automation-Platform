@@ -1,0 +1,101 @@
+"""Explicit PostgreSQL + governed workflow + containerized QA composition.
+
+The host must inject the actual Action Kernel-backed authorization callbacks,
+agent registry adapters, and build executor. This module does not invent agent
+providers or grant policy. It never starts a worker or runs Docker at import time.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+from services.kdo_engineering_phase16_4 import PostgresEngineeringBuildQueue
+from services.kdo_engineering_phase16_6 import create_postgres_engineering_workflow
+from services.kdo_engineering_phase16_13_pipeline import (
+    EngineeringPipelineCompositionError,
+    make_containerized_dynamic_quality_executor,
+)
+from services.kdo_engineering_worker_bootstrap import (
+    ProductionWorkerConfig,
+    validate_production_worker_config,
+)
+
+
+class EngineeringWorkerCompositionError(RuntimeError):
+    """Missing or invalid host-owned dependencies for worker composition."""
+
+
+def build_worker_dependencies(
+    *,
+    config: ProductionWorkerConfig,
+    connection_factory: Callable[[], Any],
+    source_repository_path: str | Path,
+    managed_workspace_root: str | Path,
+    pinned_worker_image: str,
+    workflow_authorize: Callable[[str, str, str, str], bool],
+    build_executor: Callable[..., Mapping[str, Any]],
+    registry_factory: Callable[[Any, str, tuple[str, ...]], Any],
+    repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
+    pipeline_authorize: Callable[[str, Mapping[str, Any]], bool],
+    docker_binary: str = "docker",
+    test_profile: str = "pytest",
+    test_timeout_seconds: int = 120,
+    max_repair_attempts: int = 2,
+    memory_limit: str = "1g",
+    cpu_limit: str = "1.0",
+    pids_limit: int = 128,
+) -> dict[str, Any]:
+    """Compose the real PostgreSQL queue and task workflow with isolated QA.
+
+    Every authority-bearing callback and the initial build adapter is supplied by
+    the trusted host. Generated task text cannot select providers, policy, Docker
+    image, command profile, or resource limits.
+    """
+    validate_production_worker_config(config)
+    if not callable(connection_factory):
+        raise EngineeringWorkerCompositionError("postgres_connection_factory_required")
+    required_callbacks = {
+        "workflow_authorize": workflow_authorize,
+        "build_executor": build_executor,
+        "registry_factory": registry_factory,
+        "repair_capabilities_factory": repair_capabilities_factory,
+        "pipeline_authorize": pipeline_authorize,
+    }
+    missing = [name for name, callback in required_callbacks.items() if not callable(callback)]
+    if missing:
+        raise EngineeringWorkerCompositionError("host_owned_dependencies_required:" + ",".join(missing))
+    if not isinstance(pinned_worker_image, str) or "@sha256:" not in pinned_worker_image:
+        raise EngineeringWorkerCompositionError("digest_pinned_worker_image_required")
+
+    try:
+        workflow = create_postgres_engineering_workflow(
+            connection_factory=connection_factory,
+            source_repository_path=source_repository_path,
+            managed_root=managed_workspace_root,
+            authorize=workflow_authorize,
+        )
+        queue = PostgresEngineeringBuildQueue(connection_factory)
+        executor = make_containerized_dynamic_quality_executor(
+            workspace_root=managed_workspace_root,
+            pinned_worker_image=pinned_worker_image,
+            build_executor=build_executor,
+            registry_factory=registry_factory,
+            repair_capabilities_factory=repair_capabilities_factory,
+            authorize=pipeline_authorize,
+            test_profile=test_profile,
+            max_repair_attempts=max_repair_attempts,
+            test_timeout_seconds=test_timeout_seconds,
+            docker_binary=docker_binary,
+            memory_limit=memory_limit,
+            cpu_limit=cpu_limit,
+            pids_limit=pids_limit,
+        )
+    except (ValueError, EngineeringPipelineCompositionError) as exc:
+        raise EngineeringWorkerCompositionError("governed_worker_composition_failed") from exc
+
+    return {
+        "queue": queue,
+        "workflow": workflow,
+        "executor": executor,
+        "cleanup": lambda: None,
+    }
