@@ -111,3 +111,21 @@ def test_gateway_builder_rejects_workspace_outside_managed_root(tmp_path):
     )
     with pytest.raises(GatewayAgentError, match="workspace_outside_managed_root"):
         builder(str(outside), _task(), ("Implement calculator",))
+
+
+@pytest.mark.parametrize("unsafe_path", [
+    "deployment/staging.env",
+    ".github/workflows/ship.yml",
+    "infra/main.tf",
+    "docker-compose.yml",
+])
+def test_gateway_builder_rejects_deployment_and_infrastructure_paths(tmp_path, unsafe_path):
+    root, workspace = _workspace(tmp_path)
+    authorized = []
+    builder = make_gateway_build_executor(
+        gateway=FakeGateway(_patch(unsafe_path)), workspace_root=str(root),
+        authorize=lambda *_: authorized.append(True) or True,
+    )
+    with pytest.raises(GatewayAgentError, match="patch_path_not_allowed"):
+        builder(str(workspace), _task(), ("Implement calculator",))
+    assert authorized == []
