@@ -59,7 +59,7 @@ def test_dynamic_gateway_registry_installs_specialists_without_model_review_auth
     gateway = FakeGateway(_result({
         "status": "succeeded", "summary": "reviewed",
         "evidence": {"patch_text": "diff --git a/x b/x", "review_id": "model-invented",
-                     "review_status": "approved"},
+                     "review_status": "approved", "verification_status": "approved"},
     }))
     factory = make_gateway_quality_registry_factory(gateway=gateway, workspace_id="w1")
     registry = factory(SimpleNamespace(task_id="t1"), "/tmp/task-workspace", ())
@@ -75,6 +75,8 @@ def test_dynamic_gateway_registry_installs_specialists_without_model_review_auth
     assert review["status"] == "succeeded"
     assert review["evidence"]["review_status"] == "pending_human_review"
     assert "review_id" not in review["evidence"]
+    assert review["evidence"]["verification_status"] == "approved"
+    assert review["evidence"]["verification_id"] == "req-1"
 
     repair = registry.adapter("backend_engineer")
     proposal = repair(AgentAssignment(
