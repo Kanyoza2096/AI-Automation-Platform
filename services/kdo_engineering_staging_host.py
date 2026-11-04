@@ -125,9 +125,15 @@ def _build_authenticated_workflow_authorizer(
                 return bool(row and row[0] is True)
             finally:
                 if cursor is not None:
-                    cursor.close()
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
                 if connection is not None:
-                    connection.close()
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
         except Exception:
             return False
 
