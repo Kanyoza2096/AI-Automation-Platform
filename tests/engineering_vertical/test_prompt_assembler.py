@@ -87,3 +87,21 @@ def test_specialist_roles_assemble_task_specific_prompts():
         assert f"ROLE TEMPLATE ({role_id} v1)" in prompt
         assert "Inspect this task" in prompt
         assert manifest["role"] == role_id
+
+
+
+def test_requested_capabilities_are_explicitly_non_authoritative_task_requirements():
+    assembler = EngineeringPromptAssembler()
+    assignment = task(requested_capabilities=("read_task_workspace", "propose_patch"))
+    prompt, manifest = assembler.assemble(assignment)
+    assert '"requested_capabilities":["read_task_workspace","propose_patch"]' in prompt
+    assert "NOT permissions or authorization" in prompt
+    assert len(manifest["task_contract_sha256"]) == 64
+
+
+def test_duplicate_or_blank_requested_capabilities_are_rejected():
+    assembler = EngineeringPromptAssembler()
+    with pytest.raises(PromptAssemblyError, match="invalid_requested_capabilities"):
+        assembler.assemble(task(requested_capabilities=("propose_patch", "propose_patch")))
+    with pytest.raises(PromptAssemblyError, match="invalid_requested_capabilities"):
+        assembler.assemble(task(requested_capabilities=(" ",)))
