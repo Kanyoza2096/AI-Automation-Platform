@@ -446,7 +446,7 @@ class UnifiedEventBus:
         if not self._validate_payload(payload):
             return None
 
-        if self._throttle_policy == ThrottlePolicy.DEFER:
+        if self._throttle_policy in (ThrottlePolicy.DEFER, ThrottlePolicy.BLOCK):
             await self._wait_for_throttle_capacity()
         elif not self._check_throttle():
             return None
