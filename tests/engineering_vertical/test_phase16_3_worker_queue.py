@@ -237,7 +237,6 @@ def test_claimed_worker_runs_approved_task_and_finishes_at_review_boundary(tmp_p
         return {"changed": ["app.py"], "tests": "not-run-by-test-executor"}
     result = run_claimed_build_job(workflow=workflow, queue=queue, job=claimed,
         worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder", executor=executor,
-        admission_receipt_verifier=lambda scope, receipt: True,
         admission_receipt_verifier=lambda scope, receipt: True)
     assert result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW
     assert queue.get(job.job_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id).status == "awaiting_review"
