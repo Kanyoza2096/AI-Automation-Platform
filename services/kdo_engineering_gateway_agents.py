@@ -277,3 +277,46 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
             "release_authorized": False,
         }
     return execute
+
+
+
+def make_gateway_quality_registry_factory(*, gateway: Any, workspace_id: str):
+    """Create task-scoped dynamic diagnosis/repair/review adapters.
+
+    The reviewer adapter can only return a pending human review marker. A model
+    response is never accepted as a durable independent-review decision.
+    """
+    from services.kdo_engineering_agent_registry import AgentRegistry
+
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise GatewayAgentError("workspace_id_required")
+
+    def factory(task_contract: Any, workspace_path: str, steps: tuple[str, ...]) -> AgentRegistry:
+        registry = AgentRegistry()
+        role_ids = ("debugging_engineer", "backend_engineer", "independent_reviewer")
+        for role_id in role_ids:
+            base = make_gateway_agent(
+                gateway=gateway, role=role_id, agent_id=f"kdo-gateway:{role_id}",
+                workspace_id=workspace_id,
+            )
+
+            def invoke(assignment: AgentAssignment, *, _base=base, _role=role_id):
+                result = dict(_base(assignment))
+                evidence = result.get("evidence")
+                reported = evidence.get("model_reported") if isinstance(evidence, Mapping) else None
+                if not isinstance(reported, Mapping):
+                    return result
+                normalized = dict(evidence)
+                # The repair loop consumes patch_text directly; it remains
+                # untrusted and is still checked/applied only after authorization.
+                if _role == "backend_engineer" and isinstance(reported.get("patch_text"), str):
+                    normalized["patch_text"] = reported["patch_text"]
+                if _role == "independent_reviewer":
+                    normalized.pop("review_id", None)
+                    normalized["review_status"] = "pending_human_review"
+                result["evidence"] = normalized
+                return result
+
+            registry.register_adapter(role_id, invoke)
+        return registry
+    return factory
