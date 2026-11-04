@@ -248,14 +248,19 @@ class UnifiedEventBus:
         logger.info("UnifiedEventBus: shutting down...")
         self._running = False
 
+        # Stop the persistence worker first so any in-flight batch is returned
+        # to the queue before the final shutdown flush runs.
+        if self._persistence_task and not self._persistence_task.done():
+            self._persistence_task.cancel()
+            try:
+                await self._persistence_task
+            except asyncio.CancelledError:
+                pass
+
         if self.supabase and self._persistence_queue.qsize() > 0:
             await self._flush_persistence()
 
-        for task in [
-            self._dispatch_task,
-            self._persistence_task,
-            self._correlation_cleanup_task,
-        ]:
+        for task in [self._dispatch_task, self._correlation_cleanup_task]:
             if task and not task.done():
                 task.cancel()
                 try:
@@ -646,6 +651,12 @@ class UnifiedEventBus:
                         self._persistence_queue.task_done()
 
             except asyncio.CancelledError:
+                # A batch removed from the queue is still outstanding work.
+                # Return it before exiting so stop() can flush it or the next
+                # start can resume persistence.
+                for entry in batch:
+                    await self._persistence_queue.put(entry)
+                    self._persistence_queue.task_done()
                 break
             except Exception as exc:
                 logger.error("Persistence loop error: %s", exc)
