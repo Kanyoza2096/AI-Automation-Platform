@@ -190,7 +190,12 @@ class SharedEventBus:
                         continue
                     delivery = self._claim_delivery(event_id)
                     if delivery:
-                        self._dispatch_event(event, delivery_id=delivery)
+                        delivery_id, claim_token = delivery
+                        self._dispatch_event(
+                            event,
+                            delivery_id=delivery_id,
+                            claim_token=claim_token,
+                        )
                         delivered += 1
 
                 # Walk past old acknowledged/unhandled events; otherwise the
@@ -226,23 +231,32 @@ class SharedEventBus:
                 logger.warning("Unable to ensure event delivery %s: %s", event_id, exc)
                 return False
 
-    def _claim_delivery(self, event_id: str) -> Optional[str]:
+    def _claim_delivery(self, event_id: str) -> Optional[tuple[str, str]]:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
         try:
             result = self.supabase.table("event_deliveries").update({
                 "claimed_by": claim_token,
-                "claimed_at": datetime.now(timezone.utc).isoformat(),
+                "claimed_at": now,
             }).eq("event_id", event_id).eq("consumer_group", self.source_service).eq(
                 "processed", False
+            ).is_("dead_lettered_at", "null").lte(
+                "next_attempt_at", now
             ).or_(f"claimed_at.is.null,claimed_at.lt.{cutoff}").select("id").execute()
             if result.data:
-                return str(result.data[0].get("id"))
+                return str(result.data[0].get("id")), claim_token
         except Exception as exc:
             logger.warning("SharedEventBus delivery claim failed for %s: %s", event_id, exc)
         return None
 
-    def _dispatch_event(self, event: Dict[str, Any], *, delivery_id: Optional[str] = None) -> None:
+    def _dispatch_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        delivery_id: Optional[str] = None,
+        claim_token: Optional[str] = None,
+    ) -> None:
         event_name = event.get("event_type") or event.get("event_name", "")
         event_id = event.get("id")
         source_instance = event.get("source_instance", "")
@@ -278,9 +292,16 @@ class SharedEventBus:
                 logger.error("SharedEventBus handler failed for '%s': %s", event_name, exc)
 
         if handler_failed:
-            self._mark_delivery_processed(delivery_id, success=False, error="one or more handlers failed")
+            self._mark_delivery_processed(
+                delivery_id,
+                claim_token=claim_token,
+                success=False,
+                error="one or more handlers failed",
+            )
         else:
-            self._mark_delivery_processed(delivery_id, success=True)
+            self._mark_delivery_processed(
+                delivery_id, claim_token=claim_token, success=True
+            )
 
     def _claim_event(self, event_id: Any) -> bool:
         """Atomically claim an event so only one worker dispatches it."""
@@ -303,25 +324,62 @@ class SharedEventBus:
             logger.warning("SharedEventBus claim failed for %s: %s", event_id, exc)
             return False
 
-    def _mark_delivery_processed(self, delivery_id: Optional[str], success: bool = True, error: str | None = None) -> None:
-        if not delivery_id or not self.supabase:
+    def _mark_delivery_processed(
+        self,
+        delivery_id: Optional[str],
+        *,
+        claim_token: Optional[str],
+        success: bool = True,
+        error: str | None = None,
+    ) -> None:
+        if not delivery_id or not claim_token or not self.supabase:
             return
         try:
-            succeeded = bool(success)
-            update = {
-                "processed": succeeded,
-                "processed_at": datetime.now(timezone.utc).isoformat() if succeeded else None,
-                "processing_error": (error or "")[:500] if error else None,
-            }
-            if succeeded:
-                update.update({"claimed_by": None, "claimed_at": None})
-            # Failed deliveries remain unprocessed. Keeping the claim timestamp
-            # applies the existing five-minute lease as retry backoff.
-            self.supabase.table("event_deliveries").update(update).eq(
-                "id", delivery_id
-            ).eq("consumer_group", self.source_service).execute()
+            result = self.supabase.rpc(
+                "complete_shared_event_delivery",
+                {
+                    "p_delivery_id": delivery_id,
+                    "p_consumer_group": self.source_service,
+                    "p_claim_token": claim_token,
+                    "p_success": bool(success),
+                    "p_error": (error or "")[:1000] if error else None,
+                    "p_max_attempts": 5,
+                },
+            ).execute()
+            if result.data is False:
+                logger.warning(
+                    "SharedEventBus completion rejected for stale claim %s",
+                    delivery_id,
+                )
         except Exception:
-            logger.exception("SharedEventBus failed to mark delivery %s processed", delivery_id)
+            logger.exception("SharedEventBus failed to complete delivery %s", delivery_id)
+
+    def get_dead_letters(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return durable deliveries that exhausted their retry budget."""
+        if not self.supabase:
+            return []
+        result = self.supabase.table("event_deliveries").select(
+            "id,event_id,event_type,consumer_group,attempt_count,processing_error,dead_lettered_at"
+        ).eq("consumer_group", self.source_service).not_.is_(
+            "dead_lettered_at", "null"
+        ).order("dead_lettered_at", desc=True).limit(max(1, min(limit, 200))).execute()
+        return result.data or []
+
+    def requeue_dead_letter(self, delivery_id: str) -> bool:
+        """Explicitly return a dead-lettered delivery to the retry queue."""
+        if not delivery_id or not self.supabase:
+            return False
+        result = self.supabase.table("event_deliveries").update({
+            "attempt_count": 0,
+            "dead_lettered_at": None,
+            "next_attempt_at": datetime.now(timezone.utc).isoformat(),
+            "processing_error": None,
+            "claimed_by": None,
+            "claimed_at": None,
+        }).eq("id", delivery_id).eq(
+            "consumer_group", self.source_service
+        ).not_.is_("dead_lettered_at", "null").select("id").execute()
+        return bool(result.data)
 
     def _mark_processed(self, event_id: Any, success: bool = True, error: str | None = None) -> None:
         try:
