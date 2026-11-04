@@ -194,6 +194,14 @@ class PostgresEngineeringTaskRepository(_PostgresAdapter):
             if current.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
                 raise Phase162Error("submitted_plan_required")
             # The authenticated workspace operator may approve their own submitted plan.
+            assignments = review.get("assignments")
+            if assignments is not None:
+                assignment_digest = hashlib.sha256(
+                    json.dumps(assignments, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if assignment_digest != review.get("assignments_digest"):
+                    raise Phase162Error("submitted_assignments_fingerprint_mismatch")
             steps = review.get("steps", [])
             digest = _plan_digest(steps) if isinstance(steps, list) and steps else ""
             if not digest or digest != review.get("digest"):
