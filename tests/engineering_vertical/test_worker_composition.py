@@ -12,6 +12,15 @@ from services.kdo_engineering_worker_composition import (
 )
 
 
+class ScopedAuthorizer:
+    @contextmanager
+    def bind_execution_context(self, context, lease_check):
+        yield
+
+    def authorize(self, action, task):
+        return False
+
+
 def config(**overrides):
     values = dict(
         enabled=True,
@@ -47,8 +56,7 @@ def test_composition_wires_postgres_workflow_and_containerized_quality_executor(
     def authorize_workflow(*args):
         return True
 
-    def authorize_pipeline(*args):
-        return True
+    scoped_authorizer = ScopedAuthorizer()
 
     deps = build_worker_dependencies(
         config=config(),
@@ -60,7 +68,7 @@ def test_composition_wires_postgres_workflow_and_containerized_quality_executor(
         build_executor=build_executor,
         registry_factory=registry_factory,
         repair_capabilities_factory=repair_capabilities_factory,
-        pipeline_authorize=authorize_pipeline,
+        pipeline_authorize=scoped_authorizer.authorize,
         admission_receipt_verifier=lambda scope, receipt: True,
     )
 
@@ -68,7 +76,32 @@ def test_composition_wires_postgres_workflow_and_containerized_quality_executor(
     assert deps["workflow"].tasks.__class__.__name__ == "PostgresEngineeringTaskRepository"
     assert deps["workflow"].workspaces.__class__.__name__ == "PostgresEngineeringWorkspaceRepository"
     assert callable(deps["executor"])
+    assert deps["executor"].worker_authorizer is scoped_authorizer
+    assert deps["worker_authorizer"] is scoped_authorizer
     assert callable(deps["cleanup"])
+
+
+def test_composition_rejects_unscoped_pipeline_authorizer(tmp_path):
+    source = tmp_path / "source"
+    managed = tmp_path / "managed"
+    source.mkdir()
+    managed.mkdir()
+
+    with pytest.raises(EngineeringWorkerCompositionError, match="scoped_council_action_kernel_authorizer_required"):
+        build_worker_dependencies(
+            config=config(),
+            connection_factory=lambda: None,
+            source_repository_path=source,
+            managed_workspace_root=managed,
+            pinned_worker_image="registry.example/kdo-worker@sha256:" + "a" * 64,
+            workflow_authorize=lambda *args: True,
+            build_executor=lambda *args, **kwargs: {},
+            registry_factory=lambda *args: object(),
+            repair_capabilities_factory=lambda *args: {"python"},
+            pipeline_authorize=lambda *args: True,
+            admission_receipt_verifier=lambda scope, receipt: True,
+        )
+
 
 
 def test_composition_rejects_missing_host_owned_authority_callbacks(tmp_path):
