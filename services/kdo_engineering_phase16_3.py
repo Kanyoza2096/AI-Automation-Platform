@@ -384,6 +384,8 @@ async def admit_approved_build(*, workflow: KDOPhase162Workflow, action_kernel: 
     queue = getattr(action_kernel, "_kdo_engineering_build_queue", None)
     if queue is None or not callable(getattr(queue, "record_admission_receipt", None)):
         raise Phase163Error("governed_build_queue_receipt_recorder_required")
+    if not callable(receipt_verifier):
+        raise Phase163Error("authoritative_admission_receipt_verifier_required")
 
     job_idempotency_key = f"kdo-build:{tenant_id}:{workspace_id}:{task_id}:{digest}"
 
