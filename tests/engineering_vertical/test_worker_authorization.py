@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 
 from services.action_kernel import ActionContract
@@ -204,4 +205,4 @@ def test_action_kernel_handler_rechecks_lease_after_council_approval():
             "authorization_request_id": "request-a",
         }
         with pytest.raises(GovernedWorkerAuthorizationError, match="worker_lease_not_active"):
-            handler(params, None)
+            asyncio.run(asyncio.to_thread(handler, params, None))
