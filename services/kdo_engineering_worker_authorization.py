@@ -93,6 +93,23 @@ class CouncilActionKernelWorkerAuthorizer:
                 }
                 if any(str(parameters.get(key, "")) != str(value) for key, value in expected.items()):
                     raise GovernedWorkerAuthorizationError("worker_execution_scope_mismatch")
+                digest_task = {
+                    key: parameters.get(key)
+                    for key in (
+                        "tenant_id", "workspace_id", "task_id", "job_id",
+                        "plan_digest", "lease_token_digest",
+                    )
+                }
+                criteria = parameters.get("acceptance_criteria")
+                if isinstance(criteria, (list, tuple)):
+                    digest_task["acceptance_criteria"] = list(criteria)
+                canonical = json.dumps(
+                    {"action": parameters.get("requested_action"), "task": digest_task},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                )
+                expected_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                if parameters.get("payload_digest") != expected_digest:
+                    raise GovernedWorkerAuthorizationError("worker_action_payload_digest_mismatch")
                 if lease_check() is not True:
                     raise GovernedWorkerAuthorizationError("worker_lease_not_active")
                 # This is an authorization-record action, not the filesystem or
