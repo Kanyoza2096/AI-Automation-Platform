@@ -205,6 +205,23 @@ class CouncilActionKernelWorkerAuthorizer:
         else:
             return False
 
+        def verify_bound_receipt(scope: Mapping[str, Any], receipt: Mapping[str, Any]) -> bool:
+            # Read-back must prove the exact job, plan, lease digest and operation
+            # payload, and the lease must still be active after Action Kernel returns.
+            try:
+                if lease_check() is not True:
+                    return False
+                bound_scope = {
+                    **dict(scope),
+                    "job_id": context["job_id"],
+                    "plan_digest": context["plan_digest"],
+                    "lease_token_digest": lease_token_digest,
+                    "payload_digest": payload_digest,
+                }
+                return self._receipt_verifier.verify(bound_scope, receipt) is True
+            except Exception:
+                return False
+
         with self._lock:
             try:
                 result = asyncio.run(execute_council_governed_engineering_action(
@@ -216,7 +233,7 @@ class CouncilActionKernelWorkerAuthorizer:
                     objective=objective,
                     action_kernel=self._kernel,
                     event_store=self._event_store,
-                    receipt_verifier=self._receipt_verifier,
+                    receipt_verifier=verify_bound_receipt,
                     idempotency_key=(
                         f"kdo-worker-auth:{safe_task['tenant_id']}:"
                         f"{safe_task['workspace_id']}:{safe_task['task_id']}:"
