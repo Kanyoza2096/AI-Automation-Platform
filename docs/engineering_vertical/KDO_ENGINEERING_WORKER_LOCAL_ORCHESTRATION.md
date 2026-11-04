@@ -70,7 +70,8 @@ engineering-specific Action Kernel contract that maps plan approval, build
 patching, test execution, repair application, and review handoff to canonical
 decision IDs and durable receipts. The existing generic Action Kernel must not
 be invoked through an unrelated business action or a fabricated decision ID.
-Until that adapter is implemented and tested against the canonical Council /
-DecisionGate / Action Kernel path, the worker must remain disabled. The passing
+Until those worker-side adapters are implemented and tested against the
+canonical Council / DecisionGate / Action Kernel path, the worker must remain
+disabled. The passing
 focused CI suite proves adapter interfaces and unit behavior only; it does not
 prove the live authority chain or authorize staging execution.
