@@ -13,7 +13,7 @@ The Engineering Vertical focused workflow now also runs:
 - `tests/engineering_vertical/test_worker_entrypoint.py` and `test_worker_composition.py`: disabled-by-default worker startup and fail-closed PostgreSQL/container composition.
 - `tests/engineering_vertical/test_gateway_agents.py` and `test_gateway_build_executor.py`: existing LLM Gateway adapters, dynamic diagnosis/repair/verification handoff, bounded patch validation, workspace scope, and policy-before-mutation behavior.
 
-The existing workflow provisions disposable PostgreSQL 16 and applies migrations 140, 150, 151, and 152 before the PostgreSQL integration tests. The local fixture-based staging lifecycle tests are deliberately labeled as deterministic tests; they do not establish live staging readiness.
+The existing workflow provisions disposable PostgreSQL 16 and applies migrations 140, 150, 151, 152, and 153 before the PostgreSQL integration tests. The local fixture-based staging lifecycle tests are deliberately labeled as deterministic tests; they do not establish live staging readiness.
 
 ## Required live staging run
 
@@ -22,7 +22,7 @@ Use a dedicated staging Supabase project, isolated tenant/workspace pairs, non-p
 1. Configure secrets from `deployment/staging/.env.staging.example` through a secret manager/operator channel. Keep `.env.staging` untracked.
 2. Run `python scripts/kdo_engineering_staging_gate.py` and retain its redacted configuration report.
 3. Run `python scripts/kdo_engineering_staging_gate.py --live-read-only`. This is only a zero-row receipt-schema/read-access probe; it is not proof of tenant row isolation.
-4. Apply and verify all current engineering migrations, including 140, 150, 151, and 152, against the staging PostgreSQL project. Record migration versions and database role grants.
+4. Apply and verify all current engineering migrations, including 140, 150, 151, 152, and 153, against the staging PostgreSQL project. Record migration versions and database role grants.
 5. Deploy the staging web service using `deployment/staging/docker-compose.yml`. Verify liveness/readiness from the host and confirm public ingress is not exposed.
 6. Provision the dedicated worker host separately. Keep `KDO_ENGINEERING_WORKER_ENABLED=false` until the worker process/container executor, its supervision and hard cancellation, and the staging approval gates are verified. Do not start a worker by importing it into the web process.
 7. Execute the governed lifecycle with a disposable staging task: plan submission, independent Council approval, durable job enqueue, scoped worker claim, lease heartbeat, isolated container build/test, cancellation/timeout, review-ready boundary, reviewer decision, and separately authorized release decision.
