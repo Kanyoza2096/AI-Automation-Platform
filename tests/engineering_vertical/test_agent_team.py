@@ -91,3 +91,53 @@ def test_planned_assignment_dependency_cycle_is_rejected():
     ]
     with pytest.raises(AgentTeamError, match="dependency_cycle"):
         coordinate_planned_assignments(assignments=assignments, agents={})
+
+
+def test_plan_and_coordinate_composes_planner_with_specialist_team_without_execution():
+    from services.kdo_engineering_agent_team import plan_and_coordinate_engineering_task
+    from services.kdo_engineering_phase16_11_planner import make_engineering_plan_generator
+    from types import SimpleNamespace
+
+    assignments = [
+        {"task_id": "sec", "role": "security_engineer", "objective": "Threat model",
+         "acceptance_criteria": ["Threats documented"], "depends_on": [],
+         "deliverables": ["model"], "policy_refs": [], "requested_capabilities": ["inspect_auth"]},
+        {"task_id": "impl", "role": "backend_engineer", "objective": "Implement endpoint",
+         "acceptance_criteria": ["Auth enforced"], "depends_on": ["sec"],
+         "deliverables": ["patch"], "policy_refs": [], "requested_capabilities": ["propose_patch"]},
+        {"task_id": "test", "role": "test_engineer", "objective": "Test endpoint",
+         "acceptance_criteria": ["Allow and deny paths tested"], "depends_on": ["impl"],
+         "deliverables": ["test-report"], "policy_refs": [], "requested_capabilities": ["run_tests"]},
+    ]
+    data = {"status": "succeeded", "summary": "plan",
+            "evidence": {"steps": ["Threat model", "Implement", "Test"], "assignments": assignments}}
+    class Gateway:
+        def complete_structured(self, prompt, **kwargs):
+            return SimpleNamespace(ok=True, data=data, provider="test", model="test",
+                                   request_id="req", finish_reason="stop")
+    seen = []
+    def adapter(assignment):
+        seen.append(assignment.task_id)
+        return {"agent_id": assignment.role, "status": "succeeded",
+                "summary": "proposal", "evidence": {"proposal": True}}
+    result = plan_and_coordinate_engineering_task(
+        plan_generator=make_engineering_plan_generator(Gateway()),
+        task={"task_id": "parent", "objective": "Secure endpoint",
+              "acceptance_criteria": ["Authorization enforced"]},
+        workspace_id="w1",
+        agents={"security_engineer": adapter, "backend_engineer": adapter, "test_engineer": adapter},
+    )
+    assert result["coordination"]["status"] == "proposal_complete"
+    assert seen == ["sec", "impl", "test"]
+    assert result["approval_required"] is True
+    assert result["execution_started"] is False
+    assert result["release_authorized"] is False
+
+
+def test_plan_and_coordinate_rejects_planner_authority_escalation():
+    from services.kdo_engineering_agent_team import plan_and_coordinate_engineering_task
+    with pytest.raises(AgentTeamError, match="authority_invariant"):
+        plan_and_coordinate_engineering_task(
+            plan_generator=lambda **kwargs: {"assignments": [], "approval_required": False,
+                "execution_started": True, "release_authorized": True},
+            task={}, workspace_id="w1", agents={})
