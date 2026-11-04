@@ -102,7 +102,9 @@ class SQLiteEngineeringBuildQueue:
 
     @staticmethod
     def _record(row: sqlite3.Row) -> EngineeringBuildJob:
-        return EngineeringBuildJob(**dict(row))
+        values = dict(row)
+        values["admission_receipt_verified"] = values.get("admission_receipt_verified") == 1
+        return EngineeringBuildJob(**values)
 
     def enqueue(self, *, tenant_id: str, workspace_id: str, task_id: str,
                 plan_digest: str, idempotency_key: str) -> EngineeringBuildJob:
