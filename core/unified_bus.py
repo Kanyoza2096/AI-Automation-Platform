@@ -650,22 +650,23 @@ class UnifiedEventBus:
             and (handler_name is None or letter.handler_name == handler_name)
         ]
         replayed = 0
-        async with self._lock:
-            registered = {
-                getattr(handler, "__qualname__", str(handler)): (event_name, handler)
-                for event_name, handlers in self._subscribers.items()
-                for handler in handlers
-            }
-            registered.update({
-                getattr(handler, "__qualname__", str(handler)): (event_name, handler)
-                for event_name, handler in self._wildcard
-            })
-
         for letter in candidates:
-            registration = registered.get(letter.handler_name)
-            if registration is None:
+            async with self._lock:
+                registered_handlers = (
+                    list(self._subscribers.get(letter.event_name, []))
+                    + list(self._wildcard)
+                )
+            handler = next(
+                (
+                    candidate for candidate in registered_handlers
+                    if getattr(candidate, "__qualname__", str(candidate))
+                    == letter.handler_name
+                ),
+                None,
+            )
+            if handler is None:
                 continue
-            event_name, handler = registration
+            event_name = letter.event_name
             failures_before = self._handler_errors
             await self._invoke_handler(
                 handler,
