@@ -51,3 +51,34 @@ def test_gateway_team_requires_distinct_reviewer_identity():
     with pytest.raises(GatewayAgentError, match="distinct_agent_identity"):
         build_gateway_agents(gateway=FakeGateway(), workspace_id="w1",
             agent_ids={"planner":"p", "implementer":"same", "test_engineer":"t", "reviewer":"same"})
+
+
+def test_dynamic_gateway_registry_installs_specialists_without_model_review_authority():
+    from services.kdo_engineering_gateway_agents import make_gateway_quality_registry_factory
+
+    gateway = FakeGateway(_result({
+        "status": "succeeded", "summary": "reviewed",
+        "evidence": {"patch_text": "diff --git a/x b/x", "review_id": "model-invented",
+                     "review_status": "approved"},
+    }))
+    factory = make_gateway_quality_registry_factory(gateway=gateway, workspace_id="w1")
+    registry = factory(SimpleNamespace(task_id="t1"), "/tmp/task-workspace", ())
+    assert {"debugging_engineer", "backend_engineer", "independent_reviewer"}.issubset(
+        set(registry.installed_roles())
+    )
+
+    reviewer = registry.adapter("independent_reviewer")
+    review = reviewer(AgentAssignment(
+        "t1", "independent_reviewer", "Review changes",
+        {"acceptance_criteria": ["Check correctness"], "workspace_id": "w1"}, (),
+    ))
+    assert review["status"] == "succeeded"
+    assert review["evidence"]["review_status"] == "pending_human_review"
+    assert "review_id" not in review["evidence"]
+
+    repair = registry.adapter("backend_engineer")
+    proposal = repair(AgentAssignment(
+        "t1", "backend_engineer", "Propose repair",
+        {"acceptance_criteria": ["Fix defect"], "workspace_id": "w1"}, (),
+    ))
+    assert proposal["evidence"]["patch_text"] == "diff --git a/x b/x"
