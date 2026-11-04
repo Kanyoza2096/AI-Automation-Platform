@@ -259,6 +259,27 @@ def test_claimed_worker_runs_approved_task_and_finishes_at_review_boundary(tmp_p
     queue.close()
 
 
+def test_worker_rechecks_authoritative_receipt_before_executor(tmp_path):
+    from services.kdo_engineering_phase16_3 import run_claimed_build_job
+
+    workflow, task, _ = _make_approved_workflow(tmp_path)
+    queue = make_queue(tmp_path)
+    stored = workflow.tasks.get(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id)
+    job = _enqueue_verified(queue, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+        task_id=task.task_id, plan_digest=stored.evidence["plan_review"]["digest"],
+        idempotency_key="receipt-recheck-build")
+    claimed = queue.claim_next(worker_id="worker-1")
+    executed = []
+    with pytest.raises(Phase163Error, match="authoritative_admission_receipt_not_confirmed"):
+        run_claimed_build_job(workflow=workflow, queue=queue, job=claimed,
+            worker_id="worker-1", lease_token=claimed.lease_token, actor_id="builder",
+            executor=lambda *args, **kwargs: executed.append(True),
+            admission_receipt_verifier=lambda scope, receipt: False)
+    assert executed == []
+    assert queue.get(job.job_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id).status == "running"
+    queue.close()
+
+
 def test_unauthorized_actor_cannot_reach_council_or_enqueue(tmp_path):
     import asyncio
     from services.kdo_engineering_phase16_2 import Phase162Error
