@@ -37,6 +37,7 @@ def build_worker_dependencies(
     registry_factory: Callable[[Any, str, tuple[str, ...]], Any],
     repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
     pipeline_authorize: Callable[[str, Mapping[str, Any]], bool],
+    repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
     docker_binary: str = "docker",
     test_profile: str = "pytest",
     test_timeout_seconds: int = 120,
@@ -132,6 +133,8 @@ def build_gateway_worker_dependencies(
 
     if gateway is None or not callable(getattr(gateway, "complete_structured", None)):
         raise EngineeringWorkerCompositionError("configured_llm_gateway_required")
+    if not callable(repair_capabilities_factory):
+        raise EngineeringWorkerCompositionError("task_aware_repair_capability_factory_required")
     workspace_id = config.workspace_id
     build_executor = make_gateway_build_executor(
         gateway=gateway, workspace_root=str(managed_workspace_root),
