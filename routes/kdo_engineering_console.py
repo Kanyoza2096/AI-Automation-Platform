@@ -254,12 +254,25 @@ async def engineering_console_submit_plan(
         not isinstance(step, str) or not step.strip() or len(step) > 2000 for step in steps
     ):
         raise HTTPException(status_code=422, detail="steps_must_be_1_to_30_nonempty_strings_max_2000_characters")
+    assignments = body.get("assignments")
+    if assignments is not None and (
+        not isinstance(assignments, list) or not 3 <= len(assignments) <= 12
+        or any(not isinstance(item, dict) for item in assignments)
+    ):
+        raise HTTPException(status_code=422, detail="assignments_must_be_3_to_12_objects")
+    summary = body.get("summary")
+    if summary is not None and (not isinstance(summary, str) or len(summary) > 4000):
+        raise HTTPException(status_code=422, detail="invalid_plan_summary")
+    planner = body.get("planner")
+    if planner is not None and not isinstance(planner, dict):
+        raise HTTPException(status_code=422, detail="invalid_planner_evidence")
     provider = _provider(request)
     try:
         result = await _call(
             _require_method(provider, "submit_plan"), task_id=task_id,
             workspace_id=workspace_id, user_id=_actor_id(request),
-            steps=[step.strip() for step in steps],
+            steps=[step.strip() for step in steps], assignments=assignments,
+            summary=summary, planner=planner,
         )
     except Exception as exc:
         _raise_provider_error(exc)
