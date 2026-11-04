@@ -185,11 +185,11 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
                     raw = path.read_bytes()
                     if b"\x00" in raw:
                         continue
-                    body = raw.decode("utf-8")[:6000]
+                    body = raw.decode("utf-8")[:2500]
                 except (OSError, UnicodeDecodeError):
                     continue
                 part = f"\n--- FILE: {rel} ---\n{body}"
-                if len(chunks) >= 40 or total + len(part) > 36000:
+                if len(chunks) >= 20 or total + len(part) > 10000:
                     return "".join(chunks) + "\n[repository snapshot truncated]"
                 chunks.append(part)
                 total += len(part)
@@ -253,6 +253,12 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
                 path = Path(target)
                 if path.is_absolute() or ".." in path.parts or any(p.search(target) for p in blocked):
                     raise GatewayAgentError("patch_path_not_allowed")
+                candidate = Path(workspace_path).resolve()
+                probe = candidate
+                for part in path.parts:
+                    probe = probe / part
+                    if probe.is_symlink():
+                        raise GatewayAgentError("patch_symlink_path_not_allowed")
         if cancellation_event is not None and cancellation_event.is_set():
             return {"status": "cancelled", "execution_started": False, "release_authorized": False}
         task_scope = {"task_id": task_id, "tenant_id": tenant_id, "workspace_id": workspace_id,
