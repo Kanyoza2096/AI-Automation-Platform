@@ -203,12 +203,13 @@ def test_receipt_verification_failure_leaves_enqueued_job_unclaimable(tmp_path):
     queue = make_queue(tmp_path)
     kernel = ActionKernel(allow_in_memory=True)
     register_engineering_build_enqueue_contract(kernel, queue)
-    result = asyncio.run(admit_approved_build(workflow=workflow, action_kernel=kernel,
-        task_id=task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
-        actor_id="builder", agent_id="kdo-agent",
-        council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-rejected"},
-        receipt_verifier=lambda scope, receipt: False))
-    assert result["ok"] is False and result["status"] == "uncertain"
+    from services.kdo_engineering_governed_actions import GovernedEngineeringActionError
+    with pytest.raises(GovernedEngineeringActionError, match="build_admission_receipt_not_verified"):
+        asyncio.run(admit_approved_build(workflow=workflow, action_kernel=kernel,
+            task_id=task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+            actor_id="builder", agent_id="kdo-agent",
+            council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-rejected"},
+            receipt_verifier=lambda scope, receipt: False))
     queued = queue._record(queue._db.execute(
         "SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
         (task.tenant_id, task.workspace_id, task.task_id),
