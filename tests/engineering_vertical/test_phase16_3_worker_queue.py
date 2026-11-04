@@ -182,8 +182,10 @@ def test_council_and_action_kernel_admission_creates_durable_job_only_after_appr
         council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-1"},
         receipt_verifier=lambda scope, receipt: True))
     assert result["ok"] is True
-    queued = queue.get_by_idempotency(tenant_id=task.tenant_id, workspace_id=task.workspace_id,
-                                     idempotency_key=f"engineering:{task.tenant_id}:{task.workspace_id}:{task.task_id}:kdo_engineering_build_enqueue")
+    queued = queue._record(queue._db.execute(
+        "SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
+        (task.tenant_id, task.workspace_id, task.task_id),
+    ).fetchone())
     assert queued.admission_receipt_verified is True
     assert queued.admission_decision_id == "council-decision-1"
     assert queued.admission_intent_id and queued.admission_execution_id
@@ -207,8 +209,10 @@ def test_receipt_verification_failure_leaves_enqueued_job_unclaimable(tmp_path):
         council_deliberate=lambda **kwargs: {"is_approved": True, "decision_id": "council-decision-rejected"},
         receipt_verifier=lambda scope, receipt: False))
     assert result["ok"] is False and result["status"] == "uncertain"
-    queued = queue.get_by_idempotency(tenant_id=task.tenant_id, workspace_id=task.workspace_id,
-        idempotency_key=f"engineering:{task.tenant_id}:{task.workspace_id}:{task.task_id}:kdo_engineering_build_enqueue")
+    queued = queue._record(queue._db.execute(
+        "SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
+        (task.tenant_id, task.workspace_id, task.task_id),
+    ).fetchone())
     assert queued.admission_receipt_verified is False
     assert queue.claim_next(worker_id="worker-1") is None
     queue.close()
