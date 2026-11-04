@@ -169,6 +169,8 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
         ignored = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"}
         suffixes = {".py", ".md", ".toml", ".ini", ".cfg", ".txt", ".json",
                     ".yaml", ".yml", ".js", ".jsx", ".ts", ".tsx", ".css", ".html"}
+        protected_dirs = re.compile(r"(^|/)(\\.git|\\.github|\\.gitlab|\\.circleci|deployment|deploy|infra|terraform|k8s|kubernetes)(/|$)", re.I)
+        protected_files = re.compile(r"(^|/)(Procfile|Dockerfile|docker-compose[^/]*\\.ya?ml|compose\\.ya?ml|render\\.ya?ml|\\.env(?:\\..*)?|.*\\.pem|.*\\.key|.*credentials.*)$", re.I)
         chunks, total = [], 0
         for current, dirs, files in os.walk(candidate, followlinks=False):
             dirs[:] = sorted(d for d in dirs if d not in ignored and not (Path(current) / d).is_symlink())
@@ -177,9 +179,7 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
                 if path.is_symlink() or path.suffix.lower() not in suffixes:
                     continue
                 rel = path.relative_to(candidate).as_posix()
-                if rel.startswith(".github/workflows/") or rel in {
-                    "Procfile", "render.yaml", "render.yml", "Dockerfile"
-                } or re.search(r"(^|/)(\.env(?:\.|$)|.*\.pem$|.*\.key$|.*credentials.*)", rel, re.I):
+                if protected_dirs.search(rel) or protected_files.search(rel):
                     continue
                 try:
                     raw = path.read_bytes()
@@ -243,9 +243,10 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
         patch = evidence.get("patch_text")
         if not isinstance(patch, str) or not patch.startswith("diff --git ") or len(patch.encode("utf-8")) > 1_000_000 or "\x00" in patch:
             raise GatewayAgentError("valid_unified_diff_required")
-        blocked = (re.compile(r"(^|/)\.git(/|$)"), re.compile(r"(^|/)\.github/workflows/"),
-                   re.compile(r"(^|/)(Procfile|render\.yaml|render\.yml|Dockerfile)$", re.I),
-                   re.compile(r"(^|/)(\.env(?:\.|$)|.*\.pem$|.*\.key$|.*credentials.*)", re.I))
+        blocked = (
+            re.compile(r"(^|/)(\.git|\.github|\.gitlab|\.circleci|deployment|deploy|infra|terraform|k8s|kubernetes)(/|$)", re.I),
+            re.compile(r"(^|/)(Procfile|Dockerfile|docker-compose[^/]*\.ya?ml|compose\.ya?ml|render\.ya?ml|\.env(?:\..*)?|.*\.pem|.*\.key|.*credentials.*)$", re.I),
+        )
         candidate = Path(workspace_path).resolve()
         def validate_target(raw_target: str) -> None:
             target = raw_target.strip().split("\t", 1)[0]
