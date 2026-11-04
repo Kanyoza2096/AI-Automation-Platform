@@ -50,6 +50,7 @@ def make_gateway_agent(*, gateway: Any, role: str, agent_id: str,
         acceptance = raw_context.get("acceptance_criteria", [])
         deliverables = raw_context.get("deliverables", [])
         policy_refs = raw_context.get("policy_refs", [])
+        requested_capabilities = raw_context.get("requested_capabilities", [])
         try:
             task = EngineeringTaskAssignment(
                 task_id=assignment.task_id,
@@ -58,8 +59,9 @@ def make_gateway_agent(*, gateway: Any, role: str, agent_id: str,
                 acceptance_criteria=tuple(acceptance) if isinstance(acceptance, (list, tuple)) else (),
                 depends_on=tuple(assignment.depends_on),
                 deliverables=tuple(deliverables) if isinstance(deliverables, (list, tuple)) else (),
-                context={k: v for k, v in raw_context.items() if k not in {"acceptance_criteria", "deliverables", "policy_refs"}},
+                context={k: v for k, v in raw_context.items() if k not in {"acceptance_criteria", "deliverables", "policy_refs", "requested_capabilities"}},
                 policy_refs=tuple(policy_refs) if isinstance(policy_refs, (list, tuple)) else (),
+                requested_capabilities=tuple(requested_capabilities) if isinstance(requested_capabilities, (list, tuple)) else (),
             )
             prompt, prompt_manifest = assembler.assemble(
                 task, policy_version=policy_version,
