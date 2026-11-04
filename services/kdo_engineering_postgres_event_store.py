@@ -41,7 +41,9 @@ class PostgresEngineeringEventStore:
         try:
             conn = self._connect()
             cursor = conn.cursor()
-            stream_key = f"{tenant_id}:{workspace_id}:{task_id}"
+            # Match the console provider's advisory-lock key so web and worker
+            # writers serialize on the same task stream.
+            stream_key = f"{workspace_id}:{task_id}"
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (stream_key,))
             cursor.execute(
                 """SELECT sequence_no,event_hash
