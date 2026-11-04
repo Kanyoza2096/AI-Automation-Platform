@@ -292,10 +292,10 @@ class PostgresEngineeringConsoleProvider:
         if not steps or any(not isinstance(step, str) or not step.strip() for step in steps):
             raise ValueError("plan_must_contain_nonempty_steps")
         task = self.tasks.get(task_id, tenant_id=workspace_id, workspace_id=workspace_id)
-        if task.status != EngineeringTaskStatus.PROPOSED:
-            raise EngineeringConsoleProviderError("plan_submission_requires_proposed_task")
         if task.evidence.get("plan_review", {}).get("state") in {"submitted", "approved", "rejected"}:
             raise EngineeringConsoleProviderError("plan_already_submitted")
+        if task.status != EngineeringTaskStatus.PROPOSED:
+            raise EngineeringConsoleProviderError("plan_submission_requires_proposed_task")
         normalized = [step.strip() for step in steps]
         normalized_assignments = None
         if assignments is not None:
