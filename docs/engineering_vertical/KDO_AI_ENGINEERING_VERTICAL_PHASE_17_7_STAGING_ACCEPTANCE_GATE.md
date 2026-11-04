@@ -72,8 +72,11 @@ run #64 passed on commit `f6d5164`; a subsequent test was added to exercise the
 complete gateway-backed diagnose/repair/verify handoff and is awaiting its own
 CI result. These repository tests do not satisfy the live acceptance gates.
 
-The host policy callback remains an injection seam. No engineering-specific
-canonical Action Kernel contract/adapter has been verified for build patch,
-test execution, repair, and review transitions. Keep the worker disabled until
+The canonical Council + Action Kernel path for approved build admission already
+exists (`admit_approved_build` plus the PostgreSQL enqueue contract). The worker
+runtime still needs a trusted production factory, canonical workflow
+authorization/receipt verification, and explicit policy mapping for build patch,
+test execution, repair, and review transitions; its current callbacks remain
+injection seams. Keep the worker disabled until
 the canonical Council / DecisionGate / Action Kernel / receipt chain is
 implemented, tested, and evidenced in staging.
