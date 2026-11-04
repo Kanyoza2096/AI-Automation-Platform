@@ -62,7 +62,8 @@ def test_authorizer_registers_high_risk_approval_required_contract():
     assert contract.inline_with_decision is True
     assert set(contract.required_parameters) == {
         "tenant_id", "workspace_id", "task_id", "requested_action",
-        "payload_digest", "authorization_request_id",
+        "payload_digest", "authorization_request_id", "job_id",
+        "plan_digest", "lease_token_digest",
     }
 
 
@@ -78,3 +79,62 @@ def test_authorizer_rejects_pre_registered_weak_contract():
     ))
     with pytest.raises(GovernedWorkerAuthorizationError, match="worker_authorization_contract_mismatch"):
         CouncilActionKernelWorkerAuthorizer(kernel)
+
+
+
+def _task():
+    return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "task_id": "task-a",
+        "acceptance_criteria": ["tests pass"],
+    }
+
+
+def _context():
+    return {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "task_id": "task-a",
+        "job_id": "job-a",
+        "plan_digest": "a" * 64,
+        "lease_token": "lease-secret",
+    }
+
+
+def test_authorizer_fails_closed_without_claimed_job_context():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+
+    assert authorizer.authorize("run_tests", _task()) is False
+    assert kernel.contracts[ACTION_TYPE]
+
+
+def test_authorizer_rejects_expired_or_lost_lease_before_governance():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+
+    with authorizer.bind_execution_context(_context(), lambda: False):
+        assert authorizer.authorize("run_tests", _task()) is False
+
+    # No Action Kernel execution occurred when the lease validator denied access.
+    assert kernel.contracts[ACTION_TYPE]
+
+
+def test_authorizer_rejects_task_scope_mismatch_before_governance():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    wrong_task = {**_task(), "task_id": "different-task"}
+
+    with authorizer.bind_execution_context(_context(), lambda: True):
+        assert authorizer.authorize("apply_patch", wrong_task) is False
+
+
+def test_authorizer_requires_context_with_job_plan_and_lease_fields():
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    incomplete = {key: value for key, value in _context().items() if key != "plan_digest"}
+
+    with pytest.raises(GovernedWorkerAuthorizationError, match="complete_worker_execution_context_required"):
+        with authorizer.bind_execution_context(incomplete, lambda: True):
+            pass
