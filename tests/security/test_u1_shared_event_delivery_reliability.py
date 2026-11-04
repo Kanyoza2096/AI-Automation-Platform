@@ -15,6 +15,8 @@ class Query:
         self.filters = {}
         self.window = None
         self.update_values = None
+        self.rpc_name = None
+        self.rpc_params = None
 
     def select(self, *args): return self
     def order(self, *args, **kwargs): return self
@@ -33,6 +35,14 @@ class Query:
         self.db.updates.append((self.table, value))
         return self
 
+    def is_(self, *args): return self
+    def lte(self, *args): return self
+    def not_(self): return self
+    def rpc(self, name, params):
+        self.rpc_name = name
+        self.rpc_params = params
+        return self
+
     def execute(self):
         if self.table == "events":
             rows = self.db.events
@@ -40,6 +50,9 @@ class Query:
                 start, end = self.window
                 rows = rows[start:end + 1]
             return Result(rows)
+        if self.rpc_name:
+            self.db.rpc_calls.append((self.rpc_name, self.rpc_params))
+            return Result(True)
         if self.table == "event_deliveries":
             rows = list(self.db.deliveries.values())
             rows = [row for row in rows if all(row.get(k) == v for k, v in self.filters.items())]
@@ -55,6 +68,7 @@ class Database:
         self.events = events
         self.deliveries = {}
         self.updates = []
+        self.rpc_calls = []
 
     def table(self, name):
         return Query(self, name)
@@ -73,27 +87,35 @@ def test_poll_pages_past_first_fifty_events():
     assert seen == list(range(51))
 
 
-def test_failed_delivery_is_not_acknowledged_and_can_be_retried():
+def test_failed_delivery_is_recorded_for_retry_and_eventual_dead_letter():
     db = Database([])
     bus = SharedEventBus(db, source_service="director")
 
-    bus._mark_delivery_processed("delivery-1", success=False, error="temporary failure")
+    bus._mark_delivery_processed(
+        "delivery-1",
+        claim_token="worker:claim-1",
+        success=False,
+        error="temporary failure",
+    )
 
-    update = db.updates[-1][1]
-    assert update["processed"] is False
-    assert update["processed_at"] is None
-    assert update["processing_error"] == "temporary failure"
-    assert "claimed_at" not in update
+    name, params = db.rpc_calls[-1]
+    assert name == "complete_shared_event_delivery"
+    assert params["p_delivery_id"] == "delivery-1"
+    assert params["p_claim_token"] == "worker:claim-1"
+    assert params["p_success"] is False
+    assert params["p_error"] == "one or more handlers failed"
+    assert params["p_max_attempts"] == 5
 
 
-def test_successful_delivery_is_acknowledged_and_releases_lease():
+def test_successful_delivery_is_acknowledged_with_claim_fencing():
     db = Database([])
     bus = SharedEventBus(db, source_service="director")
 
-    bus._mark_delivery_processed("delivery-1", success=True)
+    bus._mark_delivery_processed(
+        "delivery-1", claim_token="worker:claim-2", success=True
+    )
 
-    update = db.updates[-1][1]
-    assert update["processed"] is True
-    assert update["processed_at"]
-    assert update["claimed_by"] is None
-    assert update["claimed_at"] is None
+    name, params = db.rpc_calls[-1]
+    assert name == "complete_shared_event_delivery"
+    assert params["p_success"] is True
+    assert params["p_claim_token"] == "worker:claim-2"
