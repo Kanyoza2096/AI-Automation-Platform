@@ -61,8 +61,9 @@ class FakeEngineeringConsoleProvider:
         self.calls.append(("generate_plan", task_id, workspace_id))
         return {"task_id": task_id, "revision": 1, "summary": "A bounded calculator implementation plan", "steps": ["Inspect repository", "Implement calculator operations", "Add unit tests", "Run tests"]}
 
-    def submit_plan(self, *, task_id, workspace_id, user_id, steps):
+    def submit_plan(self, *, task_id, workspace_id, user_id, steps, assignments=None, summary=None, planner=None):
         self.calls.append(("submit_plan", task_id, workspace_id, user_id, steps))
+        self.submitted_plan_metadata = {"assignments": assignments, "summary": summary, "planner": planner}
         task = self.get_task(task_id=task_id, workspace_id=workspace_id)
         task["revision"] += 1
         task["approval_required"] = True
@@ -177,6 +178,30 @@ def test_plan_submission_is_validated_and_delegated_to_provider():
     assert response.status_code == 200
     assert response.json()["approval_required"] is True
     assert ("submit_plan", "task-1", "workspace-1", "planner@example.test", ["Inspect repository", "Implement change", "Run tests"]) in provider.calls
+
+
+def test_plan_submission_preserves_structured_specialist_assignments():
+    provider = FakeEngineeringConsoleProvider()
+    client = make_client(provider)
+    assignments = [
+        {"task_id": "requirements", "role": "planner", "objective": "Refine scope",
+         "acceptance_criteria": ["Scope is explicit"], "depends_on": [], "deliverables": ["scope"],
+         "policy_refs": [], "requested_capabilities": []},
+        {"task_id": "implementation", "role": "implementer", "objective": "Implement calculator",
+         "acceptance_criteria": ["Operations work"], "depends_on": ["requirements"], "deliverables": ["calculator.py"],
+         "policy_refs": [], "requested_capabilities": []},
+        {"task_id": "tests", "role": "test_engineer", "objective": "Verify calculator",
+         "acceptance_criteria": ["Tests pass"], "depends_on": ["implementation"], "deliverables": ["test_calculator.py"],
+         "policy_refs": [], "requested_capabilities": []},
+    ]
+    response = client.post("/api/v1/engineering/console/tasks/task-1/plan",
+        headers={"x-test-workspace": "workspace-1", "x-test-user": "planner@example.test"},
+        json={"steps": ["Inspect", "Implement", "Test"], "assignments": assignments,
+              "summary": "Calculator plan", "planner": {"provider": "test"}})
+    assert response.status_code == 200
+    assert provider.submitted_plan_metadata["assignments"] == assignments
+    assert provider.submitted_plan_metadata["summary"] == "Calculator plan"
+    assert provider.submitted_plan_metadata["planner"] == {"provider": "test"}
 
 
 def test_plan_submission_rejects_empty_steps():
