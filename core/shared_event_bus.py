@@ -307,11 +307,19 @@ class SharedEventBus:
         if not delivery_id or not self.supabase:
             return
         try:
-            self.supabase.table("event_deliveries").update({
-                "processed": True,
-                "processed_at": datetime.now(timezone.utc).isoformat(),
+            succeeded = bool(success)
+            update = {
+                "processed": succeeded,
+                "processed_at": datetime.now(timezone.utc).isoformat() if succeeded else None,
                 "processing_error": (error or "")[:500] if error else None,
-            }).eq("id", delivery_id).eq("consumer_group", self.source_service).execute()
+            }
+            if succeeded:
+                update.update({"claimed_by": None, "claimed_at": None})
+            # Failed deliveries remain unprocessed. Keeping the claim timestamp
+            # applies the existing five-minute lease as retry backoff.
+            self.supabase.table("event_deliveries").update(update).eq(
+                "id", delivery_id
+            ).eq("consumer_group", self.source_service).execute()
         except Exception:
             logger.exception("SharedEventBus failed to mark delivery %s processed", delivery_id)
 
