@@ -140,14 +140,16 @@ def test_workspace_metadata_is_tenant_scoped_and_reconciliation_does_not_delete(
     assert before.exists()
 
 
-def test_plan_cannot_be_approved_by_submitter_and_plan_is_single_submission(env):
+def test_plan_submitter_can_approve_own_plan_and_plan_is_single_submission(env):
     _, _, _, _, workflow, task = env
     workflow.create_task(task, actor_id="creator")
     workflow.submit_plan(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
                          actor_id="creator", plan=["One step"])
-    with pytest.raises(Phase162Error, match="independent_plan_reviewer"):
-        workflow.review_plan(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
-                             reviewer_id="creator", approve=True)
+    approved = workflow.review_plan(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+                                    reviewer_id="creator", approve=True)
+    assert approved.status.value == "planned"
+    assert approved.evidence["plan_review"]["reviewed_by"] == "creator"
+    assert approved.evidence["plan_review"]["state"] == "approved"
     with pytest.raises(Phase162Error, match="already_submitted"):
         workflow.submit_plan(task.task_id, tenant_id=task.tenant_id, workspace_id=task.workspace_id,
                              actor_id="creator", plan=["Changed step"])
