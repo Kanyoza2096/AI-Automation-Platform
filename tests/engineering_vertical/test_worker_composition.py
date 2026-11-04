@@ -7,6 +7,7 @@ from services.kdo_engineering_worker_bootstrap import ProductionWorkerConfig
 from services.kdo_engineering_worker_composition import (
     EngineeringWorkerCompositionError,
     build_worker_dependencies,
+    build_gateway_worker_dependencies,
 )
 
 
@@ -128,4 +129,54 @@ def test_composition_rejects_worker_not_explicitly_enabled(tmp_path):
             registry_factory=lambda *args: object(),
             repair_capabilities_factory=lambda *args: {"python"},
             pipeline_authorize=lambda *args: True,
+        )
+
+
+
+def test_gateway_composition_requires_and_wires_task_aware_repair_capabilities(tmp_path):
+    source = tmp_path / "source"
+    managed = tmp_path / "managed"
+    source.mkdir()
+    managed.mkdir()
+
+    class Gateway:
+        def complete_structured(self, *_args, **_kwargs):
+            raise AssertionError("gateway must not be called during composition")
+
+    deps = build_gateway_worker_dependencies(
+        config=config(),
+        connection_factory=lambda: None,
+        source_repository_path=source,
+        managed_workspace_root=managed,
+        pinned_worker_image="registry.example/kdo-worker@sha256:" + "b" * 64,
+        gateway=Gateway(),
+        workflow_authorize=lambda *_: True,
+        pipeline_authorize=lambda *_: True,
+        repair_capabilities_factory=lambda task, steps: {"backend", "api"},
+    )
+    assert isinstance(deps["queue"], PostgresEngineeringBuildQueue)
+    assert callable(deps["executor"])
+
+
+def test_gateway_composition_rejects_missing_task_aware_repair_capabilities(tmp_path):
+    source = tmp_path / "source"
+    managed = tmp_path / "managed"
+    source.mkdir()
+    managed.mkdir()
+
+    class Gateway:
+        def complete_structured(self, *_args, **_kwargs):
+            raise AssertionError("gateway must not be called during composition")
+
+    with pytest.raises(EngineeringWorkerCompositionError, match="task_aware_repair_capability_factory_required"):
+        build_gateway_worker_dependencies(
+            config=config(),
+            connection_factory=lambda: None,
+            source_repository_path=source,
+            managed_workspace_root=managed,
+            pinned_worker_image="registry.example/kdo-worker@sha256:" + "b" * 64,
+            gateway=Gateway(),
+            workflow_authorize=lambda *_: True,
+            pipeline_authorize=lambda *_: True,
+            repair_capabilities_factory=None,
         )
