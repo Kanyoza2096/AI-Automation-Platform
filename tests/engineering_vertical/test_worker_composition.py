@@ -171,6 +171,7 @@ def test_gateway_composition_requires_and_wires_task_aware_repair_capabilities(t
     )
     assert isinstance(deps["queue"], PostgresEngineeringBuildQueue)
     assert callable(deps["executor"])
+    assert deps["executor"].worker_authorizer is scoped_authorizer
 
 
 def test_gateway_composition_rejects_missing_task_aware_repair_capabilities(tmp_path):
