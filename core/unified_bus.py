@@ -342,11 +342,31 @@ class UnifiedEventBus:
                 logger.warning("Event dropped due to throttling")
                 return False
             elif self._throttle_policy == ThrottlePolicy.DEFER:
-                logger.warning("Event deferred due to throttling")
-                return False
+                # publish() performs the actual asynchronous wait until the
+                # rolling window has capacity; do not reject the event here.
+                return True
 
         self._recent_events.append(now)
         return True
+
+    async def _wait_for_throttle_capacity(self) -> None:
+        """Wait until the configured rolling rate window has capacity."""
+        while True:
+            now = time.monotonic()
+            while (
+                self._recent_events
+                and self._recent_events[0] < now - self.config.throttle_window_seconds
+            ):
+                self._recent_events.popleft()
+            if len(self._recent_events) < self.config.max_events_per_second:
+                self._recent_events.append(now)
+                return
+            self._throttled_count += 1
+            delay = max(
+                0.001,
+                self._recent_events[0] + self.config.throttle_window_seconds - now,
+            )
+            await asyncio.sleep(delay)
 
     def _next_sequence(self) -> int:
         """Get next sequence number."""
@@ -426,7 +446,9 @@ class UnifiedEventBus:
         if not self._validate_payload(payload):
             return None
 
-        if not self._check_throttle():
+        if self._throttle_policy == ThrottlePolicy.DEFER:
+            await self._wait_for_throttle_capacity()
+        elif not self._check_throttle():
             return None
 
         event_id = f"evt_{uuid.uuid4().hex[:12]}"
@@ -456,18 +478,32 @@ class UnifiedEventBus:
         )
         self._event_store.append(entry)
 
+        # Enqueue persistence first. DEFER/BLOCK apply backpressure instead
+        # of acknowledging an event that cannot be durably queued.
+        if self.supabase:
+            try:
+                if self._throttle_policy == ThrottlePolicy.DROP:
+                    self._persistence_queue.put_nowait(entry)
+                else:
+                    await self._persistence_queue.put(entry)
+            except asyncio.QueueFull:
+                logger.warning("Persistence queue FULL — dropping event: %s", event_name)
+                self._events_dropped += 1
+                return None
+
+        dispatch_item = (
+            event_name, payload, source, event_id, workspace_id, brand_id,
+            decision_id, correlation_id, parent_event_id,
+        )
         try:
-            self._dispatch_queue.put_nowait((event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id))
+            if self._throttle_policy == ThrottlePolicy.DROP:
+                self._dispatch_queue.put_nowait(dispatch_item)
+            else:
+                await self._dispatch_queue.put(dispatch_item)
         except asyncio.QueueFull:
             logger.warning("Dispatch queue FULL — dropping event: %s", event_name)
             self._events_dropped += 1
             return None
-
-        if self.supabase:
-            try:
-                self._persistence_queue.put_nowait(entry)
-            except asyncio.QueueFull:
-                logger.warning("Persistence queue FULL — event not persisted: %s", event_name)
 
         self._events_published += 1
         return event_id
@@ -579,41 +615,48 @@ class UnifiedEventBus:
         while self._running:
             try:
                 batch: List[EventStoreEntry] = []
-
                 try:
                     entry = await asyncio.wait_for(
                         self._persistence_queue.get(),
                         timeout=self.config.persistence_flush_interval,
                     )
                     batch.append(entry)
-
                     for _ in range(self.config.persistence_batch_size - 1):
                         try:
-                            entry = self._persistence_queue.get_nowait()
-                            batch.append(entry)
+                            batch.append(self._persistence_queue.get_nowait())
                         except asyncio.QueueEmpty:
                             break
-
-                    await self._persist_batch(batch)
-
-                    for _ in batch:
-                        self._persistence_queue.task_done()
-
                 except asyncio.TimeoutError:
-                    pass
+                    continue
+
+                attempt = 0
+                while self._running:
+                    if await self._persist_batch(batch):
+                        for _ in batch:
+                            self._persistence_queue.task_done()
+                        break
+                    attempt += 1
+                    # Keep ownership of the dequeued batch until it is saved.
+                    # This avoids acknowledging or discarding failed writes.
+                    await asyncio.sleep(min(30.0, max(1.0, 2 ** min(attempt, 5))))
+                else:
+                    # Shutdown requested: put the batch back for stop() to flush.
+                    for entry in batch:
+                        await self._persistence_queue.put(entry)
+                        self._persistence_queue.task_done()
 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error("Persistence loop error: %s", exc)
 
-    async def _persist_batch(self, batch: List[EventStoreEntry]) -> None:
+    async def _persist_batch(self, batch: List[EventStoreEntry]) -> bool:
         if not self.supabase:
-            return
+            return True
 
         if self._circuit_state == CircuitState.OPEN:
             if not self._should_retry_circuit():
-                return
+                return False
             self._circuit_state = CircuitState.HALF_OPEN
 
         try:
@@ -642,6 +685,7 @@ class UnifiedEventBus:
 
             self._circuit_failures = 0
             self._circuit_state = CircuitState.CLOSED
+            return True
 
         except Exception as exc:
             self._persistence_failures += len(batch)
@@ -652,7 +696,8 @@ class UnifiedEventBus:
                 self._circuit_state = CircuitState.OPEN
                 logger.warning("Persistence circuit breaker opened")
 
-            logger.debug("Persistence failed: %s", str(exc)[:200])
+            logger.warning("Persistence failed; batch retained for retry: %s", str(exc)[:200])
+            return False
 
     def _should_retry_circuit(self) -> bool:
         if self._circuit_last_failure_time is None:
