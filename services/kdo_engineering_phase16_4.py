@@ -163,9 +163,20 @@ class PostgresEngineeringBuildQueue:
                   AND status='queued' AND admission_receipt_verified=FALSE RETURNING *""",
                 (decision_id, intent_id, execution_id, tenant_id, workspace_id, task_id))
             row = self._record(_row_dict(cur, cur.fetchone()))
-            if row is None:
+            if row is not None:
+                return row
+            cur.execute("""SELECT * FROM public.kdo_engineering_build_jobs
+                WHERE tenant_id=%s AND workspace_id=%s AND task_id=%s""",
+                (tenant_id, workspace_id, task_id))
+            existing = self._record(_row_dict(cur, cur.fetchone()))
+            if existing is None:
                 raise Phase163Error("queued_job_not_found_or_receipt_already_recorded")
-            return row
+            expected = (decision_id, intent_id, execution_id)
+            actual = (existing.admission_decision_id, existing.admission_intent_id,
+                      existing.admission_execution_id)
+            if existing.admission_receipt_verified is not True or actual != expected:
+                raise Phase163Error("admission_receipt_conflict_or_job_not_queued")
+            return existing
         return self._run(op, write=True)
 
     def get_by_idempotency(self, *, tenant_id: str, workspace_id: str,
