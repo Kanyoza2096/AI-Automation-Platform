@@ -150,6 +150,7 @@ jobs:
             tests/engineering_vertical/test_worker_bootstrap.py \
             tests/engineering_vertical/test_worker_entrypoint.py \
             tests/engineering_vertical/test_phase16_4_shared_queue.py \
+            tests/engineering_vertical/test_durable_receipts.py \
             tests/engineering_vertical/test_phase16_4_postgres_integration.py \
             tests/engineering_vertical/test_phase16_5_postgres_repositories.py \
             tests/engineering_vertical/test_phase16_7_dynamic_quality_loop.py \
