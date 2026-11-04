@@ -35,6 +35,18 @@ logger = logging.getLogger("kanyoza.core.species_auth")
 MASTER_PERMISSIONS = ["read", "write", "admin", "owner", "species"]
 
 
+def _workspace_token_role(permissions: List[str]) -> str:
+    """Derive the workspace role from the token's explicit permission scope."""
+    granted = {str(permission).strip().lower() for permission in permissions}
+    if "owner" in granted:
+        return "owner"
+    if "admin" in granted:
+        return "admin"
+    if "operator" in granted or "write" in granted:
+        return "operator"
+    return "viewer"
+
+
 @dataclass
 class AuthIdentity:
     """Resolved identity after successful authentication."""
@@ -237,11 +249,13 @@ class SpeciesAuth:
                             return AuthIdentity(valid=False, error="API key expired")
                     except (TypeError, ValueError):
                         return AuthIdentity(valid=False, error="API key has invalid expiry")
+                permissions = list(record.get("permissions") or ["read"])
                 return AuthIdentity(
                     valid=True,
                     method="workspace_token",
                     workspace_id=workspace_id,
-                    permissions=list(record.get("permissions") or ["read"]),
+                    role=_workspace_token_role(permissions),
+                    permissions=permissions,
                     name=record.get("name") or "Scoped Token",
                     is_species=False,
                 )
@@ -285,11 +299,13 @@ class SpeciesAuth:
             workspace_id = found.get("workspace_id") or found.get("tenant_id")
             if not workspace_id:
                 return AuthIdentity(valid=False, error="API key has no workspace scope")
+            permissions = list(found.get("permissions") or ["read"])
             return AuthIdentity(
                 valid=True,
                 method="workspace_token",
                 workspace_id=workspace_id,
-                permissions=list(found.get("permissions") or ["read"]),
+                role=_workspace_token_role(permissions),
+                permissions=permissions,
                 name=found.get("name") or "Scoped Token",
                 is_species=False,
             )
