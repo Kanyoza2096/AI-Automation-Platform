@@ -38,9 +38,12 @@ model-provider integration.
 The gateway-backed builder receives the approved task contract, approved plan,
 and a bounded text-only snapshot of the task worktree. It can propose one
 unified diff. The host rejects unsafe paths and symlink targets, checks the
-task-scoped workspace, and calls the injected Action Kernel policy callback
+task-scoped workspace, and calls the injected host policy callback
 for `build_patch` before applying the patch through the checked Git patch
-primitive. This is a host filesystem mutation, not a sandbox; it is only valid
+primitive. Important: this callback is currently an interface seam, not a
+verified Action Kernel integration. KDO still needs an engineering-specific
+canonical decision/Action Kernel adapter; do not wire a permissive lambda or
+claim this authority path is complete. This is a host filesystem mutation, not a sandbox; it is only valid
 inside the disposable task worktree.
 
 The dynamic QA registry installs task-aware debugging, backend repair, and
@@ -57,3 +60,17 @@ The adapter integration is covered by
 `test_gateway_agents.py` and `test_gateway_build_executor.py`. A passing CI
 run is still required before merge. No worker is enabled by this change, and
 no live calculator build has been executed.
+
+
+## Remaining authority integration blocker
+
+The gateway adapter and worker composition intentionally accept host-owned
+authorization callbacks, but the repository does not yet provide a verified
+engineering-specific Action Kernel contract that maps plan approval, build
+patching, test execution, repair application, and review handoff to canonical
+decision IDs and durable receipts. The existing generic Action Kernel must not
+be invoked through an unrelated business action or a fabricated decision ID.
+Until that adapter is implemented and tested against the canonical Council /
+DecisionGate / Action Kernel path, the worker must remain disabled. The passing
+focused CI suite proves adapter interfaces and unit behavior only; it does not
+prove the live authority chain or authorize staging execution.
