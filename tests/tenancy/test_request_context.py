@@ -121,3 +121,22 @@ def test_workspace_token_permissions_map_to_authority_role(permissions, expected
     ctx = bind_from_auth_identity(identity)
     assert ctx.role == expected_role
     clear_request_context()
+
+
+def test_workspace_api_token_auth_maps_write_scope_to_operator(monkeypatch):
+    from core.api_tokens import api_token_manager
+    from core.species_auth import SpeciesAuth
+
+    monkeypatch.setattr(
+        api_token_manager,
+        "validate_token",
+        lambda _token: {
+            "workspace_id": "ws-token",
+            "permissions": ["read", "write"],
+            "name": "Scoped Token",
+        },
+    )
+    identity = SpeciesAuth()._validate_workspace_token("kny_test_token")
+    assert identity.valid is True
+    assert identity.role == "operator"
+    assert identity.permissions == ["read", "write"]
