@@ -561,11 +561,31 @@ def run_claimed_build_job(
 
     def execute() -> None:
         try:
-            outcome["result"] = workflow.execute_approved_build(
-                job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
-                actor_id=actor_id, executor=executor, execution_guard=execution_guard,
-                execution_cancelled=execution_cancelled,
-            )
+            worker_authorizer = getattr(executor, "worker_authorizer", None)
+            if worker_authorizer is not None:
+                binder = getattr(worker_authorizer, "bind_execution_context", None)
+                if not callable(binder):
+                    raise Phase163Error("worker_authorizer_context_binding_required")
+                execution_context = {
+                    "job_id": current.job_id,
+                    "tenant_id": current.tenant_id,
+                    "workspace_id": current.workspace_id,
+                    "task_id": current.task_id,
+                    "plan_digest": current.plan_digest,
+                    "lease_token": lease_token,
+                }
+                with binder(execution_context, lambda: (verify_current_lease() is not None)):
+                    outcome["result"] = workflow.execute_approved_build(
+                        job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
+                        actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+                        execution_cancelled=execution_cancelled,
+                    )
+            else:
+                outcome["result"] = workflow.execute_approved_build(
+                    job.task_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id,
+                    actor_id=actor_id, executor=executor, execution_guard=execution_guard,
+                    execution_cancelled=execution_cancelled,
+                )
         except BaseException as exc:
             outcome["error"] = exc
         finally:
