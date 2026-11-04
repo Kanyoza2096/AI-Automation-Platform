@@ -93,7 +93,10 @@ def test_postgres_workspace_and_plan_review_are_scope_bound_and_first_write_wins
 def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(repositories):
     tasks, workspaces, tenant, workspace = repositories
     task = tasks.create(make_task(tenant, workspace))
-    plan_digest = "e" * 64
+    plan_steps = ["inspect", "implement", "test"]
+    plan_digest = hashlib.sha256(
+        json.dumps(plan_steps, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     submitted = tasks.update_evidence(
         task.task_id,
         tenant_id=tenant,
@@ -102,7 +105,7 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
         evidence={
             "plan_review": {
                 "state": "submitted",
-                "steps": ["inspect", "implement", "test"],
+                "steps": plan_steps,
                 "digest": plan_digest,
                 "submitted_by": "author-1",
             }
@@ -180,7 +183,10 @@ def test_postgres_plan_approval_rejects_tampered_specialist_assignments(reposito
 def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(repositories):
     tasks, workspaces, tenant, workspace = repositories
     task = tasks.create(make_task(tenant, workspace))
-    plan_digest = "f" * 64
+    plan_steps = ["inspect", "test"]
+    plan_digest = hashlib.sha256(
+        json.dumps(plan_steps, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     submitted = tasks.update_evidence(
         task.task_id,
         tenant_id=tenant,
@@ -189,7 +195,7 @@ def test_postgres_plan_approval_rolls_back_task_when_ledger_insert_fails(reposit
         evidence={
             "plan_review": {
                 "state": "submitted",
-                "steps": ["inspect", "test"],
+                "steps": plan_steps,
                 "digest": plan_digest,
                 "submitted_by": "author-1",
             }
