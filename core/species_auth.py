@@ -248,6 +248,11 @@ class SpeciesAuth:
         except Exception as exc:
             logger.debug("api_token_manager validate failed: %s", exc)
 
+        # Initialize the fallback record even when the Supabase client is
+        # unavailable or the lookup returns no row. Invalid tokens must fail
+        # closed with an auth response, never an UnboundLocalError.
+        found = None
+
         # Canonical DB fallback for kny_ tokens. This must run before the
         # legacy-key feature gate: the gate controls only api_keys, never api_tokens.
         try:

@@ -72,3 +72,17 @@ def test_expired_legacy_key_is_rejected(monkeypatch):
     identity = auth.validate(bearer_token="kny_test", key_store=key_store)
     assert identity.valid is False
     assert identity.error == "API key expired"
+
+
+def test_unknown_workspace_token_fails_closed_when_supabase_client_unavailable(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = None
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+    monkeypatch.setattr("services.supabase.supabase_service", SimpleNamespace(client=None))
+    monkeypatch.delenv("ALLOW_LEGACY_API_KEYS", raising=False)
+
+    identity = auth.validate(bearer_token="kny_unknown")
+
+    assert identity.valid is False
+    assert identity.error == "Legacy api_keys disabled — use api_tokens (kny_)"
