@@ -141,6 +141,7 @@ def build_gateway_worker_dependencies(
         raise EngineeringWorkerCompositionError("configured_llm_gateway_required")
     if not callable(repair_capabilities_factory):
         raise EngineeringWorkerCompositionError("task_aware_repair_capability_factory_required")
+    worker_authorizer = None
     if pipeline_authorize is None:
         if action_kernel is None:
             raise EngineeringWorkerCompositionError("durable_action_kernel_required_for_worker_authorization")
@@ -164,7 +165,7 @@ def build_gateway_worker_dependencies(
     registry_factory = make_gateway_quality_registry_factory(
         gateway=gateway, workspace_id=workspace_id,
     )
-    return build_worker_dependencies(
+    dependencies = build_worker_dependencies(
         config=config,
         connection_factory=connection_factory,
         source_repository_path=source_repository_path,
@@ -184,3 +185,9 @@ def build_gateway_worker_dependencies(
         cpu_limit=cpu_limit,
         pids_limit=pids_limit,
     )
+    if worker_authorizer is not None:
+        # The queue supervisor binds the exact claimed job/plan/lease around this
+        # executor invocation. The pipeline's per-action callback reads that
+        # thread-local context and fails closed when it is absent.
+        dependencies["executor"].worker_authorizer = worker_authorizer
+    return dependencies
