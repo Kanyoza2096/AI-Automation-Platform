@@ -209,9 +209,10 @@ def test_plan_submission_preserves_structured_specialist_assignments():
 
 def test_postgres_console_provider_persists_validated_specialist_plan_evidence():
     task = SimpleNamespace(
-        task_id="task-structured", objective="Build a calculator",
-        acceptance_criteria=("All operations work",), status=EngineeringTaskStatus.PROPOSED,
-        evidence={}, revision=1,
+        task_id="task-structured", tenant_id="workspace-a", workspace_id="workspace-a",
+        objective="Build a calculator", acceptance_criteria=("All operations work",),
+        idempotency_key="structured-plan", status=EngineeringTaskStatus.PROPOSED,
+        repository_ref=None, base_revision=None, metadata={}, evidence={}, revision=1,
     )
 
     class TaskRepository:
