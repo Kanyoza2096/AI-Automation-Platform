@@ -114,3 +114,50 @@ def test_defer_policy_waits_for_dispatch_queue_capacity():
         assert bus._dispatch_queue.qsize() == 1
 
     asyncio.run(run())
+
+
+
+def test_dispatch_waits_for_all_registered_handlers():
+    async def run():
+        bus = UnifiedEventBus()
+        seen = []
+
+        async def handler(event):
+            await asyncio.sleep(0)
+            seen.append(event["event_id"])
+
+        await bus.subscribe("task.completed", handler)
+        await bus._dispatch_event(
+            "task.completed", {}, "test", "event-dispatch-1"
+        )
+
+        assert seen == ["event-dispatch-1"]
+
+    asyncio.run(run())
+
+
+def test_in_process_dead_letter_can_be_replayed_and_cleared():
+    async def run():
+        bus = UnifiedEventBus()
+        attempts = {"count": 0}
+
+        async def flaky_handler(event):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("temporary handler failure")
+
+        await bus.subscribe("task.failed", flaky_handler)
+        await bus._invoke_handler(
+            flaky_handler,
+            "task.failed",
+            {"task_id": "task-1"},
+            "test",
+            "event-dlq-1",
+        )
+
+        assert len(bus.get_dead_letters()) == 1
+        assert await bus.replay_dead_letter("event-dlq-1") == 1
+        assert bus.get_dead_letters() == []
+        assert attempts["count"] == 2
+
+    asyncio.run(run())
