@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -283,6 +284,12 @@ class PostgresEngineeringConsoleProvider:
             proposal = self._plan_generator(task={"task_id": task.task_id, "objective": task.objective,
                 "acceptance_criteria": list(task.acceptance_criteria)}, workspace_id=workspace_id)
         except Exception as exc:
+            # Keep the API response generic, but preserve the planner's bounded
+            # failure code in server logs for diagnosis without logging prompts
+            # or model output.
+            logging.getLogger(__name__).warning(
+                "Engineering planner proposal failed: %s", str(exc)[:180]
+            )
             raise EngineeringConsoleProviderError("dynamic_planning_failed") from exc
         if not isinstance(proposal, dict) or not isinstance(proposal.get("steps"), list):
             raise EngineeringConsoleProviderError("invalid_planner_response")
