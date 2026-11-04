@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import pytest
 
 from services.action_kernel import ActionContract
@@ -105,6 +107,29 @@ def _context():
     }
 
 
+def _handler_parameters(context):
+    task = {
+        "tenant_id": context["tenant_id"],
+        "workspace_id": context["workspace_id"],
+        "task_id": context["task_id"],
+        "job_id": context["job_id"],
+        "plan_digest": context["plan_digest"],
+        "lease_token_digest": hashlib.sha256(context["lease_token"].encode()).hexdigest(),
+        "acceptance_criteria": ["tests pass"],
+    }
+    action = "run_tests"
+    canonical = json.dumps(
+        {"action": action, "task": task},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    return {
+        **task,
+        "requested_action": action,
+        "payload_digest": hashlib.sha256(canonical.encode()).hexdigest(),
+        "authorization_request_id": "request-a",
+    }
+
+
 def test_authorizer_fails_closed_without_claimed_job_context():
     kernel = FakeKernel(FakeDatabase())
     authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
@@ -199,11 +224,7 @@ def test_action_kernel_handler_rechecks_lease_after_council_approval():
     context = _context()
     with authorizer.bind_execution_context(context, lambda: False):
         handler = kernel.contracts[ACTION_TYPE].handler
-        params = {
-            **{key: context[key] for key in ("job_id", "plan_digest", "tenant_id", "workspace_id", "task_id")},
-            "lease_token_digest": __import__("hashlib").sha256(b"lease-secret").hexdigest(),
-            "authorization_request_id": "request-a",
-        }
+        params = _handler_parameters(context)
         with pytest.raises(GovernedWorkerAuthorizationError, match="worker_lease_not_active"):
             asyncio.run(asyncio.to_thread(handler, params, None))
 
@@ -214,11 +235,7 @@ def test_action_kernel_handler_rejects_job_or_plan_mismatch(field, value):
     kernel = FakeKernel(FakeDatabase())
     authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
     context = _context()
-    params = {
-        **{key: context[key] for key in ("job_id", "plan_digest", "tenant_id", "workspace_id", "task_id")},
-        "lease_token_digest": __import__("hashlib").sha256(b"lease-secret").hexdigest(),
-        "authorization_request_id": "request-a",
-    }
+    params = _handler_parameters(context)
     params[field] = value
     with authorizer.bind_execution_context(context, lambda: True):
         with pytest.raises(GovernedWorkerAuthorizationError, match="worker_execution_scope_mismatch"):
