@@ -10,6 +10,9 @@ from fastapi.testclient import TestClient
 
 from api.dependencies import auth_user_email_var, auth_workspace_id_var, require_auth, require_workspace_operator
 from routes.kdo_engineering_console import router
+from services.kdo_engineering_console_provider import PostgresEngineeringConsoleProvider
+from services.kdo_engineering_vertical_contracts import EngineeringTaskStatus
+from types import SimpleNamespace
 
 TEST_CONTEXT_SECRET = "engineering-console-test-context-secret-long-enough"
 os.environ["KCPG_CONTEXT_SIGNING_SECRET"] = TEST_CONTEXT_SECRET
@@ -187,7 +190,7 @@ def test_plan_submission_preserves_structured_specialist_assignments():
         {"task_id": "requirements", "role": "planner", "objective": "Refine scope",
          "acceptance_criteria": ["Scope is explicit"], "depends_on": [], "deliverables": ["scope"],
          "policy_refs": [], "requested_capabilities": []},
-        {"task_id": "implementation", "role": "implementer", "objective": "Implement calculator",
+        {"task_id": "implementation", "role": "backend_engineer", "objective": "Implement calculator",
          "acceptance_criteria": ["Operations work"], "depends_on": ["requirements"], "deliverables": ["calculator.py"],
          "policy_refs": [], "requested_capabilities": []},
         {"task_id": "tests", "role": "test_engineer", "objective": "Verify calculator",
@@ -202,6 +205,50 @@ def test_plan_submission_preserves_structured_specialist_assignments():
     assert provider.submitted_plan_metadata["assignments"] == assignments
     assert provider.submitted_plan_metadata["summary"] == "Calculator plan"
     assert provider.submitted_plan_metadata["planner"] == {"provider": "test"}
+
+
+def test_postgres_console_provider_persists_validated_specialist_plan_evidence():
+    task = SimpleNamespace(
+        task_id="task-structured", objective="Build a calculator",
+        acceptance_criteria=("All operations work",), status=EngineeringTaskStatus.PROPOSED,
+        evidence={}, revision=1,
+    )
+
+    class TaskRepository:
+        def get(self, *args, **kwargs):
+            return task
+
+        def update_evidence(self, task_id, *, expected_revision, evidence, **kwargs):
+            assert expected_revision == task.revision
+            task.evidence.update(evidence)
+            task.revision += 1
+            return task
+
+    provider = PostgresEngineeringConsoleProvider(lambda: None)
+    provider.tasks = TaskRepository()
+    provider._append_event = lambda **kwargs: None
+    assignments = [
+        {"task_id": "scope", "role": "planner", "objective": "Define calculator scope",
+         "acceptance_criteria": ["Scope is clear"], "depends_on": [], "deliverables": ["scope.md"],
+         "policy_refs": [], "requested_capabilities": []},
+        {"task_id": "implementation", "role": "backend_engineer", "objective": "Implement operations",
+         "acceptance_criteria": ["Four operations work"], "depends_on": ["scope"],
+         "deliverables": ["calculator.py"], "policy_refs": [], "requested_capabilities": ["python"]},
+        {"task_id": "verification", "role": "test_engineer", "objective": "Verify operations",
+         "acceptance_criteria": ["All tests pass"], "depends_on": ["implementation"],
+         "deliverables": ["test_calculator.py"], "policy_refs": [], "requested_capabilities": ["pytest"]},
+    ]
+    result = provider.submit_plan(
+        task_id=task.task_id, workspace_id="workspace-a", user_id="operator@example.test",
+        steps=["Define scope", "Implement", "Test"], assignments=assignments,
+        summary="Calculator plan", planner={"provider": "test", "evidence_authority": "model_proposal_unverified"},
+    )
+    review = result["evidence"]["plan_review"]
+    assert review["assignments"] == assignments
+    assert review["summary"] == "Calculator plan"
+    assert review["planner"]["trust"] == "model_proposal_unverified"
+    assert review["state"] == "submitted"
+    assert result["approval_required"] is True
 
 
 def test_plan_submission_rejects_empty_steps():
