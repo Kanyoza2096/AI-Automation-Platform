@@ -69,6 +69,10 @@ def run_worker(environ: Mapping[str, str] | None = None) -> int:
     if not factory_spec:
         raise RuntimeError("trusted_worker_host_factory_required_when_worker_enabled")
 
+    # Resolve trusted deployment code before probing infrastructure. Invalid
+    # factory paths fail deterministically without opening DB or Docker handles.
+    host_factory = _load_factory(factory_spec)
+
     # Verify the execution runtime before constructing DB clients or claiming jobs.
     validate_docker_runtime(env.get("KDO_ENGINEERING_DOCKER_BINARY", "docker"))
 
@@ -78,9 +82,7 @@ def run_worker(environ: Mapping[str, str] | None = None) -> int:
         return psycopg.connect(config.database_url, connect_timeout=5)
 
     # Trusted deployment code only; never task/model supplied input.
-    host_arguments = _load_factory(factory_spec)(
-        config=config, connection_factory=connection_factory
-    )
+    host_arguments = host_factory(config=config, connection_factory=connection_factory)
     if not isinstance(host_arguments, Mapping):
         raise RuntimeError("trusted_worker_host_factory_must_return_mapping")
 
