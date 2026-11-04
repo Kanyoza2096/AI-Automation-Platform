@@ -82,6 +82,7 @@ def test_bootstrap_requires_postgres_queue_and_never_falls_back_to_sqlite():
             queue=object(),
             workflow=object(),
             executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
             stopping=threading.Event(),
         )
 
@@ -96,6 +97,7 @@ def test_bootstrap_checks_schema_before_worker_start():
             queue=PostgresEngineeringBuildQueue(lambda: None),
             workflow=object(),
             executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
             stopping=threading.Event(),
         )
     assert connection.closed
@@ -123,6 +125,7 @@ def test_bootstrap_runs_scoped_worker_and_publishes_lifecycle_health(monkeypatch
         queue=queue,
         workflow=object(),
         executor=lambda **_: {},
+        admission_receipt_verifier=lambda scope, receipt: True,
         stopping=threading.Event(),
         health_sink=lambda event: health_events.append(dict(event)),
         max_jobs=1,
