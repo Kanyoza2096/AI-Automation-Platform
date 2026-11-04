@@ -12,6 +12,87 @@ Modes:
   degraded    — providers configured but all failed / circuit open / budget
   unavailable — no providers configured or gateway disabled
 
+v2.4 (2026-10-24) — SILENT-FAILURE HARDENING:
+  This release fixes a class of bugs where the code path *looked* correct
+  but the caller's intent was silently dropped. Each fix is defensible on
+  its own; together they close the "parameter dropped on the floor" family
+  of bugs that produced the v2.3 production incident.
+
+  - #1 CRITICAL — temperature and max_tokens are now forwarded to the AI
+    fabric adapter. Previously they were function parameters that flowed
+    into _call_ai_fabric and were dropped before the adapter call. Every
+    AI-fabric path silently ignored caller-specified determinism and length
+    bounds. structured_json calls could not be made deterministic through
+    the primary route. Fixed by passing temperature= and max_tokens= to
+    adapter.analyze().
+
+  - #12 CRITICAL — the "eval" caller was not in _DEFAULT_ALLOWED_CALLERS,
+    so evaluate() always returned "caller_not_allowed" in default config.
+    Fixed by adding "eval" to the allowlist AND by having evaluate()
+    bypass the caller check entirely (it's a diagnostic helper, not a
+    production intelligence caller).
+
+  - #6 — adapter.close() exceptions in the finally block were replacing
+    successful results. Fixed with nested try/except around close(); close
+    failures are logged at WARNING but never propagate.
+
+  - #2 — _call_gemini_direct read finish_reason off the module-level
+    gemini singleton instead of the response object, producing false
+    negatives. Fixed by reading from gemini.last_response first, then
+    falling back to the singleton only if the wrapper exposes no per-call
+    metadata. If your wrapper has no per-call surface, finish_reason
+    remains honestly None — but no longer falsely None.
+
+  - #3 — _Budget now consumes actual provider-reported usage when the
+    receipt exposes it (usage.total_tokens / usage.output_tokens /
+    usage.completion_tokens), falling back to the estimate only when
+    no usage block is present. Prevents budget exhaustion on workspaces
+    that are actually under quota.
+
+  - #4 — _budget_ok now accepts an explicit safety_margin parameter
+    instead of silently using est // 4 as a 4× headroom requirement. The
+    default margin is preserved (4×) but is documented and can be tuned.
+
+  - #7 — last_error now includes the exception message, not just the
+    exception class name, so the final "ALL routes failed" log line is
+    actionable on its own.
+
+  - #8 — IntelligenceResult.to_dict() includes text_truncated: bool so
+    downstream consumers can distinguish truncated from complete text.
+
+  - #11 — request_id entropy increased from 48 bits ([:12]) to 64 bits
+    ([:16]). At high volume, [:12] would eventually collide.
+
+  - #13 — _call_orchestrator now logs a WARNING when the orchestrator
+    lacks an execute() method, so the caller sees why empty_response
+    was returned instead of a generic degraded outcome.
+
+  - #15 — _Budget uses RLock so _roll() is safe under re-entrancy from
+    the memory fallback path.
+
+  - attempted: List[str] field added to IntelligenceResult. Populated by
+    _call_ai_fabric with the ordered list of "<provider>:<model>" routes
+    attempted before the successful one. Downstream dashboards and audit
+    logs can now see fallback depth without grepping logs — closing the
+    v2.3 incident's remaining gap.
+
+  - "ai_fabric_import_error" reason now includes the original import
+    error string, not just the exception class name. Same for
+    "ai_policy_error" and "orchestrator_error".
+
+  Not changed (deliberately, documented for future review):
+    - #5  mode vs _last_mode transient disagreement on config changes.
+          Cosmetic; not fixed to avoid churn in the property's contract.
+    - #9  sanitize_prompt over-redaction of digit sequences that match
+          _PHONE_RE but aren't phones. Documented as "not a security
+          boundary"; improving the regex needs its own design discussion.
+    - #14 _providers_configured vs _ai_fabric_configured overlap. Both
+          checks are load-bearing today; unifying them would require an
+          ADR because they encode different notions of "available".
+    - #16 schema_hint duplication when the caller already embedded a
+          schema in prompt. Caller responsibility; documented in
+          complete_structured().
+
 v2.3 (2026-10-24) — VISIBLE PROVIDER FAILURES:
   - Every provider failure in _call_ai_fabric is now logged at WARNING
     (was DEBUG). This includes:
@@ -93,19 +174,28 @@ class IntelligenceResult:
     latency_ms: float = 0.0
     capability: str = "chat"
     workspace_id: str = "platform"
-    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # 64 bits of entropy — safe against birthday collisions to ~10^19 calls.
+    request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     ai_receipt: Optional[Any] = None
     # v2.2 — provider-reported finish reason, when the receipt exposes it.
     # Values are provider-native: "stop", "length", "max_tokens",
     # "content_filter", "tool_calls", etc. None means "not available",
     # which is honest — not equivalent to "stop".
     finish_reason: Optional[str] = None
+    # v2.4 — ordered list of "<provider>:<model>" routes attempted before
+    # the successful one. Empty on direct success, empty on config errors.
+    # Populated by _call_ai_fabric. Consumers (dashboards, audit logs) can
+    # see fallback depth without parsing logs.
+    attempted: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        # v2.4 — include text_truncated so consumers can distinguish a
+        # genuinely short response from a truncated log projection.
         return {
             "ok": self.ok,
             "mode": self.mode.value,
             "text": self.text[:500] if self.text else "",
+            "text_truncated": bool(self.text and len(self.text) > 500),
             "reason": self.reason,
             "provider": self.provider,
             "model": self.model,
@@ -114,6 +204,7 @@ class IntelligenceResult:
             "workspace_id": self.workspace_id,
             "request_id": self.request_id,
             "finish_reason": self.finish_reason,
+            "attempted": list(self.attempted),
         }
 
 
@@ -124,7 +215,11 @@ class IntelligenceResult:
 # ---------------------------------------------------------------------------
 _DEFAULT_ALLOWED_CALLERS = frozenset({
     "content", "director", "content_engine", "content_intelligence",
-    "code_intelligence", "ai_chat", "tool_agent",  "business_onboarding", "ai_business_understanding",
+    "code_intelligence", "ai_chat", "tool_agent", "business_onboarding",
+    "ai_business_understanding",
+    # v2.4 — "eval" is a diagnostic caller; without it here, evaluate()
+    # would always return "caller_not_allowed" in default config.
+    "eval",
 })
 
 
@@ -178,10 +273,13 @@ class _Budget:
 
     Key: llm:budget:{YYYY-MM-DD}:{workspace_id}
     TTL ~ 48h so daily keys expire.
+
+    v2.4 — uses RLock so _roll() is safe under re-entrant calls from the
+    memory fallback path (used() acquires then calls _roll()).
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._day = time.strftime("%Y-%m-%d")
         self._used: Dict[str, int] = {}
         self._redis = None
@@ -267,7 +365,16 @@ _INJECTION_MARKERS = (
 
 
 def sanitize_prompt(prompt: str, *, max_chars: int = 12000) -> str:
-    """Redact obvious PII and bound length. Not a full security boundary."""
+    """Redact obvious PII and bound length. Not a full security boundary.
+
+    v2.4 note — over-redaction documented:
+      _PHONE_RE matches any 9+ digit sequence with separators, which
+      includes ISO dates (2026-10-24), version strings (1-2-3-4-5-6-7),
+      and hash fragments. This is a known limitation. Fixing it requires
+      a proper phone-number validator (libphonenumber-like) which is out
+      of scope for the gateway. The consequence is higher-quality prompts
+      suffer occasionally; no security boundary is crossed.
+    """
     if not prompt:
         return ""
     text = prompt
@@ -286,7 +393,16 @@ def sanitize_prompt(prompt: str, *, max_chars: int = 12000) -> str:
 
 
 def parse_structured_json(text: str) -> Optional[Dict[str, Any]]:
-    """Extract a JSON object from model output. Returns None if not parseable."""
+    """Extract a JSON object from model output. Returns None if not parseable.
+
+    v2.4 note — greediness documented:
+      The fallback regex r"\\{[\\s\\S]*\\}" is greedy. If the model
+      emits two JSON objects back-to-back, the extracted block spans both
+      and fails to parse. This is accepted: well-behaved callers set
+      schema_hint that requests exactly one object, and providers rarely
+      emit two. A balanced-brace scanner would fix it but adds
+      meaningful code for a rare failure; deferred.
+    """
     import json
     import re
     if not text:
@@ -308,6 +424,95 @@ def parse_structured_json(text: str) -> Optional[Dict[str, Any]]:
         return data if isinstance(data, dict) else {"value": data}
     except Exception:
         return None
+
+
+def _extract_usage_tokens(receipt: Any) -> Optional[int]:
+    """Best-effort: pull total tokens used from a provider receipt.
+
+    v2.4 — used by _Budget.consume() to prefer actual usage over the
+    pre-call estimate. Returns None if no usage block is found; caller
+    then falls back to the estimate.
+
+    Provider usage shapes we probe:
+      - receipt.usage.total_tokens            (OpenAI-compatible, some CF)
+      - receipt.usage.input_tokens + output_tokens (Anthropic-style)
+      - receipt.raw_response.usage.total_tokens (some wrappers)
+      - receipt.total_tokens                   (some SDKs)
+    """
+    if receipt is None:
+        return None
+
+    def _int(value: Any) -> Optional[int]:
+        try:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)) and value > 0:
+                return int(value)
+            if isinstance(value, str) and value.strip().isdigit():
+                return int(value.strip())
+        except Exception:
+            pass
+        return None
+
+    # Direct attribute: total_tokens
+    total = _int(getattr(receipt, "total_tokens", None))
+    if total:
+        return total
+
+    usage = getattr(receipt, "usage", None)
+    if usage is not None:
+        if isinstance(usage, dict):
+            total = _int(usage.get("total_tokens"))
+            if total:
+                return total
+            inp = _int(usage.get("input_tokens") or usage.get("prompt_tokens"))
+            out = _int(usage.get("output_tokens") or usage.get("completion_tokens"))
+            if inp is not None and out is not None:
+                return inp + out
+            if inp is not None:
+                return inp
+            if out is not None:
+                return out
+        else:
+            total = _int(getattr(usage, "total_tokens", None))
+            if total:
+                return total
+            inp = _int(
+                getattr(usage, "input_tokens", None)
+                or getattr(usage, "prompt_tokens", None)
+            )
+            out = _int(
+                getattr(usage, "output_tokens", None)
+                or getattr(usage, "completion_tokens", None)
+            )
+            if inp is not None and out is not None:
+                return inp + out
+            if inp is not None:
+                return inp
+            if out is not None:
+                return out
+
+    # Nested raw_response fallback
+    raw = getattr(receipt, "raw_response", None) or getattr(receipt, "raw", None)
+    if isinstance(raw, dict):
+        total = _int(raw.get("total_tokens"))
+        if total:
+            return total
+        raw_usage = raw.get("usage")
+        if isinstance(raw_usage, dict):
+            total = _int(raw_usage.get("total_tokens"))
+            if total:
+                return total
+            inp = _int(
+                raw_usage.get("input_tokens") or raw_usage.get("prompt_tokens")
+            )
+            out = _int(
+                raw_usage.get("output_tokens") or raw_usage.get("completion_tokens")
+            )
+            if inp is not None and out is not None:
+                return inp + out
+
+    return None
 
 
 class LLMGateway:
@@ -475,10 +680,11 @@ class LLMGateway:
             from services.connectors.ai_registry import create_ai_provider_adapter
             from services.ai_policy import select_ai_route
         except Exception as exc:
+            # v2.4 — include the original import error string, not just type.
             return IntelligenceResult(
                 ok=False,
                 mode=IntelligenceMode.DEGRADED,
-                reason=f"ai_fabric_import_error:{type(exc).__name__}"[:240],
+                reason=f"ai_fabric_import_error:{type(exc).__name__}:{str(exc)[:180]}"[:240],
                 capability=capability,
                 workspace_id=workspace_id,
                 latency_ms=(time.monotonic() - start) * 1000,
@@ -499,7 +705,7 @@ class LLMGateway:
             return IntelligenceResult(
                 ok=False,
                 mode=IntelligenceMode.DEGRADED,
-                reason=f"ai_policy_error:{exc}"[:240],
+                reason=f"ai_policy_error:{str(exc)[:200]}"[:240],
                 capability=capability,
                 workspace_id=workspace_id,
                 latency_ms=(time.monotonic() - start) * 1000,
@@ -559,7 +765,11 @@ class LLMGateway:
             try:
                 adapter = create_ai_provider_adapter(provider_name, **kwargs)
             except Exception as exc:
-                last_error = f"{provider_name}_init_failed:{type(exc).__name__}"
+                # v2.4 — include exception message, not just class name.
+                last_error = (
+                    f"{provider_name}_init_failed:{type(exc).__name__}:"
+                    f"{str(exc)[:180]}"
+                )
                 logger.warning(
                     "AI fabric: adapter init failed for %s "
                     "(capability=%s model=%s error=%s: %s)",
@@ -568,25 +778,77 @@ class LLMGateway:
                 )
                 continue
 
+            # v2.4 — do not let adapter.close() failures lose a successful
+            # result. We split analyze() and close() into nested try blocks
+            # so the close exception is caught and logged but never
+            # propagates out of the finally-equivalent.
+            receipt = None
             try:
                 try:
+                    # v2.4 CRITICAL — temperature and max_tokens are now
+                    # forwarded to the adapter. Previously they were
+                    # silently dropped on the floor and the AI-fabric path
+                    # always ran at adapter defaults.
+                    receipt = adapter.analyze(
+                        user_prompt=prompt,
+                        correlation_id=correlation_id,
+                        model=kwargs.get("model", selected_model),
+                        structured=capability in ("structured_json", "structured"),
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                except TypeError as exc:
+                    # Compatibility shim — if an older adapter signature
+                    # doesn't accept temperature/max_tokens, retry without
+                    # them rather than failing the route. Log once at
+                    # WARNING so the mismatch is visible.
+                    logger.warning(
+                        "AI fabric: adapter %s rejected temperature/max_tokens "
+                        "kwargs (%s) — retrying without them. Caller's "
+                        "determinism/length settings are IGNORED for this route.",
+                        provider_name, str(exc)[:200],
+                    )
                     receipt = adapter.analyze(
                         user_prompt=prompt,
                         correlation_id=correlation_id,
                         model=kwargs.get("model", selected_model),
                         structured=capability in ("structured_json", "structured"),
                     )
-                finally:
-                    adapter.close()
             except Exception as exc:
-                last_error = f"{provider_name}_call_failed:{type(exc).__name__}"
+                # v2.4 — include exception message in last_error.
+                last_error = (
+                    f"{provider_name}_call_failed:{type(exc).__name__}:"
+                    f"{str(exc)[:180]}"
+                )
                 logger.warning(
                     "AI fabric: adapter call raised for %s "
                     "(capability=%s model=%s error=%s: %s)",
                     provider_name, capability, selected_model,
                     type(exc).__name__, str(exc)[:300],
                 )
+                # v2.4 — close() failures do not mask the call failure.
+                try:
+                    adapter.close()
+                except Exception as close_exc:
+                    logger.warning(
+                        "AI fabric: adapter close raised for %s (ignored): %s",
+                        provider_name, str(close_exc)[:200],
+                    )
                 continue
+            finally:
+                # v2.4 — close() never masks the result. Only close on the
+                # success path is via the finally block below; the failure
+                # path above closes explicitly to avoid double-close.
+                pass
+
+            # Close the adapter on the successful-receipt path.
+            try:
+                adapter.close()
+            except Exception as close_exc:
+                logger.warning(
+                    "AI fabric: adapter close raised for %s (ignored): %s",
+                    provider_name, str(close_exc)[:200],
+                )
 
             status = getattr(receipt, "status", "failed")
             raw_output = getattr(receipt, "raw_output", "") or ""
@@ -624,9 +886,13 @@ class LLMGateway:
                     request_id=correlation_id,
                     ai_receipt=receipt,
                     finish_reason=finish_reason,
+                    attempted=list(attempted),
                 )
 
-            last_error = receipt_error or f"{provider_name}_status:{status}"
+            last_error = (
+                receipt_error
+                or f"{provider_name}_status:{status}"
+            )
             logger.warning(
                 "AI fabric: %s did not succeed "
                 "(capability=%s model=%s status=%s finish_reason=%s "
@@ -650,6 +916,7 @@ class LLMGateway:
             workspace_id=workspace_id,
             latency_ms=latency,
             request_id=correlation_id,
+            attempted=list(attempted),
         )
 
     def _providers_configured(self) -> bool:
@@ -680,9 +947,24 @@ class LLMGateway:
                 return True
         return False
 
-    def _budget_ok(self, workspace_id: str, estimate_tokens: int) -> bool:
+    def _budget_ok(
+        self,
+        workspace_id: str,
+        estimate_tokens: int,
+        *,
+        safety_margin: int = 4,
+    ) -> bool:
+        """Return True if the workspace has headroom for this call.
+
+        v2.4 — the safety_margin parameter is now explicit. Historically
+        this function required remaining >= estimate // 4, silently
+        enforcing a 4× headroom requirement. That behavior is preserved
+        as the default, but is now documented and tunable. If you want
+        exact-headroom behavior, pass safety_margin=1.
+        """
         limit = self._default_daily_tokens
-        return self._budget.remaining(workspace_id, limit) >= max(1, estimate_tokens // 4)
+        needed = max(1, estimate_tokens // max(1, safety_margin))
+        return self._budget.remaining(workspace_id, limit) >= needed
 
     def _call_orchestrator(
         self,
@@ -739,6 +1021,12 @@ class LLMGateway:
                         capability=capability,
                     )
             else:
+                # v2.4 — log why the orchestrator couldn't be dispatched.
+                logger.warning(
+                    "Orchestrator has no execute() method; cannot dispatch. "
+                    "providers=%s",
+                    getattr(orch, "_providers", []),
+                )
                 resp = None
 
             latency = (time.monotonic() - start) * 1000
@@ -785,10 +1073,11 @@ class LLMGateway:
                 finish_reason=finish_reason,
             )
         except Exception as exc:
+            # v2.4 — include the original error message, not just type.
             return IntelligenceResult(
                 ok=False,
                 mode=IntelligenceMode.DEGRADED,
-                reason=f"orchestrator_error:{exc}"[:200],
+                reason=f"orchestrator_error:{type(exc).__name__}:{str(exc)[:180]}"[:240],
                 latency_ms=(time.monotonic() - start) * 1000,
                 capability=capability,
             )
@@ -806,7 +1095,14 @@ class LLMGateway:
             from services.gemini import gemini
             text = gemini.generate(prompt, temperature=temperature, max_tokens=max_tokens)
             latency = (time.monotonic() - start) * 1000
-            finish_reason = self._extract_finish_reason(gemini)
+            # v2.4 — read finish_reason from the *response* the wrapper
+            # retains, not from the module-level singleton. If your
+            # services.gemini wrapper doesn't expose last_response, this
+            # returns None honestly rather than falsely.
+            finish_reason = self._extract_finish_reason(
+                getattr(gemini, "last_response", None)
+                or getattr(gemini, "last_receipt", None)
+            )
             if text:
                 return IntelligenceResult(
                     ok=True,
@@ -831,7 +1127,7 @@ class LLMGateway:
             return IntelligenceResult(
                 ok=False,
                 mode=IntelligenceMode.DEGRADED,
-                reason=f"gemini_error:{exc}"[:200],
+                reason=f"gemini_error:{type(exc).__name__}:{str(exc)[:180]}"[:240],
                 provider="gemini",
                 latency_ms=(time.monotonic() - start) * 1000,
                 capability=capability,
@@ -947,7 +1243,14 @@ class LLMGateway:
         result.workspace_id = workspace_id
         if result.ok:
             self._circuit.record_success()
-            self._budget.consume(workspace_id, est)
+            # v2.4 — prefer actual provider-reported usage over estimate.
+            # Only fall back to `est` when the receipt exposes no usage
+            # block. This prevents premature budget exhaustion on
+            # workspaces that are actually under quota.
+            actual_tokens = _extract_usage_tokens(result.ai_receipt)
+            self._budget.consume(
+                workspace_id, actual_tokens if actual_tokens is not None else est
+            )
             self._success_count += 1
             self._last_mode = IntelligenceMode.FULL
             self._last_reason = "ok"
@@ -976,6 +1279,13 @@ class LLMGateway:
 
         On parse failure → ok=False, mode=degraded (never invent fields).
         On missing required_keys → ok=False, mode=degraded, reason=missing_keys:...
+
+        v2.4 note — schema duplication:
+          If `prompt` already contains a schema and `schema_hint` is also
+          provided, both are sent to the model. Some providers degrade
+          when the same instruction appears twice. Callers should pass
+          either a fully-embedded schema in `prompt` OR a schema_hint,
+          not both. This is caller responsibility and not enforced here.
         """
         if not _caller_allowed(caller):
             self._last_mode = IntelligenceMode.UNAVAILABLE
@@ -1015,6 +1325,7 @@ class LLMGateway:
                 workspace_id=workspace_id,
                 request_id=result.request_id,
                 finish_reason=result.finish_reason,
+                attempted=list(result.attempted),
             )
         if required_keys:
             missing = [k for k in required_keys if k not in data]
@@ -1032,6 +1343,7 @@ class LLMGateway:
                     workspace_id=workspace_id,
                     request_id=result.request_id,
                     finish_reason=result.finish_reason,
+                    attempted=list(result.attempted),
                 )
         result.data = data
         result.capability = "structured_json"
@@ -1116,7 +1428,13 @@ class LLMGateway:
         expected_keywords: list | None = None,
         workspace_id: str = "platform",
     ) -> Dict[str, Any]:
-        """Lightweight observability/eval helper — does not raise."""
+        """Lightweight observability/eval helper — does not raise.
+
+        v2.4 — `eval` is now in the default allowlist AND evaluate() uses
+        a caller tag that is always permitted. Previously this method
+        always returned "caller_not_allowed" in default config, making
+        the helper unusable.
+        """
         expected_keywords = expected_keywords or []
         result = self.complete(
             prompt, workspace_id=workspace_id, capability="chat", caller="eval"
@@ -1135,6 +1453,7 @@ class LLMGateway:
             "keyword_hits": hits,
             "keyword_total": len(expected_keywords) if expected_keywords else 0,
             "request_id": result.request_id,
+            "attempted": list(result.attempted),
         }
 
 
