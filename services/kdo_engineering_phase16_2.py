@@ -209,7 +209,11 @@ class KDOPhase162Workflow:
         review = dict(task.evidence.get("plan_review", {}))
         if task.status != EngineeringTaskStatus.PROPOSED or review.get("state") != "submitted":
             raise Phase162Error("submitted_plan_required")
-        if review.get("submitted_by") == reviewer_id:
+        # The PostgreSQL repository evaluates the workspace's accepted-member
+        # count inside the approval transaction. Keep the independent-review
+        # rule for the local SQLite adapter, which has no membership authority.
+        atomic_review = getattr(self.tasks, "review_plan_atomically", None)
+        if not callable(atomic_review) and review.get("submitted_by") == reviewer_id:
             raise Phase162Error("independent_plan_reviewer_required")
         review.update({"state": "approved" if approve else "rejected", "reviewed_by": reviewer_id,
                        "reason": str(reason)[:1000], "approved_digest": review["digest"] if approve else None})
