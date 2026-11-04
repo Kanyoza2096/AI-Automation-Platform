@@ -183,14 +183,14 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
                     continue
                 try:
                     raw = path.read_bytes()
-                    if b"\\x00" in raw:
+                    if b"\x00" in raw:
                         continue
                     body = raw.decode("utf-8")[:6000]
                 except (OSError, UnicodeDecodeError):
                     continue
-                part = f"\\n--- FILE: {rel} ---\\n{body}"
+                part = f"\n--- FILE: {rel} ---\n{body}"
                 if len(chunks) >= 40 or total + len(part) > 36000:
-                    return "".join(chunks) + "\\n[repository snapshot truncated]"
+                    return "".join(chunks) + "\n[repository snapshot truncated]"
                 chunks.append(part)
                 total += len(part)
         return "".join(chunks) or "[no eligible text files]"
@@ -241,14 +241,14 @@ def make_gateway_build_executor(*, gateway: Any, workspace_root: str,
         if data.get("status") != "succeeded" or not isinstance(evidence, dict):
             raise GatewayAgentError("code_generation_not_successful")
         patch = evidence.get("patch_text")
-        if not isinstance(patch, str) or not patch.startswith("diff --git ") or len(patch.encode("utf-8")) > 1_000_000 or "\\x00" in patch:
+        if not isinstance(patch, str) or not patch.startswith("diff --git ") or len(patch.encode("utf-8")) > 1_000_000 or "\x00" in patch:
             raise GatewayAgentError("valid_unified_diff_required")
         blocked = (re.compile(r"(^|/)\.git(/|$)"), re.compile(r"(^|/)\.github/workflows/"),
                    re.compile(r"(^|/)(Procfile|render\.yaml|render\.yml|Dockerfile)$", re.I),
                    re.compile(r"(^|/)(\.env(?:\.|$)|.*\.pem$|.*\.key$|.*credentials.*)", re.I))
         for line in patch.splitlines():
             if line.startswith(("+++ ", "--- ")) and line[4:].strip() != "/dev/null":
-                target = line[4:].split("\\t", 1)[0]
+                target = line[4:].split("\t", 1)[0]
                 target = target[2:] if target.startswith(("a/", "b/")) else target
                 path = Path(target)
                 if path.is_absolute() or ".." in path.parts or any(p.search(target) for p in blocked):
