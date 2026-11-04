@@ -63,7 +63,7 @@ def test_dynamic_gateway_registry_installs_specialists_without_model_review_auth
     }))
     factory = make_gateway_quality_registry_factory(gateway=gateway, workspace_id="w1")
     registry = factory(SimpleNamespace(task_id="t1"), "/tmp/task-workspace", ())
-    assert {"debugging_engineer", "backend_engineer", "independent_reviewer"}.issubset(
+    assert {"debugging_engineer", "frontend_engineer", "backend_engineer", "database_engineer",\n            "integration_engineer", "refactoring_engineer", "independent_reviewer"}.issubset(
         set(registry.installed_roles())
     )
 
@@ -131,3 +131,11 @@ def test_gateway_specialists_complete_test_repair_verify_handoff_without_release
     assert result.verification["independent_of_repair_agent"] is True
     assert result.release_authorized is False
     assert len(gateway.calls) == 3
+
+
+    frontend = registry.adapter("frontend_engineer")
+    frontend_proposal = frontend(AgentAssignment(
+        "t1", "frontend_engineer", "Propose a UI repair",
+        {"acceptance_criteria": ["Fix visible error"], "workspace_id": "w1"}, (),
+    ))
+    assert frontend_proposal["evidence"]["patch_text"] == "diff --git a/x b/x"
