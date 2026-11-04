@@ -169,10 +169,18 @@ class SQLiteEngineeringBuildQueue:
                     WHERE tenant_id=? AND workspace_id=? AND task_id=? AND status='queued'
                       AND admission_receipt_verified=0""",
                     (decision_id, intent_id, execution_id, tenant_id, workspace_id, task_id))
-                if result.rowcount != 1:
-                    raise Phase163Error("queued_job_not_found_or_receipt_already_recorded")
                 row = self._db.execute("SELECT * FROM kdo_engineering_build_jobs WHERE tenant_id=? AND workspace_id=? AND task_id=?",
                     (tenant_id, workspace_id, task_id)).fetchone()
+                if row is None:
+                    raise Phase163Error("queued_job_not_found_or_receipt_already_recorded")
+                recorded = dict(row)
+                expected = (decision_id, intent_id, execution_id)
+                actual = (recorded.get("admission_decision_id"), recorded.get("admission_intent_id"),
+                          recorded.get("admission_execution_id"))
+                if result.rowcount != 1 and not (
+                    recorded.get("admission_receipt_verified") == 1 and actual == expected
+                ):
+                    raise Phase163Error("admission_receipt_conflict_or_job_not_queued")
                 self._db.execute("COMMIT")
                 return self._record(row)
             except Exception:
