@@ -16,11 +16,13 @@ class FakeDatabase:
 class FakeKernel:
     def __init__(self, db=None, allow_in_memory=False):
         self.db = db
+        self.execute_calls = []
         self.allow_in_memory = allow_in_memory
         self.contracts = {}
 
-    def execute(self, **_kwargs):
-        raise AssertionError("execution is not part of constructor validation")
+    def execute(self, **kwargs):
+        self.execute_calls.append(kwargs)
+        raise AssertionError("unexpected Action Kernel execution in this test")
 
     def get_contract_metadata(self, action_type):
         contract = self.contracts.get(action_type)
@@ -118,7 +120,7 @@ def test_authorizer_rejects_expired_or_lost_lease_before_governance():
         assert authorizer.authorize("run_tests", _task()) is False
 
     # No Action Kernel execution occurred when the lease validator denied access.
-    assert kernel.contracts[ACTION_TYPE]
+    assert kernel.execute_calls == []
 
 
 def test_authorizer_rejects_task_scope_mismatch_before_governance():
@@ -138,3 +140,35 @@ def test_authorizer_requires_context_with_job_plan_and_lease_fields():
     with pytest.raises(GovernedWorkerAuthorizationError, match="complete_worker_execution_context_required"):
         with authorizer.bind_execution_context(incomplete, lambda: True):
             pass
+
+
+
+def test_authorizer_binds_job_plan_and_lease_digest_into_governed_request(monkeypatch):
+    import services.kdo_engineering_worker_authorization as module
+
+    captured = {}
+
+    async def fake_governed_action(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "succeeded",
+            "ok": True,
+            "receipt_verified": True,
+            "receipt": {"intent_id": "intent-a", "execution_id": "execution-a"},
+        }
+
+    monkeypatch.setattr(module, "execute_council_governed_engineering_action", fake_governed_action)
+    kernel = FakeKernel(FakeDatabase())
+    authorizer = CouncilActionKernelWorkerAuthorizer(kernel)
+    context = _context()
+
+    with authorizer.bind_execution_context(context, lambda: True):
+        assert authorizer.authorize("run_tests", _task()) is True
+
+    params = captured["parameters"]
+    assert params["job_id"] == "job-a"
+    assert params["plan_digest"] == "a" * 64
+    assert params["lease_token_digest"] == __import__("hashlib").sha256(
+        b"lease-secret"
+    ).hexdigest()
+    assert "lease-secret" not in str(params)
