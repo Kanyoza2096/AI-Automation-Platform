@@ -195,3 +195,34 @@ def coordinate_planned_assignments(*, assignments, agents):
         "execution_started": False,
         "release_authorized": False,
     }
+
+
+def plan_and_coordinate_engineering_task(*, plan_generator, task, workspace_id, agents):
+    """Compose planner proposal generation with dependency-aware specialist dispatch.
+
+    This is a proposal/analysis workflow only. It never invokes the build executor,
+    mutates a repository, approves a plan, or authorizes release.
+    """
+    if not callable(plan_generator):
+        raise AgentTeamError("plan_generator_required")
+    try:
+        proposal = plan_generator(task=task, workspace_id=workspace_id)
+    except Exception as exc:
+        raise AgentTeamError("engineering_planning_failed:" + type(exc).__name__) from exc
+    if not isinstance(proposal, Mapping):
+        raise AgentTeamError("invalid_planner_proposal")
+    if (proposal.get("approval_required") is not True
+            or proposal.get("execution_started") is not False
+            or proposal.get("release_authorized") is not False):
+        raise AgentTeamError("planner_proposal_authority_invariant_failed")
+    assignments = proposal.get("assignments")
+    if not isinstance(assignments, (list, tuple)) or not assignments:
+        raise AgentTeamError("planner_assignments_required")
+    coordination = coordinate_planned_assignments(assignments=assignments, agents=agents)
+    return {
+        "plan": dict(proposal),
+        "coordination": coordination,
+        "approval_required": True,
+        "execution_started": False,
+        "release_authorized": False,
+    }
