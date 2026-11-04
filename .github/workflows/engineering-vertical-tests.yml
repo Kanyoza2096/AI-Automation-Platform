@@ -202,6 +202,7 @@ jobs:
             tests/security/test_phase3_event_architecture.py \
             tests/security/test_shared_event_bus_safety.py \
             tests/security/test_u1_shared_event_delivery_reliability.py \
+            tests/security/test_u1_shared_event_delivery_migration.py \
             tests/security/test_u1_unified_event_bus_backpressure.py \
             tests/security/test_phase6_production_tenant_hardening.py \
             tests/tenancy/test_request_context.py
