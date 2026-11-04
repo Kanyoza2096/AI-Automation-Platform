@@ -34,7 +34,7 @@ def _enqueue_verified(queue, **kwargs):
 
 def test_queue_is_idempotent_and_rejects_conflicting_payload(tmp_path):
     queue = make_queue(tmp_path)
-    first = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
+    first = _enqueue_verified(queue, tenant_id="t1", workspace_id="w1", task_id="task1",
                           plan_digest=DIGEST, idempotency_key="idem1")
     repeated = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
                              plan_digest=DIGEST, idempotency_key="idem1")
