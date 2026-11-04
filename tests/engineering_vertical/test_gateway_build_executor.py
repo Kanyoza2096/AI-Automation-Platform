@@ -74,7 +74,8 @@ def test_gateway_builder_applies_patch_only_after_host_authorization(tmp_path):
     assert (workspace / "calculator.py").read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"
     assert decisions[0][0] == "build_patch"
     assert gateway.calls[0][1]["caller"] == "code_intelligence"
-    assert "Stable role" in gateway.calls[0][0]
+    assert "ROLE TEMPLATE (implementer v1)" in gateway.calls[0][0]
+    assert "Implement only the assigned objective" in gateway.calls[0][0]
 
 
 def test_gateway_builder_denied_authorization_does_not_mutate_workspace(tmp_path):
