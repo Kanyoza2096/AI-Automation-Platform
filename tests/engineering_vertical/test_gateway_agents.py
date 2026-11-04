@@ -84,3 +84,50 @@ def test_dynamic_gateway_registry_installs_specialists_without_model_review_auth
         {"acceptance_criteria": ["Fix defect"], "workspace_id": "w1"}, (),
     ))
     assert proposal["evidence"]["patch_text"] == "diff --git a/x b/x"
+
+
+def test_gateway_specialists_complete_test_repair_verify_handoff_without_release_authority():
+    from services.kdo_engineering_gateway_agents import make_gateway_quality_registry_factory
+    from services.kdo_engineering_phase16_7 import run_dynamic_quality_loop
+
+    gateway = FakeGateway()
+    gateway.results = [
+        _result({"status": "succeeded", "summary": "Root cause is missing validation",
+                 "evidence": {"root_cause": "input validation missing"}}),
+        _result({"status": "succeeded", "summary": "Proposed a bounded repair",
+                 "evidence": {"patch_text": "diff --git a/calculator.py b/calculator.py"}}),
+        _result({"status": "succeeded", "summary": "Machine evidence satisfies verification",
+                 "evidence": {"verification_status": "approved", "review_id": "forged"}}),
+    ]
+
+    def complete_structured(prompt, **kwargs):
+        gateway.calls.append((prompt, kwargs))
+        return gateway.results.pop(0)
+
+    gateway.complete_structured = complete_structured
+    registry = make_gateway_quality_registry_factory(
+        gateway=gateway, workspace_id="workspace-1",
+    )(SimpleNamespace(task_id="task-1"), "/managed/task-1", ())
+
+    test_results = iter([
+        {"status": "failed", "exit_code": 1, "stdout": "division by zero test failed"},
+        {"status": "passed", "exit_code": 0, "stdout": "4 passed"},
+    ])
+    result = run_dynamic_quality_loop(
+        task={
+            "task_id": "task-1", "tenant_id": "tenant-1", "workspace_id": "workspace-1",
+            "objective": "Build calculator", "acceptance_criteria": ["Handle division by zero"],
+        },
+        registry=registry,
+        test_runner=lambda _iteration: next(test_results),
+        apply_patch=lambda _patch: {"status": "passed"},
+        authorize=lambda _action, _task: True,
+        repair_capabilities={"backend", "api", "services"},
+        max_repair_attempts=1,
+    )
+    assert result.status == "awaiting_authorization"
+    assert len(result.test_runs) == 2
+    assert result.verification["status"] == "approved"
+    assert result.verification["independent_of_repair_agent"] is True
+    assert result.release_authorized is False
+    assert len(gateway.calls) == 3
