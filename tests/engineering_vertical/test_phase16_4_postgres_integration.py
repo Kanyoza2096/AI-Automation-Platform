@@ -66,13 +66,17 @@ def postgres_queue_scope():
 
 
 def enqueue(queue, tenant_id, workspace_id, task_id):
-    return queue.enqueue(
+    job = queue.enqueue(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         task_id=task_id,
         plan_digest=DIGEST,
         idempotency_key="idem-" + task_id,
     )
+    queue.record_admission_receipt(tenant_id=tenant_id, workspace_id=workspace_id,
+        task_id=task_id, decision_id="test-council-decision",
+        intent_id="test-intent-" + task_id, execution_id="test-execution-" + task_id)
+    return job
 
 
 def expire_job(connect, job_id):
