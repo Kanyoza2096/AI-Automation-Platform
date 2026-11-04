@@ -67,13 +67,17 @@ def test_flush_preserves_failed_persistence_batch_in_queue():
             config=EventBusConfig(max_queue_size=2),
         )
         entry = _entry()
-        await bus._persistence_queue.put(entry)
+        future = asyncio.get_running_loop().create_future()
+        await bus._persistence_queue.put((entry, future))
 
         await bus._flush_persistence()
 
         assert bus._persistence_queue.qsize() == 1
-        retained = bus._persistence_queue.get_nowait()
+        retained, retained_future = bus._persistence_queue.get_nowait()
         assert retained.event_id == entry.event_id
+        assert retained_future is future
+        assert future.done()
+        assert isinstance(future.exception(), RuntimeError)
         bus._persistence_queue.task_done()
 
     asyncio.run(run())
