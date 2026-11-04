@@ -58,3 +58,22 @@ def test_docker_runtime_accepts_reachable_daemon():
         which=lambda binary: f"/usr/bin/{binary}",
         runner=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="27.0.1\n", stderr=""),
     )
+
+
+def test_docker_preflight_uses_allowlisted_runtime_environment():
+    captured = {}
+    validate_docker_runtime(
+        which=lambda binary: f"/usr/bin/{binary}",
+        runner=lambda *_args, **kwargs: captured.update(kwargs) or SimpleNamespace(
+            returncode=0, stdout="27.0.1\\n", stderr=""
+        ),
+        environ={
+            "PATH": "/usr/bin",
+            "DOCKER_HOST": "tcp://docker.internal:2376",
+            "DOCKER_TLS_VERIFY": "1",
+            "DATABASE_URL": "postgresql://user:secret@example/db",
+        },
+    )
+    assert captured["env"]["DOCKER_HOST"] == "tcp://docker.internal:2376"
+    assert captured["env"]["DOCKER_TLS_VERIFY"] == "1"
+    assert "DATABASE_URL" not in captured["env"]
