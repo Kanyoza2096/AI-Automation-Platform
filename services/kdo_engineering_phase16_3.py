@@ -407,6 +407,7 @@ def run_claimed_build_job(
     *, workflow: KDOPhase162Workflow, queue: Any, job: EngineeringBuildJob,
     worker_id: str, lease_token: str, actor_id: str,
     executor: Callable[..., Mapping[str, Any]],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     lease_seconds: int = 300,
     max_runtime_seconds: float = 1800,
     heartbeat_interval_seconds: float | None = None,
@@ -420,6 +421,8 @@ def run_claimed_build_job(
     when it eventually returns. Executors should still impose their own process-level
     command/container timeouts.
     """
+    if not callable(admission_receipt_verifier):
+        raise Phase163Error("authoritative_admission_receipt_verifier_required")
     if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 3600:
         raise Phase163Error("lease_seconds_must_be_between_30_and_3600")
     if isinstance(max_runtime_seconds, bool) or not isinstance(max_runtime_seconds, (int, float)) \
@@ -436,6 +439,22 @@ def run_claimed_build_job(
     if (current.admission_receipt_verified is not True or not current.admission_decision_id
             or not current.admission_intent_id or not current.admission_execution_id):
         raise Phase163Error("verified_governed_admission_receipt_required")
+    admission_scope = {"tenant_id": current.tenant_id, "workspace_id": current.workspace_id,
+                       "task_id": current.task_id, "decision_id": current.admission_decision_id,
+                       "action_type": "kdo_engineering_build_enqueue"}
+    admission_receipt = {"intent_id": current.admission_intent_id,
+                         "execution_id": current.admission_execution_id,
+                         "status": "succeeded", "action_type": "kdo_engineering_build_enqueue"}
+    try:
+        receipt_valid = admission_receipt_verifier(admission_scope, admission_receipt)
+        if hasattr(receipt_valid, "__await__"):
+            raise Phase163Error("async_admission_receipt_verifier_not_supported_in_sync_worker")
+    except Phase163Error:
+        raise
+    except Exception as exc:
+        raise Phase163Error("admission_receipt_verification_failed_closed") from exc
+    if receipt_valid is not True:
+        raise Phase163Error("authoritative_admission_receipt_not_confirmed")
     if (current.status != "running" or current.lease_owner != worker_id
             or current.lease_token != lease_token or current.task_id != job.task_id
             or current.plan_digest != job.plan_digest or current.idempotency_key != job.idempotency_key):
