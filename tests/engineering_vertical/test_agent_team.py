@@ -1,3 +1,5 @@
+import pytest
+
 from services.kdo_engineering_agent_team import AgentTeamError, coordinate_engineering_team
 
 def _agents(*, reviewer_id="reviewer-1", review_status="approved", tests_passed=True):
