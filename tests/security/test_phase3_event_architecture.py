@@ -116,7 +116,6 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
     async def run():
         db = DB()
         bus = UnifiedEventBus(db)
-        bus._running = True
         event_id = await bus.publish(
             "publish.requested",
             {"x": 1},
@@ -125,7 +124,7 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
             correlation_id="corr-1",
             decision_id="dec-1",
         )
-        await bus._flush_persistence()
+        await bus.stop()
         return event_id, db.records
 
     event_id, records = asyncio.run(run())
