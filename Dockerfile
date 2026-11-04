@@ -12,4 +12,4 @@ ENV OTEL_SERVICE_NAME="kanyoza-ai-platform"
 ENV OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD curl -f http://localhost:${PORT}/health/live || exit 1
 EXPOSE 10000
-CMD ["sh", "-c", "honcho start --procfile Procfile"]
+CMD ["sh", "-c", "exec honcho start --procfile Procfile"]
