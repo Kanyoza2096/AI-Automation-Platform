@@ -114,9 +114,11 @@ def build_gateway_worker_dependencies(
     pinned_worker_image: str,
     gateway: Any,
     workflow_authorize: Callable[[str, str, str, str], bool],
-    pipeline_authorize: Callable[[str, Mapping[str, Any]], bool],
+    pipeline_authorize: Callable[[str, Mapping[str, Any]], bool] | None = None,
     admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     repair_capabilities_factory: Callable[[Any, tuple[str, ...]], Iterable[str]],
+    action_kernel: Any = None,
+    event_store: Any = None,
     docker_binary: str = "docker",
     test_profile: str = "pytest",
     test_timeout_seconds: int = 120,
@@ -139,6 +141,21 @@ def build_gateway_worker_dependencies(
         raise EngineeringWorkerCompositionError("configured_llm_gateway_required")
     if not callable(repair_capabilities_factory):
         raise EngineeringWorkerCompositionError("task_aware_repair_capability_factory_required")
+    if pipeline_authorize is None:
+        if action_kernel is None:
+            raise EngineeringWorkerCompositionError("durable_action_kernel_required_for_worker_authorization")
+        try:
+            from services.kdo_engineering_worker_authorization import (
+                build_council_action_kernel_worker_authorizer,
+            )
+            worker_authorizer = build_council_action_kernel_worker_authorizer(
+                action_kernel, event_store=event_store,
+            )
+        except Exception as exc:
+            raise EngineeringWorkerCompositionError("council_action_kernel_authorizer_unavailable") from exc
+        pipeline_authorize = worker_authorizer.authorize
+    if not callable(pipeline_authorize):
+        raise EngineeringWorkerCompositionError("pipeline_authorizer_required")
     workspace_id = config.workspace_id
     build_executor = make_gateway_build_executor(
         gateway=gateway, workspace_root=str(managed_workspace_root),
