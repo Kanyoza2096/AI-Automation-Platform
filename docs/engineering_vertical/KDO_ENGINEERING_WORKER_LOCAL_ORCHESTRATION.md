@@ -75,3 +75,8 @@ canonical Council / DecisionGate / Action Kernel path, the worker must remain
 disabled. The passing
 focused CI suite proves adapter interfaces and unit behavior only; it does not
 prove the live authority chain or authorize staging execution.
+
+
+## Durable admission receipt enforcement
+
+The shared build queue now stores the Council decision ID and the Action Kernel intent/execution receipt IDs for each admitted job. New queue rows default to unverified; SQLite and PostgreSQL claim queries only return rows whose admission receipt has been verified. The enqueue path records those identifiers only after the configured canonical receipt verifier confirms the matching tenant/workspace/task/action/decision/intent/execution scope. The worker independently calls the same host-supplied authoritative receipt read-back verifier again immediately before task execution; a missing verifier, false result, mismatched scope, or verifier error blocks execution. The trusted worker factory must return admission_receipt_verifier alongside queue, workflow, and executor. A boolean queue flag alone is not accepted as proof of authority.
