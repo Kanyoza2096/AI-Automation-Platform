@@ -73,6 +73,12 @@ class Database:
     def table(self, name):
         return Query(self, name)
 
+    def rpc(self, name, params):
+        query = Query(self, "rpc")
+        query.rpc_name = name
+        query.rpc_params = params
+        return query
+
 
 def test_poll_pages_past_first_fifty_events():
     db = Database([
@@ -103,7 +109,7 @@ def test_failed_delivery_is_recorded_for_retry_and_eventual_dead_letter():
     assert params["p_delivery_id"] == "delivery-1"
     assert params["p_claim_token"] == "worker:claim-1"
     assert params["p_success"] is False
-    assert params["p_error"] == "one or more handlers failed"
+    assert params["p_error"] == "temporary failure"
     assert params["p_max_attempts"] == 5
 
 
