@@ -313,6 +313,10 @@ class PostgresEngineeringConsoleProvider:
             "digest": digest, "submitted_by": user_id}
         if normalized_assignments is not None:
             plan_review["assignments"] = normalized_assignments
+            plan_review["assignments_digest"] = hashlib.sha256(
+                json.dumps(normalized_assignments, sort_keys=True, ensure_ascii=False,
+                           separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
         if summary:
             plan_review["summary"] = summary.strip()
         if planner:
