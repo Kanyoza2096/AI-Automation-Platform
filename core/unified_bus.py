@@ -680,7 +680,7 @@ class UnifiedEventBus:
 
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.supabase.table("events").insert(records).execute(),
+                lambda: self.supabase.table("events").upsert(records, on_conflict="id").execute(),
             )
 
             self._circuit_failures = 0
@@ -716,9 +716,15 @@ class UnifiedEventBus:
                 break
 
         if batch:
-            await self._persist_batch(batch)
-            for _ in batch:
-                self._persistence_queue.task_done()
+            persisted = await self._persist_batch(batch)
+            if persisted:
+                for _ in batch:
+                    self._persistence_queue.task_done()
+            else:
+                # Preserve failed writes for the next start/recovery cycle.
+                for entry in batch:
+                    await self._persistence_queue.put(entry)
+                    self._persistence_queue.task_done()
 
     # ═══════════════════════════════════════════════════════════════════
     # DEAD LETTER QUEUE
