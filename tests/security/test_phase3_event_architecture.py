@@ -17,6 +17,7 @@ class _Query:
         self.table = table
         self.filters = {}
         self._data = None
+        self._range = None
 
     def insert(self, value):
         self.db.inserted.append((self.table, value))
@@ -30,6 +31,7 @@ class _Query:
     def is_(self, *args): return self
     def order(self, *args, **kwargs): return self
     def limit(self, *args): return self
+    def range(self, start, end): self._range = (start, end); return self
     def or_(self, *args): return self
 
     def update(self, value):
@@ -38,7 +40,11 @@ class _Query:
 
     def execute(self):
         if self.table == "events":
-            return _Result(self.db.events)
+            rows = self.db.events
+            if self._range is not None:
+                start, end = self._range
+                rows = rows[start:end + 1]
+            return _Result(rows)
         if self.table == "event_deliveries":
             rows = list(self.db.deliveries.values())
             if self.filters:
