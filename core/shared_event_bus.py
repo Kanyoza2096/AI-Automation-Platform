@@ -166,32 +166,38 @@ class SharedEventBus:
             return 0
 
         try:
-            result = self.supabase.table("events") \
-                .select("*") \
-                .order("created_at") \
-                .range(0, self.MAX_EVENTS_PER_POLL - 1) \
-                .execute()
-
             delivered = 0
-            for event in result.data or []:
-                event_name = event.get("event_type") or event.get("event_name", "")
-                with self._lock:
-                    has_handler = bool(self._handlers.get(event_name))
-                if not has_handler:
-                    continue
-                event_id = event.get("id")
-                if not event_id:
-                    continue
-                # A producer instance should not synchronously consume its own
-                # transport copy; local UnifiedEventBus already handled it.
-                if event.get("source_instance") == self.instance_id:
-                    continue
-                if not self._ensure_delivery(event_id, event_name):
-                    continue
-                delivery = self._claim_delivery(event_id)
-                if delivery:
-                    self._dispatch_event(event, delivery_id=delivery)
-                    delivered += 1
+            offset = 0
+            while True:
+                result = self.supabase.table("events") \
+                    .select("*") \
+                    .order("created_at") \
+                    .range(offset, offset + self.MAX_EVENTS_PER_POLL - 1) \
+                    .execute()
+                page = result.data or []
+                for event in page:
+                    event_name = event.get("event_type") or event.get("event_name", "")
+                    with self._lock:
+                        has_handler = bool(self._handlers.get(event_name))
+                    if not has_handler:
+                        continue
+                    event_id = event.get("id")
+                    if not event_id:
+                        continue
+                    if event.get("source_instance") == self.instance_id:
+                        continue
+                    if not self._ensure_delivery(event_id, event_name):
+                        continue
+                    delivery = self._claim_delivery(event_id)
+                    if delivery:
+                        self._dispatch_event(event, delivery_id=delivery)
+                        delivered += 1
+
+                # Walk past old acknowledged/unhandled events; otherwise the
+                # oldest page can permanently starve newer messages.
+                if len(page) < self.MAX_EVENTS_PER_POLL:
+                    break
+                offset += len(page)
             return delivered
 
         except Exception as exc:
