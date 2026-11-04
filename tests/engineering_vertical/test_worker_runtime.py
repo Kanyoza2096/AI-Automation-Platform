@@ -95,7 +95,6 @@ def test_heartbeat_failure_prevents_terminal_completion_and_fails_closed(monkeyp
             workflow=object(), queue=queue, job=job, worker_id="worker-a",
             lease_token="lease-token", actor_id="builder", executor=lambda **_: {},
             admission_receipt_verifier=lambda scope, receipt: True,
-        admission_receipt_verifier=lambda scope, receipt: True,
             lease_seconds=30, heartbeat_interval_seconds=0.005,
         )
 
@@ -131,7 +130,6 @@ def test_worker_runtime_forwards_shutdown_cancellation_event(monkeypatch):
         workflow=object(), queue=FakeQueue(), job=make_job(), worker_id="worker-a",
         lease_token="lease-token", actor_id="builder", executor=lambda **_: {},
             admission_receipt_verifier=lambda scope, receipt: True,
-        admission_receipt_verifier=lambda scope, receipt: True,
         lease_seconds=30, heartbeat_interval_seconds=1,
         cancellation_event=cancellation,
     )
