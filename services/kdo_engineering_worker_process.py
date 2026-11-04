@@ -1,15 +1,16 @@
 """Honcho process entrypoint for the isolated KDO engineering worker.
 
 The web process never imports this module. The worker is inert by default.
-Enabling it requires an explicitly configured, trusted host factory that
-constructs the real staging dependencies and canonical Action Kernel.
+Enabling it requires a trusted host factory and a reachable Docker daemon.
 """
 from __future__ import annotations
 
 import importlib
 import logging
 import os
+import shutil
 import signal
+import subprocess
 import threading
 from collections.abc import Mapping
 from typing import Any, Callable
@@ -18,6 +19,32 @@ from services.kdo_engineering_worker_bootstrap import ProductionWorkerConfig
 from services.kdo_engineering_trusted_worker_host import build_trusted_gateway_worker_host
 
 logger = logging.getLogger("kdo.engineering.worker.process")
+
+
+def validate_docker_runtime(
+    docker_binary: str = "docker",
+    *,
+    which: Callable[[str], str | None] = shutil.which,
+    runner: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Fail closed unless both the Docker CLI and its daemon are reachable."""
+    if not isinstance(docker_binary, str) or not docker_binary.strip():
+        raise RuntimeError("docker_binary_configuration_invalid")
+    if which(docker_binary) is None:
+        raise RuntimeError("docker_cli_unavailable")
+    try:
+        result = runner(
+            [docker_binary, "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+    except Exception as exc:
+        raise RuntimeError("docker_daemon_unavailable") from exc
+    if getattr(result, "returncode", 1) != 0 or not str(getattr(result, "stdout", "")).strip():
+        raise RuntimeError("docker_daemon_unavailable")
 
 
 def _load_factory(spec: str) -> Callable[..., Mapping[str, Any]]:
@@ -41,6 +68,9 @@ def run_worker(environ: Mapping[str, str] | None = None) -> int:
     factory_spec = env.get("KDO_ENGINEERING_WORKER_HOST_FACTORY", "").strip()
     if not factory_spec:
         raise RuntimeError("trusted_worker_host_factory_required_when_worker_enabled")
+
+    # Verify the execution runtime before constructing DB clients or claiming jobs.
+    validate_docker_runtime(env.get("KDO_ENGINEERING_DOCKER_BINARY", "docker"))
 
     import psycopg
 
