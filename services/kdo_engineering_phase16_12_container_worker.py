@@ -12,6 +12,27 @@ import os, re, shutil, subprocess, time, uuid, threading
 from typing import Callable, Sequence, Mapping, Any
 
 
+_DOCKER_CLI_ENV_KEYS = frozenset({
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+    "DOCKER_CONFIG", "DOCKER_API_VERSION", "XDG_RUNTIME_DIR",
+})
+
+
+def docker_cli_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a minimal Docker CLI environment without forwarding application secrets.
+
+    Only explicit Docker endpoint/TLS/config selectors are inherited. These values
+    configure the host-side CLI; they are never passed into the build container.
+    """
+    source = os.environ if environ is None else environ
+    result = {"PATH": str(source.get("PATH", "")), "CI": "1"}
+    for key in _DOCKER_CLI_ENV_KEYS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            result[key] = value
+    return result
+
+
 def _bounded_subprocess_run(cmd: Sequence[str], *, output_limit: int, **kwargs: Any) -> Any:
     """Run the Docker CLI while retaining only a bounded tail of each stream."""
     timeout = kwargs.pop("timeout")
@@ -142,7 +163,7 @@ class DockerWorkspaceRunner:
             cleanup = self.process_runner(
                 [self.docker_binary, "rm", "--force", container_name],
                 cwd=str(self.workspace_root),
-                env={"PATH": os.environ.get("PATH", ""), "CI": "1"},
+                env=docker_cli_environment(),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

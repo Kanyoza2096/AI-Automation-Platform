@@ -6,6 +6,7 @@ import os
 import pytest
 from services.kdo_engineering_phase16_12_container_worker import (
     ContainerWorkerError, DockerWorkspaceRunner, make_docker_workspace_test_runner,
+    docker_cli_environment,
 )
 
 def test_container_command_has_isolation_and_resource_controls(tmp_path):
@@ -170,3 +171,21 @@ def test_default_docker_cli_capture_is_bounded_in_memory(tmp_path):
     assert len(result.stderr) <= 128
     assert result.stdout.endswith("x" * 128)
     assert result.stderr.endswith("y" * 128)
+
+
+def test_docker_cli_environment_allows_only_explicit_runtime_configuration():
+    env = docker_cli_environment({
+        "PATH": "/usr/bin",
+        "DOCKER_HOST": "tcp://docker.internal:2376",
+        "DOCKER_TLS_VERIFY": "1",
+        "DOCKER_CERT_PATH": "/run/secrets/docker-client",
+        "DATABASE_URL": "postgresql://user:secret@example/db",
+        "SUPABASE_SERVICE_ROLE_KEY": "must-not-be-forwarded",
+        "OPENAI_API_KEY": "must-not-be-forwarded",
+    })
+    assert env == {
+        "PATH": "/usr/bin", "CI": "1",
+        "DOCKER_HOST": "tcp://docker.internal:2376",
+        "DOCKER_TLS_VERIFY": "1",
+        "DOCKER_CERT_PATH": "/run/secrets/docker-client",
+    }
