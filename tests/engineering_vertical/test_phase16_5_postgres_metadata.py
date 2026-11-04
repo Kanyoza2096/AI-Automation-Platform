@@ -104,10 +104,14 @@ def test_metadata_adapters_do_not_silently_fall_back_to_sqlite():
     assert "postgres_engineering_metadata_operation_failed" in source
 
 class AtomicReviewCursor:
-    def __init__(self, row): self.row=row; self.current=None; self.sql=[]; self.params=[]; self.closed=False
+    def __init__(self, row, member_count=2):
+        self.row=row; self.current=None; self.sql=[]; self.params=[]; self.closed=False
+        self.member_count=member_count; self.rowcount=1
     def execute(self, sql, params=None):
         normalized=" ".join(sql.split()); self.sql.append(normalized); self.params.append(params)
-        if normalized.startswith("SELECT * FROM public.kdo_engineering_tasks"):
+        if normalized.startswith("SELECT COUNT(*) FROM public.workspace_members"):
+            self.current=(self.member_count,)
+        elif normalized.startswith("SELECT * FROM public.kdo_engineering_tasks"):
             self.current=self.row
         elif normalized.startswith("UPDATE public.kdo_engineering_tasks"):
             self.current={"task_id":params[4]}
@@ -160,6 +164,26 @@ def test_atomic_review_rejects_self_approval_before_any_write():
             expected_revision=1,reviewer_id="same-person",approve=True)
     assert not any(sql.startswith("UPDATE ") or sql.startswith("INSERT ") for sql in cursor.sql)
     assert connection.rollbacks == 1
+
+
+def test_atomic_review_allows_submitter_in_single_member_workspace():
+    from services.kdo_engineering_task_repository import _encode
+    from services.kdo_engineering_phase16_2 import _plan_digest
+    steps=["Edit app.py"]
+    task=EngineeringTaskContract(task_id="task-single",tenant_id="tenant-1",workspace_id="ws-single",
+        objective="Change app",acceptance_criteria=("checks pass",),idempotency_key="idem-single",
+        evidence={"plan_review":{"state":"submitted","steps":steps,"digest":_plan_digest(steps),"submitted_by":"same-person"}})
+    data=_encode(task)
+    row={**data,"acceptance_criteria":json.loads(data["acceptance_criteria"]),
+         "metadata":json.loads(data["metadata"]),"evidence":json.loads(data["evidence"])}
+    cursor=AtomicReviewCursor(row,member_count=1); connection=FakeConnection(cursor)
+    approved=PostgresEngineeringTaskRepository(lambda: connection).review_plan_atomically(
+        task.task_id,tenant_id=task.tenant_id,workspace_id=task.workspace_id,
+        expected_revision=1,reviewer_id="same-person",approve=True,reason="Single operator approval")
+    assert approved.status == EngineeringTaskStatus.PLANNED
+    assert approved.evidence["plan_review"]["reviewed_by"] == "same-person"
+    assert any("SELECT COUNT(*) FROM public.workspace_members" in sql for sql in cursor.sql)
+    assert connection.commits == 1 and connection.rollbacks == 0
 
 
 def test_postgres_workflow_composition_injects_postgres_adapters_explicitly():
