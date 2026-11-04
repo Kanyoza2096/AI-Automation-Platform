@@ -160,6 +160,7 @@ def run_production_engineering_worker(
     queue: Any,
     workflow: Any,
     executor: Callable[..., Mapping[str, Any]],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     stopping: threading.Event,
     health_sink: Callable[[Mapping[str, Any]], None] | None = None,
     max_jobs: int | None = None,
@@ -174,6 +175,8 @@ def run_production_engineering_worker(
         raise EngineeringWorkerBootstrapError("postgres_queue_required_no_sqlite_fallback")
     if not callable(connection_factory) or not callable(executor):
         raise EngineeringWorkerBootstrapError("connection_factory_and_executor_required")
+    if not callable(admission_receipt_verifier):
+        raise EngineeringWorkerBootstrapError("authoritative_admission_receipt_verifier_required")
     if workflow is None or not isinstance(stopping, threading.Event):
         raise EngineeringWorkerBootstrapError("governed_workflow_and_stop_event_required")
     _probe_postgres(connection_factory)
@@ -208,6 +211,7 @@ def run_production_engineering_worker(
             workspace_id=config.workspace_id,
             actor_id=config.actor_id,
             executor=executor,
+            admission_receipt_verifier=admission_receipt_verifier,
             stopping=stopping,
             lease_seconds=config.lease_seconds,
             heartbeat_interval_seconds=config.heartbeat_interval_seconds,
