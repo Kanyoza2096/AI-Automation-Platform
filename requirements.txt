@@ -1,21 +1,11 @@
 fastapi>=0.110,<1
 uvicorn[standard]>=0.27
 gunicorn>=21.2
+honcho>=2.0,<3
 pydantic>=2.5,<3
 pydantic-settings>=2.1
 httpx>=0.26
-
-# supabase-py >= 2.6.0 is REQUIRED: it's the first release where
-# ClientOptions accepts httpx_client. Older versions silently fall
-# back to the default HTTP/2 transport → GOAWAY storms, intermittent
-# 500s on /dashboard/live, and Business Automation rules failures
-# (see bug report 2026-10-26, "HTTP/2 GOAWAY" section).
-# The <3 upper bound avoids ClientOptions / create_client signature
-# changes expected in 3.x. Do NOT lower the floor without also
-# verifying `inspect.signature(ClientOptions.__init__)` includes
-# 'httpx_client' on the resolved version.
 supabase>=2.6.0,<3
-
 redis>=5.0
 python-socketio>=5.10
 python-multipart>=0.0.9
@@ -27,15 +17,7 @@ opentelemetry-api>=1.20
 opentelemetry-sdk>=1.20
 websockets>=12.0
 aiohttp>=3.9
-# Rendering / cards (used by services/rendering, card_renderer, trend plugin)
 Pillow>=10.0
-# Optional — card HTML→PNG path (README: playwright install chromium)
-# playwright>=1.40
-# Optional — Google APIs used by backup plugin
-# google-api-python-client>=2.100
-# Cloudflare uses httpx/requests already; set CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN
-
-# Runtime dependencies required by full-mode plugins/services
 psutil>=5.9
 PyMuPDF>=1.24
 PyPDF2>=3.0
@@ -45,7 +27,5 @@ requests-oauthlib>=2.0
 stripe>=10.0
 google-auth>=2.29
 google-api-python-client>=2.100
-
-# Migration/bootstrap runtime database driver
 psycopg[binary]>=3.1
 PyYAML>=6.0
