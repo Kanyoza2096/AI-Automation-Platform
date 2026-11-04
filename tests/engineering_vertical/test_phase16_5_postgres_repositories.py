@@ -112,14 +112,14 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
         tenant_id=tenant,
         workspace_id=workspace,
         expected_revision=submitted.revision,
-        reviewer_id="reviewer-2",
+        reviewer_id="author-1",
         approve=True,
-        reason="independent review passed",
+        reason="submitter reviewed the plan",
     )
 
     assert approved.status == EngineeringTaskStatus.PLANNED
     assert approved.evidence["plan_review"]["approved_digest"] == plan_digest
-    assert approved.evidence["plan_review"]["reviewed_by"] == "reviewer-2"
+    assert approved.evidence["plan_review"]["reviewed_by"] == "author-1"
     # Approval must persist before execution creates its worktree.
     assert workspaces.list_scope(tenant_id=tenant, workspace_id=workspace) == []
     ledger = workspaces.get_plan_review(
@@ -127,7 +127,7 @@ def test_postgres_plan_approval_is_atomic_and_precedes_workspace_creation(reposi
     )
     assert ledger["decision"] == "approved"
     assert ledger["plan_digest"] == plan_digest
-    assert ledger["reviewer_id"] == "reviewer-2"
+    assert ledger["reviewer_id"] == "author-1"
     with pytest.raises(EngineeringTaskConflict, match="stale_revision"):
         tasks.review_plan_atomically(
             task.task_id,
