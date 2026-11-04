@@ -145,3 +145,18 @@ def test_gateway_specialists_complete_test_repair_verify_handoff_without_release
     ))
     assert frontend_proposal["evidence"]["patch_text"] == "diff --git a/x b/x"
     assert len(gateway.calls) == 4
+
+ 
+
+def test_gateway_agent_maps_requested_capabilities_into_task_prompt():
+    gateway = FakeGateway(_result({"status": "succeeded", "summary": "planned",
+                                   "evidence": {"plan": []}}))
+    agent = make_gateway_agent(gateway=gateway, role="planner", agent_id="planner-1",
+                               workspace_id="w1")
+    assignment = AgentAssignment("task-1", "planner", "Plan safely",
+        {"acceptance_criteria": ["No production changes"],
+         "requested_capabilities": ["read_task_workspace", "propose_patch"]})
+    agent(assignment)
+    prompt = gateway.calls[0][0]
+    assert "read_task_workspace" in prompt
+    assert "NOT permissions or authorization" in prompt
