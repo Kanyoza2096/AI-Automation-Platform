@@ -483,17 +483,30 @@ class UnifiedEventBus:
         )
         self._event_store.append(entry)
 
-        # Enqueue persistence first. DEFER/BLOCK apply backpressure instead
-        # of acknowledging an event that cannot be durably queued.
+        # Do not acknowledge publication until the event has reached the
+        # durable store. The queue provides batching/backpressure, while the
+        # future links the producer's acknowledgement to the database commit.
         if self.supabase:
+            persisted = asyncio.get_running_loop().create_future()
+            pending_item = (entry, persisted)
             try:
                 if self._throttle_policy == ThrottlePolicy.DROP:
-                    self._persistence_queue.put_nowait(entry)
+                    self._persistence_queue.put_nowait(pending_item)
                 else:
-                    await self._persistence_queue.put(entry)
+                    await self._persistence_queue.put(pending_item)
             except asyncio.QueueFull:
                 logger.warning("Persistence queue FULL — dropping event: %s", event_name)
                 self._events_dropped += 1
+                return None
+
+            try:
+                await persisted
+            except Exception as exc:
+                logger.error(
+                    "Event %s was not durably persisted; publication rejected: %s",
+                    event_name,
+                    exc,
+                )
                 return None
 
         dispatch_item = (
@@ -619,13 +632,13 @@ class UnifiedEventBus:
     async def _persistence_loop(self) -> None:
         while self._running:
             try:
-                batch: List[EventStoreEntry] = []
+                batch: List[tuple[EventStoreEntry, asyncio.Future]] = []
                 try:
-                    entry = await asyncio.wait_for(
+                    item = await asyncio.wait_for(
                         self._persistence_queue.get(),
                         timeout=self.config.persistence_flush_interval,
                     )
-                    batch.append(entry)
+                    batch.append(item)
                     for _ in range(self.config.persistence_batch_size - 1):
                         try:
                             batch.append(self._persistence_queue.get_nowait())
@@ -635,27 +648,27 @@ class UnifiedEventBus:
                     continue
 
                 attempt = 0
+                entries = [entry for entry, _future in batch]
                 while self._running:
-                    if await self._persist_batch(batch):
-                        for _ in batch:
+                    if await self._persist_batch(entries):
+                        for _entry, future in batch:
+                            if not future.done():
+                                future.set_result(True)
                             self._persistence_queue.task_done()
                         break
                     attempt += 1
-                    # Keep ownership of the dequeued batch until it is saved.
-                    # This avoids acknowledging or discarding failed writes.
+                    # The producer remains blocked until durable persistence
+                    # succeeds or shutdown explicitly rejects the publication.
                     await asyncio.sleep(min(30.0, max(1.0, 2 ** min(attempt, 5))))
                 else:
-                    # Shutdown requested: put the batch back for stop() to flush.
-                    for entry in batch:
-                        await self._persistence_queue.put(entry)
+                    for item in batch:
+                        await self._persistence_queue.put(item)
                         self._persistence_queue.task_done()
 
             except asyncio.CancelledError:
-                # A batch removed from the queue is still outstanding work.
-                # Return it before exiting so stop() can flush it or the next
-                # start can resume persistence.
-                for entry in batch:
-                    await self._persistence_queue.put(entry)
+                # Return in-flight work for the orderly shutdown flush.
+                for item in batch:
+                    await self._persistence_queue.put(item)
                     self._persistence_queue.task_done()
                 break
             except Exception as exc:
@@ -719,7 +732,7 @@ class UnifiedEventBus:
         )
 
     async def _flush_persistence(self) -> None:
-        batch = []
+        batch: List[tuple[EventStoreEntry, asyncio.Future]] = []
         while not self._persistence_queue.empty():
             try:
                 batch.append(self._persistence_queue.get_nowait())
@@ -727,15 +740,26 @@ class UnifiedEventBus:
                 break
 
         if batch:
-            persisted = await self._persist_batch(batch)
+            entries = [entry for entry, _future in batch]
+            persisted = await self._persist_batch(entries)
             if persisted:
-                for _ in batch:
+                for _entry, future in batch:
+                    if not future.done():
+                        future.set_result(True)
                     self._persistence_queue.task_done()
             else:
-                # Preserve failed writes for the next start/recovery cycle.
-                for entry in batch:
-                    await self._persistence_queue.put(entry)
+                # The caller must not receive a successful publication
+                # acknowledgement when shutdown cannot flush the durable write.
+                for item in batch:
+                    entry, future = item
+                    await self._persistence_queue.put(item)
                     self._persistence_queue.task_done()
+                    if not future.done():
+                        future.set_exception(
+                            RuntimeError(
+                                f"Event {entry.event_id} remains queued; durable persistence failed during shutdown"
+                            )
+                        )
 
     # ═══════════════════════════════════════════════════════════════════
     # DEAD LETTER QUEUE
