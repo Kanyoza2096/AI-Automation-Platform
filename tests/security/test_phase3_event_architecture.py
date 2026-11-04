@@ -29,6 +29,7 @@ class _Query:
     def select(self, *args): return self
     def eq(self, key, value): self.filters[key] = value; return self
     def is_(self, *args): return self
+    def lte(self, *args): return self
     def order(self, *args, **kwargs): return self
     def limit(self, *args): return self
     def range(self, start, end): self._range = (start, end); return self
@@ -61,6 +62,11 @@ class _DB:
         self.updates = []
 
     def table(self, name): return _Query(self, name)
+    def rpc(self, name, params):
+        db = self
+        class Q:
+            def execute(self): return _Result(True)
+        return Q()
 
 
 def test_shared_bus_uses_per_consumer_delivery_rows():
@@ -103,7 +109,7 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
             assert name == "events"
             db = self
             class Q:
-                def insert(self, records): db.records = records; return self
+                def upsert(self, records, on_conflict=None): db.records = records; return self
                 def execute(self): return _Result([{}])
             return Q()
 
