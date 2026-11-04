@@ -69,6 +69,16 @@ def build_worker_dependencies(
     if not isinstance(pinned_worker_image, str) or "@sha256:" not in pinned_worker_image:
         raise EngineeringWorkerCompositionError("digest_pinned_worker_image_required")
 
+    # Enforce scoped Council/Action Kernel authorization at the shared composition
+    # boundary, not only in the gateway convenience wrapper. Otherwise a trusted
+    # host could accidentally inject a permissive lambda and run without job/lease
+    # binding or worker_authorizer context.
+    authorizer_candidate = getattr(pipeline_authorize, "__self__", pipeline_authorize)
+    if not callable(getattr(authorizer_candidate, "bind_execution_context", None)):
+        raise EngineeringWorkerCompositionError(
+            "scoped_council_action_kernel_authorizer_required"
+        )
+
     try:
         workflow = create_postgres_engineering_workflow(
             connection_factory=connection_factory,
@@ -95,10 +105,12 @@ def build_worker_dependencies(
     except (ValueError, EngineeringPipelineCompositionError) as exc:
         raise EngineeringWorkerCompositionError("governed_worker_composition_failed") from exc
 
+    executor.worker_authorizer = authorizer_candidate
     return {
         "queue": queue,
         "workflow": workflow,
         "executor": executor,
+        "worker_authorizer": authorizer_candidate,
         "admission_receipt_verifier": admission_receipt_verifier,
         "cleanup": lambda: None,
     }
