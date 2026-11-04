@@ -99,6 +99,21 @@ class SQLiteEngineeringBuildQueue:
           CREATE INDEX IF NOT EXISTS idx_kdo_build_jobs_scope
             ON kdo_engineering_build_jobs(tenant_id, workspace_id, status);
         """)
+        # Additive upgrade for durable local queues created before receipt gating.
+        existing = {row[1] for row in self._db.execute(
+            "PRAGMA table_info(kdo_engineering_build_jobs)"
+        ).fetchall()}
+        for name, declaration in (
+            ("admission_decision_id", "TEXT"),
+            ("admission_intent_id", "TEXT"),
+            ("admission_execution_id", "TEXT"),
+            ("admission_receipt_verified", "INTEGER NOT NULL DEFAULT 0"),
+            ("admitted_at", "TEXT"),
+        ):
+            if name not in existing:
+                self._db.execute(
+                    f"ALTER TABLE kdo_engineering_build_jobs ADD COLUMN {name} {declaration}"
+                )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> EngineeringBuildJob:
