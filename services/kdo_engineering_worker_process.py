@@ -80,6 +80,21 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    config = ProductionWorkerConfig.from_env()
+    if not config.enabled:
+        # Keep the Honcho-managed worker slot alive but completely inert. This
+        # prevents a clean early exit from being interpreted as a failed
+        # Procfile process while guaranteeing no DB poll or Docker launch.
+        stopping = threading.Event()
+
+        def stop(_signum: int, _frame: Any) -> None:
+            stopping.set()
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        logger.info("Engineering worker is disabled; waiting without polling.")
+        stopping.wait()
+        return
     raise SystemExit(run_worker())
 
 
