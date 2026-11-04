@@ -20,6 +20,18 @@ def make_queue(tmp_path):
     return SQLiteEngineeringBuildQueue(tmp_path / "build-jobs.sqlite")
 
 
+def _enqueue_verified(queue, **kwargs):
+    job = queue.enqueue(**kwargs)
+    current = queue.get(job.job_id, tenant_id=job.tenant_id, workspace_id=job.workspace_id)
+    if not current.admission_receipt_verified:
+        queue.record_admission_receipt(
+            tenant_id=job.tenant_id, workspace_id=job.workspace_id, task_id=job.task_id,
+            decision_id="test-council-decision", intent_id="test-intent-" + job.task_id,
+            execution_id="test-execution-" + job.task_id,
+        )
+    return job
+
+
 def test_queue_is_idempotent_and_rejects_conflicting_payload(tmp_path):
     queue = make_queue(tmp_path)
     first = queue.enqueue(tenant_id="t1", workspace_id="w1", task_id="task1",
