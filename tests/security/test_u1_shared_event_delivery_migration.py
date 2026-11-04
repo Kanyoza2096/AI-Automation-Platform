@@ -141,7 +141,8 @@ def test_u1_delivery_rpc_fences_claims_retries_and_dead_letters():
                     """,
                     (success_delivery_id,),
                 ).fetchone()
-                assert success_row == (True, success_row[1], None, None)
+                assert success_row[0] is True
                 assert success_row[1] is not None
+                assert success_row[2:] == (None, None)
         finally:
             connection.rollback()
