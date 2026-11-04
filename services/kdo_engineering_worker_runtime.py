@@ -109,6 +109,7 @@ def run_claimed_build_job_with_heartbeat(
     lease_token: str,
     actor_id: str,
     executor: Callable[..., Mapping[str, Any]],
+    admission_receipt_verifier: Callable[[Mapping[str, Any], Mapping[str, Any]], Any],
     lease_seconds: int = 300,
     heartbeat_interval_seconds: float | None = None,
     cancellation_event: threading.Event | None = None,
@@ -153,6 +154,7 @@ def run_claimed_build_job_with_heartbeat(
             lease_token=lease_token,
             actor_id=actor_id,
             executor=executor,
+            admission_receipt_verifier=admission_receipt_verifier,
             cancellation_event=cancellation_event,
         )
         proxy.stop()
