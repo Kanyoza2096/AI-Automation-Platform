@@ -89,3 +89,28 @@ def test_persistence_batch_success_returns_true():
         assert await bus._persist_batch([_entry()]) is True
 
     asyncio.run(run())
+
+
+
+def test_defer_policy_waits_for_dispatch_queue_capacity():
+    async def run():
+        bus = UnifiedEventBus(
+            config=EventBusConfig(max_queue_size=1),
+        )
+        bus._running = True
+        await bus._dispatch_queue.put(("occupied", {}, "test", "existing", None, None, None, None, None))
+
+        publish_task = asyncio.create_task(
+            bus.publish("test.event", {"value": 2}, source="test")
+        )
+        await asyncio.sleep(0)
+        assert not publish_task.done()
+
+        bus._dispatch_queue.get_nowait()
+        bus._dispatch_queue.task_done()
+        event_id = await asyncio.wait_for(publish_task, timeout=1)
+
+        assert event_id
+        assert bus._dispatch_queue.qsize() == 1
+
+    asyncio.run(run())
