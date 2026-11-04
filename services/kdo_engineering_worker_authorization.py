@@ -13,6 +13,7 @@ import hashlib
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from collections.abc import Mapping
 from typing import Any
 
@@ -31,6 +32,9 @@ REQUIRED_PARAMETERS = (
     "requested_action",
     "payload_digest",
     "authorization_request_id",
+    "job_id",
+    "plan_digest",
+    "lease_token_digest",
 )
 
 
@@ -63,6 +67,7 @@ class CouncilActionKernelWorkerAuthorizer:
         self._event_store = event_store
         self._receipt_verifier = build_durable_action_receipt_verifier(db)
         self._lock = threading.RLock()
+        self._execution_context = threading.local()
         self._register_contract()
 
     def _register_contract(self) -> None:
@@ -102,15 +107,48 @@ class CouncilActionKernelWorkerAuthorizer:
         ):
             raise GovernedWorkerAuthorizationError("worker_authorization_contract_mismatch")
 
+    @contextmanager
+    def bind_execution_context(self, context: Mapping[str, Any], lease_check: Any):
+        """Bind every action to one currently leased queue job on this worker thread."""
+        required = ("job_id", "plan_digest", "lease_token", "tenant_id", "workspace_id", "task_id")
+        if not isinstance(context, Mapping) or any(not _valid_text(context.get(k)) for k in required):
+            raise GovernedWorkerAuthorizationError("complete_worker_execution_context_required")
+        if not callable(lease_check):
+            raise GovernedWorkerAuthorizationError("active_lease_validator_required")
+        previous = getattr(self._execution_context, "value", None)
+        self._execution_context.value = (dict(context), lease_check)
+        try:
+            yield
+        finally:
+            self._execution_context.value = previous
+
     def authorize(self, action: str, task: Mapping[str, Any]) -> bool:
-        """Return True only after fresh Council approval and durable receipt read-back."""
+        """Authorize only while the exact job/plan/lease remains active."""
         if not _valid_text(action) or not isinstance(task, Mapping):
             return False
         scope_keys = ("tenant_id", "workspace_id", "task_id")
         if any(not _valid_text(task.get(key)) for key in scope_keys):
             return False
 
+        bound = getattr(self._execution_context, "value", None)
+        if not bound:
+            return False
+        context, lease_check = bound
+        if any(str(task.get(key, "")) != str(context.get(key, "")) for key in scope_keys):
+            return False
+        try:
+            if lease_check() is not True:
+                return False
+        except Exception:
+            return False
+        lease_token = str(context["lease_token"])
+        lease_token_digest = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
         safe_task = {key: str(task[key]) for key in scope_keys}
+        safe_task.update({
+            "job_id": str(context["job_id"]),
+            "plan_digest": str(context["plan_digest"]),
+            "lease_token_digest": lease_token_digest,
+        })
         criteria = task.get("acceptance_criteria", ())
         if isinstance(criteria, (list, tuple)):
             safe_task["acceptance_criteria"] = [
@@ -127,10 +165,14 @@ class CouncilActionKernelWorkerAuthorizer:
             "requested_action": action,
             "payload_digest": payload_digest,
             "authorization_request_id": request_id,
+            "job_id": str(context["job_id"]),
+            "plan_digest": str(context["plan_digest"]),
+            "lease_token_digest": lease_token_digest,
         }
         objective = (
             f"Authorize engineering worker operation '{action}' for task "
-            f"{safe_task['task_id']}; this approval covers this operation only."
+            f"{safe_task['task_id']} in job {safe_task['job_id']} "
+            f"under approved plan {safe_task['plan_digest']}; lease is revalidated."
         )
 
         # Worker execution invokes this synchronous adapter from its worker thread.
@@ -158,7 +200,7 @@ class CouncilActionKernelWorkerAuthorizer:
                     idempotency_key=(
                         f"kdo-worker-auth:{safe_task['tenant_id']}:"
                         f"{safe_task['workspace_id']}:{safe_task['task_id']}:"
-                        f"{action}:{request_id}"
+                        f"{safe_task['job_id']}:{safe_task['plan_digest']}:{lease_token_digest}:{action}:{request_id}"
                     ),
                 ))
             except Exception:
