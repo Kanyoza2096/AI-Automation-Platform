@@ -112,6 +112,7 @@ class EventStoreEntry:
     brand_id: Optional[str] = None
     decision_id: Optional[str] = None
     parent_event_id: Optional[str] = None
+    schema_version: str = "1.0"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -459,6 +460,7 @@ class UnifiedEventBus:
             brand_id=brand_id,
             decision_id=decision_id,
             parent_event_id=parent_event_id,
+            schema_version=schema_version,
         )
         self._event_store.append(entry)
 
@@ -636,7 +638,7 @@ class UnifiedEventBus:
                     "source_service": entry.source_engine,
                     "source_instance": None,
                     "processed": False,
-                    "schema_version": getattr(entry, "schema_version", "1.0"),
+                    "schema_version": entry.schema_version,
                 }
                 for entry in batch
             ]
