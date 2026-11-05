@@ -149,27 +149,40 @@ class PostgresEngineeringEventStore:
                     pass
 
     def verify_chain(self, *, task_id: str, tenant_id: str, workspace_id: str) -> bool:
-        events = self.list_events(
-            task_id=task_id, tenant_id=tenant_id, workspace_id=workspace_id, limit=500
-        )
+        # Read bounded pages so verification covers the complete stream without
+        # loading an unbounded task history into memory.
         previous = "GENESIS"
-        for index, event in enumerate(events, 1):
-            if event["sequence_no"] != index or event["previous_hash"] != previous:
-                return False
-            payload_json = json.dumps(
-                event["payload"], sort_keys=True, separators=(",", ":"), default=str
+        expected_sequence = 1
+        after_sequence = 0
+        page_size = 500
+        while True:
+            events = self.list_events(
+                task_id=task_id, tenant_id=tenant_id, workspace_id=workspace_id,
+                after_sequence=after_sequence, limit=page_size,
             )
-            body = {
-                "event_id": event["event_id"], "task_id": task_id,
-                "tenant_id": tenant_id, "workspace_id": workspace_id,
-                "sequence_no": index, "event_type": event["event_type"],
-                "actor_id": event["actor_id"], "payload_json": payload_json,
-                "created_at": event["created_at"], "previous_hash": previous,
-            }
-            digest = hashlib.sha256(
-                json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            ).hexdigest()
-            if digest != event["event_hash"]:
-                return False
-            previous = digest
-        return True
+            if not events:
+                return True
+            for event in events:
+                if (event["sequence_no"] != expected_sequence
+                        or event["previous_hash"] != previous):
+                    return False
+                payload_json = json.dumps(
+                    event["payload"], sort_keys=True, separators=(",", ":"), default=str
+                )
+                body = {
+                    "event_id": event["event_id"], "task_id": task_id,
+                    "tenant_id": tenant_id, "workspace_id": workspace_id,
+                    "sequence_no": expected_sequence, "event_type": event["event_type"],
+                    "actor_id": event["actor_id"], "payload_json": payload_json,
+                    "created_at": event["created_at"], "previous_hash": previous,
+                }
+                digest = hashlib.sha256(
+                    json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                if digest != event["event_hash"]:
+                    return False
+                previous = digest
+                expected_sequence += 1
+                after_sequence = event["sequence_no"]
+            if len(events) < page_size:
+                return True
