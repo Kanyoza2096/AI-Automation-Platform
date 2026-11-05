@@ -4,6 +4,7 @@ import asyncio
 
 from core.shared_event_bus import SharedEventBus
 from core.unified_bus import UnifiedEventBus
+from utils.ids import get_process_instance_id
 
 
 class _Result:
@@ -124,6 +125,7 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
     assert records[0]["workspace_id"] == "ws-1"
     assert records[0]["correlation_id"] == "corr-1"
     assert records[0]["source_service"] == "director"
+    assert records[0]["source_instance"] == get_process_instance_id()
     assert records[0]["parent_event_id"] == "parent-evt-1"
     assert records[0]["schema_version"] == "2.0"
     assert records[0]["payload"]["_nerve"]["event_id"] == event_id
