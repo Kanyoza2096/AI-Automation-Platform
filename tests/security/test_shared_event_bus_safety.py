@@ -182,6 +182,8 @@ def test_shared_bus_persists_canonical_nerve_metadata():
     assert record["source_instance"] == bus.instance_id
     assert record["schema_version"] == "1.0"
     assert record["payload"]["task_id"] == "task-7"
+    assert record["payload"]["_nerve"]["event_id"] == record["id"]
+    assert record["payload"]["_nerve"]["event_name"] == record["event_type"]
     assert record["payload"]["_nerve"]["workspace_id"] == "workspace-2"
     assert record["payload"]["_nerve"]["correlation_id"] == "corr-7"
     assert record["payload"]["_nerve"]["parent_event_id"] == "event-parent-1"
