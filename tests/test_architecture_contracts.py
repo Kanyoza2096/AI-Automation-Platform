@@ -38,7 +38,7 @@ def test_unified_event_bus_is_composition_root_authority() -> None:
 def test_unified_event_bus_has_one_instance_across_di_and_legacy_access() -> None:
     registry = (ROOT / "dependency_registry.py").read_text(encoding="utf-8")
     lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
-    assert "Reuses its instance" in registry
+    assert "Reuse its instance" in registry
     assert "Never create a second bus during boot" in lifecycle
     assert "bus = await get_unified_bus()" in lifecycle
 
