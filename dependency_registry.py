@@ -495,13 +495,31 @@ def _register_settings(c: ServiceContainer, bindings: list[BindingMetadata]) -> 
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _register_infrastructure(c: ServiceContainer, bindings: list[BindingMetadata]) -> None:
-    from core.unified_bus import UnifiedEventBus, EventBusConfig
+    from core.unified_bus import (
+        UnifiedEventBus,
+        EventBusConfig,
+        get_bus_sync,
+        set_bus_instance,
+    )
 
     def _build_unified_bus():
-        supabase_client = _resolve_supabase_safely(c)
-        config = EventBusConfig()
-        bus = UnifiedEventBus(supabase_client=supabase_client, config=config)
-        logger.info("UnifiedEventBus created (persistence=%s)", supabase_client is not None)
+        # The module accessor is used by legacy callers across the codebase.
+        # Reuse its instance so DI and direct-access paths share one nervous
+        # system instead of creating two subscriber registries in one process.
+        bus = get_bus_sync()
+        if bus is None:
+            supabase_client = _resolve_supabase_safely(c)
+            bus = UnifiedEventBus(
+                supabase_client=supabase_client,
+                config=EventBusConfig(),
+            )
+            set_bus_instance(bus)
+            logger.info(
+                "UnifiedEventBus created (persistence=%s)",
+                supabase_client is not None,
+            )
+        else:
+            logger.info("UnifiedEventBus reused from canonical module authority")
         return bus
 
     c.register(UnifiedEventBus, _build_unified_bus, singleton=True)
