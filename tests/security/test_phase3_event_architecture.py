@@ -112,6 +112,8 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
             workspace_id="ws-1",
             correlation_id="corr-1",
             decision_id="dec-1",
+            parent_event_id="parent-evt-1",
+            schema_version="2.0",
         )
         await bus._flush_persistence()
         return event_id, db.records
@@ -122,3 +124,9 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
     assert records[0]["workspace_id"] == "ws-1"
     assert records[0]["correlation_id"] == "corr-1"
     assert records[0]["source_service"] == "director"
+    assert records[0]["parent_event_id"] == "parent-evt-1"
+    assert records[0]["schema_version"] == "2.0"
+    assert records[0]["payload"]["_nerve"]["event_id"] == event_id
+    assert records[0]["payload"]["_nerve"]["event_name"] == "publish.requested"
+    assert records[0]["payload"]["_nerve"]["parent_event_id"] == "parent-evt-1"
+    assert records[0]["payload"]["_nerve"]["schema_version"] == "2.0"
