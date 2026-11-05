@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
-from utils.ids import correlation_id_ctx
+from utils.ids import correlation_id_ctx, get_process_instance_id
 
 logger = logging.getLogger("kanyoza.unified_bus")
 
@@ -636,7 +636,7 @@ class UnifiedEventBus:
                     "brand_id": entry.brand_id,
                     "parent_event_id": entry.parent_event_id,
                     "source_service": entry.source_engine,
-                    "source_instance": None,
+                    "source_instance": get_process_instance_id(),
                     "processed": False,
                     "schema_version": entry.schema_version,
                 }
