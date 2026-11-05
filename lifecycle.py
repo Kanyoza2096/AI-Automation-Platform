@@ -1086,17 +1086,20 @@ async def _boot_content_intelligence(container: ServiceContainer) -> None:
 
 
 async def _boot_event_bus(container: ServiceContainer) -> None:
-    from core.unified_bus import UnifiedEventBus, get_unified_bus
+    from core.unified_bus import UnifiedEventBus, get_unified_bus, set_bus_instance
     from core.event_bus import EventBus, get_event_bus_bridge, EventBusBridge
 
-    bus = await get_unified_bus()
-    container.register_instance(UnifiedEventBus, bus)
-
-    try:
-        from core.unified_bus import set_bus_instance
+    # Resolve the composition-root singleton first. The dependency registry
+    # factory reuses the module-level instance, which also serves legacy
+    # get_unified_bus() callers. Never create a second bus during boot.
+    bus = container.try_resolve(UnifiedEventBus)
+    if bus is None:
+        bus = await get_unified_bus()
+    else:
         set_bus_instance(bus)
-    except Exception:
-        pass
+
+    await bus.start()
+    container.register_instance(UnifiedEventBus, bus)
 
     bridge = get_event_bus_bridge(unified=bus)
     container.register_instance(EventBus, bridge)
