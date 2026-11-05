@@ -31,7 +31,9 @@ class FakeEventCursor:
                 params[5], params[6], params[7], params[8], params[9], params[10],
             ))
         elif "SELECT event_id,task_id,tenant_id,workspace_id,sequence_no" in sql:
-            self.connection.selected = list(self.connection.events)
+            after_sequence, limit = params[3], params[4]
+            matching = [event for event in self.connection.events if event[4] > after_sequence]
+            self.connection.selected = matching[:limit]
 
     def fetchone(self):
         return self.one
@@ -227,3 +229,29 @@ def test_authenticated_workflow_authorizer_rejects_read_only_and_expired_tokens(
         connection_factory=FakeScopeConnection,
     )
     assert authorize_expired("token-1", "execute_build", "tenant-1", "workspace-1") is False
+
+
+
+def test_postgres_event_store_verifies_chains_longer_than_one_page():
+    connection = FakeEventConnection()
+    store = PostgresEngineeringEventStore(lambda: connection)
+    previous_hash = None
+    for sequence in range(1, 1002):
+        event = store.append(
+            task_id="long-task", tenant_id="tenant-1", workspace_id="workspace-1",
+            event_type="worker.progress", actor_id="worker-1",
+            payload={"step": sequence},
+            expected_previous_hash=previous_hash,
+        )
+        previous_hash = event["event_hash"]
+
+    assert store.verify_chain(
+        task_id="long-task", tenant_id="tenant-1", workspace_id="workspace-1"
+    )
+    # Corrupt an event beyond the first page; verification must inspect it.
+    corrupted = list(connection.events[750])
+    corrupted[10] = "tampered"
+    connection.events[750] = tuple(corrupted)
+    assert store.verify_chain(
+        task_id="long-task", tenant_id="tenant-1", workspace_id="workspace-1"
+    ) is False
