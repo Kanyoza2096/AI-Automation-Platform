@@ -77,10 +77,12 @@ class SharedEventBus:
         try:
             from core.nerve import validate_and_normalize
 
+            event_id = uuid.uuid4().hex
             envelope = validate_and_normalize(
                 event_name,
                 payload or {},
                 source=self.source_service,
+                event_id=event_id,
                 correlation_id=correlation_id,
                 workspace_id=workspace_id,
                 brand_id=brand_id,
@@ -89,7 +91,6 @@ class SharedEventBus:
                 schema_version=schema_version,
                 strict=False,
             )
-            event_id = uuid.uuid4().hex
             self.supabase.table("events").insert({
                 "id": event_id,
                 "event_type": envelope.event_name,
