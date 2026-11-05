@@ -17,14 +17,14 @@ The existing workflow provisions disposable PostgreSQL 16 and applies migrations
 
 ## Required live staging run
 
-Use a dedicated staging Supabase project, isolated tenant/workspace pairs, non-production provider accounts, and a dedicated worker host. Never use production data or credentials.
+Use a dedicated staging Supabase project, isolated tenant/workspace pairs, non-production provider accounts, and a separately supervised Honcho worker process in the staging container. Never use production data or credentials.
 
 1. Configure secrets from `deployment/staging/.env.staging.example` through a secret manager/operator channel. Keep `.env.staging` untracked.
 2. Run `python scripts/kdo_engineering_staging_gate.py` and retain its redacted configuration report.
 3. Run `python scripts/kdo_engineering_staging_gate.py --live-read-only`. This is only a zero-row receipt-schema/read-access probe; it is not proof of tenant row isolation.
-4. Apply and verify all current engineering migrations, including 140, 150, 151, 152, and 153, against the staging PostgreSQL project. Record migration versions and database role grants.
-5. Deploy the staging web service using `deployment/staging/docker-compose.yml`. Verify liveness/readiness from the host and confirm public ingress is not exposed.
-6. Provision the dedicated worker host separately. Keep `KDO_ENGINEERING_WORKER_ENABLED=false` until the worker process/container executor, its supervision and hard cancellation, and the staging approval gates are verified. Do not start a worker by importing it into the web process.
+4. Reconcile the live migration lineage before applying anything. Read-only inspection on 2026-11-04 found migrations 140, 141, 142, 151, and 152 applied in KDO Testing. The disposable CI fixture currently uses 140, 150, 151, 152, and 153. Do not blindly apply 150 or 153 to live staging; compare the resulting DDL, constraints, indexes, and grants, then select and verify one canonical migration chain.
+5. Verify the existing Render staging web service's liveness/readiness and route authentication. As of 2026-11-04 it is a Free web service with an IP allowlist of `0.0.0.0/0`, so ingress is public; do not describe it as a private service. Confirm every engineering route enforces canonical authentication and workspace scope. No additional paid service is required for this code-level phase.
+6. Configure the `worker` Procfile entry under Honcho alongside `web`. Keep `KDO_ENGINEERING_WORKER_ENABLED=false` until the trusted host factory, isolated container executor, process supervision, hard cancellation, and staging approval gates are verified. The worker must remain a sibling process; never import or start it from web application startup. Honcho provides process supervision only, not sandbox isolation or hard cancellation by itself.
 7. Execute the governed lifecycle with a disposable staging task: plan submission, independent Council approval, durable job enqueue, scoped worker claim, lease heartbeat, isolated container build/test, cancellation/timeout, review-ready boundary, reviewer decision, and separately authorized release decision.
 8. Exercise negative paths: denied Council decision, cross-tenant and cross-workspace reads, expired/stale lease, worker crash/restart, duplicate idempotency key, provider timeout after submission, unknown worker status, unauthorized uncertain replay, and failed sandbox cleanup.
 9. Retain immutable evidence: commit SHA, container image digest, migration versions, tenant/workspace identifiers (non-sensitive test fixtures), Council decision IDs, task/job IDs, queue lease transitions, reconciliation event IDs, canonical receipt IDs, test reports, and operator approvals. Do not place secrets or production personal data in evidence.
@@ -42,19 +42,19 @@ All gates below require evidence from the actual staging topology:
 - [ ] Multiple PostgreSQL workers prove concurrent claims, tenant/workspace scoping, lease renewal, fencing, and crash/restart recovery.
 - [ ] Uncertain-job replay requires a verified human approval reference and evidence digest; replay cannot approve review, merge, deploy, or release.
 - [ ] Generated code runs only in a digest-pinned isolated container with hard timeout/cancellation, bounded output, CPU/memory/PID limits, no network, read-only root filesystem, non-root user, dropped capabilities, and task-scoped writable workspace.
-- [ ] Host-level controls are in place: dedicated worker host, rootless Docker or user namespace remapping, disk quotas, firewall/egress policy, no production secrets in child process, and process supervision.
+- [ ] Runtime isolation controls are proven for the Honcho worker's execution path: rootless Docker or user namespace remapping, disk quotas, firewall/egress policy, no production secrets in child process, and verified hard cancellation. Honcho process supervision alone does not satisfy these controls.
 - [ ] Reviewer identity is independent from implementer identity; test evidence is machine-collected; release authorization is separate.
 - [ ] Logs, metrics, alerts, trace IDs, queue depth, lease failures, uncertain jobs, worker health, execution duration, image digest, and database migration version are retained and reviewable.
 
 ## Current honest status
 
-Repository CI validates the implemented interfaces and PostgreSQL queue/repository behavior. It does not connect to the user's staging project, deploy the staging compose service, prove real Supabase RLS behavior, call a live Council, execute provider side effects, or validate a deployed worker host.
+Repository CI validates the implemented interfaces and PostgreSQL queue/repository behavior. It does not connect to the user's staging project, deploy the staging compose service, prove real Supabase RLS behavior, call a live Council, execute provider side effects, or validate the deployed Honcho worker process and its container-runtime isolation.
 
 The following external/runtime evidence is still required before this phase can be marked complete:
 
 1. A staging project URL and securely provisioned staging credentials.
 2. A deployed staging web endpoint and RLS-aware test identities for two isolated tenants.
-3. A concrete production composition adapter that constructs the governed workflow, canonical Council/DecisionGate/Action Kernel authorization and receipt verifier, PostgreSQL queue/repositories, and container executor for the worker bootstrap. The current gateway builder and worker composition still expose injected authorization callbacks; they are not yet a verified Action Kernel integration.
+3. The new staging host factory at `services/kdo_engineering_staging_host.py` now composes the canonical Supabase service client, durable Action Kernel, workspace-token authorization, PostgreSQL queue/repositories, hash-chained engineering event adapter, LLM Gateway, and isolated container executor. It has repository-level tests but has not yet been exercised against a running worker. Securely provision the dedicated staging worker token and prove live Council/Action Kernel/receipt behavior before enabling it.
 4. A supervised dedicated worker process/container with hard cancellation and host-level isolation controls.
 5. Live Council/Action Kernel/receipt-verifier evidence and independent operator/reviewer sign-off.
 6. Operational dashboards/alerts and retained staging test artifacts.
@@ -73,13 +73,17 @@ complete gateway-backed diagnose/repair/verify handoff and is awaiting its own
 CI result. These repository tests do not satisfy the live acceptance gates.
 
 The canonical Council + Action Kernel path for approved build admission already
-exists (`admit_approved_build` plus the PostgreSQL enqueue contract). The separate
-trusted worker-host integration (production factory, canonical runtime
-authorization/receipt wiring, and policy mapping for patch, test, repair, and
-review actions) is explicitly deferred from the current implementation phase,
-as agreed. It is not a blocker for continuing planner, specialist-agent, prompt,
-and workflow development. The worker must remain disabled until that deferred
-integration is revisited, implemented, and evidenced in staging.
+exists (`admit_approved_build` plus the PostgreSQL enqueue contract). The trusted staging worker-host integration is now implemented as a concrete
+composition factory in PR #39. It validates the expected Supabase project
+reference, requires a persisted workspace-scoped kny_ worker token whose record
+ID matches the configured actor, rechecks token revocation/expiry and workspace
+status, and limits the workflow callback to execute_build. The same durable
+Supabase client backs the Action Kernel and receipt verifier; engineering
+coordination events use the existing migration-142 hash-chained event table.
+This is code-level composition, not live runtime proof. The worker must remain
+disabled until the actual Docker runtime, hard cancellation, host isolation,
+live Council/Action Kernel receipts, and two-scope authorization tests are
+verified in staging.
 
 
 ## Durable admission receipt enforcement

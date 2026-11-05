@@ -640,13 +640,19 @@ def run_claimed_build_job(
         raise Phase163Error("worker_lease_lost_during_execution") from cause
 
     if "error" in outcome:
+        error = outcome["error"]
         with fence_lock:
             try:
                 queue.complete(latest_job[0], worker_id=worker_id,
                                lease_token=lease_token, status="uncertain")
             except BaseException:
                 pass
-        raise outcome["error"]
+        # The worker can observe the deadline in its finalization guard and exit
+        # just before the supervisor's wait expires. Normalize that race to the
+        # same queue-level timeout outcome as the supervisor timeout path.
+        if isinstance(error, Phase162Error) and str(error) == "worker_execution_timeout":
+            raise Phase163Error("worker_execution_timeout_marked_uncertain") from error
+        raise error
 
     result = outcome["result"]
     terminal = "awaiting_review" if result["task"].status == EngineeringTaskStatus.AWAITING_REVIEW else "failed"
