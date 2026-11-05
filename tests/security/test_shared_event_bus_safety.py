@@ -179,7 +179,7 @@ def test_shared_bus_persists_canonical_nerve_metadata():
     assert record["brand_id"] == "brand-4"
     assert record["parent_event_id"] == "event-parent-1"
     assert record["source_service"] == "engineering-worker"
-    assert record["source_instance"] == bus.instance_id
+    assert record["source_instance"] == bus.process_instance_id
     assert record["schema_version"] == "1.0"
     assert record["payload"]["task_id"] == "task-7"
     assert record["payload"]["_nerve"]["event_id"] == record["id"]
@@ -188,3 +188,37 @@ def test_shared_bus_persists_canonical_nerve_metadata():
     assert record["payload"]["_nerve"]["correlation_id"] == "corr-7"
     assert record["payload"]["_nerve"]["parent_event_id"] == "event-parent-1"
     assert record["payload"]["_nerve"]["schema_version"] == "1.0"
+
+
+
+def test_shared_bus_skips_events_persisted_by_unified_bus_in_same_process():
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+        def select(self, *args): return self
+        def order(self, *args, **kwargs): return self
+        def limit(self, *args): return self
+        def execute(self):
+            class Result:
+                data = self.rows
+            return Result()
+
+    class DB:
+        def __init__(self, rows):
+            self.rows = rows
+        def table(self, name):
+            assert name == "events"
+            return Query(self.rows)
+
+    bus = SharedEventBus(source_service="worker-a")
+    db = DB([{
+        "id": "event-from-local-unified-bus",
+        "event_type": "task.created",
+        "payload": {"task_id": "t1"},
+        "source_instance": bus.process_instance_id,
+    }])
+    bus.supabase = db
+    received = []
+    bus.subscribe("task.created", lambda payload: received.append(payload))
+    assert bus.poll() == 0
+    assert received == []
