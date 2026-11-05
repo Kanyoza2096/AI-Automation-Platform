@@ -54,7 +54,6 @@ class NerveEnvelope:
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     payload: Dict[str, Any] = field(default_factory=dict)
     brand_id: Optional[str] = None
-    parent_event_id: Optional[str] = None
     decision_id: Optional[str] = None
     parent_event_id: Optional[str] = None
     schema_version: str = "1.0"
