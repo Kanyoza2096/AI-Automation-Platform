@@ -367,6 +367,7 @@ class UnifiedEventBus:
         decision_id: Optional[str] = None,
         *,
         strict_nerve: bool = False,
+        schema_version: str = "1.0",
     ) -> Optional[str]:
         """
         Publish an event onto the nervous system.
@@ -411,9 +412,15 @@ class UnifiedEventBus:
                 workspace_id=workspace_id,
                 brand_id=brand_id,
                 decision_id=decision_id,
+                parent_event_id=parent_event_id,
+                schema_version=schema_version,
                 strict=strict_nerve,
             )
             payload = envelope.to_payload()
+            workspace_id = envelope.workspace_id
+            brand_id = envelope.brand_id
+            decision_id = envelope.decision_id
+            parent_event_id = envelope.parent_event_id
             correlation_id = envelope.correlation_id
             source = envelope.source
         except NerveContractError as exc:
@@ -629,7 +636,7 @@ class UnifiedEventBus:
                     "source_service": entry.source_engine,
                     "source_instance": None,
                     "processed": False,
-                    "schema_version": "1.0",
+                    "schema_version": getattr(entry, "schema_version", "1.0"),
                 }
                 for entry in batch
             ]
