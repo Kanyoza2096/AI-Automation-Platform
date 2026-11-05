@@ -112,3 +112,28 @@ def test_shared_bus_failed_handler_delivery_remains_retryable_and_fenced():
 def test_shared_bus_ack_without_claim_token_fails_closed():
     bus = SharedEventBus(source_service="worker-a")
     assert bus._mark_delivery_processed("delivery-1", claim_token=None) is False
+
+
+
+def test_shared_bus_dispatch_passes_claim_token_and_keeps_failed_work_retryable(monkeypatch):
+    bus = SharedEventBus(source_service="worker-a")
+    observed = []
+    bus.subscribe("task.failed", lambda payload: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        bus,
+        "_mark_delivery_processed",
+        lambda delivery_id, **kwargs: observed.append((delivery_id, kwargs)) or True,
+    )
+    bus._dispatch_event(
+        {"id": "event-1", "event_type": "task.failed", "payload": {"task_id": "t1"}},
+        delivery_id="delivery-1",
+        claim_token="worker-a:claim-1",
+    )
+    assert observed == [(
+        "delivery-1",
+        {
+            "claim_token": "worker-a:claim-1",
+            "success": False,
+            "error": "one or more handlers failed",
+        },
+    )]
