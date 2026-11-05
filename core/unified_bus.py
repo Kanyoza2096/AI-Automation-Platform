@@ -393,6 +393,7 @@ class UnifiedEventBus:
                 )
                 return None
 
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
         try:
             from core.nerve import validate_and_normalize, NerveContractError
             if not workspace_id:
@@ -405,6 +406,7 @@ class UnifiedEventBus:
                 event_name,
                 payload,
                 source=source,
+                event_id=event_id,
                 correlation_id=correlation_id,
                 workspace_id=workspace_id,
                 brand_id=brand_id,
@@ -427,7 +429,6 @@ class UnifiedEventBus:
         if not self._check_throttle():
             return None
 
-        event_id = f"evt_{uuid.uuid4().hex[:12]}"
         metadata = EventMetadata(
             event_id=event_id,
             correlation_id=correlation_id,
