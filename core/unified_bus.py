@@ -19,13 +19,11 @@ v17.2 FIXES:
     have started it.
   - If the lazy start raises, the event is still dropped but with an error
     that names the failure, not a misleading "not running" warning.
-
-  NOTE: This does not eliminate the two-instance problem. A pre-boot
-  service and a post-boot service publish to different buses with
-  different subscriber sets. Eliminating that requires removing the
-  factory in dependency_registry and resolving the bus lazily at
-  call-site (separate change). This revision makes both instances
-  functional; it does not merge them.
+  - U1 composition-root wiring now adopts the module singleton during DI
+    construction and lifecycle boot resolves and starts that same instance.
+    DI-created services and legacy get_unified_bus() callers therefore share
+    one in-process subscriber registry. SharedEventBus remains the separate
+    cross-process transport; this singleton is not a distributed bus.
 
 v17.1 FIXES:
   - Added _validate_payload method (was missing)
