@@ -65,23 +65,44 @@ class SharedEventBus:
         workspace_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         decision_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
+        parent_event_id: Optional[str] = None,
+        schema_version: str = "1.0",
     ) -> bool:
-        """Publish an event (sync). Returns success boolean."""
+        """Publish using the same nerve contract and persistence shape as UnifiedEventBus."""
         if not self.supabase:
             logger.debug("SharedEventBus: no Supabase — publish skipped")
             return False
 
         try:
+            from core.nerve import validate_and_normalize
+
+            envelope = validate_and_normalize(
+                event_name,
+                payload or {},
+                source=self.source_service,
+                correlation_id=correlation_id,
+                workspace_id=workspace_id,
+                brand_id=brand_id,
+                decision_id=decision_id,
+                parent_event_id=parent_event_id,
+                schema_version=schema_version,
+                strict=False,
+            )
+            event_id = uuid.uuid4().hex
             self.supabase.table("events").insert({
-                "id": uuid.uuid4().hex,
-                "event_type": event_name,
-                "payload": payload or {},
-                "workspace_id": workspace_id,
-                "correlation_id": correlation_id,
-                "decision_id": decision_id,
-                "source_service": self.source_service,
+                "id": event_id,
+                "event_type": envelope.event_name,
+                "payload": envelope.to_payload(),
+                "workspace_id": envelope.workspace_id,
+                "correlation_id": envelope.correlation_id,
+                "decision_id": envelope.decision_id,
+                "brand_id": envelope.brand_id,
+                "parent_event_id": envelope.parent_event_id,
+                "source_service": envelope.source,
                 "source_instance": self.instance_id,
                 "processed": False,
+                "schema_version": envelope.schema_version,
             }).execute()
 
             self._events_published += 1
