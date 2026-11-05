@@ -55,6 +55,8 @@ class NerveEnvelope:
     brand_id: Optional[str] = None
     parent_event_id: Optional[str] = None
     decision_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
+    schema_version: str = "1.0"
     published_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_payload(self) -> Dict[str, Any]:
@@ -66,6 +68,8 @@ class NerveEnvelope:
             "source": self.source,
             "brand_id": self.brand_id,
             "decision_id": self.decision_id,
+            "parent_event_id": self.parent_event_id,
+            "schema_version": self.schema_version,
             "published_at": self.published_at.isoformat(),
         }
         # Also top-level for easy access / legacy handlers
@@ -95,6 +99,8 @@ def validate_and_normalize(
     workspace_id: Optional[str] = None,
     brand_id: Optional[str] = None,
     decision_id: Optional[str] = None,
+    parent_event_id: Optional[str] = None,
+    schema_version: str = "1.0",
     strict: bool = True,
 ) -> NerveEnvelope:
     """
@@ -163,6 +169,12 @@ def validate_and_normalize(
         payload=payload,
         brand_id=str(brand) if brand else None,
         decision_id=str(decision) if decision else None,
+        parent_event_id=(
+            parent_event_id
+            or payload.get("parent_event_id")
+            or payload.get("_nerve", {}).get("parent_event_id")
+        ),
+        schema_version=str(schema_version or "1.0"),
     )
 
 
