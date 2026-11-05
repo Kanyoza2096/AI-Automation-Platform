@@ -168,4 +168,5 @@ jobs:
             tests/engineering_vertical/test_gateway_agents.py \
             tests/engineering_vertical/test_gateway_build_executor.py \
             tests/security/test_phase6_production_tenant_hardening.py \
-            tests/tenancy/test_request_context.py
+            tests/tenancy/test_request_context.py \
+            tests/test_architecture_contracts.py
