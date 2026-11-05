@@ -42,6 +42,7 @@ class SharedEventBus:
         # identity prevents one worker from mistaking another worker in the
         # same service mode for its own event producer.
         self.instance_id = f"{source_service}:{uuid.uuid4().hex[:12]}"
+        self.process_instance_id = get_process_instance_id()
         self.poll_interval = poll_interval
 
         self._handlers: Dict[str, List[Callable]] = {}
@@ -101,7 +102,7 @@ class SharedEventBus:
                 "brand_id": envelope.brand_id,
                 "parent_event_id": envelope.parent_event_id,
                 "source_service": envelope.source,
-                "source_instance": self.instance_id,
+                "source_instance": self.process_instance_id,
                 "processed": False,
                 "schema_version": envelope.schema_version,
             }).execute()
@@ -206,7 +207,8 @@ class SharedEventBus:
                     continue
                 # A producer instance should not synchronously consume its own
                 # transport copy; local UnifiedEventBus already handled it.
-                if event.get("source_instance") == self.instance_id:
+                source_instance = event.get("source_instance")
+                if source_instance in (self.process_instance_id, self.instance_id):
                     continue
                 if not self._ensure_delivery(event_id, event_name):
                     continue
@@ -279,7 +281,7 @@ class SharedEventBus:
         event_id = event.get("id")
         source_instance = event.get("source_instance", "")
 
-        if source_instance and source_instance == self.instance_id:
+        if source_instance and source_instance in (self.process_instance_id, self.instance_id):
             return
 
         try:
