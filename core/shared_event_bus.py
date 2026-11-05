@@ -190,7 +190,12 @@ class SharedEventBus:
                     continue
                 delivery = self._claim_delivery(event_id)
                 if delivery:
-                    self._dispatch_event(event, delivery_id=delivery)
+                    delivery_id, claim_token = delivery
+                    self._dispatch_event(
+                        event,
+                        delivery_id=delivery_id,
+                        claim_token=claim_token,
+                    )
                     delivered += 1
             return delivered
 
@@ -220,7 +225,12 @@ class SharedEventBus:
                 logger.warning("Unable to ensure event delivery %s: %s", event_id, exc)
                 return False
 
-    def _claim_delivery(self, event_id: str) -> Optional[str]:
+    def _claim_delivery(self, event_id: str) -> Optional[tuple[str, str]]:
+        """Claim one consumer delivery and return its fencing token.
+
+        The token must accompany acknowledgement so a worker whose lease has
+        expired cannot complete work claimed by a replacement worker.
+        """
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
         try:
@@ -231,12 +241,18 @@ class SharedEventBus:
                 "processed", False
             ).or_(f"claimed_at.is.null,claimed_at.lt.{cutoff}").select("id").execute()
             if result.data:
-                return str(result.data[0].get("id"))
+                return str(result.data[0].get("id")), claim_token
         except Exception as exc:
             logger.warning("SharedEventBus delivery claim failed for %s: %s", event_id, exc)
         return None
 
-    def _dispatch_event(self, event: Dict[str, Any], *, delivery_id: Optional[str] = None) -> None:
+    def _dispatch_event(
+        self,
+        event: Dict[str, Any],
+        *,
+        delivery_id: Optional[str] = None,
+        claim_token: Optional[str] = None,
+    ) -> None:
         event_name = event.get("event_type") or event.get("event_name", "")
         event_id = event.get("id")
         source_instance = event.get("source_instance", "")
@@ -272,9 +288,9 @@ class SharedEventBus:
                 logger.error("SharedEventBus handler failed for '%s': %s", event_name, exc)
 
         if handler_failed:
-            self._mark_delivery_processed(delivery_id, success=False, error="one or more handlers failed")
+            self._mark_delivery_processed(delivery_id, claim_token=claim_token, success=False, error="one or more handlers failed")
         else:
-            self._mark_delivery_processed(delivery_id, success=True)
+            self._mark_delivery_processed(delivery_id, claim_token=claim_token, success=True)
 
     def _claim_event(self, event_id: Any) -> bool:
         """Atomically claim an event so only one worker dispatches it."""
@@ -297,17 +313,38 @@ class SharedEventBus:
             logger.warning("SharedEventBus claim failed for %s: %s", event_id, exc)
             return False
 
-    def _mark_delivery_processed(self, delivery_id: Optional[str], success: bool = True, error: str | None = None) -> None:
-        if not delivery_id or not self.supabase:
-            return
+    def _mark_delivery_processed(
+        self,
+        delivery_id: Optional[str],
+        *,
+        claim_token: Optional[str],
+        success: bool = True,
+        error: str | None = None,
+    ) -> bool:
+        """Acknowledge only the currently owned delivery lease.
+
+        Failed work remains unprocessed and retains its lease timestamp, making
+        it retryable after lease expiry instead of silently dead-lettering it.
+        """
+        if not delivery_id or not claim_token or not self.supabase:
+            return False
         try:
-            self.supabase.table("event_deliveries").update({
-                "processed": True,
-                "processed_at": datetime.now(timezone.utc).isoformat(),
+            update = {
+                "processed": bool(success),
+                "processed_at": datetime.now(timezone.utc).isoformat() if success else None,
                 "processing_error": (error or "")[:500] if error else None,
-            }).eq("id", delivery_id).eq("consumer_group", self.source_service).execute()
+            }
+            if success:
+                update.update({"claimed_by": None, "claimed_at": None})
+            result = self.supabase.table("event_deliveries").update(update).eq(
+                "id", delivery_id
+            ).eq("consumer_group", self.source_service).eq(
+                "claimed_by", claim_token
+            ).eq("processed", False).select("id").execute()
+            return bool(result.data)
         except Exception:
-            logger.exception("SharedEventBus failed to mark delivery %s processed", delivery_id)
+            logger.exception("SharedEventBus failed to acknowledge delivery %s", delivery_id)
+            return False
 
     def _mark_processed(self, event_id: Any, success: bool = True, error: str | None = None) -> None:
         try:
