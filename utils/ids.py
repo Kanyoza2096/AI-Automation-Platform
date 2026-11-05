@@ -8,6 +8,7 @@ through the call stack without being threaded through every function signature.
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextvars import ContextVar
 from typing import Optional
@@ -24,7 +25,7 @@ _PROCESS_INSTANCE_ID = f"proc_{uuid.uuid4().hex}"
 
 def get_process_instance_id() -> str:
     """Return the stable identity shared by all KDO transports in this process."""
-    return _PROCESS_INSTANCE_ID
+    return f"proc_{os.getpid()}_{_PROCESS_INSTANCE_ID}"
 
 
 def generate_correlation_id() -> str:
