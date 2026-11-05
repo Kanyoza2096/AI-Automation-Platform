@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -156,6 +157,8 @@ class FakeQuery:
 
 class FakeDatabase:
     def __init__(self, token):
+        token = dict(token)
+        token["token_hash"] = hashlib.sha256(b"kny_test_secret").hexdigest()
         self.records = {
             "api_tokens": token,
             "workspaces": {"id": "workspace-1", "status": "active"},

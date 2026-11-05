@@ -161,6 +161,7 @@ jobs:
             tests/engineering_vertical/test_dag_coordinator.py \
             tests/engineering_vertical/test_worker_composition.py \
             tests/engineering_vertical/test_worker_authorization.py \
+            tests/engineering_vertical/test_staging_worker_host.py \
             tests/engineering_vertical/test_gateway_agents.py \
             tests/engineering_vertical/test_gateway_build_executor.py \
             tests/security/test_phase6_production_tenant_hardening.py \
