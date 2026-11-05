@@ -199,9 +199,7 @@ def test_shared_bus_skips_events_persisted_by_unified_bus_in_same_process():
         def order(self, *args, **kwargs): return self
         def limit(self, *args): return self
         def execute(self):
-            class Result:
-                data = self.rows
-            return Result()
+            return type("Result", (), {"data": self.rows})()
 
     class DB:
         def __init__(self, rows):
