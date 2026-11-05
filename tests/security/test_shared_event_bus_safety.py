@@ -137,3 +137,52 @@ def test_shared_bus_dispatch_passes_claim_token_and_keeps_failed_work_retryable(
             "error": "one or more handlers failed",
         },
     )]
+
+
+
+def test_shared_bus_persists_canonical_nerve_metadata():
+    class Result:
+        data = [{"id": "event-1"}]
+
+    class Query:
+        def __init__(self, db):
+            self.db = db
+        def insert(self, record):
+            self.db.record = record
+            return self
+        def execute(self):
+            return Result()
+
+    class DB:
+        record = None
+        def table(self, name):
+            assert name == "events"
+            return Query(self)
+
+    db = DB()
+    bus = SharedEventBus(db, source_service="engineering-worker")
+    assert bus.publish(
+        "engineering.task.completed",
+        {"task_id": "task-7"},
+        workspace_id="workspace-2",
+        correlation_id="corr-7",
+        decision_id="decision-3",
+        brand_id="brand-4",
+        parent_event_id="event-parent-1",
+    ) is True
+
+    record = db.record
+    assert record["event_type"] == "engineering.task.completed"
+    assert record["workspace_id"] == "workspace-2"
+    assert record["correlation_id"] == "corr-7"
+    assert record["decision_id"] == "decision-3"
+    assert record["brand_id"] == "brand-4"
+    assert record["parent_event_id"] == "event-parent-1"
+    assert record["source_service"] == "engineering-worker"
+    assert record["source_instance"] == bus.instance_id
+    assert record["schema_version"] == "1.0"
+    assert record["payload"]["task_id"] == "task-7"
+    assert record["payload"]["_nerve"]["workspace_id"] == "workspace-2"
+    assert record["payload"]["_nerve"]["correlation_id"] == "corr-7"
+    assert record["payload"]["_nerve"]["parent_event_id"] == "event-parent-1"
+    assert record["payload"]["_nerve"]["schema_version"] == "1.0"
