@@ -28,7 +28,19 @@ def test_unified_event_bus_is_composition_root_authority() -> None:
     registry = (ROOT / "dependency_registry.py").read_text(encoding="utf-8")
     lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
     assert "c.register(UnifiedEventBus" in registry
+    assert "get_bus_sync()" in registry
+    assert "set_bus_instance(bus)" in registry
+    assert "bus = container.try_resolve(UnifiedEventBus)" in lifecycle
+    assert "await bus.start()" in lifecycle
     assert "container.register_instance(UnifiedEventBus, bus)" in lifecycle
+
+
+def test_unified_event_bus_has_one_instance_across_di_and_legacy_access() -> None:
+    registry = (ROOT / "dependency_registry.py").read_text(encoding="utf-8")
+    lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
+    assert "Reuses its instance" in registry
+    assert "Never create a second bus during boot" in lifecycle
+    assert "bus = await get_unified_bus()" in lifecycle
 
 
 def test_legacy_event_bus_is_explicitly_bridged() -> None:
