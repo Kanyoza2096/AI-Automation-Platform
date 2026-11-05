@@ -50,6 +50,7 @@ class NerveEnvelope:
     event_name: str
     workspace_id: str
     source: str
+    event_id: Optional[str] = None
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     payload: Dict[str, Any] = field(default_factory=dict)
     brand_id: Optional[str] = None
@@ -63,6 +64,8 @@ class NerveEnvelope:
         """Payload handed to handlers — always includes nerve fields."""
         body = dict(self.payload)
         body["_nerve"] = {
+            "event_id": self.event_id,
+            "event_name": self.event_name,
             "workspace_id": self.workspace_id,
             "correlation_id": self.correlation_id,
             "source": self.source,
@@ -95,6 +98,7 @@ def validate_and_normalize(
     payload: Optional[Dict[str, Any]] = None,
     *,
     source: str = "unknown",
+    event_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     brand_id: Optional[str] = None,
@@ -165,6 +169,7 @@ def validate_and_normalize(
         event_name=event_name,
         workspace_id=str(ws),
         source=str(src),
+        event_id=str(event_id) if event_id else None,
         correlation_id=str(corr),
         payload=payload,
         brand_id=str(brand) if brand else None,
