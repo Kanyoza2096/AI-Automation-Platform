@@ -33,6 +33,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install system libraries for declared runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev pkg-config python3-dev
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
