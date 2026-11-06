@@ -80,6 +80,7 @@ class HealthMonitorService:
         self._last_summary_sent_date: Optional[str] = None
         self._last_health_check_time = 0.0
         self._last_health_snapshot: Dict[str, Any] = {}
+        self._last_service_diagnostics: Dict[str, Any] = {}
 
         # Alert pipeline
         self._alert_queue: "asyncio.Queue[Tuple[str, str]]" = asyncio.Queue(
@@ -267,6 +268,7 @@ class HealthMonitorService:
                     # Preserve the bounded per-service snapshot so operators can
                     # identify degraded providers without enabling DEBUG logs.
                     "service_states": dict(sorted(services.items())),
+                    "service_diagnostics": dict(self._last_service_diagnostics),
                     "services_down_names": sorted(
                         name for name, state in services.items() if state == "down"
                     ),
@@ -329,8 +331,25 @@ class HealthMonitorService:
                 if asyncio.iscoroutine(maybe):
                     maybe = await maybe
                 reports = maybe
+            self._last_service_diagnostics = {}
             for name, report in (reports or {}).items():
                 services[name] = self._classify_report(report)
+                if name == "meta_engine":
+                    metadata = getattr(report, "metadata", {}) or {}
+                    diagnostic_keys = (
+                        "snapshot_status",
+                        "engine_states",
+                        "unknown_engines",
+                        "degraded_engines",
+                        "offline_engines",
+                    )
+                    details = {
+                        key: metadata[key]
+                        for key in diagnostic_keys
+                        if isinstance(metadata, dict) and key in metadata
+                    }
+                    if details:
+                        self._last_service_diagnostics[name] = details
         except Exception as exc:
             logger.debug("Health registry check failed: %s", sanitize_error_message(exc))
 
@@ -359,13 +378,24 @@ class HealthMonitorService:
                 from plugins.base import PluginRegistry
                 registry = self.container.try_resolve(PluginRegistry)
                 if registry:
-                    health = registry.health_all()
-                    for name, h in health.items():
-                        services[f"Plugin:{name}"] = "ok" if h.get("ok") else "down"
+                    for plugin in registry.get_all():
+                        name = plugin.name
+                        checker = getattr(plugin, "health_check", None)
+                        health = checker() if callable(checker) else plugin.health()
+                        services[f"Plugin:{name}"] = self._classify_plugin_health(health)
         except Exception:
             pass
 
         return services
+
+    @staticmethod
+    def _classify_plugin_health(health: Any) -> str:
+        """Preserve explicit plugin unknown/degraded states; retain legacy bool contracts."""
+        if not isinstance(health, dict):
+            return "unknown"
+        if health.get("status") is not None:
+            return HealthMonitorService._classify_report(health)
+        return "ok" if health.get("ok") else "down"
 
     @staticmethod
     def _classify_report(report: Any) -> str:
