@@ -341,8 +341,37 @@ class MetaEngineV7:
         if snapshot is None:
             return {"status": "starting" if self._running else "stopped", "available": True, "version": self.VERSION, "engine_readiness": self._engine_readiness_report(), "metrics": director_signal_metrics()}
         status = "healthy" if snapshot.overall_status == EngineStatus.NOMINAL else "unknown" if snapshot.overall_status == EngineStatus.UNKNOWN else "degraded"
+        engine_states = {
+            str(name): str(getattr(getattr(health, "status", None), "value", getattr(health, "status", "unknown")))
+            for name, health in getattr(snapshot, "engines", {}).items()
+        }
+        unknown_engines = sorted(
+            name for name, state in engine_states.items()
+            if state in {EngineStatus.UNKNOWN.value, EngineStatus.STALE.value}
+        )
+        degraded_engines = sorted(
+            name for name, state in engine_states.items()
+            if state == EngineStatus.DEGRADED.value
+        )
+        offline_engines = sorted(
+            name for name, state in engine_states.items()
+            if state == EngineStatus.OFFLINE.value
+        )
         signals = self._director_signals_for_snapshot(snapshot)
-        return {"status": status, "available": True, "version": self.VERSION, "health_score": snapshot.health_score, "risk_score": snapshot.risk_score, "engine_readiness": self._engine_readiness_report(), "metrics": director_signal_metrics(signals)}
+        return {
+            "status": status,
+            "available": True,
+            "version": self.VERSION,
+            "health_score": snapshot.health_score,
+            "risk_score": snapshot.risk_score,
+            "snapshot_status": getattr(snapshot.overall_status, "value", str(snapshot.overall_status)),
+            "engine_states": dict(sorted(engine_states.items())),
+            "unknown_engines": unknown_engines,
+            "degraded_engines": degraded_engines,
+            "offline_engines": offline_engines,
+            "engine_readiness": self._engine_readiness_report(),
+            "metrics": director_signal_metrics(signals),
+        }
 
     def get_status(self) -> Dict[str, Any]:
         snapshot = self._current_snapshot
