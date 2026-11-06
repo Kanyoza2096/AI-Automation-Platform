@@ -402,8 +402,8 @@ class HealthMonitorService:
         """Map a HealthReport (or legacy shape) to ok/unknown/down."""
         if report is None:
             return "unknown"
-        status = getattr(report, "status", None)
-        # Enum with .value
+        status = report.get("status") if isinstance(report, dict) else getattr(report, "status", None)
+        # Enum with .value; dictionary-shaped plugin contracts are also supported.
         status_value = getattr(status, "value", None)
         if status_value is None:
             status_value = str(status) if status is not None else ""
