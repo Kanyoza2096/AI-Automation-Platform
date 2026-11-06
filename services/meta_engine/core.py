@@ -452,44 +452,22 @@ class MetaEngineV7:
         logger.info("Meta Engine v%s stopped", self.VERSION)
 
     async def check_health_async(self) -> Dict[str, Any]:
+        """Expose the same detailed snapshot through the async health-provider path.
+
+        The health registry prefers this method over check_health(). Keep both
+        contracts aligned so engine-level diagnostics are not lost during
+        normalization into HealthReport.metadata.
+        """
         try:
-            snapshot = self._current_snapshot
-            if snapshot is None:
-                from core.director_signal_contract import director_signal_metrics
-                return {"status": "starting" if self._running else "stopped", "error": "No snapshot available yet", "message": "Meta Engine waiting for first monitor cycle", "engine_count": len(self._engines), "engine_readiness": self._engine_readiness_report(), "metrics": director_signal_metrics()}
-
-            overall = snapshot.overall_status
-            is_nominal = overall == EngineStatus.NOMINAL
-            reasons = []
-            if snapshot.critical_alerts:
-                reasons.append(f"{snapshot.critical_alerts} offline engine(s)")
-            if snapshot.active_alerts:
-                reasons.append(f"{snapshot.active_alerts} degraded engine(s)")
-            stale_count = sum(1 for h in snapshot.engines.values() if h.status == EngineStatus.STALE)
-            if stale_count and is_nominal:
-                reasons.append(f"{stale_count} idle/stale engine(s) (info only)")
-
-            return {
-                "status": "healthy" if is_nominal else "unknown" if overall == EngineStatus.UNKNOWN else "degraded",
-                "version": self.VERSION,
-                "overall": overall.value,
-                "health_score": snapshot.health_score,
-                "risk_score": snapshot.risk_score,
-                "metrics": __import__("core.director_signal_contract", fromlist=["director_signal_metrics"]).director_signal_metrics(self._director_signals_for_snapshot(snapshot)),
-                "engine_count": len(self._engines),
-                "engine_readiness": self._engine_readiness_report(),
-                "active_incidents": snapshot.active_incidents,
-                "critical_alerts": snapshot.critical_alerts,
-                "active_alerts": snapshot.active_alerts,
-                "stale_engines": stale_count,
-                "resource_mode": snapshot.resources.mode.value,
-                "cycle_count": self._cycle_count,
-                "uptime_hours": round(snapshot.uptime_seconds / 3600, 2),
-                "message": ("All engines nominal" if is_nominal else ("Meta degraded: " + "; ".join(reasons) if reasons else "Meta overall not nominal")),
-            }
+            return self.check_health()
         except Exception as exc:
             from core.director_signal_contract import director_signal_metrics
-            return {"status": "unknown", "error": str(exc)[:200], "message": "Health check could not execute", "metrics": director_signal_metrics()}
+            return {
+                "status": "unknown",
+                "error": str(exc)[:200],
+                "message": "Health check could not execute",
+                "metrics": director_signal_metrics(),
+            }
 
     async def _async_monitoring_loop(self) -> None:
         while self._running:
