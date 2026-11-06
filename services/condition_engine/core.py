@@ -760,8 +760,12 @@ class AutonomousConditionEngine:
             "change_content_type": {"test_new_format": True, "duration_posts": 5},
         }
         built = params.get(action, {})
-        if built and decision.evidence.get("workspace_id"):
-            built = {**built, "workspace_id": decision.evidence.get("workspace_id")}
+        if built:
+            context = {"correlation_id": decision.correlation_id}
+            workspace_id = decision.evidence.get("workspace_id")
+            if workspace_id:
+                context["workspace_id"] = str(workspace_id)
+            built = {**built, **context}
         return built
     
     def _estimate_expected_outcome(self, decision: Decision) -> Dict[str, Any]:
@@ -830,6 +834,15 @@ class AutonomousConditionEngine:
         plan = self._plans.get(plan_id)
         if not plan:
             raise ValueError(f"Unknown action plan: {plan_id}")
+        event_context = {
+            "plan_id": plan.id,
+            "decision_id": plan.decision_id,
+            "brand_id": plan.brand_id,
+        }
+        for context_key in ("workspace_id", "correlation_id", "parent_event_id"):
+            context_value = (plan.parameters or {}).get(context_key)
+            if context_value not in (None, ""):
+                event_context[context_key] = str(context_value)
         if plan.risk in {ActionRisk.HIGH, ActionRisk.CRITICAL} and not approved:
             plan.status = ActionStatus.REJECTED
             return plan
@@ -840,7 +853,7 @@ class AutonomousConditionEngine:
             plan.status = ActionStatus.FAILED
             plan.outcome = {"error": "action_executor_unavailable"}
             _publish_event("strategy_executed", {
-                "brand_id": plan.brand_id,
+                **event_context,
                 "action": plan.action,
                 "success": False,
                 "error": "action_executor_unavailable",
@@ -852,6 +865,11 @@ class AutonomousConditionEngine:
             if asyncio.iscoroutine(result) or asyncio.isfuture(result):
                 result = await result
             plan.outcome = result
+            if isinstance(result, dict):
+                for result_key in ("execution_id", "intent_id"):
+                    result_value = result.get(result_key)
+                    if result_value not in (None, ""):
+                        event_context[result_key] = str(result_value)
             result_ok = True
             if isinstance(result, dict) and "ok" in result:
                 result_ok = bool(result.get("ok"))
@@ -860,21 +878,33 @@ class AutonomousConditionEngine:
             if not result_ok:
                 plan.status = ActionStatus.FAILED
                 _publish_event("strategy_executed", {
-                    "brand_id": plan.brand_id,
+                    **event_context,
                     "action": plan.action,
                     "success": False,
+                    "status": (result.get("status") if isinstance(result, dict) else "failed"),
                     "error": (result.get("error") if isinstance(result, dict) else "action_result_not_ok"),
                 })
                 return plan
             plan.status = ActionStatus.EXECUTED
             plan.executed_at = utc_now()
             self._last_action_at[(plan.brand_id, plan.action)] = utc_now()
-            _publish_event("strategy_executed", {"brand_id": plan.brand_id, "action": plan.action, "success": True})
+            _publish_event("strategy_executed", {
+                **event_context,
+                "action": plan.action,
+                "success": True,
+                "status": (result.get("status") if isinstance(result, dict) else "succeeded"),
+            })
             return plan
         except Exception as exc:
             plan.status = ActionStatus.FAILED
             plan.outcome = {"error": str(exc)}
-            _publish_event("strategy_executed", {"brand_id": plan.brand_id, "action": plan.action, "success": False, "error": str(exc)})
+            _publish_event("strategy_executed", {
+                **event_context,
+                "action": plan.action,
+                "success": False,
+                "status": "failed",
+                "error": str(exc),
+            })
             return plan
     
     # ═══════════════════════════════════════════════════════════════════════
