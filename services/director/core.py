@@ -42,6 +42,7 @@ from .utils import (
     sanitize_error_message,
     iso,
     _publish_event,
+    flush_pending_event_tasks,
 )
 from .models import (
     Authority,
@@ -551,6 +552,12 @@ class Director:
                     pass
         self._loop_task = None
         self._event_task = None
+        timed_out_publications = await flush_pending_event_tasks(timeout_seconds=2.0)
+        if timed_out_publications:
+            log.warning(
+                "Director shutdown cancelled %d event publication task(s) after drain timeout",
+                timed_out_publications,
+            )
         log.info("👔 Director OFFLINE")
 
     async def check_health_async(self) -> Dict[str, Any]:
