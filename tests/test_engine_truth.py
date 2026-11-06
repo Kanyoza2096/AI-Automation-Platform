@@ -543,3 +543,58 @@ def test_topology_registration_presence_does_not_infer_health():
     assert _topology_status("registered-but-error", {"registered-but-error": "error"}) == "error"
     assert _topology_status("live", {"live": "nominal"}) == "healthy"
     assert _topology_status("stopped", {"stopped": "stopped"}) == "degraded"
+
+
+def test_registered_health_adapter_is_used_for_status_not_only_liveness():
+    class AdapterOnlyEngine:
+        pass
+
+    meta = MetaEngineV7()
+    try:
+        engine = AdapterOnlyEngine()
+        meta.register("adapter_only", engine)
+        meta.register_health_handler(
+            "adapter_only",
+            lambda _engine: {"status": "healthy", "evidence": "adapter"},
+        )
+        assert meta._reported_engine_status(engine, "adapter_only") == "healthy"
+        health = meta.check_engine_health("adapter_only", force=True)
+        assert health.status.value == "nominal"
+    finally:
+        asyncio.run(meta.stop())
+
+
+def test_idle_is_a_valid_non_degraded_engine_status():
+    class IdleEngine:
+        def health_check(self):
+            return {"status": "idle", "active_jobs": 0}
+
+    meta = MetaEngineV7()
+    try:
+        engine = IdleEngine()
+        meta.register("idle_engine", engine)
+        health = meta.check_engine_health("idle_engine", force=True)
+        assert health.status.value == "nominal"
+    finally:
+        asyncio.run(meta.stop())
+
+
+def test_typed_health_report_status_is_normalized():
+    from enum import Enum
+    from types import SimpleNamespace
+
+    class Status(Enum):
+        HEALTHY = "healthy"
+
+    class TypedReportEngine:
+        async def check_health_async(self):
+            return SimpleNamespace(status=Status.HEALTHY)
+
+    meta = MetaEngineV7()
+    try:
+        engine = TypedReportEngine()
+        meta.register("typed_report_engine", engine)
+        assert meta._reported_engine_status(engine, "typed_report_engine") == "healthy"
+        assert meta.check_engine_health("typed_report_engine", force=True).status.value == "nominal"
+    finally:
+        asyncio.run(meta.stop())
