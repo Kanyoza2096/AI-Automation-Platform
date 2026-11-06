@@ -1,4 +1,4 @@
-# Re-run marker: verify event_type/event_name contract sync after staging migration, 2026-11-06
+# Re-run marker: post-queue-health-fix U1 event and poller acceptance, 2026-11-07
 name: U1 staging event reliability acceptance
 
 on:
