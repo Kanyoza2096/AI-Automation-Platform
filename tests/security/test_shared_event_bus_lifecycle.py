@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import time
 
 from core.shared_event_bus import SharedEventBus
@@ -79,7 +80,14 @@ class StatefulQuery:
             if all(row.get(key) == value for key, value in self.filters)
         ]
         if self.or_filter and "claimed_at.is.null" in self.or_filter:
-            matched = [row for row in matched if row.get("claimed_at") is None]
+            cutoff_text = self.or_filter.split("claimed_at.lt.", 1)[1] if "claimed_at.lt." in self.or_filter else None
+            cutoff = datetime.fromisoformat(cutoff_text) if cutoff_text else None
+            matched = [
+                row for row in matched
+                if row.get("claimed_at") is None
+                or (cutoff is not None and row.get("claimed_at") is not None
+                    and datetime.fromisoformat(row["claimed_at"]) < cutoff)
+            ]
 
         if self.operation == "update":
             for row in matched:
@@ -246,3 +254,41 @@ def test_long_running_handler_renews_its_lease_until_completion():
     assert len(renewals) >= 2
     assert db.tables["event_handler_deliveries"][0]["processed"] is True
     assert db.tables["event_handler_deliveries"][0]["claimed_by"] is None
+
+
+def test_competing_worker_cannot_take_over_while_heartbeat_renews_handler_lease():
+    db = StatefulDB([])
+    first_worker = SharedEventBus(db, source_service="engineering-worker")
+    second_worker = SharedEventBus(db, source_service="engineering-worker")
+    for bus in (first_worker, second_worker):
+        bus.HANDLER_LEASE_SECONDS = 0.03
+        bus.HANDLER_LEASE_HEARTBEAT_SECONDS = 0.01
+
+    receipt = first_worker._ensure_handler_delivery("event-compete-1", "handler-A")
+    assert receipt is not None
+    first_claim = first_worker._claim_handler_delivery(receipt["id"])
+    assert first_claim is not None
+    receipt_id, first_token = first_claim
+
+    stop_heartbeat, heartbeat_thread = first_worker._start_handler_lease_heartbeat(
+        receipt_id, first_token
+    )
+    try:
+        # Wait longer than the lease duration. The heartbeat must keep ownership alive.
+        time.sleep(0.09)
+        assert second_worker._claim_handler_delivery(receipt_id) is None
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
+
+    # Once the lease is genuinely expired, another worker may take over.
+    db.tables["event_handler_deliveries"][0]["claimed_at"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+    replacement_claim = second_worker._claim_handler_delivery(receipt_id)
+    assert replacement_claim is not None
+    _, replacement_token = replacement_claim
+    assert replacement_token != first_token
+
+    # The former owner is fenced out after takeover.
+    assert first_worker._renew_handler_delivery_lease(receipt_id, first_token) is False
