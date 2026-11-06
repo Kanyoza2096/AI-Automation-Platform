@@ -45,3 +45,25 @@ def test_plugin_health_classification_preserves_unknown_and_legacy_states():
     assert classify({"ok": False, "status": "unhealthy"}) == "down"
     assert classify({"ok": True}) == "ok"
     assert classify({"ok": False}) == "down"
+
+
+
+@pytest.mark.asyncio
+async def test_meta_engine_async_health_provider_preserves_engine_diagnostics():
+    from services.meta_engine.core import MetaEngineV7
+
+    expected = {
+        "status": "unknown",
+        "snapshot_status": "unknown",
+        "engine_states": {"alpha": "nominal", "beta": "unknown"},
+        "unknown_engines": ["beta"],
+        "degraded_engines": [],
+        "offline_engines": [],
+    }
+
+    class FakeMetaEngine:
+        def check_health(self):
+            return expected
+
+    result = await MetaEngineV7.check_health_async(FakeMetaEngine())
+    assert result == expected
