@@ -1,0 +1,39 @@
+name: U1 staging event reliability acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kdo-u1-staging-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+      STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      KDO_U1_ACCEPTANCE_ENABLED: "true"
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install acceptance dependencies
+        run: python -m pip install --upgrade pip "supabase>=2.6.0,<3"
+      - name: Verify staging credentials are present
+        run: |
+          test -n "$STAGING_SUPABASE_URL"
+          test -n "$STAGING_SUPABASE_SERVICE_ROLE_KEY"
+      - name: Run isolated U1 live acceptance tests
+        run: python scripts/u1_staging_event_acceptance.py
