@@ -21,7 +21,7 @@ class FakeDecision:
 class FakePlan:
     action = "increase_similar_content"
     brand_id = "brand-test"
-    parameters = {"workspace_id": "workspace-test", "content_mix_change": 0.1}
+    parameters = {"workspace_id": "workspace-test", "correlation_id": "correlation-test", "content_mix_change": 0.1}
     reason = "test-only"
     decision_id = "decision-test"
     risk = "low"
@@ -80,6 +80,8 @@ async def test_explicit_council_approval_reaches_governed_execution_boundary(mon
         async def execute(self, **kwargs):
             called["execute"] += 1
             assert kwargs["workspace_id"] == "workspace-test"
+            assert kwargs["metadata"]["decision_id"] == "decision-test"
+            assert kwargs["metadata"]["correlation_id"] == "correlation-test"
             return {"ok": True, "success": True, "status": "succeeded", "provider_object_id": "test-object-1"}
 
     import services.content_engine as content_module
