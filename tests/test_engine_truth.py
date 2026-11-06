@@ -598,3 +598,24 @@ def test_typed_health_report_status_is_normalized():
         assert meta.check_engine_health("typed_report_engine", force=True).status.value == "nominal"
     finally:
         asyncio.run(meta.stop())
+
+
+def test_task_queue_health_adapter_distinguishes_running_idle_and_full():
+    from services.engine_health_handlers import task_queue_health
+
+    class Queue:
+        def __init__(self, stats):
+            self._stats = stats
+
+        def stats(self):
+            return self._stats
+
+    assert task_queue_health(Queue({
+        "running": True, "queued": 0, "maxsize": 10,
+    }))["status"] == "healthy"
+    assert task_queue_health(Queue({
+        "running": False, "queued": 0, "maxsize": 10,
+    }))["status"] == "unknown"
+    assert task_queue_health(Queue({
+        "running": True, "queued": 10, "maxsize": 10,
+    }))["status"] == "degraded"
