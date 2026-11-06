@@ -778,7 +778,7 @@ class MetaEngineV7:
             last_success = successes[-1] if successes else None
             if last_success and (now - last_success).total_seconds() > self.STALE_AFTER_SECONDS:
                 health.status = EngineStatus.STALE
-            elif _reported_status in {"healthy", "ok", "nominal", "ready"}:
+            elif _reported_status in {"healthy", "ok", "nominal", "ready", "idle"}:
                 # An explicit, successful health contract is evidence of readiness;
                 # mere reachability or `available: true` is not.
                 health.status = EngineStatus.NOMINAL
@@ -829,6 +829,24 @@ class MetaEngineV7:
         if engine is None:
             return None
         try:
+            # Registered adapters are the canonical contract for components
+            # whose native APIs expose metrics or typed reports rather than a
+            # normalized status. Use the same adapter for liveness and status.
+            custom_handler = self._health_handlers.get(engine_name)
+            if custom_handler is not None:
+                try:
+                    result = custom_handler(engine)
+                    if inspect.isawaitable(result):
+                        result = asyncio.run(result)
+                    if isinstance(result, dict):
+                        status = result.get("status") or result.get("overall")
+                    else:
+                        status = getattr(result, "status", result)
+                    status = getattr(status, "value", status)
+                    if isinstance(status, str) and status.strip():
+                        return status.strip().lower()
+                except Exception as exc:
+                    logger.debug("Health adapter failed for %s: %s", engine_name, exc)
             for method_name in ("check_health_async", "check_health", "health_check", "get_status", "get_stats"):
                 method = getattr(engine, method_name, None)
                 if not callable(method):
