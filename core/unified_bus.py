@@ -19,13 +19,11 @@ v17.2 FIXES:
     have started it.
   - If the lazy start raises, the event is still dropped but with an error
     that names the failure, not a misleading "not running" warning.
-
-  NOTE: This does not eliminate the two-instance problem. A pre-boot
-  service and a post-boot service publish to different buses with
-  different subscriber sets. Eliminating that requires removing the
-  factory in dependency_registry and resolving the bus lazily at
-  call-site (separate change). This revision makes both instances
-  functional; it does not merge them.
+  - U1 composition-root wiring now adopts the module singleton during DI
+    construction and lifecycle boot resolves and starts that same instance.
+    DI-created services and legacy get_unified_bus() callers therefore share
+    one in-process subscriber registry. SharedEventBus remains the separate
+    cross-process transport; this singleton is not a distributed bus.
 
 v17.1 FIXES:
   - Added _validate_payload method (was missing)
@@ -50,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
-from utils.ids import correlation_id_ctx
+from utils.ids import correlation_id_ctx, get_process_instance_id
 
 logger = logging.getLogger("kanyoza.unified_bus")
 
@@ -114,6 +112,7 @@ class EventStoreEntry:
     brand_id: Optional[str] = None
     decision_id: Optional[str] = None
     parent_event_id: Optional[str] = None
+    schema_version: str = "1.0"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -369,6 +368,7 @@ class UnifiedEventBus:
         decision_id: Optional[str] = None,
         *,
         strict_nerve: bool = False,
+        schema_version: str = "1.0",
     ) -> Optional[str]:
         """
         Publish an event onto the nervous system.
@@ -395,6 +395,7 @@ class UnifiedEventBus:
                 )
                 return None
 
+        event_id = f"evt_{uuid.uuid4().hex[:12]}"
         try:
             from core.nerve import validate_and_normalize, NerveContractError
             if not workspace_id:
@@ -407,13 +408,20 @@ class UnifiedEventBus:
                 event_name,
                 payload,
                 source=source,
+                event_id=event_id,
                 correlation_id=correlation_id,
                 workspace_id=workspace_id,
                 brand_id=brand_id,
                 decision_id=decision_id,
+                parent_event_id=parent_event_id,
+                schema_version=schema_version,
                 strict=strict_nerve,
             )
             payload = envelope.to_payload()
+            workspace_id = envelope.workspace_id
+            brand_id = envelope.brand_id
+            decision_id = envelope.decision_id
+            parent_event_id = envelope.parent_event_id
             correlation_id = envelope.correlation_id
             source = envelope.source
         except NerveContractError as exc:
@@ -429,7 +437,6 @@ class UnifiedEventBus:
         if not self._check_throttle():
             return None
 
-        event_id = f"evt_{uuid.uuid4().hex[:12]}"
         metadata = EventMetadata(
             event_id=event_id,
             correlation_id=correlation_id,
@@ -453,6 +460,7 @@ class UnifiedEventBus:
             brand_id=brand_id,
             decision_id=decision_id,
             parent_event_id=parent_event_id,
+            schema_version=schema_version,
         )
         self._event_store.append(entry)
 
@@ -628,9 +636,9 @@ class UnifiedEventBus:
                     "brand_id": entry.brand_id,
                     "parent_event_id": entry.parent_event_id,
                     "source_service": entry.source_engine,
-                    "source_instance": None,
+                    "source_instance": get_process_instance_id(),
                     "processed": False,
-                    "schema_version": "1.0",
+                    "schema_version": entry.schema_version,
                 }
                 for entry in batch
             ]

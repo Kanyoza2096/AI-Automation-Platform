@@ -50,22 +50,28 @@ class NerveEnvelope:
     event_name: str
     workspace_id: str
     source: str
+    event_id: Optional[str] = None
     correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     payload: Dict[str, Any] = field(default_factory=dict)
     brand_id: Optional[str] = None
-    parent_event_id: Optional[str] = None
     decision_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
+    schema_version: str = "1.0"
     published_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_payload(self) -> Dict[str, Any]:
         """Payload handed to handlers — always includes nerve fields."""
         body = dict(self.payload)
         body["_nerve"] = {
+            "event_id": self.event_id,
+            "event_name": self.event_name,
             "workspace_id": self.workspace_id,
             "correlation_id": self.correlation_id,
             "source": self.source,
             "brand_id": self.brand_id,
             "decision_id": self.decision_id,
+            "parent_event_id": self.parent_event_id,
+            "schema_version": self.schema_version,
             "published_at": self.published_at.isoformat(),
         }
         # Also top-level for easy access / legacy handlers
@@ -91,10 +97,13 @@ def validate_and_normalize(
     payload: Optional[Dict[str, Any]] = None,
     *,
     source: str = "unknown",
+    event_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     brand_id: Optional[str] = None,
     decision_id: Optional[str] = None,
+    parent_event_id: Optional[str] = None,
+    schema_version: str = "1.0",
     strict: bool = True,
 ) -> NerveEnvelope:
     """
@@ -104,13 +113,18 @@ def validate_and_normalize(
     unless the event is species-scoped.
     """
     payload = dict(payload or {})
+    # Treat malformed legacy metadata as absent rather than allowing a string,
+    # list, or null value to crash normalization for the entire event.
+    nerve_metadata = payload.get("_nerve")
+    if not isinstance(nerve_metadata, dict):
+        nerve_metadata = {}
 
     # Prefer explicit args, then payload fields
-    ws = workspace_id or payload.get("workspace_id") or payload.get("_nerve", {}).get("workspace_id")
+    ws = workspace_id or payload.get("workspace_id") or nerve_metadata.get("workspace_id")
     corr = (
         correlation_id
         or payload.get("correlation_id")
-        or payload.get("_nerve", {}).get("correlation_id")
+        or nerve_metadata.get("correlation_id")
         or uuid.uuid4().hex
     )
     brand = brand_id or payload.get("brand_id")
@@ -159,10 +173,17 @@ def validate_and_normalize(
         event_name=event_name,
         workspace_id=str(ws),
         source=str(src),
+        event_id=str(event_id) if event_id else None,
         correlation_id=str(corr),
         payload=payload,
         brand_id=str(brand) if brand else None,
         decision_id=str(decision) if decision else None,
+        parent_event_id=(
+            parent_event_id
+            or payload.get("parent_event_id")
+            or nerve_metadata.get("parent_event_id")
+        ),
+        schema_version=str(schema_version or "1.0"),
     )
 
 
@@ -171,5 +192,7 @@ def workspace_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[str]:
         return None
     if "workspace_id" in payload:
         return payload.get("workspace_id")
-    nerve = payload.get("_nerve") or {}
+    nerve = payload.get("_nerve")
+    if not isinstance(nerve, dict):
+        return None
     return nerve.get("workspace_id")
