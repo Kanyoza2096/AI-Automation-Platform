@@ -152,14 +152,30 @@ async def _publish_event_async(event_name: str, payload: Dict[str, Any]) -> None
     if not HAS_EVENT_BUS:
         return
     pl = dict(payload or {})
-    pl.setdefault("workspace_id", "platform")
+    workspace_id = str(pl.get("workspace_id") or "platform")
+    pl["workspace_id"] = workspace_id
+    # Preserve the causal envelope across the Director → bus boundary. These
+    # fields let downstream organs correlate decisions and scope observations
+    # without trying to reconstruct provenance from the payload later.
+    publish_kwargs = {
+        "source": "director",
+        "workspace_id": workspace_id,
+    }
+    for field_name in (
+        "correlation_id",
+        "parent_event_id",
+        "brand_id",
+        "decision_id",
+    ):
+        value = pl.get(field_name)
+        if value not in (None, ""):
+            publish_kwargs[field_name] = str(value)
     try:
         bus = await get_unified_bus()
         try:
-            event_id = await bus.publish(
-                event_name, pl, source="director", workspace_id="platform"
-            )
+            event_id = await bus.publish(event_name, pl, **publish_kwargs)
         except TypeError:
+            # Compatibility for older bus adapters that accept only payload.
             event_id = await bus.publish(event_name, pl)
         if event_id is None:
             logging.getLogger("kanyoza.director").warning(
