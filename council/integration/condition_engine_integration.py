@@ -118,6 +118,7 @@ def bind_condition_engine_with_council(condition_engine) -> None:
                     metadata={
                         "brand_id": brand_id,
                         "decision_id": decision_id,
+                        "correlation_id": str(params.get("correlation_id") or ""),
                         "risk": str(getattr(plan, "risk", "low")),
                         "confidence": float(getattr(plan, "confidence", 0.0) or 0.0),
                     },
