@@ -36,6 +36,8 @@ class SharedEventBus:
 
     POLL_INTERVAL_SECONDS = 15
     MAX_EVENTS_PER_POLL = 50
+    HANDLER_LEASE_SECONDS = 300
+    HANDLER_LEASE_HEARTBEAT_SECONDS = 60
 
     def __init__(self, supabase_client: Any = None, source_service: str = "unknown", poll_interval: int = POLL_INTERVAL_SECONDS):
         self.supabase = supabase_client
@@ -305,7 +307,7 @@ class SharedEventBus:
 
     def _claim_handler_delivery(self, receipt_id: str) -> Optional[tuple[str, str]]:
         """Claim one handler receipt with a lease-fenced token."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=self.HANDLER_LEASE_SECONDS)).isoformat()
         claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
         try:
             result = self.supabase.table("event_handler_deliveries").update({
@@ -318,6 +320,42 @@ class SharedEventBus:
         except Exception as exc:
             logger.warning("Handler receipt claim failed for %s: %s", receipt_id, exc)
         return None
+
+    def _renew_handler_delivery_lease(self, receipt_id: str, claim_token: str) -> bool:
+        """Extend a handler lease only while this worker still owns its token."""
+        if not receipt_id or not claim_token or not self.supabase:
+            return False
+        try:
+            result = self.supabase.table("event_handler_deliveries").update({
+                "claimed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", receipt_id).eq("claimed_by", claim_token).eq(
+                "processed", False
+            ).select("id").execute()
+            return bool(result.data)
+        except Exception:
+            logger.exception("Failed to renew handler lease %s", receipt_id)
+            return False
+
+    def _start_handler_lease_heartbeat(self, receipt_id: str, claim_token: str):
+        """Keep long-running handlers leased; stop if fencing says ownership was lost."""
+        stop_event = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop_event.wait(self.HANDLER_LEASE_HEARTBEAT_SECONDS):
+                if not self._renew_handler_delivery_lease(receipt_id, claim_token):
+                    logger.warning(
+                        "Handler lease renewal lost for receipt %s; stopping heartbeat",
+                        receipt_id,
+                    )
+                    return
+
+        thread = threading.Thread(
+            target=heartbeat,
+            name=f"handler-lease-{receipt_id}",
+            daemon=True,
+        )
+        thread.start()
+        return stop_event, thread
 
     def _mark_handler_delivery_processed(
         self, receipt_id: Optional[str], *, claim_token: Optional[str],
@@ -398,6 +436,9 @@ class SharedEventBus:
                 handler_failed = True
                 continue
             receipt_id, receipt_token = claim
+            stop_heartbeat, heartbeat_thread = self._start_handler_lease_heartbeat(
+                receipt_id, receipt_token
+            )
             try:
                 result = handler(payload)
                 if inspect.isawaitable(result):
@@ -415,6 +456,9 @@ class SharedEventBus:
                     error=str(exc) or type(exc).__name__,
                 )
                 logger.error("SharedEventBus handler failed for '%s' (%s): %s", event_name, handler_key, exc)
+            finally:
+                stop_heartbeat.set()
+                heartbeat_thread.join(timeout=2)
 
         if handler_failed:
             self._mark_delivery_processed(
