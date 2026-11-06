@@ -25,7 +25,7 @@ def _payload_dict(value):
     return value if isinstance(value, dict) else {}
 
 
-def _competing_poller_worker(url, key, event_ids, group, result_queue):
+def _competing_poller_worker(url, key, event_ids, event_name, group, result_queue):
     client = create_client(url, key)
     bus = SharedEventBus(client, source_service=group, poll_interval=1)
     handled = []
@@ -36,7 +36,7 @@ def _competing_poller_worker(url, key, event_ids, group, result_queue):
             handled.append(marker)
 
     bus.subscribe(
-        f"kdo.u1.acceptance.stress.{event_ids[0][:8]}",
+        event_name,
         handler,
         handler_id=HANDLER_ID,
     )
@@ -133,7 +133,7 @@ def main():
             result_queue = ctx.Queue()
             process = ctx.Process(
                 target=_competing_poller_worker,
-                args=(url, key, event_ids, group, result_queue),
+                args=(url, key, event_ids, event_name, group, result_queue),
             )
             process.start()
             processes.append(process)
