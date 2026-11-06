@@ -289,3 +289,83 @@ def test_handler_receipt_ack_is_fenced_by_claim_token():
     assert ("claimed_by", "replacement-worker:claim-2") in db.query.filters
     assert ("processed", False) in db.query.filters
     assert db.query.values["processed"] is True
+
+
+
+def test_handler_lease_renewal_is_fenced_by_current_claim_token():
+    class Result:
+        data = [{"id": "handler-receipt-1"}]
+
+    class Query:
+        def __init__(self):
+            self.filters = []
+            self.values = None
+
+        def update(self, values):
+            self.values = values
+            return self
+
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+
+        def select(self, *_args):
+            return self
+
+        def execute(self):
+            return Result()
+
+    class DB:
+        def __init__(self):
+            self.query = Query()
+
+        def table(self, name):
+            assert name == "event_handler_deliveries"
+            return self.query
+
+    db = DB()
+    bus = SharedEventBus(db, source_service="worker-a")
+    assert bus._renew_handler_delivery_lease(
+        "handler-receipt-1", "worker-a:current-claim"
+    ) is True
+    assert ("id", "handler-receipt-1") in db.query.filters
+    assert ("claimed_by", "worker-a:current-claim") in db.query.filters
+    assert ("processed", False) in db.query.filters
+    assert "claimed_at" in db.query.values
+
+
+def test_handler_lease_renewal_rejects_a_stale_worker():
+    class Result:
+        data = []
+
+    class Query:
+        def __init__(self):
+            self.filters = []
+
+        def update(self, _values):
+            return self
+
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+
+        def select(self, *_args):
+            return self
+
+        def execute(self):
+            return Result()
+
+    class DB:
+        def __init__(self):
+            self.query = Query()
+
+        def table(self, name):
+            assert name == "event_handler_deliveries"
+            return self.query
+
+    db = DB()
+    bus = SharedEventBus(db, source_service="worker-a")
+    assert bus._renew_handler_delivery_lease(
+        "handler-receipt-1", "stale-worker:old-claim"
+    ) is False
+    assert ("claimed_by", "stale-worker:old-claim") in db.query.filters
