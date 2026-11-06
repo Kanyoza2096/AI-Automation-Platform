@@ -369,3 +369,97 @@ def test_handler_lease_renewal_rejects_a_stale_worker():
         "handler-receipt-1", "stale-worker:old-claim"
     ) is False
     assert ("claimed_by", "stale-worker:old-claim") in db.query.filters
+
+
+def test_poll_filters_unrelated_event_types_before_page_limit(monkeypatch):
+    class Query:
+        def __init__(self, rows):
+            self.rows = rows
+            self.event_types = None
+            self.offset = 0
+            self.limit = 0
+        def select(self, *_args): return self
+        def in_(self, column, values):
+            assert column == "event_type"
+            self.event_types = set(values)
+            return self
+        def order(self, *_args, **_kwargs): return self
+        def range(self, start, end):
+            self.offset, self.limit = start, end - start + 1
+            return self
+        def execute(self):
+            rows = [row for row in self.rows if row["event_type"] in self.event_types]
+            return type("Result", (), {"data": rows[self.offset:self.offset + self.limit]})()
+
+    class DB:
+        def __init__(self, rows): self.query = Query(rows)
+        def table(self, name):
+            assert name == "events"
+            return self.query
+
+    rows = [
+        {"id": f"old-{i}", "event_type": "unrelated.heartbeat", "source_instance": "other"}
+        for i in range(100)
+    ]
+    rows.append({"id": "target", "event_type": "target.event", "source_instance": "other"})
+    db = DB(rows)
+    bus = SharedEventBus(db, source_service="worker")
+    bus.subscribe("target.event", lambda _payload: None)
+    dispatched = []
+    monkeypatch.setattr(bus, "_ensure_delivery", lambda *_args: True)
+    monkeypatch.setattr(bus, "_claim_delivery", lambda event_id: (f"d-{event_id}", "claim"))
+    monkeypatch.setattr(bus, "_dispatch_event", lambda event, **_kwargs: dispatched.append(event["id"]))
+
+    assert bus.poll() == 1
+    assert dispatched == ["target"]
+    assert db.query.event_types == {"target.event"}
+    assert db.query.limit == bus.MAX_EVENTS_PER_POLL
+
+
+def test_poll_advances_pages_when_matching_backlog_exceeds_page_size(monkeypatch):
+    class Query:
+        def __init__(self, rows, db):
+            self.rows, self.db = rows, db
+            self.offset, self.limit, self.event_types = 0, 0, set()
+        def select(self, *_args): return self
+        def in_(self, column, values):
+            assert column == "event_type"
+            self.event_types = set(values)
+            return self
+        def order(self, *_args, **_kwargs): return self
+        def range(self, start, end):
+            self.offset, self.limit = start, end - start + 1
+            self.db.offsets.append(start)
+            return self
+        def execute(self):
+            rows = [row for row in self.rows if row["event_type"] in self.event_types]
+            return type("Result", (), {"data": rows[self.offset:self.offset + self.limit]})()
+
+    class DB:
+        def __init__(self, rows): self.rows, self.offsets = rows, []
+        def table(self, name):
+            assert name == "events"
+            return Query(self.rows, self)
+
+    rows = [{"id": f"e-{i}", "event_type": "target.event", "source_instance": "other"} for i in range(52)]
+    db = DB(rows)
+    bus = SharedEventBus(db, source_service="worker")
+    bus.subscribe("target.event", lambda _payload: None)
+    seen = set()
+    dispatched = []
+    monkeypatch.setattr(bus, "_ensure_delivery", lambda *_args: True)
+    def claim(event_id):
+        if event_id in seen:
+            return None
+        seen.add(event_id)
+        return (f"d-{event_id}", "claim")
+    monkeypatch.setattr(bus, "_claim_delivery", claim)
+    monkeypatch.setattr(bus, "_dispatch_event", lambda event, **_kwargs: dispatched.append(event["id"]))
+
+    assert bus.poll() == 50
+    assert bus.poll() == 2
+    assert len(dispatched) == 52
+    assert db.offsets == [0, 50]
+    # Once the final short page is reached, the next cycle restarts at zero.
+    assert bus.poll() == 0
+    assert db.offsets == [0, 50, 0]
