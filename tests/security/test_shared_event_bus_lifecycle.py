@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 from core.shared_event_bus import SharedEventBus
 
@@ -221,3 +222,27 @@ def test_partial_handler_failure_skips_already_completed_handler_on_retry():
     assert second_handler_attempts == ["event-partial-1", "event-partial-1"]
     assert all(receipt["processed"] is True for receipt in handler_receipts)
     assert group_receipt["processed"] is True
+
+
+
+def test_long_running_handler_renews_its_lease_until_completion():
+    db = StatefulDB([_event("event-long-handler-1")])
+    bus = SharedEventBus(db, source_service="engineering-worker")
+    bus.HANDLER_LEASE_HEARTBEAT_SECONDS = 0.01
+    renewals = []
+    original_renew = bus._renew_handler_delivery_lease
+
+    def observe_renewal(receipt_id, claim_token):
+        renewals.append((receipt_id, claim_token))
+        return original_renew(receipt_id, claim_token)
+
+    bus._renew_handler_delivery_lease = observe_renewal
+
+    def slow_handler(payload):
+        time.sleep(0.06)
+
+    bus.subscribe("engineering.task.completed", slow_handler)
+    assert bus.poll() == 1
+    assert len(renewals) >= 2
+    assert db.tables["event_handler_deliveries"][0]["processed"] is True
+    assert db.tables["event_handler_deliveries"][0]["claimed_by"] is None
