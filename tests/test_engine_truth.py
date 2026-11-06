@@ -619,3 +619,21 @@ def test_task_queue_health_adapter_distinguishes_running_idle_and_full():
     assert task_queue_health(Queue({
         "running": True, "queued": 10, "maxsize": 10,
     }))["status"] == "degraded"
+
+def test_task_queue_health_adapter_is_registered_with_meta_engine():
+    from services.engine_health_handlers import HEALTH_HANDLERS, task_queue_health
+
+    assert HEALTH_HANDLERS["task_queue"] is task_queue_health
+
+
+def test_render_queue_health_uses_aggregate_health_check_before_task_status():
+    from services.engine_health_handlers import render_queue_health
+
+    class RenderQueue:
+        def get_status(self, task_id):
+            raise AssertionError("task-specific status must not be used for service health")
+
+        def health_check(self):
+            return {"status": "healthy", "stats": {"running": True}}
+
+    assert render_queue_health(RenderQueue())["status"] == "healthy"
