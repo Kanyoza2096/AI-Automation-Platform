@@ -137,7 +137,10 @@ class SharedEventBus:
             module = getattr(handler, "__module__", type(handler).__module__)
             qualname = getattr(handler, "__qualname__", getattr(handler, "__name__", type(handler).__qualname__))
             code = getattr(handler, "__code__", None)
-            line = getattr(code, "co_firstlineno", None)
+            # Named functions keep the same key when unrelated edits move
+            # their source lines. Lambdas need a line suffix to distinguish
+            # multiple anonymous registrations in the same module.
+            line = getattr(code, "co_firstlineno", None) if "<lambda>" in qualname else None
             key = f"{module}:{qualname}" + (f":{line}" if line else "")
         if not key or len(key) > 512:
             raise ValueError("handler_id must contain between 1 and 512 characters")
