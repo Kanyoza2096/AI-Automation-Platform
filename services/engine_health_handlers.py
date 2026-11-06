@@ -241,6 +241,29 @@ def backup_plugin_health(engine: Any) -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TASK QUEUE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def task_queue_health(engine: Any) -> Dict[str, Any]:
+    """Report queue lifecycle and backpressure without treating idle as failure."""
+    try:
+        if engine is None:
+            return {"status": "offline", "reason": "TaskQueue instance unavailable"}
+        stats = engine.stats() if callable(getattr(engine, "stats", None)) else {}
+        if not isinstance(stats, dict):
+            return {"status": "unknown", "reason": "TaskQueue stats unavailable"}
+        if stats.get("running") is not True:
+            return {"status": "unknown", "reason": "TaskQueue is not running in this process", "stats": stats}
+        queued = int(stats.get("queued", 0) or 0)
+        maxsize = int(stats.get("maxsize", 0) or 0)
+        if maxsize > 0 and queued >= maxsize:
+            return {"status": "degraded", "reason": "TaskQueue is at capacity", "stats": stats}
+        return {"status": "healthy", "stats": stats}
+    except Exception as exc:
+        return {"status": "degraded", "message": str(exc)[:200]}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # COMPLETE REGISTRY — ALL ENGINES
 # ═══════════════════════════════════════════════════════════════════════════
 
