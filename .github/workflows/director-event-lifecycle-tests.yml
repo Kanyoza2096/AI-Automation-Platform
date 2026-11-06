@@ -10,6 +10,8 @@ on:
       - "tests/services/test_director_event_delivery.py"
       - "dependency_registry.py"
       - "tests/test_architecture_contracts.py"
+      - "services/health_monitor_service.py"
+      - "tests/test_health_monitor_observability.py"
       - "services/condition_engine/core.py"
       - "services/condition_engine/utils.py"
       - "council/integration/condition_engine_integration.py"
