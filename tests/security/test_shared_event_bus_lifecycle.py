@@ -191,3 +191,47 @@ def test_async_handler_finishes_before_delivery_is_acknowledged():
     delivery = db.tables["event_deliveries"][0]
     assert delivery["processed"] is True
     assert delivery["claimed_by"] is None
+
+
+
+def test_partial_handler_failure_documents_at_least_once_handler_contract():
+    event = {
+        "id": "event-partial-1",
+        "event_type": "engineering.task.completed",
+        "payload": {
+            "task_id": "task-partial-1",
+            "_nerve": {"event_id": "event-partial-1"},
+        },
+        "source_instance": "another-process",
+        "processed": False,
+    }
+    db = StatefulDB([event])
+    bus = SharedEventBus(db, source_service="engineering-worker")
+    first_handler_effects = []
+    second_handler_attempts = []
+
+    def first_handler(payload):
+        # A real side-effecting handler must deduplicate this stable key.
+        first_handler_effects.append(payload["_nerve"]["event_id"])
+
+    def second_handler(payload):
+        second_handler_attempts.append(payload["_nerve"]["event_id"])
+        if len(second_handler_attempts) == 1:
+            raise RuntimeError("temporary failure after first handler completed")
+
+    bus.subscribe("engineering.task.completed", first_handler)
+    bus.subscribe("engineering.task.completed", second_handler)
+
+    assert bus.poll() == 1
+    delivery = db.tables["event_deliveries"][0]
+    assert delivery["processed"] is False
+
+    # After lease expiry, the whole consumer-group attempt is retried. This
+    # proves why per-handler durable receipts are needed before claiming that
+    # side effects execute exactly once.
+    delivery["claimed_at"] = None
+    assert bus.poll() == 1
+
+    assert first_handler_effects == ["event-partial-1", "event-partial-1"]
+    assert second_handler_attempts == ["event-partial-1", "event-partial-1"]
+    assert delivery["processed"] is True
