@@ -97,9 +97,54 @@ except ImportError:
     HAS_EVENT_BUS = False
 
 
+_pending_event_tasks: Set[asyncio.Task] = set()
+
+
 def _director_log_debug(msg: str, *args: Any) -> None:
     """Safe logger — uses logging directly so it works before `log` is bound."""
     logging.getLogger("kanyoza.director").debug(msg, *args)
+
+
+def _track_event_task(task: asyncio.Task) -> None:
+    """Keep fire-and-forget publications visible and drainable during shutdown."""
+    _pending_event_tasks.add(task)
+
+    def _finished(completed: asyncio.Task) -> None:
+        _pending_event_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            error = completed.exception()
+        except Exception as exc:
+            logging.getLogger("kanyoza.director").warning(
+                "Director event task inspection failed: %s", exc
+            )
+            return
+        if error is not None:
+            logging.getLogger("kanyoza.director").warning(
+                "Director event task failed: %s", error
+            )
+
+    task.add_done_callback(_finished)
+
+
+async def flush_pending_event_tasks(timeout_seconds: float = 2.0) -> int:
+    """Drain scheduled Director event publications before runtime shutdown.
+
+    Returns the number of tasks that exceeded the drain deadline and were
+    cancelled. This is a best-effort in-process drain, not a durable outbox.
+    """
+    if timeout_seconds < 0:
+        raise ValueError("timeout_seconds must be non-negative")
+    pending = set(_pending_event_tasks)
+    if not pending:
+        return 0
+    _, timed_out = await asyncio.wait(pending, timeout=timeout_seconds)
+    for task in timed_out:
+        task.cancel()
+    if timed_out:
+        await asyncio.gather(*timed_out, return_exceptions=True)
+    return len(timed_out)
 
 
 async def _publish_event_async(event_name: str, payload: Dict[str, Any]) -> None:
@@ -111,22 +156,36 @@ async def _publish_event_async(event_name: str, payload: Dict[str, Any]) -> None
     try:
         bus = await get_unified_bus()
         try:
-            await bus.publish(event_name, pl, source="director", workspace_id="platform")
+            event_id = await bus.publish(
+                event_name, pl, source="director", workspace_id="platform"
+            )
         except TypeError:
-            await bus.publish(event_name, pl)
+            event_id = await bus.publish(event_name, pl)
+        if event_id is None:
+            logging.getLogger("kanyoza.director").warning(
+                "Director event publication was not accepted: %s", event_name
+            )
     except Exception as exc:
-        _director_log_debug("Director publish failed for %s: %s", event_name, exc)
+        logging.getLogger("kanyoza.director").warning(
+            "Director publish failed for %s: %s", event_name, exc
+        )
 
 
 def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
-    """Publish event — Director is async-native."""
+    """Schedule a tracked event publication on the running Director loop."""
     if not HAS_EVENT_BUS:
         return
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_publish_event_async(event_name, payload))
+        task = loop.create_task(
+            _publish_event_async(event_name, payload),
+            name=f"director-event:{event_name}",
+        )
+        _track_event_task(task)
     except RuntimeError:
-        _director_log_debug("Director: no running loop, skipping publish %s", event_name)
+        logging.getLogger("kanyoza.director").warning(
+            "Director event not scheduled (no running loop): %s", event_name
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -328,6 +387,7 @@ __all__ = [
     # Event publishing
     "_publish_event",
     "_publish_event_async",
+    "flush_pending_event_tasks",
     "_director_log_debug",
     # Error classification
     "SupabaseErrorClassifier",
