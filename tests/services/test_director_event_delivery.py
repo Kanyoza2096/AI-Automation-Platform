@@ -23,7 +23,14 @@ def test_director_event_publication_is_tracked_and_drained(monkeypatch):
     async def scenario():
         utils._publish_event(
             "director.proposal",
-            {"proposal_id": "proposal-test", "workspace_id": "workspace-test"},
+            {
+                "proposal_id": "proposal-test",
+                "workspace_id": "workspace-test",
+                "correlation_id": "corr-test",
+                "parent_event_id": "evt-parent",
+                "brand_id": "brand-test",
+                "decision_id": "decision-test",
+            },
         )
         assert utils._pending_event_tasks
         timed_out = await utils.flush_pending_event_tasks(timeout_seconds=1.0)
@@ -36,6 +43,11 @@ def test_director_event_publication_is_tracked_and_drained(monkeypatch):
     assert published[0][0] == "director.proposal"
     assert published[0][1]["workspace_id"] == "workspace-test"
     assert published[0][2]["source"] == "director"
+    assert published[0][2]["workspace_id"] == "workspace-test"
+    assert published[0][2]["correlation_id"] == "corr-test"
+    assert published[0][2]["parent_event_id"] == "evt-parent"
+    assert published[0][2]["brand_id"] == "brand-test"
+    assert published[0][2]["decision_id"] == "decision-test"
 
 
 def test_director_event_drain_rejects_negative_timeout():
