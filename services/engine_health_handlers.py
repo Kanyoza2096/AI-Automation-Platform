@@ -180,12 +180,16 @@ def plugin_registry_health(engine: Any) -> Dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def render_queue_health(engine: Any) -> Dict[str, Any]:
-    """Health check for RenderQueue."""
+    """Health check for RenderQueue using its aggregate health contract.
+
+    get_status() is task-specific and requires a task ID; it is not a
+    service-level health endpoint.
+    """
     try:
-        if hasattr(engine, "get_status"):
-            return engine.get_status()
         if hasattr(engine, "health_check"):
             return engine.health_check()
+        if hasattr(engine, "get_status"):
+            return {"status": "unknown", "message": "RenderQueue exposes task status only"}
         # Check queue size
         if hasattr(engine, "_pending"):
             pending = len(engine._pending)
@@ -280,6 +284,7 @@ HEALTH_HANDLERS = {
     "render_queue": render_queue_health,           # NEW
     "monitor_plugin": monitor_plugin_health,       # NEW
     "backup_plugin": backup_plugin_health,         # NEW
+    "task_queue": task_queue_health,
 }
 
 
