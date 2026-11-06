@@ -153,9 +153,20 @@ class SharedEventBus:
         key = self._handler_identity(handler, handler_id)
         with self._lock:
             registrations = self._handlers.setdefault(event_name, [])
-            if any(existing_key == key for existing_key, _ in registrations):
-                raise ValueError(f"Duplicate handler identity '{key}' for event '{event_name}'")
-            registrations.append((key, handler))
+            existing = next(
+                ((existing_key, existing_handler) for existing_key, existing_handler in registrations
+                 if existing_key == key),
+                None,
+            )
+            if existing is not None:
+                if existing[1] != handler:
+                    raise ValueError(
+                        f"Handler identity '{key}' is already registered for event '{event_name}'; "
+                        "supply a distinct handler_id"
+                    )
+                # Repeated wiring of the same bound method is idempotent.
+            else:
+                registrations.append((key, handler))
             logger.info("SharedEventBus: subscribed to '%s' (%d handlers)", event_name, len(registrations))
 
         def unsubscribe() -> None:
