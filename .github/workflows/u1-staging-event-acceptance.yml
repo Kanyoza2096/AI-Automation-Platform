@@ -2,6 +2,10 @@ name: U1 staging event reliability acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches: [staging]
+    paths:
+      - .github/workflows/u1-staging-event-acceptance.yml
 
 permissions:
   contents: read
