@@ -869,6 +869,12 @@ class MetaEngineV7:
                         return overall.strip().lower()
                 if isinstance(result, str) and result.strip():
                     return result.strip().lower()
+                # Some subsystems return typed HealthReport objects rather
+                # than dictionaries. Normalize enum-backed status values too.
+                typed_status = getattr(result, "status", None)
+                typed_status = getattr(typed_status, "value", typed_status)
+                if isinstance(typed_status, str) and typed_status.strip():
+                    return typed_status.strip().lower()
         except Exception as exc:
             logger.debug("Reported status read failed for %s: %s", engine_name, exc)
         return None
