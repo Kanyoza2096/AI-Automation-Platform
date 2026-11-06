@@ -279,6 +279,15 @@ class SharedEventBus:
         delivery_id: Optional[str] = None,
         claim_token: Optional[str] = None,
     ) -> None:
+        """Dispatch one consumer-group attempt using at-least-once semantics.
+
+        A failed handler leaves the group delivery retryable. Consequently,
+        handlers that perform side effects MUST be idempotent and should use
+        the stable ``payload['_nerve']['event_id']`` plus their own handler
+        identity as a deduplication key. The group-level receipt below does not
+        provide per-handler exactly-once execution; that requires durable
+        handler receipts and is intentionally not simulated in process memory.
+        """
         event_name = event.get("event_type") or event.get("event_name", "")
         event_id = event.get("id")
         source_instance = event.get("source_instance", "")
