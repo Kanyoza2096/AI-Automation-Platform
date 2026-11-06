@@ -207,7 +207,14 @@ def test_shared_bus_skips_events_persisted_by_unified_bus_in_same_process():
         def __init__(self, rows):
             self.rows = rows
         def select(self, *args): return self
+        def in_(self, column, values):
+            assert column == "event_type"
+            self.rows = [row for row in self.rows if row.get(column) in values]
+            return self
         def order(self, *args, **kwargs): return self
+        def range(self, start, end):
+            self.rows = self.rows[start:end + 1]
+            return self
         def limit(self, *args): return self
         def execute(self):
             return type("Result", (), {"data": self.rows})()
