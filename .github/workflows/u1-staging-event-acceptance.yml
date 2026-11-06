@@ -42,3 +42,5 @@ jobs:
           test -n "$STAGING_SUPABASE_SERVICE_ROLE_KEY"
       - name: Run isolated U1 live acceptance tests
         run: python scripts/u1_staging_event_acceptance.py
+      - name: Run U1 live poller integration acceptance
+        run: python scripts/u1_staging_poller_acceptance.py
