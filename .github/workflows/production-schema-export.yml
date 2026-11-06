@@ -1,6 +1,9 @@
 name: Production schema-only export
 
 on:
+  push:
+    branches:
+      - staging
   workflow_dispatch:
     inputs:
       confirm_source_project:
@@ -18,7 +21,7 @@ concurrency:
 jobs:
   export-schema:
     name: Export production public schema (no rows)
-    if: github.ref == 'refs/heads/staging'
+    if: github.ref == 'refs/heads/staging' && (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[RUN_KDO_PRODUCTION_SCHEMA_EXPORT]'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
