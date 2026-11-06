@@ -113,13 +113,18 @@ def validate_and_normalize(
     unless the event is species-scoped.
     """
     payload = dict(payload or {})
+    # Treat malformed legacy metadata as absent rather than allowing a string,
+    # list, or null value to crash normalization for the entire event.
+    nerve_metadata = payload.get("_nerve")
+    if not isinstance(nerve_metadata, dict):
+        nerve_metadata = {}
 
     # Prefer explicit args, then payload fields
-    ws = workspace_id or payload.get("workspace_id") or payload.get("_nerve", {}).get("workspace_id")
+    ws = workspace_id or payload.get("workspace_id") or nerve_metadata.get("workspace_id")
     corr = (
         correlation_id
         or payload.get("correlation_id")
-        or payload.get("_nerve", {}).get("correlation_id")
+        or nerve_metadata.get("correlation_id")
         or uuid.uuid4().hex
     )
     brand = brand_id or payload.get("brand_id")
@@ -176,7 +181,7 @@ def validate_and_normalize(
         parent_event_id=(
             parent_event_id
             or payload.get("parent_event_id")
-            or payload.get("_nerve", {}).get("parent_event_id")
+            or nerve_metadata.get("parent_event_id")
         ),
         schema_version=str(schema_version or "1.0"),
     )
@@ -187,5 +192,7 @@ def workspace_from_payload(payload: Optional[Dict[str, Any]]) -> Optional[str]:
         return None
     if "workspace_id" in payload:
         return payload.get("workspace_id")
-    nerve = payload.get("_nerve") or {}
+    nerve = payload.get("_nerve")
+    if not isinstance(nerve, dict):
+        return None
     return nerve.get("workspace_id")
