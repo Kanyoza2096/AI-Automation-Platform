@@ -54,6 +54,7 @@ jobs:
             tests/services/test_director_event_delivery.py \
             tests/test_condition_engine_event_context.py \
             tests/test_condition_engine_council_approval_fence.py \
+            tests/test_health_monitor_observability.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
             tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
