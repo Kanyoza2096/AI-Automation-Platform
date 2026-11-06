@@ -1,0 +1,46 @@
+name: Director Event Lifecycle Tests
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - "services/director/core.py"
+      - "services/director/utils.py"
+      - "tests/services/test_director_event_delivery.py"
+      - "dependency_registry.py"
+      - "tests/test_architecture_contracts.py"
+      - ".github/workflows/director-event-lifecycle-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: director-event-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  director-event-lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out staging source
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+      - name: Verify Director event lifecycle and architecture contracts
+        run: |
+          python -m pytest -q \
+            tests/services/test_director_event_delivery.py \
+            tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
+            tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
+            tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
