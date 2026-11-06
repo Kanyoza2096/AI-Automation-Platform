@@ -91,19 +91,29 @@ except ImportError:
 
 
 async def _publish_event_async(event_name: str, payload: Dict[str, Any]) -> None:
-    """Async publish on UnifiedEventBus."""
+    """Publish with the originating workspace and causal execution context."""
     if not HAS_EVENT_BUS:
         return
     pl = dict(payload or {})
-    pl.setdefault("workspace_id", "platform")
+    workspace_id = str(pl.get("workspace_id") or "platform")
+    pl["workspace_id"] = workspace_id
+    publish_kwargs = {"source": "condition_engine", "workspace_id": workspace_id}
+    for field_name in (
+        "correlation_id", "parent_event_id", "brand_id", "decision_id",
+        "execution_id", "intent_id",
+    ):
+        value = pl.get(field_name)
+        if value not in (None, ""):
+            publish_kwargs[field_name] = str(value)
     try:
         bus = await get_unified_bus()
         try:
-            await bus.publish(event_name, pl, source="condition_engine", workspace_id="platform")
+            await bus.publish(event_name, pl, **publish_kwargs)
         except TypeError:
+            # Compatibility with legacy bus adapters; causal data remains in payload.
             await bus.publish(event_name, pl)
     except Exception as exc:
-        logger.debug("Condition Engine publish failed for %s: %s", event_name, exc)
+        logger.warning("Condition Engine publish failed for %s: %s", event_name, exc)
 
 
 def _publish_event(event_name: str, payload: Dict[str, Any]) -> None:
