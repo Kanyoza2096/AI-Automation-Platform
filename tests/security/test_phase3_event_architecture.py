@@ -132,3 +132,15 @@ def test_unified_bus_persistence_uses_events_schema_and_tenant_metadata():
     assert records[0]["payload"]["_nerve"]["event_name"] == "publish.requested"
     assert records[0]["payload"]["_nerve"]["parent_event_id"] == "parent-evt-1"
     assert records[0]["payload"]["_nerve"]["schema_version"] == "2.0"
+
+
+def test_nerve_normalization_tolerates_malformed_legacy_metadata():
+    from core.nerve import validate_and_normalize, workspace_from_payload
+
+    for malformed in (None, "legacy", ["not", "a", "mapping"]):
+        envelope = validate_and_normalize(
+            "legacy.event", {"_nerve": malformed}, strict=False
+        )
+        assert envelope.workspace_id == "unbound"
+        assert envelope.correlation_id
+        assert workspace_from_payload({"_nerve": malformed}) is None
