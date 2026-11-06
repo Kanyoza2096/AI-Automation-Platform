@@ -47,7 +47,8 @@ class SharedEventBus:
         self.process_instance_id = get_process_instance_id()
         self.poll_interval = poll_interval
 
-        self._handlers: Dict[str, List[Callable]] = {}
+        # Durable receipts require stable handler identities across restarts.
+        self._handlers: Dict[str, List[tuple[str, Callable]]] = {}
         self._lock = threading.RLock()
         self._poll_thread: Optional[threading.Thread] = None
         self._running = False
@@ -127,27 +128,48 @@ class SharedEventBus:
             None, lambda: self.publish(event_name, payload, **kwargs)
         )
 
-    def subscribe(self, event_name: str, handler: Callable) -> Callable[[], None]:
-        """Subscribe to event. Returns unsubscribe function."""
+    @staticmethod
+    def _handler_identity(handler: Callable, handler_id: Optional[str] = None) -> str:
+        """Return a stable receipt key; explicit IDs disambiguate callable instances."""
+        if handler_id is not None:
+            key = str(handler_id).strip()
+        else:
+            module = getattr(handler, "__module__", type(handler).__module__)
+            qualname = getattr(handler, "__qualname__", getattr(handler, "__name__", type(handler).__qualname__))
+            code = getattr(handler, "__code__", None)
+            line = getattr(code, "co_firstlineno", None)
+            key = f"{module}:{qualname}" + (f":{line}" if line else "")
+        if not key or len(key) > 512:
+            raise ValueError("handler_id must contain between 1 and 512 characters")
+        return key
+
+    def subscribe(
+        self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
+    ) -> Callable[[], None]:
+        """Subscribe with a stable identity for durable per-handler receipts."""
+        key = self._handler_identity(handler, handler_id)
         with self._lock:
-            if event_name not in self._handlers:
-                self._handlers[event_name] = []
-            self._handlers[event_name].append(handler)
-            logger.info("SharedEventBus: subscribed to '%s' (%d handlers)", event_name, len(self._handlers[event_name]))
+            registrations = self._handlers.setdefault(event_name, [])
+            if any(existing_key == key for existing_key, _ in registrations):
+                raise ValueError(f"Duplicate handler identity '{key}' for event '{event_name}'")
+            registrations.append((key, handler))
+            logger.info("SharedEventBus: subscribed to '%s' (%d handlers)", event_name, len(registrations))
 
         def unsubscribe() -> None:
             with self._lock:
                 self._handlers[event_name] = [
-                    h for h in self._handlers[event_name] if h != handler
+                    item for item in self._handlers.get(event_name, []) if item[0] != key
                 ]
-
         return unsubscribe
 
-    def unsubscribe(self, event_name: str, handler: Callable) -> None:
+    def unsubscribe(
+        self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
+    ) -> None:
+        key = self._handler_identity(handler, handler_id)
         with self._lock:
             if event_name in self._handlers:
                 self._handlers[event_name] = [
-                    h for h in self._handlers[event_name] if h != handler
+                    item for item in self._handlers[event_name] if item[0] != key
                 ]
 
     def start(self) -> None:
@@ -232,16 +254,11 @@ class SharedEventBus:
     def _ensure_delivery(self, event_id: str, event_name: str) -> bool:
         try:
             self.supabase.table("event_deliveries").insert({
-                "event_id": event_id,
-                "consumer_group": self.source_service,
-                "event_type": event_name,
-                "processed": False,
+                "event_id": event_id, "consumer_group": self.source_service,
+                "event_type": event_name, "processed": False,
             }).execute()
             return True
         except Exception as exc:
-            # Unique(event_id, consumer_group) makes this idempotent.  Supabase
-            # clients differ in how they expose duplicate-conflict errors, so a
-            # failed insert is followed by a lookup before treating it as fatal.
             try:
                 existing = self.supabase.table("event_deliveries").select("id").eq(
                     "event_id", event_id
@@ -251,18 +268,73 @@ class SharedEventBus:
                 logger.warning("Unable to ensure event delivery %s: %s", event_id, exc)
                 return False
 
-    def _claim_delivery(self, event_id: str) -> Optional[tuple[str, str]]:
-        """Claim one consumer delivery and return its fencing token.
+    def _ensure_handler_delivery(self, event_id: str, handler_key: str) -> Optional[Dict[str, Any]]:
+        """Create or retrieve one durable event/consumer/handler receipt."""
+        try:
+            self.supabase.table("event_handler_deliveries").insert({
+                "event_id": event_id, "consumer_group": self.source_service,
+                "handler_key": handler_key, "processed": False,
+            }).execute()
+        except Exception:
+            # A unique event/group/handler constraint makes insert idempotent.
+            pass
+        try:
+            result = self.supabase.table("event_handler_deliveries").select("*").eq(
+                "event_id", event_id
+            ).eq("consumer_group", self.source_service).eq(
+                "handler_key", handler_key
+            ).limit(1).execute()
+            return dict(result.data[0]) if result.data else None
+        except Exception as exc:
+            logger.warning("Unable to ensure handler receipt %s/%s: %s", event_id, handler_key, exc)
+            return None
 
-        The token must accompany acknowledgement so a worker whose lease has
-        expired cannot complete work claimed by a replacement worker.
-        """
+    def _claim_handler_delivery(self, receipt_id: str) -> Optional[tuple[str, str]]:
+        """Claim one handler receipt with a lease-fenced token."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
+        try:
+            result = self.supabase.table("event_handler_deliveries").update({
+                "claimed_by": claim_token, "claimed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", receipt_id).eq("processed", False).or_(
+                f"claimed_at.is.null,claimed_at.lt.{cutoff}"
+            ).select("id").execute()
+            if result.data:
+                return str(result.data[0].get("id")), claim_token
+        except Exception as exc:
+            logger.warning("Handler receipt claim failed for %s: %s", receipt_id, exc)
+        return None
+
+    def _mark_handler_delivery_processed(
+        self, receipt_id: Optional[str], *, claim_token: Optional[str],
+        success: bool = True, error: Optional[str] = None,
+    ) -> bool:
+        """Acknowledge a handler only while the caller owns its lease."""
+        if not receipt_id or not claim_token or not self.supabase:
+            return False
+        update = {
+            "processed": bool(success),
+            "processed_at": datetime.now(timezone.utc).isoformat() if success else None,
+            "processing_error": (error or "")[:500] if error else None,
+        }
+        if success:
+            update.update({"claimed_by": None, "claimed_at": None})
+        try:
+            result = self.supabase.table("event_handler_deliveries").update(update).eq(
+                "id", receipt_id
+            ).eq("claimed_by", claim_token).eq("processed", False).select("id").execute()
+            return bool(result.data)
+        except Exception:
+            logger.exception("Failed to acknowledge handler receipt %s", receipt_id)
+            return False
+
+    def _claim_delivery(self, event_id: str) -> Optional[tuple[str, str]]:
+        """Claim one consumer delivery and return its fencing token."""
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
         try:
             result = self.supabase.table("event_deliveries").update({
-                "claimed_by": claim_token,
-                "claimed_at": datetime.now(timezone.utc).isoformat(),
+                "claimed_by": claim_token, "claimed_at": datetime.now(timezone.utc).isoformat(),
             }).eq("event_id", event_id).eq("consumer_group", self.source_service).eq(
                 "processed", False
             ).or_(f"claimed_at.is.null,claimed_at.lt.{cutoff}").select("id").execute()
@@ -273,28 +345,20 @@ class SharedEventBus:
         return None
 
     def _dispatch_event(
-        self,
-        event: Dict[str, Any],
-        *,
-        delivery_id: Optional[str] = None,
+        self, event: Dict[str, Any], *, delivery_id: Optional[str] = None,
         claim_token: Optional[str] = None,
     ) -> None:
-        """Dispatch one consumer-group attempt using at-least-once semantics.
+        """Dispatch at-least-once with durable per-handler completion receipts.
 
-        A failed handler leaves the group delivery retryable. Consequently,
-        handlers that perform side effects MUST be idempotent and should use
-        the stable ``payload['_nerve']['event_id']`` plus their own handler
-        identity as a deduplication key. The group-level receipt below does not
-        provide per-handler exactly-once execution; that requires durable
-        handler receipts and is intentionally not simulated in process memory.
+        Completed handlers are skipped on a group retry. A crash after an
+        external side effect but before its receipt commits can still duplicate
+        that effect, so this is not an exactly-once guarantee.
         """
         event_name = event.get("event_type") or event.get("event_name", "")
         event_id = event.get("id")
         source_instance = event.get("source_instance", "")
-
         if source_instance and source_instance in (self.process_instance_id, self.instance_id):
             return
-
         try:
             payload = event.get("payload", {})
             if isinstance(payload, str):
@@ -302,28 +366,47 @@ class SharedEventBus:
         except (json.JSONDecodeError, TypeError):
             payload = {}
 
-        handlers = self._handlers.get(event_name, [])
-
+        with self._lock:
+            handlers = list(self._handlers.get(event_name, []))
         if not handlers:
             return
 
         handler_failed = False
-        for handler in handlers:
+        for handler_key, handler in handlers:
+            receipt = self._ensure_handler_delivery(str(event_id), handler_key)
+            if receipt is None:
+                handler_failed = True
+                continue
+            if receipt.get("processed") is True:
+                continue
+            claim = self._claim_handler_delivery(str(receipt["id"]))
+            if claim is None:
+                handler_failed = True
+                continue
+            receipt_id, receipt_token = claim
             try:
                 result = handler(payload)
                 if inspect.isawaitable(result):
-                    # Polling runs in a dedicated thread. There is normally no
-                    # running asyncio loop here, so create_task() would fail and
-                    # the event would be acknowledged without executing. Run
-                    # the coroutine to completion before acknowledging.
                     asyncio.run(result)
-                self._events_received += 1
+                if self._mark_handler_delivery_processed(
+                    receipt_id, claim_token=receipt_token, success=True
+                ):
+                    self._events_received += 1
+                else:
+                    handler_failed = True
             except Exception as exc:
                 handler_failed = True
-                logger.error("SharedEventBus handler failed for '%s': %s", event_name, exc)
+                self._mark_handler_delivery_processed(
+                    receipt_id, claim_token=receipt_token, success=False,
+                    error=str(exc) or type(exc).__name__,
+                )
+                logger.error("SharedEventBus handler failed for '%s' (%s): %s", event_name, handler_key, exc)
 
         if handler_failed:
-            self._mark_delivery_processed(delivery_id, claim_token=claim_token, success=False, error="one or more handlers failed")
+            self._mark_delivery_processed(
+                delivery_id, claim_token=claim_token, success=False,
+                error="one or more handlers failed or remain leased",
+            )
         else:
             self._mark_delivery_processed(delivery_id, claim_token=claim_token, success=True)
 
