@@ -1,4 +1,4 @@
-name: Director Event Lifecycle Tests
+name: Cross-Subsystem Event Lifecycle Tests
 
 on:
   push:
@@ -10,6 +10,11 @@ on:
       - "tests/services/test_director_event_delivery.py"
       - "dependency_registry.py"
       - "tests/test_architecture_contracts.py"
+      - "services/condition_engine/core.py"
+      - "services/condition_engine/utils.py"
+      - "council/integration/condition_engine_integration.py"
+      - "tests/test_condition_engine_event_context.py"
+      - "tests/test_condition_engine_council_approval_fence.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   workflow_dispatch:
 
@@ -17,11 +22,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: director-event-lifecycle-${{ github.ref }}
+  group: cross-subsystem-event-lifecycle-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  director-event-lifecycle:
+  cross-subsystem-event-lifecycle:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -45,6 +50,8 @@ jobs:
         run: |
           python -m pytest -q \
             tests/services/test_director_event_delivery.py \
+            tests/test_condition_engine_event_context.py \
+            tests/test_condition_engine_council_approval_fence.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
             tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
