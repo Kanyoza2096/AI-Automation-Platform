@@ -1,0 +1,84 @@
+name: Production schema-only export
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_source_project:
+        description: "Type the production project ref kfgutijhrywnxpsjjacd to confirm the source"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-schema-only-export
+  cancel-in-progress: false
+
+jobs:
+  export-schema:
+    name: Export production public schema (no rows)
+    if: github.ref == 'refs/heads/chore/staging-production-schema-export'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Validate manual confirmation and source connection
+        env:
+          CONFIRM_SOURCE_PROJECT: ${{ inputs.confirm_source_project }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_SOURCE_PROJECT" != "kfgutijhrywnxpsjjacd" ]; then
+            echo "::error::Confirmation did not match the expected production project."
+            exit 1
+          fi
+          if [ -z "${PRODUCTION_DATABASE_URL:-}" ]; then
+            echo "::error::Missing PRODUCTION_DATABASE_URL repository secret."
+            exit 1
+          fi
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit, unquote
+
+          raw = os.environ["PRODUCTION_DATABASE_URL"]
+          parsed = urlsplit(raw)
+          host = (parsed.hostname or "").lower()
+          user = unquote(parsed.username or "")
+          direct_ok = host == "db.kfgutijhrywnxpsjjacd.supabase.co"
+          pooler_ok = host.endswith(".pooler.supabase.com") and user == "postgres.kfgutijhrywnxpsjjacd"
+          if parsed.scheme not in ("postgres", "postgresql") or not (direct_ok or pooler_ok):
+              raise SystemExit(
+                  "Connection rejected: use the KDO production direct host or its Supabase session-pooler URI. "
+                  "The credential itself is never printed."
+              )
+          if parsed.path.rstrip("/") != "/postgres":
+              raise SystemExit("Connection rejected: expected the postgres database.")
+          print("Source guard passed: confirmed KDO production endpoint; credential not displayed.")
+          PY
+
+      - name: Export schema only using PostgreSQL 17 client
+        env:
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -e DATABASE_URL="$PRODUCTION_DATABASE_URL" \
+            -e PGSSLMODE=require \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            postgres:17-alpine \
+            sh -euc 'pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges --schema=public --file=production_schema.sql'
+          test -s production_schema.sql
+          if grep -Eq '^(COPY|INSERT INTO) ' production_schema.sql; then
+            echo "::error::Unexpected table-data statements found; refusing to upload artifact."
+            exit 1
+          fi
+          echo "Schema export created. Table definitions: $(grep -c '^CREATE TABLE ' production_schema.sql || true)"
+
+      - name: Upload schema export artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdo-production-schema-only
+          path: production_schema.sql
+          if-no-files-found: error
+          retention-days: 3
