@@ -129,3 +129,41 @@ def test_poll_completes_shared_delivery_lifecycle_end_to_end():
     # A second poll must not redeliver a successfully acknowledged event.
     assert bus.poll() == 0
     assert len(received) == 1
+
+
+
+def test_failed_delivery_is_retried_after_lease_expiry():
+    event = {
+        "id": "event-retry-1",
+        "event_type": "engineering.task.completed",
+        "payload": {"task_id": "task-retry-1"},
+        "source_instance": "another-process",
+        "processed": False,
+    }
+    db = StatefulDB([event])
+    bus = SharedEventBus(db, source_service="engineering-worker")
+    attempts = []
+
+    def flaky_handler(payload):
+        attempts.append(payload["task_id"])
+        if len(attempts) == 1:
+            raise RuntimeError("temporary downstream failure")
+
+    bus.subscribe("engineering.task.completed", flaky_handler)
+
+    # First attempt fails: it must remain pending and retain its lease.
+    assert bus.poll() == 1
+    delivery = db.tables["event_deliveries"][0]
+    assert delivery["processed"] is False
+    assert delivery["processing_error"] == "one or more handlers failed"
+    assert delivery["claimed_by"] is not None
+    assert delivery["claimed_at"] is not None
+
+    # Simulate lease expiry. The next poll can now claim the same delivery.
+    delivery["claimed_at"] = None
+    assert bus.poll() == 1
+
+    assert attempts == ["task-retry-1", "task-retry-1"]
+    assert delivery["processed"] is True
+    assert delivery["claimed_by"] is None
+    assert delivery["claimed_at"] is None
