@@ -26,6 +26,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
+from utils.ids import get_process_instance_id
+
 logger = logging.getLogger("kanyoza.shared_event_bus")
 
 
