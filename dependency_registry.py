@@ -506,8 +506,12 @@ def _register_infrastructure(c: ServiceContainer, bindings: list[BindingMetadata
         # Reuse the module-level instance used by legacy direct-access callers.
         # This keeps DI and compatibility paths on one subscriber registry.
         bus = get_bus_sync()
+        # Resolve the database client even when a direct-access caller created
+        # the module singleton before the DI container finished booting.
+        # Without this adoption step, lifecycle would start the same singleton
+        # but its persistence layer would remain permanently disconnected.
+        supabase_client = _resolve_supabase_safely(c)
         if bus is None:
-            supabase_client = _resolve_supabase_safely(c)
             bus = UnifiedEventBus(
                 supabase_client=supabase_client,
                 config=EventBusConfig(),
@@ -516,6 +520,13 @@ def _register_infrastructure(c: ServiceContainer, bindings: list[BindingMetadata
             logger.info(
                 "UnifiedEventBus created (persistence=%s)",
                 supabase_client is not None,
+            )
+        elif bus.supabase is None and supabase_client is not None:
+            bus.supabase = supabase_client
+            logger.info("UnifiedEventBus adopted the bootstrapped Supabase client")
+        elif bus.supabase is not None and supabase_client is not None and bus.supabase is not supabase_client:
+            logger.warning(
+                "UnifiedEventBus already owns a Supabase client; preserving its existing client"
             )
         else:
             logger.info("UnifiedEventBus reused from canonical module authority")
