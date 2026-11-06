@@ -43,6 +43,13 @@ def test_unified_event_bus_has_one_instance_across_di_and_legacy_access() -> Non
     assert "bus = await get_unified_bus()" in lifecycle
 
 
+def test_preboot_unified_bus_adopts_bootstrapped_supabase_client() -> None:
+    registry = (ROOT / "dependency_registry.py").read_text(encoding="utf-8")
+    assert "supabase_client = _resolve_supabase_safely(c)" in registry
+    assert "elif bus.supabase is None and supabase_client is not None:" in registry
+    assert "bus.supabase = supabase_client" in registry
+
+
 def test_legacy_event_bus_is_explicitly_bridged() -> None:
     legacy = (ROOT / "core" / "event_bus.py").read_text(encoding="utf-8")
     registry = (ROOT / "dependency_registry.py").read_text(encoding="utf-8")
