@@ -1438,15 +1438,18 @@ async def _boot_content_engine(container: ServiceContainer) -> None:
 async def _boot_meta_health_handlers(container: ServiceContainer) -> None:
     try:
         from services.engine_health_handlers import register_all_health_handlers
-        from services.meta_engine import MetaEngineV7 as MetaEngine
+        # Health adapters must be attached to the exact module-level singleton
+        # supervised by lifecycle.py and used by service_definitions. Resolving
+        # MetaEngineV7 from DI here can create a second, unowned instance whose
+        # handlers never reach the live supervisor.
+        from services.meta_engine import meta_engine
 
-        meta = container.try_resolve(MetaEngine)
-        if meta is None:
+        if meta_engine is None:
             logger.warning("MetaEngine health handlers skipped: MetaEngine unavailable")
             return
 
-        summary = register_all_health_handlers(meta)
-        logger.info("MetaEngine health handlers registered: %s", summary)
+        summary = register_all_health_handlers(meta_engine)
+        logger.info("MetaEngine health handlers registered on canonical singleton: %s", summary)
     except Exception as exc:
         logger.warning(
             "MetaEngine health handler registration failed: %s",
@@ -1470,13 +1473,17 @@ async def _boot_trend_publish_bridge(container: ServiceContainer) -> None:
 
 
 async def _boot_meta_engine(container: ServiceContainer) -> None:
-    from services.meta_engine import init_meta_engine
+    from services.meta_engine import MetaEngineV7, init_meta_engine
     from core.unified_bus import UnifiedEventBus
 
     event_bus = container.try_resolve(UnifiedEventBus)
     meta = init_meta_engine(event_bus=event_bus, container=container)
     if inspect.isawaitable(meta):
         meta = await meta
+
+    # Publish the lifecycle-owned singleton into DI so every subsystem that
+    # resolves MetaEngineV7 observes the same supervisor instance.
+    container.register_instance(MetaEngineV7, meta)
 
     await shutdown_registry.register("MetaEngine", meta.stop, timeout_seconds=10.0)
 
