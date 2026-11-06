@@ -264,6 +264,15 @@ class HealthMonitorService:
                     "services_ok": sum(1 for v in services.values() if v == "ok"),
                     "services_down": sum(1 for v in services.values() if v == "down"),
                     "services_unknown": sum(1 for v in services.values() if v == "unknown"),
+                    # Preserve the bounded per-service snapshot so operators can
+                    # identify degraded providers without enabling DEBUG logs.
+                    "service_states": dict(sorted(services.items())),
+                    "services_down_names": sorted(
+                        name for name, state in services.items() if state == "down"
+                    ),
+                    "services_unknown_names": sorted(
+                        name for name, state in services.items() if state == "unknown"
+                    ),
                     "transitions": transitions,
                 },
             )
