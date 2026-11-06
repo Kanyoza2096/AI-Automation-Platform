@@ -33,3 +33,15 @@ async def test_health_cycle_logs_service_names_for_down_and_unknown(caplog, monk
     assert record.services_unknown_names == ["unknown_provider"]
     assert record.services_total == 3
     assert record.services_ok == 1
+
+
+
+def test_plugin_health_classification_preserves_unknown_and_legacy_states():
+    classify = HealthMonitorService._classify_plugin_health
+
+    assert classify({"ok": False, "status": "unknown"}) == "unknown"
+    assert classify({"ok": False, "status": "starting"}) == "unknown"
+    assert classify({"ok": True, "status": "healthy"}) == "ok"
+    assert classify({"ok": False, "status": "unhealthy"}) == "down"
+    assert classify({"ok": True}) == "ok"
+    assert classify({"ok": False}) == "down"
