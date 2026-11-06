@@ -11,7 +11,7 @@ class Result:
 
 
 class StatefulQuery:
-    """Small Supabase query fake for exercising the complete poll lifecycle."""
+    """Small Supabase fake for group and per-handler receipt lifecycle tests."""
 
     def __init__(self, db, table):
         self.db = db
@@ -20,6 +20,7 @@ class StatefulQuery:
         self.values = None
         self.filters = []
         self.or_filter = None
+        self.limit_value = None
 
     def select(self, *_args):
         return self
@@ -45,59 +46,70 @@ class StatefulQuery:
     def order(self, *_args, **_kwargs):
         return self
 
-    def limit(self, *_args):
+    def limit(self, value):
+        self.limit_value = value
         return self
 
     def execute(self):
         rows = self.db.tables.setdefault(self.table_name, [])
 
         if self.operation == "insert":
-            if self.table_name == "event_deliveries":
-                key = (self.values["event_id"], self.values["consumer_group"])
-                if any((r["event_id"], r["consumer_group"]) == key for r in rows):
-                    raise ValueError("duplicate delivery")
+            if self.table_name in ("event_deliveries", "event_handler_deliveries"):
+                keys = (
+                    ("event_id", "consumer_group")
+                    if self.table_name == "event_deliveries"
+                    else ("event_id", "consumer_group", "handler_key")
+                )
+                key = tuple(self.values[k] for k in keys)
+                if any(tuple(row.get(k) for k in keys) == key for row in rows):
+                    raise ValueError("duplicate receipt")
                 record = dict(self.values)
-                record["id"] = f"delivery-{len(rows) + 1}"
+                record["id"] = f"{self.table_name}-{len(rows) + 1}"
                 record.setdefault("claimed_by", None)
                 record.setdefault("claimed_at", None)
                 record.setdefault("processed", False)
                 rows.append(record)
-                return Result([record])
+                return Result([dict(record)])
             rows.append(dict(self.values))
-            return Result([self.values])
+            return Result([dict(self.values)])
 
         matched = [
             row for row in rows
             if all(row.get(key) == value for key, value in self.filters)
         ]
+        if self.or_filter and "claimed_at.is.null" in self.or_filter:
+            matched = [row for row in matched if row.get("claimed_at") is None]
 
         if self.operation == "update":
-            # The fake models the null-lease branch of the atomic claim query.
-            if self.or_filter and "claimed_at.is.null" in self.or_filter:
-                matched = [r for r in matched if r.get("claimed_at") is None]
             for row in matched:
                 row.update(self.values)
-            return Result([dict(r) for r in matched])
+            return Result([dict(row) for row in matched])
 
-        return Result([dict(r) for r in matched])
+        if self.limit_value is not None:
+            matched = matched[: self.limit_value]
+        return Result([dict(row) for row in matched])
 
 
 class StatefulDB:
     def __init__(self, events):
-        self.tables = {"events": [dict(event) for event in events], "event_deliveries": []}
+        self.tables = {
+            "events": [dict(event) for event in events],
+            "event_deliveries": [],
+            "event_handler_deliveries": [],
+        }
 
     def table(self, name):
         return StatefulQuery(self, name)
 
 
-def test_poll_completes_shared_delivery_lifecycle_end_to_end():
-    event = {
-        "id": "event-1",
+def _event(event_id="event-1"):
+    return {
+        "id": event_id,
         "event_type": "engineering.task.completed",
         "payload": {
             "task_id": "task-7",
             "_nerve": {
-                "event_id": "event-1",
+                "event_id": event_id,
                 "event_name": "engineering.task.completed",
                 "workspace_id": "workspace-7",
                 "correlation_id": "corr-7",
@@ -108,7 +120,10 @@ def test_poll_completes_shared_delivery_lifecycle_end_to_end():
         "source_instance": "another-process",
         "processed": False,
     }
-    db = StatefulDB([event])
+
+
+def test_poll_completes_group_and_handler_receipts_end_to_end():
+    db = StatefulDB([_event()])
     bus = SharedEventBus(db, source_service="engineering-worker")
     received = []
     bus.subscribe("engineering.task.completed", lambda payload: received.append(payload))
@@ -118,29 +133,21 @@ def test_poll_completes_shared_delivery_lifecycle_end_to_end():
     assert received[0]["task_id"] == "task-7"
     assert received[0]["_nerve"]["correlation_id"] == "corr-7"
 
-    deliveries = db.tables["event_deliveries"]
-    assert len(deliveries) == 1
-    assert deliveries[0]["event_id"] == "event-1"
-    assert deliveries[0]["consumer_group"] == "engineering-worker"
-    assert deliveries[0]["processed"] is True
-    assert deliveries[0]["claimed_by"] is None
-    assert deliveries[0]["claimed_at"] is None
+    group_receipt = db.tables["event_deliveries"][0]
+    assert group_receipt["processed"] is True
+    assert group_receipt["claimed_by"] is None
+    handler_receipt = db.tables["event_handler_deliveries"][0]
+    assert handler_receipt["event_id"] == "event-1"
+    assert handler_receipt["consumer_group"] == "engineering-worker"
+    assert handler_receipt["processed"] is True
+    assert handler_receipt["claimed_by"] is None
 
-    # A second poll must not redeliver a successfully acknowledged event.
     assert bus.poll() == 0
     assert len(received) == 1
 
 
-
-def test_failed_delivery_is_retried_after_lease_expiry():
-    event = {
-        "id": "event-retry-1",
-        "event_type": "engineering.task.completed",
-        "payload": {"task_id": "task-retry-1"},
-        "source_instance": "another-process",
-        "processed": False,
-    }
-    db = StatefulDB([event])
+def test_failed_handler_is_retried_after_lease_expiry():
+    db = StatefulDB([_event("event-retry-1")])
     bus = SharedEventBus(db, source_service="engineering-worker")
     attempts = []
 
@@ -150,35 +157,23 @@ def test_failed_delivery_is_retried_after_lease_expiry():
             raise RuntimeError("temporary downstream failure")
 
     bus.subscribe("engineering.task.completed", flaky_handler)
-
-    # First attempt fails: it must remain pending and retain its lease.
     assert bus.poll() == 1
-    delivery = db.tables["event_deliveries"][0]
-    assert delivery["processed"] is False
-    assert delivery["processing_error"] == "one or more handlers failed"
-    assert delivery["claimed_by"] is not None
-    assert delivery["claimed_at"] is not None
+    group_receipt = db.tables["event_deliveries"][0]
+    handler_receipt = db.tables["event_handler_deliveries"][0]
+    assert group_receipt["processed"] is False
+    assert handler_receipt["processed"] is False
+    assert handler_receipt["processing_error"] == "temporary downstream failure"
 
-    # Simulate lease expiry. The next poll can now claim the same delivery.
-    delivery["claimed_at"] = None
+    group_receipt["claimed_at"] = None
+    handler_receipt["claimed_at"] = None
     assert bus.poll() == 1
-
-    assert attempts == ["task-retry-1", "task-retry-1"]
-    assert delivery["processed"] is True
-    assert delivery["claimed_by"] is None
-    assert delivery["claimed_at"] is None
+    assert attempts == ["task-7", "task-7"]
+    assert group_receipt["processed"] is True
+    assert handler_receipt["processed"] is True
 
 
-
-def test_async_handler_finishes_before_delivery_is_acknowledged():
-    event = {
-        "id": "event-async-1",
-        "event_type": "engineering.task.completed",
-        "payload": {"task_id": "task-async-1"},
-        "source_instance": "another-process",
-        "processed": False,
-    }
-    db = StatefulDB([event])
+def test_async_handler_finishes_before_both_receipts_are_acknowledged():
+    db = StatefulDB([_event("event-async-1")])
     bus = SharedEventBus(db, source_service="engineering-worker")
     observed = []
 
@@ -187,31 +182,18 @@ def test_async_handler_finishes_before_delivery_is_acknowledged():
 
     bus.subscribe("engineering.task.completed", async_handler)
     assert bus.poll() == 1
-    assert observed == ["task-async-1"]
-    delivery = db.tables["event_deliveries"][0]
-    assert delivery["processed"] is True
-    assert delivery["claimed_by"] is None
+    assert observed == ["task-7"]
+    assert db.tables["event_deliveries"][0]["processed"] is True
+    assert db.tables["event_handler_deliveries"][0]["processed"] is True
 
 
-
-def test_partial_handler_failure_documents_at_least_once_handler_contract():
-    event = {
-        "id": "event-partial-1",
-        "event_type": "engineering.task.completed",
-        "payload": {
-            "task_id": "task-partial-1",
-            "_nerve": {"event_id": "event-partial-1"},
-        },
-        "source_instance": "another-process",
-        "processed": False,
-    }
-    db = StatefulDB([event])
+def test_partial_handler_failure_skips_already_completed_handler_on_retry():
+    db = StatefulDB([_event("event-partial-1")])
     bus = SharedEventBus(db, source_service="engineering-worker")
     first_handler_effects = []
     second_handler_attempts = []
 
     def first_handler(payload):
-        # A real side-effecting handler must deduplicate this stable key.
         first_handler_effects.append(payload["_nerve"]["event_id"])
 
     def second_handler(payload):
@@ -223,15 +205,19 @@ def test_partial_handler_failure_documents_at_least_once_handler_contract():
     bus.subscribe("engineering.task.completed", second_handler)
 
     assert bus.poll() == 1
-    delivery = db.tables["event_deliveries"][0]
-    assert delivery["processed"] is False
+    group_receipt = db.tables["event_deliveries"][0]
+    handler_receipts = db.tables["event_handler_deliveries"]
+    assert len(handler_receipts) == 2
+    assert sum(bool(receipt["processed"]) for receipt in handler_receipts) == 1
 
-    # After lease expiry, the whole consumer-group attempt is retried. This
-    # proves why per-handler durable receipts are needed before claiming that
-    # side effects execute exactly once.
-    delivery["claimed_at"] = None
+    # Simulate lease expiry. The successful handler receipt remains complete.
+    group_receipt["claimed_at"] = None
+    for receipt in handler_receipts:
+        if not receipt["processed"]:
+            receipt["claimed_at"] = None
+
     assert bus.poll() == 1
-
-    assert first_handler_effects == ["event-partial-1", "event-partial-1"]
+    assert first_handler_effects == ["event-partial-1"]
     assert second_handler_attempts == ["event-partial-1", "event-partial-1"]
-    assert delivery["processed"] is True
+    assert all(receipt["processed"] is True for receipt in handler_receipts)
+    assert group_receipt["processed"] is True
