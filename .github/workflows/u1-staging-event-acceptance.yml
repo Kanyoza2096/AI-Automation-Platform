@@ -23,6 +23,7 @@ jobs:
       STAGING_SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
       STAGING_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
       KDO_U1_ACCEPTANCE_ENABLED: "true"
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - name: Checkout staging branch
         uses: actions/checkout@v4
