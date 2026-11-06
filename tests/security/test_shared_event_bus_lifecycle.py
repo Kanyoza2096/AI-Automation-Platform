@@ -167,3 +167,27 @@ def test_failed_delivery_is_retried_after_lease_expiry():
     assert delivery["processed"] is True
     assert delivery["claimed_by"] is None
     assert delivery["claimed_at"] is None
+
+
+
+def test_async_handler_finishes_before_delivery_is_acknowledged():
+    event = {
+        "id": "event-async-1",
+        "event_type": "engineering.task.completed",
+        "payload": {"task_id": "task-async-1"},
+        "source_instance": "another-process",
+        "processed": False,
+    }
+    db = StatefulDB([event])
+    bus = SharedEventBus(db, source_service="engineering-worker")
+    observed = []
+
+    async def async_handler(payload):
+        observed.append(payload["task_id"])
+
+    bus.subscribe("engineering.task.completed", async_handler)
+    assert bus.poll() == 1
+    assert observed == ["task-async-1"]
+    delivery = db.tables["event_deliveries"][0]
+    assert delivery["processed"] is True
+    assert delivery["claimed_by"] is None
