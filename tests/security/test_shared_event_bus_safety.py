@@ -119,24 +119,35 @@ def test_shared_bus_dispatch_passes_claim_token_and_keeps_failed_work_retryable(
     bus = SharedEventBus(source_service="worker-a")
     observed = []
     bus.subscribe("task.failed", lambda payload: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(bus, "_ensure_handler_delivery", lambda event_id, handler_key: {"id": "handler-receipt-1", "processed": False})
+    monkeypatch.setattr(bus, "_claim_handler_delivery", lambda receipt_id: (receipt_id, "handler-claim-1"))
+    monkeypatch.setattr(
+        bus,
+        "_mark_handler_delivery_processed",
+        lambda receipt_id, **kwargs: observed.append(("handler", receipt_id, kwargs)) or True,
+    )
     monkeypatch.setattr(
         bus,
         "_mark_delivery_processed",
-        lambda delivery_id, **kwargs: observed.append((delivery_id, kwargs)) or True,
+        lambda delivery_id, **kwargs: observed.append(("group", delivery_id, kwargs)) or True,
     )
     bus._dispatch_event(
         {"id": "event-1", "event_type": "task.failed", "payload": {"task_id": "t1"}},
         delivery_id="delivery-1",
         claim_token="worker-a:claim-1",
     )
-    assert observed == [(
-        "delivery-1",
+    assert observed[0] == (
+        "handler", "handler-receipt-1",
+        {"claim_token": "handler-claim-1", "success": False, "error": "boom"},
+    )
+    assert observed[1] == (
+        "group", "delivery-1",
         {
             "claim_token": "worker-a:claim-1",
             "success": False,
-            "error": "one or more handlers failed",
+            "error": "one or more handlers failed or remain leased",
         },
-    )]
+    )
 
 
 
