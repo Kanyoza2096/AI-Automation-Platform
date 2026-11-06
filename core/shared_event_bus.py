@@ -51,6 +51,9 @@ class SharedEventBus:
 
         # Durable receipts require stable handler identities across restarts.
         self._handlers: Dict[str, List[tuple[str, Callable]]] = {}
+        # Per-subscription pagination prevents large relevant backlogs from
+        # repeatedly presenting only their oldest page.
+        self._poll_offsets: Dict[tuple[str, ...], int] = {}
         self._lock = threading.RLock()
         self._poll_thread: Optional[threading.Thread] = None
         self._running = False
@@ -228,22 +231,36 @@ class SharedEventBus:
         if not self.supabase:
             return 0
 
+        with self._lock:
+            event_names = tuple(sorted(name for name, handlers in self._handlers.items() if handlers))
+            if not event_names:
+                return 0
+            offset = self._poll_offsets.get(event_names, 0)
+
         try:
-            result = self.supabase.table("events") \
-                .select("*") \
-                .order("created_at") \
-                .limit(self.MAX_EVENTS_PER_POLL) \
-                .execute()
+            # Filter at the database before applying the page limit. Scanning the
+            # oldest global events lets unrelated event types permanently occupy
+            # every page and starve newly published events this group handles.
+            query = self.supabase.table("events").select("*").in_("event_type", list(event_names))
+            query = query.order("created_at").order("id").range(
+                offset, offset + self.MAX_EVENTS_PER_POLL - 1
+            )
+            result = query.execute()
+            events = result.data or []
+
+            # Advance through large backlogs over successive polls. Reset only
+            # after the final page so >MAX_EVENTS_PER_POLL matching events cannot
+            # pin the consumer to the same oldest page forever.
+            with self._lock:
+                self._poll_offsets[event_names] = (
+                    offset + len(events) if len(events) == self.MAX_EVENTS_PER_POLL else 0
+                )
 
             delivered = 0
-            for event in result.data or []:
+            for event in events:
                 event_name = event.get("event_type") or event.get("event_name", "")
-                with self._lock:
-                    has_handler = bool(self._handlers.get(event_name))
-                if not has_handler:
-                    continue
                 event_id = event.get("id")
-                if not event_id:
+                if not event_id or event_name not in event_names:
                     continue
                 # A producer instance should not synchronously consume its own
                 # transport copy; local UnifiedEventBus already handled it.
