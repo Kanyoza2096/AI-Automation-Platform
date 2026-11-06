@@ -231,3 +231,61 @@ def test_shared_bus_skips_events_persisted_by_unified_bus_in_same_process():
     bus.subscribe("task.created", lambda payload: received.append(payload))
     assert bus.poll() == 0
     assert received == []
+
+
+
+def test_handler_subscription_identity_is_stable_and_repeated_wiring_is_idempotent():
+    bus = SharedEventBus(source_service="worker-a")
+
+    def on_event(payload):
+        return payload
+
+    first = bus.subscribe("task.created", on_event)
+    second = bus.subscribe("task.created", on_event)
+    assert len(bus._handlers["task.created"]) == 1
+    first()
+    assert bus._handlers["task.created"] == []
+
+
+def test_handler_receipt_ack_is_fenced_by_claim_token():
+    class Result:
+        data = []
+
+    class Query:
+        def __init__(self):
+            self.filters = []
+            self.values = None
+
+        def update(self, values):
+            self.values = values
+            return self
+
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+
+        def select(self, *_args):
+            return self
+
+        def execute(self):
+            return Result()
+
+    class DB:
+        def __init__(self):
+            self.query = Query()
+
+        def table(self, name):
+            assert name == "event_handler_deliveries"
+            return self.query
+
+    db = DB()
+    bus = SharedEventBus(db, source_service="worker-a")
+    acknowledged = bus._mark_handler_delivery_processed(
+        "handler-receipt-1",
+        claim_token="replacement-worker:claim-2",
+        success=True,
+    )
+    assert acknowledged is False
+    assert ("claimed_by", "replacement-worker:claim-2") in db.query.filters
+    assert ("processed", False) in db.query.filters
+    assert db.query.values["processed"] is True
