@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.condition_engine import utils as condition_utils
-from services.condition_engine.core import ConditionEngine
+from services.condition_engine.core import AutonomousConditionEngine
 
 
 @pytest.mark.asyncio
@@ -55,7 +55,7 @@ def test_action_parameters_carry_decision_correlation_id():
         evidence={"workspace_id": "workspace-test"},
         correlation_id="correlation-test",
     )
-    parameters = ConditionEngine._build_action_parameters(None, decision)
+    parameters = AutonomousConditionEngine._build_action_parameters(None, decision)
 
     assert parameters["workspace_id"] == "workspace-test"
     assert parameters["correlation_id"] == "correlation-test"
