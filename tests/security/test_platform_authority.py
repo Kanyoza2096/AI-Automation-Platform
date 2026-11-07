@@ -1,4 +1,4 @@
-""""Platform authority is a separate, server-issued human grant."""
+"""Platform authority is a separate, server-issued human grant."""
 
 from core.species_auth import resolve_platform_authority
 from core.request_context import RequestContext, bind_from_auth_identity
@@ -147,4 +147,3 @@ def test_auth_identity_applies_platform_grants_without_mutating_workspace_role()
         pass
     else:
         raise AssertionError("Platform Operator must remain tenant-scoped for mutations")
-"
