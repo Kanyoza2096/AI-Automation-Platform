@@ -58,3 +58,13 @@ def test_application_startup_never_creates_a_tenant_from_process_default():
     assert "tenant organisms start after authenticated workspace binding" in lifecycle
     assert "get_or_create(default_ws" not in lifecycle
     assert "canonical_dream_system.workspace_id = None" in main
+
+def test_strict_tenant_event_rejects_synthetic_default_workspace():
+    from core.nerve import NerveContractError, validate_and_normalize
+
+    with pytest.raises(NerveContractError, match="invalid workspace_id='default'"):
+        validate_and_normalize(
+            "tenant.observation",
+            {"workspace_id": "default"},
+            strict=True,
+        )
