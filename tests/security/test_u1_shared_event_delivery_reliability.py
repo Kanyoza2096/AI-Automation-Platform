@@ -54,7 +54,7 @@ class Query:
 
     def execute(self):
         self.db.last_query = self
-        if self.db.rpc_result is not None:
+        if self.table == "rpc":
             return Result(self.db.rpc_result)
         return Result(self.db.rows)
 
