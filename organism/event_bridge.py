@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
+import uuid
 
 from organism.perception import Observation, ObservationKind
 
@@ -82,7 +83,7 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
         confidence=0.8,
         source_trust=0.8,
         **({"observed_at": observed_at} if observed_at is not None else {}),
-        observation_id=f"event:{event_id}" if event_id else None,
+        observation_id=f"event:{event_id}" if event_id else f"obs_{uuid.uuid4().hex[:16]}",
         metadata={
             "event_id": event_id or None,
             "source": str(event.get("source") or "unknown")[:80],
