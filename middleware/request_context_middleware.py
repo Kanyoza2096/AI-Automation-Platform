@@ -41,6 +41,15 @@ PUBLIC_PREFIXES: Set[str] = {
     "/api/v1/guardian/status",  # ← add
 }
 
+SERVICE_AUTH_ONLY_EXACT: Set[str] = {
+    # These routes authenticate the KCPG service credential in their own
+    # FastAPI dependency. They deliberately do not bind a tenant workspace;
+    # the exchange endpoint validates the supplied human Supabase JWT itself.
+    "/api/v1/auth/exchange",
+    "/api/v1/system/auth/validate",
+}
+
+
 PUBLIC_EXACT: Set[str] = {
     "/",
     "/api/v1/architecture/laws",
@@ -62,6 +71,15 @@ def _is_webhook_ingress(path: str) -> bool:
     if path.startswith("/api/v1/business-automation/lead-capture/"):
         return True
     return False
+
+
+def _is_service_auth_only(path: str) -> bool:
+    """Service-token-only endpoints are authenticated by route dependencies.
+
+    They must bypass tenant context binding, not authentication: the route
+    handlers retain their mandatory require_auth dependency.
+    """
+    return path in SERVICE_AUTH_ONLY_EXACT
 
 
 def _is_public(path: str) -> bool:
@@ -107,7 +125,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         )
         request.state.correlation_id = correlation_id
 
-        if request.method == "OPTIONS" or _is_public(path):
+        if request.method == "OPTIONS" or _is_public(path) or _is_service_auth_only(path):
             response = await call_next(request)
             response.headers["X-Correlation-ID"] = correlation_id
             return response
