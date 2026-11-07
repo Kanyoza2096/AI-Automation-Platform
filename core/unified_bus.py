@@ -247,14 +247,19 @@ class UnifiedEventBus:
         logger.info("UnifiedEventBus: shutting down...")
         self._running = False
 
+        # Stop the persistence worker first so an in-flight batch is returned
+        # to the queue before the final shutdown flush runs.
+        if self._persistence_task and not self._persistence_task.done():
+            self._persistence_task.cancel()
+            try:
+                await self._persistence_task
+            except asyncio.CancelledError:
+                pass
+
         if self.supabase and self._persistence_queue.qsize() > 0:
             await self._flush_persistence()
 
-        for task in [
-            self._dispatch_task,
-            self._persistence_task,
-            self._correlation_cleanup_task,
-        ]:
+        for task in [self._dispatch_task, self._correlation_cleanup_task]:
             if task and not task.done():
                 task.cancel()
                 try:
@@ -341,11 +346,30 @@ class UnifiedEventBus:
                 logger.warning("Event dropped due to throttling")
                 return False
             elif self._throttle_policy == ThrottlePolicy.DEFER:
-                logger.warning("Event deferred due to throttling")
-                return False
+                # publish() waits asynchronously for rolling-window capacity.
+                return True
 
         self._recent_events.append(now)
         return True
+
+    async def _wait_for_throttle_capacity(self) -> None:
+        """Wait until the configured rolling rate window has capacity."""
+        while True:
+            now = time.monotonic()
+            while (
+                self._recent_events
+                and self._recent_events[0] < now - self.config.throttle_window_seconds
+            ):
+                self._recent_events.popleft()
+            if len(self._recent_events) < self.config.max_events_per_second:
+                self._recent_events.append(now)
+                return
+            self._throttled_count += 1
+            delay = max(
+                0.001,
+                self._recent_events[0] + self.config.throttle_window_seconds - now,
+            )
+            await asyncio.sleep(delay)
 
     def _next_sequence(self) -> int:
         """Get next sequence number."""
@@ -434,7 +458,9 @@ class UnifiedEventBus:
         if not self._validate_payload(payload):
             return None
 
-        if not self._check_throttle():
+        if self._throttle_policy in (ThrottlePolicy.DEFER, ThrottlePolicy.BLOCK):
+            await self._wait_for_throttle_capacity()
+        elif not self._check_throttle():
             return None
 
         metadata = EventMetadata(
@@ -464,18 +490,45 @@ class UnifiedEventBus:
         )
         self._event_store.append(entry)
 
+        # A successful publish acknowledgement means the durable event write
+        # completed. The persistence worker retries transient failures and
+        # applies bounded queue backpressure while this future remains pending.
+        if self.supabase:
+            persisted = asyncio.get_running_loop().create_future()
+            pending_item = (entry, persisted)
+            try:
+                if self._throttle_policy == ThrottlePolicy.DROP:
+                    self._persistence_queue.put_nowait(pending_item)
+                else:
+                    await self._persistence_queue.put(pending_item)
+            except asyncio.QueueFull:
+                logger.warning("Persistence queue FULL — dropping event: %s", event_name)
+                self._events_dropped += 1
+                return None
+
+            try:
+                await persisted
+            except Exception as exc:
+                logger.error(
+                    "Event %s was not durably persisted; publication rejected: %s",
+                    event_name,
+                    exc,
+                )
+                return None
+
+        dispatch_item = (
+            event_name, payload, source, event_id, workspace_id, brand_id,
+            decision_id, correlation_id, parent_event_id,
+        )
         try:
-            self._dispatch_queue.put_nowait((event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id))
+            if self._throttle_policy == ThrottlePolicy.DROP:
+                self._dispatch_queue.put_nowait(dispatch_item)
+            else:
+                await self._dispatch_queue.put(dispatch_item)
         except asyncio.QueueFull:
             logger.warning("Dispatch queue FULL — dropping event: %s", event_name)
             self._events_dropped += 1
             return None
-
-        if self.supabase:
-            try:
-                self._persistence_queue.put_nowait(entry)
-            except asyncio.QueueFull:
-                logger.warning("Persistence queue FULL — event not persisted: %s", event_name)
 
         self._events_published += 1
         return event_id
@@ -519,11 +572,23 @@ class UnifiedEventBus:
             handlers = list(self._subscribers.get(event_name, []))
             wildcards = list(self._wildcard)
 
-        for handler in handlers + wildcards:
-            asyncio.create_task(
-                self._invoke_handler(handler, event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id),
-                name=f"handler-{event_name}-{event_id[:8]}",
+        # Await the full handler set before acknowledging this dispatch item.
+        # Detached tasks could outlive shutdown and escape queue accounting.
+        await asyncio.gather(*[
+            self._invoke_handler(
+                handler,
+                event_name,
+                payload,
+                source,
+                event_id,
+                workspace_id,
+                brand_id,
+                decision_id,
+                correlation_id,
+                parent_event_id,
             )
+            for handler in handlers + wildcards
+        ])
 
     async def _invoke_handler(
         self,
@@ -579,49 +644,104 @@ class UnifiedEventBus:
         finally:
             correlation_id_ctx.reset(correlation_token)
 
+    async def replay_dead_letter(
+        self,
+        event_id: str,
+        handler_name: Optional[str] = None,
+    ) -> int:
+        """Retry matching in-memory dead letters and remove successful retries."""
+        candidates = [
+            letter for letter in list(self._dead_letters)
+            if letter.event_id == event_id
+            and (handler_name is None or letter.handler_name == handler_name)
+        ]
+        replayed = 0
+        for letter in candidates:
+            async with self._lock:
+                registered_handlers = (
+                    list(self._subscribers.get(letter.event_name, []))
+                    + list(self._wildcard)
+                )
+            handler = next(
+                (
+                    candidate for candidate in registered_handlers
+                    if getattr(candidate, "__qualname__", str(candidate))
+                    == letter.handler_name
+                ),
+                None,
+            )
+            if handler is None:
+                continue
+            failures_before = self._handler_errors
+            await self._invoke_handler(
+                handler,
+                letter.event_name,
+                letter.payload,
+                "dead_letter_replay",
+                letter.event_id,
+            )
+            if self._handler_errors == failures_before:
+                try:
+                    self._dead_letters.remove(letter)
+                except ValueError:
+                    pass
+                replayed += 1
+        return replayed
+
     # ═══════════════════════════════════════════════════════════════════
     # PERSISTENCE
     # ═══════════════════════════════════════════════════════════════════
 
     async def _persistence_loop(self) -> None:
         while self._running:
+            batch: List[tuple[EventStoreEntry, asyncio.Future]] = []
             try:
-                batch: List[EventStoreEntry] = []
-
                 try:
-                    entry = await asyncio.wait_for(
+                    item = await asyncio.wait_for(
                         self._persistence_queue.get(),
                         timeout=self.config.persistence_flush_interval,
                     )
-                    batch.append(entry)
-
+                    batch.append(item)
                     for _ in range(self.config.persistence_batch_size - 1):
                         try:
-                            entry = self._persistence_queue.get_nowait()
-                            batch.append(entry)
+                            batch.append(self._persistence_queue.get_nowait())
                         except asyncio.QueueEmpty:
                             break
+                except asyncio.TimeoutError:
+                    continue
 
-                    await self._persist_batch(batch)
-
-                    for _ in batch:
+                attempt = 0
+                entries = [entry for entry, _future in batch]
+                while self._running:
+                    if await self._persist_batch(entries):
+                        for _entry, future in batch:
+                            if not future.done():
+                                future.set_result(True)
+                            self._persistence_queue.task_done()
+                        break
+                    attempt += 1
+                    await asyncio.sleep(min(30.0, max(1.0, 2 ** min(attempt, 5))))
+                else:
+                    for item in batch:
+                        await self._persistence_queue.put(item)
                         self._persistence_queue.task_done()
 
-                except asyncio.TimeoutError:
-                    pass
-
             except asyncio.CancelledError:
+                # Return in-flight work for the orderly shutdown flush.
+                for item in batch:
+                    await self._persistence_queue.put(item)
+                    self._persistence_queue.task_done()
                 break
             except Exception as exc:
                 logger.error("Persistence loop error: %s", exc)
 
-    async def _persist_batch(self, batch: List[EventStoreEntry]) -> None:
+    async def _persist_batch(self, batch: List[EventStoreEntry]) -> bool:
         if not self.supabase:
-            return
+            return True
 
         if self._circuit_state == CircuitState.OPEN:
             if not self._should_retry_circuit():
-                return
+                return False
             self._circuit_state = CircuitState.HALF_OPEN
 
         try:
@@ -645,11 +765,12 @@ class UnifiedEventBus:
 
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.supabase.table("events").insert(records).execute(),
+                lambda: self.supabase.table("events").upsert(records, on_conflict="id").execute(),
             )
 
             self._circuit_failures = 0
             self._circuit_state = CircuitState.CLOSED
+            return True
 
         except Exception as exc:
             self._persistence_failures += len(batch)
@@ -660,7 +781,8 @@ class UnifiedEventBus:
                 self._circuit_state = CircuitState.OPEN
                 logger.warning("Persistence circuit breaker opened")
 
-            logger.debug("Persistence failed: %s", str(exc)[:200])
+            logger.warning("Persistence failed; batch retained for retry: %s", str(exc)[:200])
+            return False
 
     def _should_retry_circuit(self) -> bool:
         if self._circuit_last_failure_time is None:
@@ -671,7 +793,7 @@ class UnifiedEventBus:
         )
 
     async def _flush_persistence(self) -> None:
-        batch = []
+        batch: List[tuple[EventStoreEntry, asyncio.Future]] = []
         while not self._persistence_queue.empty():
             try:
                 batch.append(self._persistence_queue.get_nowait())
@@ -679,9 +801,25 @@ class UnifiedEventBus:
                 break
 
         if batch:
-            await self._persist_batch(batch)
-            for _ in batch:
-                self._persistence_queue.task_done()
+            entries = [entry for entry, _future in batch]
+            persisted = await self._persist_batch(entries)
+            if persisted:
+                for _entry, future in batch:
+                    if not future.done():
+                        future.set_result(True)
+                    self._persistence_queue.task_done()
+            else:
+                # Shutdown cannot claim success when the durable write failed.
+                for item in batch:
+                    entry, future = item
+                    await self._persistence_queue.put(item)
+                    self._persistence_queue.task_done()
+                    if not future.done():
+                        future.set_exception(
+                            RuntimeError(
+                                f"Event {entry.event_id} remains queued; durable persistence failed during shutdown"
+                            )
+                        )
 
     # ═══════════════════════════════════════════════════════════════════
     # DEAD LETTER QUEUE
