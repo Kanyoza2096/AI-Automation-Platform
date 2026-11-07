@@ -93,11 +93,18 @@ class AuthIdentity:
     error: str = ""
 
     def has_permission(self, permission: str) -> bool:
+        is_human_platform_grant = (
+            not self.is_species
+            and self.method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+        )
         if permission.startswith("platform:"):
-            if self.is_species or self.platform_role == "super_admin":
+            if self.is_species:
+                return False
+            if is_human_platform_grant:
                 return True
             return permission in self.platform_permissions
-        if self.platform_role == "super_admin":
+        if is_human_platform_grant:
             return True
         if self.is_species or "owner" in self.permissions or "admin" in self.permissions:
             return True
@@ -105,7 +112,9 @@ class AuthIdentity:
 
     def assert_workspace_access(self, target_workspace_id: str) -> None:
         """Raise PermissionError if this identity cannot touch the workspace."""
-        if self.is_species or self.platform_role == "super_admin":
+        if self.is_species or (
+            self.method == "supabase_jwt" and self.platform_role == "super_admin"
+        ):
             return
         if not self.workspace_id:
             raise PermissionError("No workspace bound to this credential")
