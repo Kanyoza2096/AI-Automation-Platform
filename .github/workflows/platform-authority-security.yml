@@ -1,0 +1,38 @@
+name: Platform Authority Security
+
+on:
+  push:
+    branches:
+      - "security/platform-super-admin-authority"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "config/settings.py"
+      - "core/species_auth.py"
+      - "core/request_context.py"
+      - "api/v1.py"
+      - "tests/security/test_platform_authority.py"
+      - "tests/tenancy/test_request_context.py"
+      - ".github/workflows/platform-authority-security.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  platform-authority-boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install minimal test dependencies
+        run: python -m pip install "pydantic>=2.5,<3" "pydantic-settings>=2.1" "pytest>=8.0"
+      - name: Compile changed Python modules
+        run: python -m py_compile config/settings.py core/species_auth.py core/request_context.py api/v1.py
+      - name: Run platform authority and tenancy regression tests
+        run: python -m pytest tests/security/test_platform_authority.py tests/tenancy/test_request_context.py -q
