@@ -1,7 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
+from core.organism import Organism, OrganismConfig, OrganismRegistry
 from organism.capabilities import AuthorityRequirement, CapabilityRegistry, CapabilitySpec, CapabilityRisk
 from organism.goals import Goal, GoalState
 from organism.lifecycle import OrganismRuntime, cycle_async
@@ -129,3 +131,48 @@ def test_cycle_can_generate_strategy_variants_from_declared_action_pool():
     result = runtime.cycle(strategy=seed, strategy_action_pool=("publish", "notify"))
     assert result.evolution is not None
     assert len(result.evolution.candidates) > 1
+
+
+
+class _LifecycleEventBus:
+    def __init__(self):
+        self.events = []
+
+    async def publish(self, event_name, payload, **kwargs):
+        self.events.append((event_name, payload, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_organism_start_builds_one_workspace_runtime_and_serializes_birth():
+    bus = _LifecycleEventBus()
+    organism = Organism(OrganismConfig(workspace_id="workspace-a"), event_bus=bus)
+
+    assert organism._runtime is None
+    await asyncio.gather(organism.start(), organism.start())
+
+    runtime = organism.runtime
+    assert runtime is not None
+    assert runtime.workspace_id == "workspace-a"
+    assert organism._running is True
+    assert len(bus.events) == 1
+    assert bus.events[0][0] == "organism.born"
+    assert bus.events[0][2]["workspace_id"] == "workspace-a"
+
+    await organism.stop()
+    assert organism._running is False
+    assert organism.runtime is runtime
+
+    await organism.start()
+    assert organism.runtime is runtime
+    assert len(bus.events) == 2
+
+
+def test_organism_registry_never_shares_runtime_state_between_workspaces():
+    registry = OrganismRegistry()
+    first = registry.get_or_create("workspace-a")
+    second = registry.get_or_create("workspace-b")
+
+    assert first.runtime.workspace_id == "workspace-a"
+    assert second.runtime.workspace_id == "workspace-b"
+    assert first.runtime is not second.runtime
+    assert first.runtime.memory is not second.runtime.memory
