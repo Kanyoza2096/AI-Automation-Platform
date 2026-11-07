@@ -40,6 +40,7 @@ class Query:
         self.calls.append(("or", value))
         return self
 
+    @property
     def not_(self):
         self.calls.append(("not",))
         return self
