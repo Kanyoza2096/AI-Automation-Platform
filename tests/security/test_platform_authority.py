@@ -49,6 +49,7 @@ def test_machine_identity_never_becomes_human_platform_super_admin():
     ctx = bind_from_auth_identity(identity)
     assert ctx.principal_type == "machine"
     assert ctx.platform_role == ""
+    assert not ctx.has_permission("platform:users:manage")
     from core.request_context import clear_request_context
     clear_request_context()
 
@@ -97,6 +98,18 @@ def test_auth_identity_applies_platform_grants_without_mutating_workspace_role()
     assert owner.has_permission("write")
     assert owner.has_permission("platform:users:manage")
     owner.assert_workspace_access("ws-b")
+
+    machine = AuthIdentity(
+        valid=True,
+        method="python_service",
+        workspace_id=None,
+        role="species",
+        permissions=["species", "owner"],
+        is_species=True,
+        platform_role="super_admin",
+        platform_permissions=["platform:*"],
+    )
+    assert not machine.has_permission("platform:users:manage")
 
     operator = AuthIdentity(
         valid=True,
