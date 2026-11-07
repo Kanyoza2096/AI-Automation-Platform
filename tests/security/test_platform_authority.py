@@ -64,6 +64,8 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
     )
     super_admin.assert_workspace("ws-b")
     assert super_admin.effective_workspace("ws-b") == "ws-b"
+    assert super_admin.has_permission("write")
+    assert super_admin.has_permission("platform:users:manage")
 
     workspace_owner = RequestContext(
         principal_id="workspace-owner",
