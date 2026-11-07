@@ -161,3 +161,51 @@ def test_in_process_dead_letter_can_be_replayed_and_cleared():
         assert attempts["count"] == 2
 
     asyncio.run(run())
+
+
+def test_publish_waits_for_durable_commit_before_dispatch():
+    import threading
+
+    class _BlockingQuery(_Query):
+        def execute(self):
+            self.client.started.set()
+            if not self.client.release.wait(timeout=5):
+                raise TimeoutError("test persistence release timed out")
+            self.client.persisted = True
+            return _Result()
+
+    class _BlockingSupabase(_Supabase):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.persisted = False
+
+        def table(self, name):
+            assert name == "events"
+            return _BlockingQuery(self)
+
+    async def run():
+        client = _BlockingSupabase()
+        bus = UnifiedEventBus(supabase_client=client)
+        handler_called = asyncio.Event()
+
+        async def handler(_event):
+            handler_called.set()
+
+        await bus.subscribe("durable.test", handler)
+        publish_task = asyncio.create_task(
+            bus.publish("durable.test", {"value": "durable"}, source="test")
+        )
+        assert await asyncio.to_thread(client.started.wait, 2)
+        assert not publish_task.done()
+        assert not handler_called.is_set()
+
+        client.release.set()
+        event_id = await asyncio.wait_for(publish_task, timeout=2)
+        assert event_id
+        assert client.persisted is True
+        await asyncio.wait_for(handler_called.wait(), timeout=2)
+        await bus.stop()
+
+    asyncio.run(run())
