@@ -14,6 +14,7 @@ EXPECTED_HOST = "kkzshurcmcptleyqjgzo.supabase.co"
 HANDLER_ID = "kdo.u1.poller.stress.handler.v1"
 BACKLOG_SIZE = 120
 POLL_TIMEOUT_SECONDS = 240
+WORKSPACE_ID = "kdo-engineering-staging"
 
 
 def _payload_dict(value):
@@ -108,12 +109,12 @@ def main():
             f"stress-{run_id}-{index:03d}" for index in range(BACKLOG_SIZE)
         }
         for marker in sorted(expected_markers):
-            if not publisher.publish(event_name, {"acceptance_marker": marker}):
+            if not publisher.publish(event_name, {"acceptance_marker": marker}, workspace_id=WORKSPACE_ID):
                 raise RuntimeError(f"staging stress event publish failed: {marker}")
 
         rows = client.table("events").select("id,payload").eq(
             "event_type", event_name
-        ).eq("source_service", producer).execute().data or []
+        ).eq("source_service", producer).eq("workspace_id", WORKSPACE_ID).execute().data or []
         marker_to_id = {
             _payload_dict(row.get("payload")).get("acceptance_marker"): str(row["id"])
             for row in rows
