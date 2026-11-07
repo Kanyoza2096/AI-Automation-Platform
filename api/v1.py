@@ -340,6 +340,8 @@ async def auth_exchange(
     from core.species_auth import species_auth
     from services.supabase import supabase_service
 
+    if auth_method_var.get() != "python_service":
+        raise HTTPException(status_code=403, detail="KCPG service credential required")
     request_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID") or "unknown"
     supabase_client = getattr(supabase_service, "client", None)
     if supabase_client is None:
@@ -423,6 +425,8 @@ async def auth_workspace(
     import uuid as _uuid
     from config.settings import settings
     from core.species_auth import normalize_role, resolve_platform_authority
+    if auth_method_var.get() != "python_service":
+        raise HTTPException(status_code=403, detail="KCPG service credential required")
     from services.supabase import supabase_service
 
     try:
