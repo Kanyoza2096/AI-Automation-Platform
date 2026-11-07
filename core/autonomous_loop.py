@@ -1371,6 +1371,29 @@ class AutonomousLoop:
         # 1. OBSERVE
         events_processed = await self._observe_phase()
 
+        # Feed the just-drained, workspace-scoped perception into each
+        # already-running organism. This is state synthesis only: no goals,
+        # action proposals, or execution authority are supplied here.
+        try:
+            from core.organism import OrganismRegistry, organism_registry
+            from organism.coordinator import cycle_started_organisms
+
+            registry = None
+            if self.container is not None:
+                try:
+                    registry = self.container.try_resolve(OrganismRegistry)
+                except Exception:
+                    registry = None
+            batch = await cycle_started_organisms(registry or organism_registry)
+            if batch.failed:
+                logger.warning(
+                    "Organism OODA synthesis partial: completed=%d failed=%d",
+                    batch.completed,
+                    batch.failed,
+                )
+        except Exception as exc:
+            logger.warning("Organism OODA synthesis unavailable: %s", str(exc)[:200])
+
         await self._check_system_health()
 
         # 2. ORIENT + 3. DECIDE + 4. ACT are inside _process_event
