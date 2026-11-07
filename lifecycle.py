@@ -1663,15 +1663,9 @@ async def _boot_autonomous_loop(app, container: ServiceContainer) -> None:
             )
             raise
 
-        try:
-            from core.organism import organism_registry
-            org = organism_registry.get_or_create("default")
-            ds = org.dreams
-            if ds is not None and org.council is not None:
-                ds._council = org.council
-            logger.info("DreamSystem linked to organism council (ws=default)")
-        except Exception as exc:
-            logger.debug("Dream council link: %s", exc)
+        # The canonical DreamSystem receives its platform council in main.py.
+        # Do not manufacture a tenant organism here just to obtain a council:
+        # tenant organisms are created only after authenticated workspace binding.
 
         await shutdown_registry.register(
             "AutonomousLoop", loop.stop, timeout_seconds=10.0
