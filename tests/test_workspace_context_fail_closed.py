@@ -68,3 +68,23 @@ def test_strict_tenant_event_rejects_synthetic_default_workspace():
             {"workspace_id": "default"},
             strict=True,
         )
+
+
+def test_autonomous_loop_boot_does_not_create_default_tenant_organism():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    lifecycle = (root / "lifecycle.py").read_text(encoding="utf-8")
+    assert 'organism_registry.get_or_create("default")' not in lifecycle
+    assert "DreamSystem linked to organism council (ws=default)" not in lifecycle
+
+
+def test_global_plugin_started_event_is_platform_scoped():
+    from core.nerve import validate_and_normalize
+
+    envelope = validate_and_normalize(
+        "plugin.started",
+        {"name": "example-plugin"},
+        strict=True,
+    )
+    assert envelope.workspace_id == "platform"

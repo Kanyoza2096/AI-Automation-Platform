@@ -28,6 +28,7 @@ SPECIES_EVENT_PREFIXES = (
     "species.",
     "meta.",
     "worker.",
+    "plugin.started",  # process-wide PluginRegistry lifecycle event
     "heartbeat.platform",
     "heartbeat.system",      # system pulse (HeartbeatPublisher)
     "heartbeat.beat",        # canonical nerve form
