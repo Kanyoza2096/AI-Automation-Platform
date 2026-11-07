@@ -110,6 +110,9 @@ class Organism:
         self.born_at = datetime.now(timezone.utc)
         self.last_active_at = self.born_at
         self._running = False
+        # Serialize birth/death so concurrent authenticated requests cannot
+        # publish duplicate lifecycle transitions for the same workspace.
+        self._lifecycle_lock = asyncio.Lock()
 
         # Organs (lazy)
         self._council = None
@@ -130,42 +133,71 @@ class Organism:
     # ── Birth / death ─────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        # Touch organs so they exist
-        self.council
-        self.memory
-        logger.info(
-            "Organism born workspace=%s plan=%s personas=%s",
-            self.workspace_id,
-            self.config.plan,
-            self.config.resolve_personas(),
-        )
-        if self._event_bus:
-            try:
-                await self._event_bus.publish(
-                    "organism.born",
-                    {
-                        "workspace_id": self.workspace_id,
-                        "plan": self.config.plan,
-                        "personas": self.config.resolve_personas(),
-                        "industry_organs": self.config.industry_organs,
-                    },
-                    source="organism",
-                    workspace_id=self.workspace_id,
+        async with self._lifecycle_lock:
+            if self._running:
+                return
+
+            # The cognitive runtime is the workspace's canonical composition
+            # boundary. Do not mark the organism alive if it cannot be built
+            # or if its tenant identity does not match this organism.
+            runtime = self.runtime
+            if runtime is None:
+                raise RuntimeError(
+                    f"OrganismRuntime unavailable for workspace={self.workspace_id}"
                 )
-            except Exception:
-                pass
+            if runtime.workspace_id != self.workspace_id:
+                raise RuntimeError("OrganismRuntime workspace identity mismatch")
+
+            # Materialize the workspace organs before publishing the birth
+            # transition. Runtime construction remains lazy for dormant tenants.
+            self.council
+            self.memory
+            self._running = True
+            logger.info(
+                "Organism born workspace=%s plan=%s personas=%s",
+                self.workspace_id,
+                self.config.plan,
+                self.config.resolve_personas(),
+            )
+            if self._event_bus:
+                try:
+                    await self._event_bus.publish(
+                        "organism.born",
+                        {
+                            "workspace_id": self.workspace_id,
+                            "plan": self.config.plan,
+                            "personas": self.config.resolve_personas(),
+                            "industry_organs": self.config.industry_organs,
+                        },
+                        source="organism",
+                        workspace_id=self.workspace_id,
+                    )
+                except Exception as exc:
+                    # Birth telemetry must not silently disappear. The organism
+                    # remains alive, while the durable bus reports the failure.
+                    logger.warning(
+                        "Organism birth event publish failed workspace=%s: %s",
+                        self.workspace_id,
+                        exc,
+                    )
 
     async def stop(self) -> None:
-        self._running = False
-        if self._dreams and hasattr(self._dreams, "stop"):
-            try:
-                await self._dreams.stop()
-            except Exception:
-                pass
-        logger.info("Organism stopped workspace=%s", self.workspace_id)
+        async with self._lifecycle_lock:
+            if not self._running:
+                return
+            if self._dreams and hasattr(self._dreams, "stop"):
+                try:
+                    await self._dreams.stop()
+                except Exception as exc:
+                    logger.warning(
+                        "DreamSystem stop failed workspace=%s: %s",
+                        self.workspace_id,
+                        exc,
+                    )
+            # Keep the deterministic runtime instance and its in-process state
+            # attached. A restart must not silently create a second mind.
+            self._running = False
+            logger.info("Organism stopped workspace=%s", self.workspace_id)
 
     def touch(self) -> None:
         self.last_active_at = datetime.now(timezone.utc)
