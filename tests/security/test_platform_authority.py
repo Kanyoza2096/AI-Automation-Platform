@@ -81,3 +81,37 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
         pass
     else:
         raise AssertionError("Workspace owner must not gain platform-wide access")
+
+def test_auth_identity_applies_platform_grants_without_mutating_workspace_role():
+    from core.species_auth import AuthIdentity
+
+    owner = AuthIdentity(
+        valid=True,
+        method="supabase_jwt",
+        workspace_id="ws-a",
+        role="viewer",
+        permissions=["read"],
+        platform_role="super_admin",
+        platform_permissions=["platform:*"],
+    )
+    assert owner.has_permission("write")
+    assert owner.has_permission("platform:users:manage")
+    owner.assert_workspace_access("ws-b")
+
+    operator = AuthIdentity(
+        valid=True,
+        method="supabase_jwt",
+        workspace_id="ws-a",
+        role="viewer",
+        permissions=["read"],
+        platform_role="operator",
+        platform_permissions=["platform:workspaces:read"],
+    )
+    assert operator.has_permission("platform:workspaces:read")
+    assert not operator.has_permission("platform:users:manage")
+    try:
+        operator.assert_workspace_access("ws-b")
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("Platform Operator must remain tenant-scoped for mutations")
