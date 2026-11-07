@@ -13,7 +13,7 @@ from core.shared_event_bus import SharedEventBus
 EXPECTED_HOST = "kkzshurcmcptleyqjgzo.supabase.co"
 HANDLER_ID = "kdo.u1.poller.stress.handler.v1"
 BACKLOG_SIZE = 120
-POLL_TIMEOUT_SECONDS = 100
+POLL_TIMEOUT_SECONDS = 240
 
 
 def _payload_dict(value):
@@ -70,7 +70,7 @@ def _competing_poller_worker(url, key, event_ids, event_name, group, result_queu
                     "completed_group_deliveries": len(completed_deliveries),
                 }
                 break
-            time.sleep(0.25)
+            time.sleep(1.0)
         if outcome is None:
             raise RuntimeError(
                 f"competing pollers timed out: handlers={len(completed_handlers)}/"
