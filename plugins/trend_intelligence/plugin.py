@@ -258,12 +258,12 @@ class TrendIntelligencePlugin:
         self._metrics["scans_total"] += 1
         for source in sources.data or []:
             source_id = str(source.get("id") or source.get("name"))
+            name = source.get("name") or source.get("id")
             workspace_id = str(source.get("workspace_id") or "").strip()
             if not workspace_id or workspace_id == "platform":
                 failed += 1
                 logger.warning("TrendIntelligence: source '%s' skipped — missing tenant workspace_id", name)
                 continue
-            name = source.get("name") or source.get("id")
             breaker = self._breakers.setdefault(source_id, CircuitBreaker())
             if not breaker.can_attempt():
                 skipped += 1
