@@ -99,7 +99,7 @@ class AuthIdentity:
             and self.platform_role == "super_admin"
         )
         if permission.startswith("platform:"):
-            if self.is_species:
+            if self.is_species or self.method != "supabase_jwt":
                 return False
             if is_human_platform_grant:
                 return True
