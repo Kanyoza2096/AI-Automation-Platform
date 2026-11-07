@@ -225,6 +225,14 @@ class Settings(BaseSettings):
         default="",
         description="Dedicated KCPG Gateway service credential. Species-level access.",
     )
+    platform_super_admin_user_ids: str = Field(
+        default="",
+        description="Comma-separated Supabase Auth user UUIDs explicitly granted platform.super_admin. Never populate from user metadata.",
+    )
+    platform_operator_user_ids: str = Field(
+        default="",
+        description="Comma-separated Supabase Auth user UUIDs explicitly granted platform.operator.",
+    )
     kcpg_internal_events_url: str = Field(default="", description="KCPG internal event ingress URL, e.g. https://gateway/api/v1/internal/events")
     kcpg_event_signing_secret: str = Field(default="", description="Shared HMAC secret for KCPG event ingress")
     admin_hash_pepper: str = Field(
