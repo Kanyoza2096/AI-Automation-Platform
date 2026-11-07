@@ -72,6 +72,7 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
         permissions=("owner",),
         principal_type="human",
     )
+    assert not workspace_owner.has_permission("platform:workspaces:read")
     try:
         workspace_owner.assert_workspace("ws-b")
     except PermissionError:
