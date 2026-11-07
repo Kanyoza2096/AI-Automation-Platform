@@ -33,6 +33,8 @@ on:
       - "tests/security/**"
       - "dependency_registry.py"
       - "lifecycle.py"
+      - "core/species_scale.py"
+      - "tests/test_species_scale_workspace_hydration.py"
       - "tests/test_architecture_contracts.py"
   workflow_dispatch:
 
