@@ -187,6 +187,7 @@ jobs:
                   "migrations/037_durable_event_fanout.sql",
                   "migrations/074_u1_shared_event_delivery_retry_dead_letter.sql",
                   "migrations/075_u1_shared_event_delivery_metrics.sql",
+                  "migrations/155_u2_organism_runtime_snapshots.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -198,6 +199,7 @@ jobs:
                   if migration_path.endswith((
                       "074_u1_shared_event_delivery_retry_dead_letter.sql",
                       "075_u1_shared_event_delivery_metrics.sql",
+                      "155_u2_organism_runtime_snapshots.sql",
                   )):
                       connection.execute(migration_sql, prepare=False)
                   else:
