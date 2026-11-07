@@ -48,7 +48,7 @@ def test_machine_identity_never_becomes_human_platform_super_admin():
     })()
     ctx = bind_from_auth_identity(identity)
     assert ctx.principal_type == "machine"
-    assert ctx.platform_role == "super_admin"  # preserved as data, but never a human principal
+    assert ctx.platform_role == ""
     clear = __import__("core.request_context", fromlist=["clear_request_context"]).clear_request_context
     clear()
 
