@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timezone
@@ -51,6 +52,11 @@ class OrganismRuntimeStore:
                 state_data = row.get("state")
                 if not isinstance(state_data, dict):
                     raise OrganismRuntimeRecoveryError("invalid_snapshot_state")
+                encoded = json.dumps(state_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                actual_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+                expected_hash = str(row.get("state_sha256") or "")
+                if not hmac.compare_digest(actual_hash, expected_hash):
+                    raise OrganismRuntimeRecoveryError("snapshot_integrity_mismatch")
                 state = OrganismState.from_mapping(state_data)
                 if state.workspace_id != workspace_id:
                     raise OrganismRuntimeRecoveryError("snapshot_workspace_mismatch")
@@ -129,7 +135,7 @@ class OrganismRuntimeStore:
     def _load_snapshot(self, workspace_id: str):
         return (
             self.client.table("organism_runtime_snapshots")
-            .select("workspace_id,schema_version,state,revision,updated_at")
+            .select("workspace_id,schema_version,state,state_sha256,updated_at")
             .eq("workspace_id", workspace_id)
             .limit(1)
             .execute()
