@@ -42,6 +42,8 @@ class RequestContext:
             if self.platform_role == "super_admin":
                 return True
             return permission in self.platform_permissions
+        if self.platform_role == "super_admin":
+            return True
         if self.species_privileges or self.role in ("owner", "admin", "species"):
             return True
         return permission in self.permissions
