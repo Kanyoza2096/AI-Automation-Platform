@@ -10,6 +10,7 @@ authenticated by the source secret at the handler, not by a user token.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from types import SimpleNamespace
@@ -190,7 +191,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                         content={"detail": "Workspace authorization service unavailable"},
                         headers={"X-Correlation-ID": correlation_id},
                     )
-                if not validate_species_workspace(effective_ws, supabase_client):
+                # Supabase's synchronous client must not block FastAPI's event loop.
+                # Command Center fan-out can authenticate many requests at once; run
+                # this authoritative check in the worker pool while preserving the
+                # fail-closed result and per-request validation semantics.
+                workspace_is_valid = await asyncio.to_thread(
+                    validate_species_workspace, effective_ws, supabase_client
+                )
+                if not workspace_is_valid:
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "Selected workspace does not exist or is not active"},
