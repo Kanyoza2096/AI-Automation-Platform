@@ -3,7 +3,6 @@
 CREATE TABLE IF NOT EXISTS public.organism_runtime_snapshots (
     workspace_id TEXT PRIMARY KEY,
     schema_version INTEGER NOT NULL DEFAULT 1 CHECK (schema_version > 0),
-    revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
     state JSONB NOT NULL,
     state_sha256 TEXT NOT NULL CHECK (length(state_sha256) = 64),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
