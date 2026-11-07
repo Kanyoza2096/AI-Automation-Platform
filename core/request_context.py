@@ -34,21 +34,31 @@ class RequestContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def has_permission(self, permission: str) -> bool:
-        # Platform permissions are separate from workspace RBAC.
+        # Platform permissions are separate from workspace RBAC and human-only.
+        is_human_platform_grant = (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+            and not self.species_privileges
+        )
         if permission.startswith("platform:"):
-            if self.species_privileges:
-                return True  # trusted machine/service identity; gateway still gates human entry
-            if self.platform_role == "super_admin":
+            if self.principal_type != "human" or self.species_privileges:
+                return False
+            if is_human_platform_grant:
                 return True
             return permission in self.platform_permissions
-        if self.platform_role == "super_admin":
+        if is_human_platform_grant:
             return True
         if self.species_privileges or self.role in ("owner", "admin", "species"):
             return True
         return permission in self.permissions
 
     def assert_workspace(self, target_workspace_id: str) -> None:
-        if self.species_privileges or self.platform_role == "super_admin":
+        if self.species_privileges or (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+        ):
             return
         if self.workspace_id != target_workspace_id:
             raise PermissionError(
@@ -61,7 +71,13 @@ class RequestContext:
         Ordinary principals: always self.workspace_id (hint ignored).
         Species operators: may adopt client_hint when provided.
         """
-        if (self.species_privileges or self.platform_role == "super_admin") and client_hint:
+        is_human_platform_grant = (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+            and not self.species_privileges
+        )
+        if (self.species_privileges or is_human_platform_grant) and client_hint:
             return client_hint
         return self.workspace_id
 
