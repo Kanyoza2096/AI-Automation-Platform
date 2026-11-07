@@ -45,8 +45,6 @@ class RequestContext:
     def assert_workspace(self, target_workspace_id: str) -> None:
         if self.species_privileges or self.platform_role == "super_admin":
             return
-        if self.platform_role == "operator" and "platform:workspaces:read" in self.platform_permissions:
-            return
         if self.workspace_id != target_workspace_id:
             raise PermissionError(
                 f"Principal {self.principal_id} cannot access workspace {target_workspace_id}"
@@ -129,7 +127,9 @@ def bind_from_auth_identity(identity: Any, *, correlation_id: str = "", brand_id
         species_privileges=is_species,
         platform_role=str(getattr(identity, "platform_role", "") or ""),
         platform_permissions=tuple(getattr(identity, "platform_permissions", None) or []),
-        principal_type="machine" if is_species else "human",
+        principal_type="machine" if (
+            is_species or str(getattr(identity, "method", "") or "") in ("workspace_token", "user_api_key")
+        ) else "human",
         auth_method=str(getattr(identity, "method", "") or ""),
         correlation_id=correlation_id or "",
         brand_id=brand_id,
