@@ -14,6 +14,7 @@ from core.shared_event_bus import SharedEventBus
 EXPECTED_HOST = "kkzshurcmcptleyqjgzo.supabase.co"
 HANDLER_ID = "kdo.u1.poller.acceptance.handler.v1"
 POLL_TIMEOUT_SECONDS = 35
+WORKSPACE_ID = "kdo-engineering-staging"
 
 
 def _payload_dict(value):
@@ -30,7 +31,7 @@ def _find_published_event(client, event_name, producer, marker):
     while time.monotonic() < deadline:
         rows = client.table("events").select("*").eq(
             "event_type", event_name
-        ).eq("source_service", producer).order(
+        ).eq("source_service", producer).eq("workspace_id", WORKSPACE_ID).order(
             "created_at", desc=True
         ).limit(20).execute().data or []
         for event in rows:
@@ -115,7 +116,7 @@ def _run_poller_worker(ctx, url, key, event_id, event_name, group, mode):
 
 def _publish_test_event(client, event_name, producer, marker):
     publisher = SharedEventBus(client, source_service=producer)
-    if not publisher.publish(event_name, {"acceptance_marker": marker}):
+    if not publisher.publish(event_name, {"acceptance_marker": marker}, workspace_id=WORKSPACE_ID):
         raise RuntimeError("SharedEventBus.publish returned false for staging probe")
     return _find_published_event(client, event_name, producer, marker)
 
