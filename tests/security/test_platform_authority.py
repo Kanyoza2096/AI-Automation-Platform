@@ -1,4 +1,4 @@
-"""Platform authority is a separate, server-issued human grant."""
+""""Platform authority is a separate, server-issued human grant."""
 
 from core.species_auth import resolve_platform_authority
 from core.request_context import RequestContext, bind_from_auth_identity
@@ -62,6 +62,7 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
         platform_role="super_admin",
         platform_permissions=("platform:*",),
         principal_type="human",
+        auth_method="supabase_jwt",
     )
     super_admin.assert_workspace("ws-b")
     assert super_admin.effective_workspace("ws-b") == "ws-b"
@@ -146,3 +147,4 @@ def test_auth_identity_applies_platform_grants_without_mutating_workspace_role()
         pass
     else:
         raise AssertionError("Platform Operator must remain tenant-scoped for mutations")
+"
