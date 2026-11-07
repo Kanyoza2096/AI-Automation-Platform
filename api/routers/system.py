@@ -73,13 +73,19 @@ async def get_system_health(request: Request):
         all_ok = all(bool(s.get("ok")) for s in services.values()) if services else False
         any_ok = any(bool(s.get("ok")) for s in services.values()) if services else False
         status = "healthy" if all_ok and services else ("degraded" if any_ok else "unknown")
-        return _ok({
+        from core.evidence_provenance import attach_evidence_provenance
+        payload = {
             "status": status,
             "connectors": statuses,
             "services": services,
             "uptime_seconds": getattr(getattr(request.app.state, "started_at", None), "timestamp", lambda: None)()
             if False else None,
-        })
+        }
+        payload = attach_evidence_provenance(
+            payload, source="kdo.system.health",
+            authority="kdo.backend.health_checker", data_class="DERIVED",
+        )
+        return _ok(payload)
     except Exception as exc:
         return _safe_err(exc, "GET /api/v1/system/health")
 
