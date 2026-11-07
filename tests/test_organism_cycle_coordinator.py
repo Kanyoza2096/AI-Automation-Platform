@@ -1,8 +1,11 @@
+import pytest
+
 from core.organism import OrganismRegistry
 from organism.coordinator import cycle_started_organisms
 from organism.perception import Observation, ObservationKind
 
 
+@pytest.mark.asyncio
 async def test_coordinator_synthesizes_observations_for_started_workspace_only():
     registry = OrganismRegistry()
     started = await registry.ensure_started("workspace-a")
@@ -27,6 +30,7 @@ async def test_coordinator_synthesizes_observations_for_started_workspace_only()
     assert dormant.runtime.state is None
 
 
+@pytest.mark.asyncio
 async def test_coordinator_does_not_create_or_start_unknown_workspaces():
     registry = OrganismRegistry()
     result = await cycle_started_organisms(registry)
@@ -37,6 +41,7 @@ async def test_coordinator_does_not_create_or_start_unknown_workspaces():
     assert registry.list_ids() == []
 
 
+@pytest.mark.asyncio
 async def test_coordinator_bounds_workspace_batch():
     registry = OrganismRegistry()
     await registry.ensure_started("workspace-a")
