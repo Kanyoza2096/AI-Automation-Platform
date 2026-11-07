@@ -44,6 +44,10 @@ def test_shared_bus_claim_returns_delivery_id_and_fencing_token():
             return self
         def or_(self, *args):
             return self
+        def is_(self, *args):
+            return self
+        def lte(self, *args):
+            return self
         def select(self, *args):
             return self
         def execute(self):
