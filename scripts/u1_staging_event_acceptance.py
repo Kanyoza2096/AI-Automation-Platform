@@ -16,6 +16,7 @@ from core.shared_event_bus import SharedEventBus
 EVENT_NAME = "kdo.u1.acceptance.probe"
 HANDLER_ID = "kdo.u1.acceptance.noop.v1"
 EXPECTED_HOST = "kkzshurcmcptleyqjgzo.supabase.co"
+WORKSPACE_ID = "kdo-engineering-staging"
 
 
 def _handler(_payload, *, fail_first=False, delay=0.0):
@@ -71,10 +72,14 @@ def _new_event(client, marker):
     event_id = uuid.uuid4().hex
     payload = {
         "acceptance_marker": marker,
+        "workspace_id": WORKSPACE_ID,
+        "correlation_id": uuid.uuid4().hex,
         "_nerve": {
             "event_id": event_id,
             "event_name": EVENT_NAME,
             "source": "github-actions-u1-acceptance",
+            "workspace_id": WORKSPACE_ID,
+            "correlation_id": uuid.uuid4().hex,
             "schema_version": "1.0",
         },
     }
@@ -83,6 +88,8 @@ def _new_event(client, marker):
         "event_type": EVENT_NAME,
         "payload": payload,
         "source_service": "github-actions-u1-acceptance",
+        "workspace_id": WORKSPACE_ID,
+        "correlation_id": payload["correlation_id"],
         "source_instance": f"acceptance-producer:{uuid.uuid4().hex}",
         "processed": False,
         "schema_version": "1.0",
