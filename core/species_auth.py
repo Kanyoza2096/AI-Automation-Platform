@@ -48,6 +48,8 @@ class AuthIdentity:
     permissions: List[str] = field(default_factory=list)
     name: str = ""
     is_species: bool = False  # True for master token or python service token
+    platform_role: str = ""  # Separate human platform authority; never inferred from workspace role
+    platform_permissions: List[str] = field(default_factory=list)
     error: str = ""
 
     def has_permission(self, permission: str) -> bool:
@@ -158,6 +160,25 @@ class SpeciesAuth:
             normalized_role = normalize_role(membership_role)
             permissions = {"viewer": ["read"], "operator": ["read", "write"], "admin": ["read", "write", "admin"], "owner": ["read", "write", "admin", "owner"]}[normalized_role]
 
+            # Platform authority is a distinct, server-configured human grant.
+            # Never read role/scope from JWT user_metadata or workspace membership.
+            settings = __import__("config.settings", fromlist=["settings"]).settings
+            def _configured_ids(raw: str) -> set[str]:
+                return {item.strip().lower() for item in str(raw or "").split(",") if item.strip()}
+            normalized_user_id = str(user_id or "").strip().lower()
+            super_admin_ids = _configured_ids(getattr(settings, "platform_super_admin_user_ids", ""))
+            operator_ids = _configured_ids(getattr(settings, "platform_operator_user_ids", ""))
+            platform_role = (
+                "super_admin" if normalized_user_id and normalized_user_id in super_admin_ids
+                else "operator" if normalized_user_id and normalized_user_id in operator_ids
+                else ""
+            )
+            platform_permissions = (
+                ["platform:*"] if platform_role == "super_admin"
+                else ["platform:health:read", "platform:workspaces:read", "platform:operations:read"]
+                if platform_role == "operator" else []
+            )
+
             return AuthIdentity(
                 valid=True,
                 method="supabase_jwt",
@@ -168,6 +189,8 @@ class SpeciesAuth:
                 role=normalized_role,
                 name=email or "jwt-user",
                 is_species=False,
+                platform_role=platform_role,
+                platform_permissions=platform_permissions,
             )
         except PermissionError as exc:
             logger.warning("JWT authenticated but not workspace-authorized: %s", exc)
