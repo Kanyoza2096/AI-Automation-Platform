@@ -42,7 +42,11 @@ class RequestContext:
             and not self.species_privileges
         )
         if permission.startswith("platform:"):
-            if self.principal_type != "human" or self.species_privileges:
+            if (
+                self.principal_type != "human"
+                or self.auth_method != "supabase_jwt"
+                or self.species_privileges
+            ):
                 return False
             if is_human_platform_grant:
                 return True
