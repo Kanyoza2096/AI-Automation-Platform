@@ -1141,6 +1141,17 @@ async def _boot_event_bus(container: ServiceContainer) -> None:
         org = organism_registry.get_or_create(default_ws, plan="free")
         await org.start()
         logger.info("OrganismRegistry ready (default workspace=%s).", default_ws)
+
+        from organism.event_bridge import OrganismEventBridge
+        organism_event_bridge = OrganismEventBridge(organism_registry)
+        await organism_event_bridge.start(bus)
+        container.register_instance(OrganismEventBridge, organism_event_bridge)
+        await shutdown_registry.register(
+            "OrganismEventBridge",
+            organism_event_bridge.stop,
+            timeout_seconds=5.0,
+        )
+        logger.info("OrganismEventBridge wired (workspace-scoped perception only).")
     except Exception as exc:
         logger.warning("OrganismRegistry boot failed: %s", str(exc)[:300])
 
