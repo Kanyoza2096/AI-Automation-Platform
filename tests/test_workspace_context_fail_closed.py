@@ -47,3 +47,14 @@ async def test_unified_bus_keeps_platform_events_without_tenant_context():
         assert event_id is not None
     finally:
         await bus.stop()
+
+
+def test_application_startup_never_creates_a_tenant_from_process_default():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    lifecycle = (root / "lifecycle.py").read_text(encoding="utf-8")
+    main = (root / "main.py").read_text(encoding="utf-8")
+    assert "tenant organisms start after authenticated workspace binding" in lifecycle
+    assert "get_or_create(default_ws" not in lifecycle
+    assert "canonical_dream_system.workspace_id = None" in main
