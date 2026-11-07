@@ -143,5 +143,15 @@ def test_u1_delivery_rpc_fences_claims_retries_and_dead_letters():
                 assert success_row[0] is True
                 assert success_row[1] is not None
                 assert success_row[2:] == (None, None)
+
+                metrics = connection.execute(
+                    "SELECT * FROM public.get_shared_event_delivery_metrics(%s)",
+                    ("u1-migration-test",),
+                ).fetchone()
+                assert metrics[0] == "u1-migration-test"
+                assert metrics[1] == 2  # total deliveries
+                assert metrics[2] == 0  # active pending deliveries
+                assert metrics[6] == 1  # completed deliveries
+                assert metrics[7] == 1  # dead-lettered deliveries
         finally:
             connection.rollback()
