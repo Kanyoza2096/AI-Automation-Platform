@@ -70,16 +70,17 @@ def _worker(url, key, event_id, group, mode, start_gate, result_queue):
 
 def _new_event(client, marker):
     event_id = uuid.uuid4().hex
+    correlation_id = uuid.uuid4().hex
     payload = {
         "acceptance_marker": marker,
         "workspace_id": WORKSPACE_ID,
-        "correlation_id": uuid.uuid4().hex,
+        "correlation_id": correlation_id,
         "_nerve": {
             "event_id": event_id,
             "event_name": EVENT_NAME,
             "source": "github-actions-u1-acceptance",
             "workspace_id": WORKSPACE_ID,
-            "correlation_id": uuid.uuid4().hex,
+            "correlation_id": correlation_id,
             "schema_version": "1.0",
         },
     }
