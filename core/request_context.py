@@ -125,8 +125,16 @@ def bind_from_auth_identity(identity: Any, *, correlation_id: str = "", brand_id
         role=role,
         permissions=permissions,
         species_privileges=is_species,
-        platform_role=str(getattr(identity, "platform_role", "") or ""),
-        platform_permissions=tuple(getattr(identity, "platform_permissions", None) or []),
+        platform_role=(
+            str(getattr(identity, "platform_role", "") or "")
+            if not is_species and str(getattr(identity, "method", "") or "") == "supabase_jwt"
+            else ""
+        ),
+        platform_permissions=(
+            tuple(getattr(identity, "platform_permissions", None) or [])
+            if not is_species and str(getattr(identity, "method", "") or "") == "supabase_jwt"
+            else ()
+        ),
         principal_type="machine" if (
             is_species or str(getattr(identity, "method", "") or "") in ("workspace_token", "user_api_key")
         ) else "human",
