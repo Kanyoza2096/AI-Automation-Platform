@@ -102,12 +102,10 @@ def bind_auth_identity(identity) -> None:
         return
 
     if identity.is_species:
-        from config.settings import get_settings
-
-        settings = get_settings()
-        default_id = getattr(settings, "default_workspace_id", "default") or "default"
+        # Platform credentials represent platform scope until an explicit,
+        # database-validated tenant workspace is selected by request middleware.
         set_workspace_context(
-            workspace_id=default_id,
+            workspace_id="platform",
             is_species=True,
             auth_method=identity.method,
         )
