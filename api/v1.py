@@ -361,6 +361,9 @@ async def auth_exchange(
         "role": identity.role,
         "workspaceId": identity.workspace_id,
         "scopes": identity.permissions,
+        "platformRole": identity.platform_role or None,
+        "platformPermissions": identity.platform_permissions,
+        "principalType": "human",
     }
 
 @router.get("/system/auth/validate", include_in_schema=False)

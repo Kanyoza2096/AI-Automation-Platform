@@ -24,6 +24,9 @@ class RequestContext:
     role: str = "viewer"  # viewer | operator | admin | owner | species
     permissions: tuple = ()
     species_privileges: bool = False
+    platform_role: str = ""  # super_admin | operator; human-only grant
+    platform_permissions: tuple = ()
+    principal_type: str = "human"  # human | machine
     auth_method: str = ""
     correlation_id: str = ""
     brand_id: Optional[str] = None
@@ -31,12 +34,35 @@ class RequestContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def has_permission(self, permission: str) -> bool:
+        # Platform permissions are separate from workspace RBAC and human-only.
+        is_human_platform_grant = (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+            and not self.species_privileges
+        )
+        if permission.startswith("platform:"):
+            if (
+                self.principal_type != "human"
+                or self.auth_method != "supabase_jwt"
+                or self.species_privileges
+            ):
+                return False
+            if is_human_platform_grant:
+                return True
+            return permission in self.platform_permissions
+        if is_human_platform_grant:
+            return True
         if self.species_privileges or self.role in ("owner", "admin", "species"):
             return True
         return permission in self.permissions
 
     def assert_workspace(self, target_workspace_id: str) -> None:
-        if self.species_privileges:
+        if self.species_privileges or (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+        ):
             return
         if self.workspace_id != target_workspace_id:
             raise PermissionError(
@@ -49,7 +75,13 @@ class RequestContext:
         Ordinary principals: always self.workspace_id (hint ignored).
         Species operators: may adopt client_hint when provided.
         """
-        if self.species_privileges and client_hint:
+        is_human_platform_grant = (
+            self.principal_type == "human"
+            and self.auth_method == "supabase_jwt"
+            and self.platform_role == "super_admin"
+            and not self.species_privileges
+        )
+        if (self.species_privileges or is_human_platform_grant) and client_hint:
             return client_hint
         return self.workspace_id
 
@@ -118,6 +150,19 @@ def bind_from_auth_identity(identity: Any, *, correlation_id: str = "", brand_id
         role=role,
         permissions=permissions,
         species_privileges=is_species,
+        platform_role=(
+            str(getattr(identity, "platform_role", "") or "")
+            if not is_species and str(getattr(identity, "method", "") or "") == "supabase_jwt"
+            else ""
+        ),
+        platform_permissions=(
+            tuple(getattr(identity, "platform_permissions", None) or [])
+            if not is_species and str(getattr(identity, "method", "") or "") == "supabase_jwt"
+            else ()
+        ),
+        principal_type="machine" if (
+            is_species or str(getattr(identity, "method", "") or "") in ("workspace_token", "user_api_key")
+        ) else "human",
         auth_method=str(getattr(identity, "method", "") or ""),
         correlation_id=correlation_id or "",
         brand_id=brand_id,

@@ -23,6 +23,8 @@ class StatefulQuery:
         self.filters = []
         self.or_filter = None
         self.limit_value = None
+        self.in_filters = []
+        self.range_value = None
 
     def select(self, *_args):
         return self
@@ -39,6 +41,14 @@ class StatefulQuery:
 
     def eq(self, key, value):
         self.filters.append((key, value))
+        return self
+
+    def in_(self, key, values):
+        self.in_filters.append((key, set(values)))
+        return self
+
+    def range(self, start, end):
+        self.range_value = (start, end)
         return self
 
     def or_(self, expression):
@@ -79,6 +89,9 @@ class StatefulQuery:
             row for row in rows
             if all(row.get(key) == value for key, value in self.filters)
         ]
+        for key, values in self.in_filters:
+            matched = [row for row in matched if row.get(key) in values]
+
         if self.or_filter and "claimed_at.is.null" in self.or_filter:
             cutoff_text = self.or_filter.split("claimed_at.lt.", 1)[1] if "claimed_at.lt." in self.or_filter else None
             cutoff = datetime.fromisoformat(cutoff_text) if cutoff_text else None
@@ -94,6 +107,9 @@ class StatefulQuery:
                 row.update(self.values)
             return Result([dict(row) for row in matched])
 
+        if self.range_value is not None:
+            start, end = self.range_value
+            matched = matched[start : end + 1]
         if self.limit_value is not None:
             matched = matched[: self.limit_value]
         return Result([dict(row) for row in matched])
