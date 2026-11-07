@@ -56,7 +56,7 @@ class RequestContext:
         Ordinary principals: always self.workspace_id (hint ignored).
         Species operators: may adopt client_hint when provided.
         """
-        if self.species_privileges and client_hint:
+        if (self.species_privileges or self.platform_role == "super_admin") and client_hint:
             return client_hint
         return self.workspace_id
 
