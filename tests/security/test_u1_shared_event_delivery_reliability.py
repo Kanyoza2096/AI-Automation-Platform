@@ -146,3 +146,55 @@ def test_dead_letter_requeue_resets_retry_state_and_is_group_scoped():
     assert ("eq", "id", "d1") in query.calls
     assert ("eq", "consumer_group", "director") in query.calls
     assert ("not",) in query.calls
+
+
+def test_delivery_metrics_are_database_aggregated_for_consumer_group():
+    row = {
+        "consumer_group": "director",
+        "total_deliveries": 12,
+        "pending_count": 3,
+        "due_count": 1,
+        "scheduled_retry_count": 2,
+        "in_flight_count": 0,
+        "completed_count": 8,
+        "dead_letter_count": 1,
+        "retrying_count": 2,
+        "retry_rate_percent": 25,
+        "average_delivery_latency_ms": 42.5,
+        "p95_delivery_latency_ms": 91.0,
+        "oldest_pending_age_seconds": 18,
+    }
+    db = Database(rpc_result=[row])
+    bus = SharedEventBus(db, source_service="director")
+
+    metrics = bus.get_delivery_metrics()
+
+    assert metrics["available"] is True
+    assert metrics["consumer_group"] == "director"
+    assert metrics["pending_count"] == 3
+    assert metrics["dead_letter_count"] == 1
+    assert metrics["p95_delivery_latency_ms"] == 91.0
+    name, params = db.rpc_calls[-1]
+    assert name == "get_shared_event_delivery_metrics"
+    assert params == {"p_consumer_group": "director"}
+
+
+def test_delivery_metrics_fail_closed_when_database_is_unavailable():
+    metrics = SharedEventBus(source_service="director").get_delivery_metrics()
+    assert metrics["available"] is False
+    assert metrics["consumer_group"] == "director"
+    assert metrics["pending_count"] == 0
+
+
+def test_shared_bus_health_exposes_delivery_metrics_separately_from_transport():
+    db = Database(rpc_result=[{
+        "consumer_group": "director",
+        "pending_count": 2,
+        "dead_letter_count": 0,
+    }])
+    health = SharedEventBus(db, source_service="director").health_check()
+
+    assert health["status"] == "healthy"
+    assert health["delivery_metrics"]["available"] is True
+    assert health["delivery_metrics"]["pending_count"] == 2
+    assert "delivery_metrics" not in health["stats"]

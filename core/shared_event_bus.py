@@ -595,10 +595,55 @@ class SharedEventBus:
             "subscriptions": {event: len(handlers) for event, handlers in self._handlers.items()},
         }
 
+    def get_delivery_metrics(self) -> Dict[str, Any]:
+        """Return database-aggregated delivery health for this consumer group."""
+        empty = {
+            "consumer_group": self.source_service,
+            "total_deliveries": 0,
+            "pending_count": 0,
+            "due_count": 0,
+            "scheduled_retry_count": 0,
+            "in_flight_count": 0,
+            "completed_count": 0,
+            "dead_letter_count": 0,
+            "retrying_count": 0,
+            "retry_rate_percent": 0,
+            "average_delivery_latency_ms": None,
+            "p95_delivery_latency_ms": None,
+            "oldest_pending_age_seconds": 0,
+        }
+        if not self.supabase:
+            return {**empty, "available": False}
+        try:
+            result = self.supabase.rpc(
+                "get_shared_event_delivery_metrics",
+                {"p_consumer_group": self.source_service},
+            ).execute()
+            rows = result.data or []
+            if isinstance(rows, dict):
+                row = rows
+            else:
+                row = rows[0] if rows else empty
+            return {**empty, **dict(row), "available": True}
+        except Exception:
+            logger.exception(
+                "SharedEventBus delivery metrics unavailable for '%s'",
+                self.source_service,
+            )
+            return {**empty, "available": False}
+
     def health_check(self) -> dict:
         stats = self.get_stats()
         status = "healthy" if self.supabase else "degraded"
-        return {"status": status, "stats": stats}
+        # Keep transport health and delivery evidence separate. A missing
+        # metrics migration is reported as unavailable, not misrepresented as
+        # a healthy zero-backlog measurement.
+        delivery_metrics = self.get_delivery_metrics()
+        return {
+            "status": status,
+            "stats": stats,
+            "delivery_metrics": delivery_metrics,
+        }
 
 
 _shared_bus: Optional[SharedEventBus] = None
