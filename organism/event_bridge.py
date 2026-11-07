@@ -44,6 +44,8 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
     if not isinstance(event, Mapping):
         return None
     event_name = event.get("event_name")
+    if not isinstance(event_name, str):
+        return None
     kind = EVENT_KINDS.get(event_name)
     if kind is None:
         return None
@@ -121,7 +123,7 @@ class OrganismEventBridge:
         if not isinstance(event, Mapping):
             return
         event_name = event.get("event_name")
-        if event_name not in self.EVENT_KINDS:
+        if not isinstance(event_name, str) or event_name not in self.EVENT_KINDS:
             return
         workspace_id = event.get("workspace_id")
         if not isinstance(workspace_id, str) or not workspace_id.strip():
