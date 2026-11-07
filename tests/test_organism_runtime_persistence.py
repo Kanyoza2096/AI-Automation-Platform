@@ -188,3 +188,21 @@ async def test_persist_rejects_cross_workspace_state():
     runtime.state = OrganismState(workspace_id="workspace-b")
     with pytest.raises(ValueError, match="does not match runtime"):
         await OrganismRuntimeStore(_Client()).persist(runtime)
+
+
+@pytest.mark.asyncio
+async def test_live_and_replayed_copy_of_same_event_is_idempotent():
+    from organism.event_bridge import observation_from_event
+
+    runtime = OrganismRuntime("workspace-a")
+    event = {
+        "event_name": "service_heartbeat",
+        "event_id": "evt-shared",
+        "workspace_id": "workspace-a",
+        "payload": {"status": "healthy"},
+    }
+    first = observation_from_event(event)
+    replayed = observation_from_event(event)
+    runtime.ingest(first)
+    runtime.ingest(replayed)
+    assert runtime.perception.recent("workspace-a") == (first,)
