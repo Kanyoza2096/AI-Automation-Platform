@@ -282,7 +282,7 @@ class TrendIntelligencePlugin:
                     # Empty is idle, not a failure.
                     breaker.record_success()
                 try:
-                    self.supabase.table("trend_sources").update({"last_fetched": datetime.now(timezone.utc).isoformat()}).eq("id", source_id).execute()
+                    self.supabase.table("trend_sources").update({"last_fetched": datetime.now(timezone.utc).isoformat()}).eq("id", source_id).eq("workspace_id", workspace_id).execute()
                 except Exception as e:
                     logger.debug("TrendIntelligence: last_fetched update failed: %s", e)
                 _publish_event("trend.source.fetched", {"source_id": source_id, "source_name": name, "items_fetched": len(posts), "items_new": new_posts}, workspace_id=workspace_id)
@@ -390,6 +390,7 @@ class TrendIntelligencePlugin:
                     self.supabase.table("trend_posts")
                     .select("id")
                     .eq("url", url)
+                    .eq("workspace_id", workspace_id)
                     .limit(1)
                     .execute()
                 )
@@ -815,6 +816,7 @@ class TrendIntelligencePlugin:
                 self.supabase.table("trend_decisions")
                 .select("id")
                 .eq("brand_id", brand_id)
+                .eq("workspace_id", str(rule.get("workspace_id") or ""))
                 .in_("decision", ["publish", "schedule"])
                 .gte("decided_at", f"{today}T00:00:00")
                 .limit(max_posts + 5)
