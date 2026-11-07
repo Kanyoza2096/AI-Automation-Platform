@@ -83,6 +83,8 @@ class OrganismRuntime:
         self.ecosystem = ecosystem
         self.cognitive = cognitive or CognitiveDecisionPlane()
         self.state: OrganismState | None = None
+        self.persistence_store = None
+        self.recovery_status = "not_attempted"
         self._cycle_number = 0
 
     def ingest(self, observation: Observation) -> Observation:

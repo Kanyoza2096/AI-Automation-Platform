@@ -54,6 +54,9 @@ async def cycle_started_organisms(
         attempted += 1
         try:
             await cycle_async(runtime)
+            store = getattr(runtime, "persistence_store", None)
+            if store is not None:
+                await store.persist(runtime)
             completed_ids.append(workspace_id)
         except Exception:
             failed += 1

@@ -69,6 +69,15 @@ class PerceptionBuffer:
 
     def ingest(self, observation: Observation) -> Observation:
         items = self._items.setdefault(observation.workspace_id, [])
+        # The same durable event may arrive once through replay and again
+        # through the live bus during boot. Stable observation IDs make that
+        # overlap idempotent without weakening workspace isolation.
+        existing = next(
+            (item for item in items if item.observation_id == observation.observation_id),
+            None,
+        )
+        if existing is not None:
+            return existing
         items.append(observation)
         if len(items) > self._limit:
             del items[: len(items) - self._limit]

@@ -148,6 +148,29 @@ class Organism:
             if runtime.workspace_id != self.workspace_id:
                 raise RuntimeError("OrganismRuntime workspace identity mismatch")
 
+            # Recovery must complete before the organism is marked alive. The
+            # backend service-role client is used only inside this server process;
+            # browser clients and tenant-supplied identifiers never select a DB.
+            if runtime.recovery_status in {
+                "not_attempted", "recovery_failed", "disabled_no_service_client"
+            }:
+                try:
+                    from services.supabase import supabase_service
+                    service_client = supabase_service.service_client
+                except Exception:
+                    service_client = None
+                if service_client is None:
+                    runtime.recovery_status = "disabled_no_service_client"
+                    logger.warning(
+                        "Organism runtime persistence disabled workspace=%s",
+                        self.workspace_id,
+                    )
+                else:
+                    from organism.persistence import OrganismRuntimeStore
+                    store = OrganismRuntimeStore(service_client)
+                    await store.restore(runtime)
+                    runtime.persistence_store = store
+
             # Materialize the workspace organs before publishing the birth
             # transition. Runtime construction remains lazy for dormant tenants.
             self.council
