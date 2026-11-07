@@ -11,6 +11,8 @@ on:
       - "config/settings.py"
       - "core/species_auth.py"
       - "core/request_context.py"
+      - "middleware/request_context_middleware.py"
+      - "tests/test_service_auth_only_workspace_bypass.py"
       - "api/v1.py"
       - "tests/security/test_platform_authority.py"
       - ".github/workflows/platform-authority-security.yml"
@@ -30,6 +32,6 @@ jobs:
       - name: Install minimal test dependencies
         run: python -m pip install "pydantic>=2.5,<3" "pydantic-settings>=2.1" "pytest>=8.0"
       - name: Compile changed Python modules
-        run: python -m py_compile config/settings.py core/species_auth.py core/request_context.py api/v1.py
+        run: python -m py_compile config/settings.py core/species_auth.py core/request_context.py middleware/request_context_middleware.py api/v1.py
       - name: Run platform authority regression tests
-        run: python -m pytest tests/security/test_platform_authority.py -q
+        run: python -m pytest tests/security/test_platform_authority.py tests/test_service_auth_only_workspace_bypass.py -q
