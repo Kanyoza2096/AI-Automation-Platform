@@ -31,6 +31,20 @@ from core.authorization import normalize_role
 
 logger = logging.getLogger("kanyoza.core.species_auth")
 
+def _configured_user_ids(raw: str) -> set[str]:
+    """Parse server-only UUID allowlists; no email or client metadata matching."""
+    return {item.strip().lower() for item in str(raw or "").split(",") if item.strip()}
+
+def resolve_platform_authority(user_id: str, *, super_admin_ids: str = "", operator_ids: str = "") -> tuple[str, list[str]]:
+    """Resolve a human platform grant from an explicit server-side UUID allowlist."""
+    subject = str(user_id or "").strip().lower()
+    if not subject:
+        return "", []
+    if subject in _configured_user_ids(super_admin_ids):
+        return "super_admin", ["platform:*"]
+    if subject in _configured_user_ids(operator_ids):
+        return "operator", ["platform:health:read", "platform:workspaces:read", "platform:operations:read"]
+    return "", []
 # Permissions a master token holds
 MASTER_PERMISSIONS = ["read", "write", "admin", "owner", "species"]
 
@@ -162,21 +176,11 @@ class SpeciesAuth:
 
             # Platform authority is a distinct, server-configured human grant.
             # Never read role/scope from JWT user_metadata or workspace membership.
-            settings = __import__("config.settings", fromlist=["settings"]).settings
-            def _configured_ids(raw: str) -> set[str]:
-                return {item.strip().lower() for item in str(raw or "").split(",") if item.strip()}
-            normalized_user_id = str(user_id or "").strip().lower()
-            super_admin_ids = _configured_ids(getattr(settings, "platform_super_admin_user_ids", ""))
-            operator_ids = _configured_ids(getattr(settings, "platform_operator_user_ids", ""))
-            platform_role = (
-                "super_admin" if normalized_user_id and normalized_user_id in super_admin_ids
-                else "operator" if normalized_user_id and normalized_user_id in operator_ids
-                else ""
-            )
-            platform_permissions = (
-                ["platform:*"] if platform_role == "super_admin"
-                else ["platform:health:read", "platform:workspaces:read", "platform:operations:read"]
-                if platform_role == "operator" else []
+            from config.settings import settings
+            platform_role, platform_permissions = resolve_platform_authority(
+                user_id,
+                super_admin_ids=getattr(settings, "platform_super_admin_user_ids", ""),
+                operator_ids=getattr(settings, "platform_operator_user_ids", ""),
             )
 
             return AuthIdentity(
