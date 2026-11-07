@@ -63,6 +63,7 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
         principal_type="human",
     )
     super_admin.assert_workspace("ws-b")
+    assert super_admin.effective_workspace("ws-b") == "ws-b"
 
     workspace_owner = RequestContext(
         principal_id="workspace-owner",
