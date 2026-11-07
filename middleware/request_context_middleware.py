@@ -170,40 +170,31 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                         )
                     effective_ws = client_ws
                 else:
-                    try:
-                        from config.settings import get_settings
-                        effective_ws = (
-                            getattr(get_settings(), "default_workspace_id", None)
-                            or "platform"
+                    # A species credential without an explicit tenant selector is
+                    # operating at platform scope, not impersonating a default tenant.
+                    effective_ws = "platform"
+
+                if client_ws:
+                    from core.species_auth import validate_species_workspace
+
+                    # A privileged tenant selector must still be validated against
+                    # the authoritative workspace registry before it is bound.
+                    if supabase_client is None:
+                        logger.error("Supabase client unavailable — refusing species workspace selection: %s", effective_ws)
+                        return JSONResponse(
+                            status_code=503,
+                            content={"detail": "Workspace authorization service unavailable"},
+                            headers={"X-Correlation-ID": correlation_id},
                         )
-                    except Exception:
-                        effective_ws = "platform"
-
-                from core.species_auth import validate_species_workspace
-
-                # Fail closed: a privileged tenant selector must be validated before
-                # it becomes request context. Never bind an arbitrary workspace when
-                # the authoritative workspace registry is unavailable.
-                if supabase_client is None:
-                    logger.error("Supabase client unavailable — refusing species workspace selection: %s", effective_ws)
-                    return JSONResponse(
-                        status_code=503,
-                        content={"detail": "Workspace authorization service unavailable"},
-                        headers={"X-Correlation-ID": correlation_id},
+                    workspace_is_valid = await asyncio.to_thread(
+                        validate_species_workspace, effective_ws, supabase_client
                     )
-                # Supabase's synchronous client must not block FastAPI's event loop.
-                # Command Center fan-out can authenticate many requests at once; run
-                # this authoritative check in the worker pool while preserving the
-                # fail-closed result and per-request validation semantics.
-                workspace_is_valid = await asyncio.to_thread(
-                    validate_species_workspace, effective_ws, supabase_client
-                )
-                if not workspace_is_valid:
-                    return JSONResponse(
-                        status_code=403,
-                        content={"detail": "Selected workspace does not exist or is not active"},
-                        headers={"X-Correlation-ID": correlation_id},
-                    )
+                    if not workspace_is_valid:
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "Selected workspace does not exist or is not active"},
+                            headers={"X-Correlation-ID": correlation_id},
+                        )
 
                 from core.request_context import RequestContext, set_request_context as _set
 
@@ -259,9 +250,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             # have a started organism runtime before downstream health/status
             # routes report its state.  Creation alone is not "alive".
             try:
-                from core.organism import organism_registry
-                await organism_registry.ensure_started(bound_ws)
-                request.state.organism_lifecycle = "ALIVE"
+                if identity.is_species and bound_ws == "platform":
+                    # Platform operators do not own a tenant organism. A tenant
+                    # organism starts only after an explicit, DB-validated selector.
+                    request.state.organism_lifecycle = "PLATFORM"
+                else:
+                    from core.organism import organism_registry
+                    await organism_registry.ensure_started(bound_ws)
+                    request.state.organism_lifecycle = "ALIVE"
             except Exception as exc:
                 # Fail closed for lifecycle reporting without turning every
                 # authenticated request into a 500.  The vitals endpoint will
