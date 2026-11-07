@@ -126,7 +126,8 @@ async def command_center_read_model(request: Request):
         sections = {key: value.as_dict() for key, value in truth_sections.items()}
         live = sum(1 for key in SECTIONS if sections[key]["state"] == "LIVE")
         unknown = len(SECTIONS) - live
-        return {
+        from core.evidence_provenance import attach_evidence_provenance
+        payload = {
             "schema": "CommandCenterReadModel/v1", "version": "v72.4",
             "generatedAt": datetime.now(timezone.utc).isoformat(),
             "workspaceId": workspace_id,
@@ -142,7 +143,16 @@ async def command_center_read_model(request: Request):
                 ],
             },
         }
-    return CommandCenterReadModel(workspace_id).build(sources)
+        return attach_evidence_provenance(
+            payload, source="kdo.command_center.read_model",
+            authority="kdo.backend.command_center", data_class="DERIVED",
+        )
+    from core.evidence_provenance import attach_evidence_provenance
+    payload = CommandCenterReadModel(workspace_id).build(sources)
+    return attach_evidence_provenance(
+        payload, source="kdo.command_center.read_model",
+        authority="kdo.backend.command_center", data_class="DERIVED",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,7 +187,8 @@ async def command_center_situation(request: Request):
         total = len(headline)
         state = "LIVE" if live == total else ("DEGRADED" if live else "UNKNOWN")
 
-        return {
+        from core.evidence_provenance import attach_evidence_provenance
+        payload = {
             "schema": "CommandCenterSituation/v1",
             "version": "v72.4",
             "workspaceId": workspace_id,
@@ -187,6 +198,10 @@ async def command_center_situation(request: Request):
             "summary": {"sourcesKnown": live, "sourcesUnknown": unknown, "sourcesTotal": total},
             "authority": {"readOnly": True, "actionAuthorityGranted": False},
         }
+        return attach_evidence_provenance(
+            payload, source="kdo.command_center.situation",
+            authority="kdo.backend.command_center", data_class="DERIVED",
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -200,7 +215,8 @@ async def command_center_diagnostics(request: Request):
     workspace_id = _workspace_id(request)
     runtime = getattr(request.app.state, "production_runtime", None)
     if runtime is None:
-        return {
+        from core.evidence_provenance import attach_evidence_provenance
+        payload = {
             "schema": "CommandCenterDiagnostics/v1",
             "version": "v72.4",
             "workspaceId": workspace_id,
@@ -208,12 +224,17 @@ async def command_center_diagnostics(request: Request):
             "reason": "production_runtime_not_installed",
             "authority": {"readOnly": True, "actionAuthorityGranted": False},
         }
+        return attach_evidence_provenance(
+            payload, source="kdo.command_center.diagnostics",
+            authority="kdo.backend.command_center", data_class="DERIVED",
+        )
     try:
         status = runtime.status()
         layers = status.get("layers", []) or []
         wired_states = {"wired", "fenced-legacy"}
         wired = sum(1 for layer in layers if layer.get("status") in wired_states)
-        return {
+        from core.evidence_provenance import attach_evidence_provenance
+        payload = {
             "schema": "CommandCenterDiagnostics/v1",
             "version": status.get("version", "v71.13"),
             "workspaceId": workspace_id,
@@ -224,6 +245,10 @@ async def command_center_diagnostics(request: Request):
             "summary": {"layersTotal": len(layers), "layersWired": wired},
             "authority": {"readOnly": True, "actionAuthorityGranted": False},
         }
+        return attach_evidence_provenance(
+            payload, source="kdo.command_center.diagnostics",
+            authority="kdo.backend.command_center", data_class="DERIVED",
+        )
     except Exception as exc:
         logger.exception("command_center_diagnostics failed for workspace=%s", workspace_id)
         raise HTTPException(status_code=503, detail=f"diagnostics_unavailable:{type(exc).__name__}") from exc
