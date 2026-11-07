@@ -151,7 +151,9 @@ class Organism:
             # Recovery must complete before the organism is marked alive. The
             # backend service-role client is used only inside this server process;
             # browser clients and tenant-supplied identifiers never select a DB.
-            if runtime.recovery_status == "not_attempted":
+            if runtime.recovery_status in {
+                "not_attempted", "recovery_failed", "disabled_no_service_client"
+            }:
                 try:
                     from services.supabase import supabase_service
                     service_client = supabase_service.service_client
