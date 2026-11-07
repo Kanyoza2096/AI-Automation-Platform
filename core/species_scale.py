@@ -212,13 +212,45 @@ class OrganismStateStore:
             n += 1
         return n
 
+    def _workspace_is_active(self, workspace_id: str) -> bool:
+        """Require an authoritative active tenant before restoring its organism."""
+        ws = str(workspace_id or "").strip()
+        if not ws or ws.lower() in {"default", "unbound", "platform"}:
+            return False
+        if not self._db:
+            return False
+        try:
+            result = (
+                self._db.table("workspaces")
+                .select("id,status")
+                .eq("id", ws)
+                .limit(1)
+                .execute()
+            )
+            if not result or not result.data:
+                return False
+            return str(result.data[0].get("status") or "").lower() == "active"
+        except Exception as exc:
+            logger.warning(
+                "Skipping organism hydration workspace=%s; workspace validation failed: %s",
+                ws[:64],
+                type(exc).__name__,
+            )
+            return False
+
     def hydrate_registry(self, registry) -> int:
-        """Rebirth organisms from durable store. Returns count hydrated."""
+        """Restore only durable organisms belonging to active database workspaces."""
         rows = self.load_all()
         n = 0
+        skipped = 0
         for row in rows:
-            ws = row.get("workspace_id")
-            if not ws:
+            ws = str(row.get("workspace_id") or "").strip()
+            if not self._workspace_is_active(ws):
+                skipped += 1
+                logger.warning(
+                    "Skipping stale organism_state row for non-active workspace=%s",
+                    ws[:64] or "<empty>",
+                )
                 continue
             org = registry.get_or_create(
                 ws,
@@ -231,8 +263,12 @@ class OrganismStateStore:
             if row.get("stats") and isinstance(row["stats"], dict):
                 org.stats.update(row["stats"])
             n += 1
-        if n:
-            logger.info("Hydrated %d organisms from durable state", n)
+        if n or skipped:
+            logger.info(
+                "Organism durable hydration complete hydrated=%d skipped_non_active=%d",
+                n,
+                skipped,
+            )
         return n
 
 
