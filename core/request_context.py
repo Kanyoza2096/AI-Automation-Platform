@@ -34,11 +34,15 @@ class RequestContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def has_permission(self, permission: str) -> bool:
+        # Platform permissions are a separate authority namespace. Workspace
+        # owner/admin roles must never satisfy platform permission checks.
+        if permission.startswith("platform:"):
+            if self.species_privileges:
+                return True  # trusted machine/service identity; gateway still gates human entry
+            if self.platform_role == "super_admin":
+                return True
+            return permission in self.platform_permissions
         if self.species_privileges or self.role in ("owner", "admin", "species"):
-            return True
-        if self.platform_role == "super_admin" and permission.startswith("platform:"):
-            return True
-        if permission.startswith("platform:") and permission in self.platform_permissions:
             return True
         return permission in self.permissions
 
