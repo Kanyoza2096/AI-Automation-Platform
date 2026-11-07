@@ -76,6 +76,15 @@ def test_platform_super_admin_can_cross_workspace_but_workspace_owner_cannot():
         principal_type="human",
     )
     assert not workspace_owner.has_permission("platform:workspaces:read")
+    forged_context = RequestContext(
+        principal_id="api-key",
+        workspace_id="ws-a",
+        platform_role="operator",
+        platform_permissions=("platform:workspaces:read",),
+        principal_type="human",
+        auth_method="workspace_token",
+    )
+    assert not forged_context.has_permission("platform:workspaces:read")
     try:
         workspace_owner.assert_workspace("ws-b")
     except PermissionError:
@@ -110,6 +119,15 @@ def test_auth_identity_applies_platform_grants_without_mutating_workspace_role()
         platform_permissions=["platform:*"],
     )
     assert not machine.has_permission("platform:users:manage")
+
+    forged_api_key = AuthIdentity(
+        valid=True,
+        method="workspace_token",
+        workspace_id="ws-a",
+        platform_role="operator",
+        platform_permissions=["platform:workspaces:read"],
+    )
+    assert not forged_api_key.has_permission("platform:workspaces:read")
 
     operator = AuthIdentity(
         valid=True,
