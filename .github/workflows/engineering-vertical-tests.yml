@@ -175,7 +175,7 @@ jobs:
                   "migrations/074_u1_shared_event_delivery_retry_dead_letter.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
-                  migration_sql = "\\n".join(
+                  migration_sql = "\n".join(
                       line for line in migration_sql.splitlines()
                       if not line.lstrip().startswith("--")
                   )
