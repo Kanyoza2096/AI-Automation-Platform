@@ -184,3 +184,17 @@ def test_delivery_metrics_fail_closed_when_database_is_unavailable():
     assert metrics["available"] is False
     assert metrics["consumer_group"] == "director"
     assert metrics["pending_count"] == 0
+
+
+def test_shared_bus_health_exposes_delivery_metrics_separately_from_transport():
+    db = Database(rpc_result=[{
+        "consumer_group": "director",
+        "pending_count": 2,
+        "dead_letter_count": 0,
+    }])
+    health = SharedEventBus(db, source_service="director").health_check()
+
+    assert health["status"] == "healthy"
+    assert health["delivery_metrics"]["available"] is True
+    assert health["delivery_metrics"]["pending_count"] == 2
+    assert "delivery_metrics" not in health["stats"]
