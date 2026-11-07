@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -75,13 +76,17 @@ class OrganismRuntimeStore:
             # The database query is newest-first for a bounded page. Replay in
             # chronological order so the in-memory buffer retains the newest items.
             for event_row in reversed(rows):
+                payload = event_row.get("payload")
+                # Ledger rows are persisted input. Malformed JSON shapes must
+                # not abort recovery for the entire workspace.
+                safe_payload = payload if isinstance(payload, Mapping) else {}
                 event = {
                     "event_name": event_row.get("event_type"),
                     "event_id": event_row.get("id"),
                     "workspace_id": event_row.get("workspace_id"),
-                    "payload": event_row.get("payload") or {},
+                    "payload": safe_payload,
                     "source": "durable_event_ledger",
-                    "correlation_id": (event_row.get("payload") or {}).get("correlation_id"),
+                    "correlation_id": safe_payload.get("correlation_id"),
                     "observed_at": event_row.get("created_at"),
                 }
                 observation = observation_from_event(event)
