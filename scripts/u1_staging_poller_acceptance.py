@@ -162,7 +162,11 @@ def main():
             raise RuntimeError(f"poller did not record the intentional failure: {failed}")
 
         expired = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
-        client.table("event_deliveries").update({"claimed_at": expired}).eq(
+        retry_due = datetime.now(timezone.utc).isoformat()
+        client.table("event_deliveries").update({
+            "claimed_at": expired,
+            "next_attempt_at": retry_due,
+        }).eq(
             "event_id", retry_id
         ).eq("consumer_group", retry_group).eq("processed", False).execute()
         client.table("event_handler_deliveries").update({"claimed_at": expired}).eq(
