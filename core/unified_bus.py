@@ -426,8 +426,12 @@ class UnifiedEventBus:
                 try:
                     from core.workspace_context import get_current_workspace
                     workspace_id = get_current_workspace()
-                except Exception:
-                    workspace_id = workspace_id
+                except PermissionError:
+                    workspace_id = None
+            # Missing identity is strict by default: tenant events must not be
+            # persisted under an "unbound" pseudo-workspace. Platform event
+            # types are still normalized to the platform workspace by Nerve.
+            effective_strict = strict_nerve or not bool(workspace_id)
             envelope = validate_and_normalize(
                 event_name,
                 payload,
@@ -439,7 +443,7 @@ class UnifiedEventBus:
                 decision_id=decision_id,
                 parent_event_id=parent_event_id,
                 schema_version=schema_version,
-                strict=strict_nerve,
+                strict=effective_strict,
             )
             payload = envelope.to_payload()
             workspace_id = envelope.workspace_id
