@@ -93,13 +93,19 @@ class AuthIdentity:
     error: str = ""
 
     def has_permission(self, permission: str) -> bool:
+        if permission.startswith("platform:"):
+            if self.is_species or self.platform_role == "super_admin":
+                return True
+            return permission in self.platform_permissions
+        if self.platform_role == "super_admin":
+            return True
         if self.is_species or "owner" in self.permissions or "admin" in self.permissions:
             return True
         return permission in self.permissions
 
     def assert_workspace_access(self, target_workspace_id: str) -> None:
         """Raise PermissionError if this identity cannot touch the workspace."""
-        if self.is_species:
+        if self.is_species or self.platform_role == "super_admin":
             return
         if not self.workspace_id:
             raise PermissionError("No workspace bound to this credential")
