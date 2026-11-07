@@ -49,6 +49,16 @@ class _Query:
         if self.operation == "upsert":
             self.client.snapshots[self.record["workspace_id"]] = self.record
             return SimpleNamespace(data=[self.record])
+        if self.table_name == "workspaces":
+            workspace_id = self.filters.get("id")
+            if self.client.workspaces is None:
+                rows = [{"id": workspace_id, "status": "active"}]
+            else:
+                rows = [
+                    row for row in self.client.workspaces
+                    if row.get("id") == workspace_id
+                ]
+            return SimpleNamespace(data=rows)
         if self.table_name == "organism_runtime_snapshots":
             row = self.client.snapshots.get(self.filters.get("workspace_id"))
             return SimpleNamespace(data=[row] if row else [])
@@ -66,6 +76,8 @@ class _Client:
         self.snapshots = snapshots or {}
         self.events = events or []
         self.fail = fail
+        self.workspaces = None
+
 
     def table(self, name):
         return _Query(self, name)
@@ -206,3 +218,42 @@ async def test_live_and_replayed_copy_of_same_event_is_idempotent():
     runtime.ingest(first)
     runtime.ingest(replayed)
     assert runtime.perception.recent("workspace-a") == (first,)
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_workspace_missing_from_current_database():
+    runtime = OrganismRuntime("production-workspace")
+    client = _Client(snapshots={"production-workspace": _snapshot("production-workspace")})
+    client.workspaces = []
+
+    with pytest.raises(OrganismRuntimeRecoveryError, match="unknown_workspace"):
+        await OrganismRuntimeStore(client).restore(runtime)
+
+    assert runtime.recovery_status == "recovery_failed"
+    assert runtime.state is None
+
+
+@pytest.mark.asyncio
+async def test_restore_rejects_inactive_workspace_before_reading_tenant_state():
+    runtime = OrganismRuntime("suspended-workspace")
+    client = _Client(snapshots={"suspended-workspace": _snapshot("suspended-workspace")})
+    client.workspaces = [{"id": "suspended-workspace", "status": "suspended"}]
+
+    with pytest.raises(OrganismRuntimeRecoveryError, match="inactive_workspace"):
+        await OrganismRuntimeStore(client).restore(runtime)
+
+    assert runtime.recovery_status == "recovery_failed"
+    assert runtime.state is None
+
+
+@pytest.mark.asyncio
+async def test_persist_rejects_workspace_missing_from_current_database():
+    runtime = OrganismRuntime("orphan-workspace")
+    runtime.state = OrganismState(workspace_id="orphan-workspace")
+    client = _Client()
+    client.workspaces = []
+
+    with pytest.raises(OrganismRuntimeRecoveryError, match="unknown_workspace"):
+        await OrganismRuntimeStore(client).persist(runtime)
+
+    assert "orphan-workspace" not in client.snapshots
