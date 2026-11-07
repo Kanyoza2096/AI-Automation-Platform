@@ -167,7 +167,8 @@ jobs:
                       payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                       workspace_id TEXT,
                       correlation_id TEXT,
-                      decision_id TEXT
+                      decision_id TEXT,
+                      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                   )
               """)
               for migration_path in (
