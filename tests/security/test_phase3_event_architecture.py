@@ -247,6 +247,6 @@ def test_nerve_normalization_tolerates_malformed_legacy_metadata():
         envelope = validate_and_normalize(
             "legacy.event", {"_nerve": malformed}, strict=False
         )
-        assert envelope.workspace_id == "default"
+        assert envelope.workspace_id == "unbound"
         assert envelope.correlation_id
         assert workspace_from_payload({"_nerve": malformed}) is None
