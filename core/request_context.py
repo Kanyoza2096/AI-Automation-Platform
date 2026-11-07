@@ -24,6 +24,9 @@ class RequestContext:
     role: str = "viewer"  # viewer | operator | admin | owner | species
     permissions: tuple = ()
     species_privileges: bool = False
+    platform_role: str = ""  # super_admin | operator; human-only grant
+    platform_permissions: tuple = ()
+    principal_type: str = "human"  # human | machine
     auth_method: str = ""
     correlation_id: str = ""
     brand_id: Optional[str] = None
@@ -33,10 +36,16 @@ class RequestContext:
     def has_permission(self, permission: str) -> bool:
         if self.species_privileges or self.role in ("owner", "admin", "species"):
             return True
+        if self.platform_role == "super_admin" and permission.startswith("platform:"):
+            return True
+        if permission.startswith("platform:") and permission in self.platform_permissions:
+            return True
         return permission in self.permissions
 
     def assert_workspace(self, target_workspace_id: str) -> None:
-        if self.species_privileges:
+        if self.species_privileges or self.platform_role == "super_admin":
+            return
+        if self.platform_role == "operator" and "platform:workspaces:read" in self.platform_permissions:
             return
         if self.workspace_id != target_workspace_id:
             raise PermissionError(
@@ -118,6 +127,9 @@ def bind_from_auth_identity(identity: Any, *, correlation_id: str = "", brand_id
         role=role,
         permissions=permissions,
         species_privileges=is_species,
+        platform_role=str(getattr(identity, "platform_role", "") or ""),
+        platform_permissions=tuple(getattr(identity, "platform_permissions", None) or []),
+        principal_type="machine" if is_species else "human",
         auth_method=str(getattr(identity, "method", "") or ""),
         correlation_id=correlation_id or "",
         brand_id=brand_id,
