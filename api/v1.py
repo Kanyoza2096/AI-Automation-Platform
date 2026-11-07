@@ -303,9 +303,21 @@ router = APIRouter(prefix="/api/v1")
 
 
 class AuthExchangeRequest(BaseModel):
-    """Short-lived internal exchange of a validated browser Supabase access token."""
-    access_token: str = Field(min_length=20, max_length=8192)
+    """Internal credential exchange; passwords are accepted only from KCPG."""
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
     workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class AuthWorkspaceRequest(BaseModel):
+    """Workspace switch based on an already authenticated Gateway principal."""
+    principal_id: str = Field(min_length=1, max_length=128)
+    workspace_id: str = Field(min_length=1, max_length=128)
 
 
 @router.post("/auth/exchange", include_in_schema=False)
@@ -313,31 +325,65 @@ async def auth_exchange(
     payload: AuthExchangeRequest,
     request: Request,
     _service_auth: bool = Depends(require_auth),
+    _rate_limit= create_rate_limit_dependency("gateway_password_auth", max_per_minute=5),
     container=Depends(get_container),
 ):
-    """Validate a browser Supabase token for KCPG session exchange.
+    """Authenticate credentials server-side for KCPG and return canonical authority.
 
-    The endpoint itself is internal-only at the network layer. KCPG authenticates
-    with the Python service credential, then supplies the browser token for
-    canonical SpeciesAuth validation. No browser token is persisted here.
+    The browser sends credentials only to KCPG. KCPG forwards them over its
+    authenticated service channel. KDO uses the staging project's public anon
+    key to perform Supabase Auth password sign-in, then validates the returned
+    access token and resolves membership/platform authority. Passwords and
+    provider tokens are never persisted or logged.
     """
+    from config.settings import settings
     from core.species_auth import species_auth
     from services.supabase import supabase_service
 
-    token = payload.access_token.strip()
-    # ServiceContainer does not expose ``supabase_service`` as an attribute.
-    # The previous lookup therefore always resolved to None in the deployed
-    # exchange path, causing every Supabase JWT to fall through SpeciesAuth
-    # as an invalid credential. Use the canonical Supabase service singleton.
-    supabase_client = getattr(supabase_service, "client", None)
+    if auth_method_var.get() != "python_service":
+        raise HTTPException(status_code=403, detail="KCPG service credential required")
     request_id = request.headers.get("X-Request-ID") or request.headers.get("X-Correlation-ID") or "unknown"
-
+    supabase_client = getattr(supabase_service, "client", None)
     if supabase_client is None:
-        logger.error(
-            "[%s] auth_exchange_supabase_client_unavailable",
-            request_id,
-        )
+        logger.error("[%s] auth_exchange_identity_service_unavailable", request_id)
         raise HTTPException(status_code=503, detail="Identity provider unavailable")
+    if not settings.supabase_url or not settings.supabase_anon_key:
+        logger.error("[%s] auth_exchange_public_identity_config_missing", request_id)
+        raise HTTPException(status_code=503, detail="Identity provider unavailable")
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0), follow_redirects=False) as client:
+            provider_response = await client.post(
+                f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password",
+                headers={
+                    "apikey": settings.supabase_anon_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"email": payload.email, "password": payload.password},
+            )
+    except httpx.TimeoutException:
+        logger.warning("[%s] auth_exchange_identity_provider_timeout", request_id)
+        raise HTTPException(status_code=503, detail="Identity provider temporarily unavailable")
+    except httpx.HTTPError as exc:
+        logger.warning("[%s] auth_exchange_identity_provider_transport_error type=%s", request_id, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Identity provider temporarily unavailable")
+
+    if provider_response.status_code in (400, 401, 422):
+        logger.warning("[%s] auth_exchange_credentials_rejected", request_id)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if provider_response.status_code != 200:
+        logger.warning("[%s] auth_exchange_identity_provider_error status=%s", request_id, provider_response.status_code)
+        raise HTTPException(status_code=503, detail="Identity provider temporarily unavailable")
+
+    try:
+        provider_payload = provider_response.json()
+        token = provider_payload.get("access_token") if isinstance(provider_payload, dict) else None
+    except (ValueError, TypeError):
+        token = None
+    if not isinstance(token, str) or len(token) < 20 or len(token) > 8192:
+        logger.warning("[%s] auth_exchange_identity_provider_response_invalid", request_id)
+        raise HTTPException(status_code=503, detail="Identity provider returned an invalid response")
 
     identity = species_auth.validate(
         bearer_token=token,
@@ -352,7 +398,9 @@ async def auth_exchange(
             identity.method or "none",
             identity.error or "invalid_identity",
         )
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
+        raise HTTPException(status_code=403 if identity.error and "workspace" in identity.error.lower() else 401,
+                            detail="Identity is not authorized" if identity.error and "workspace" in identity.error.lower()
+                            else "Invalid email or password")
 
     return {
         "ok": True,
@@ -363,6 +411,68 @@ async def auth_exchange(
         "scopes": identity.permissions,
         "platformRole": identity.platform_role or None,
         "platformPermissions": identity.platform_permissions,
+        "principalType": "human",
+    }
+
+
+@router.post("/auth/workspace", include_in_schema=False)
+async def auth_workspace(
+    payload: AuthWorkspaceRequest,
+    _service_auth: bool = Depends(require_auth),
+    _rate_limit= create_rate_limit_dependency("gateway_workspace_switch", max_per_minute=10),
+):
+    """Resolve a new workspace for an already authenticated Gateway human."""
+    import uuid as _uuid
+    from config.settings import settings
+    from core.species_auth import normalize_role, resolve_platform_authority
+    if auth_method_var.get() != "python_service":
+        raise HTTPException(status_code=403, detail="KCPG service credential required")
+    from services.supabase import supabase_service
+
+    try:
+        principal_id = str(_uuid.UUID(payload.principal_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid principal")
+    client = getattr(supabase_service, "client", None)
+    if client is None:
+        raise HTTPException(status_code=503, detail="Workspace authorization unavailable")
+
+    try:
+        workspaces = client.table("workspaces").select("id,status").eq("id", payload.workspace_id).limit(1).execute()
+        if not workspaces.data or str(workspaces.data[0].get("status") or "").lower() != "active":
+            raise HTTPException(status_code=403, detail="Workspace is unavailable")
+        platform_role, platform_permissions = resolve_platform_authority(
+            principal_id,
+            super_admin_ids=getattr(settings, "platform_super_admin_user_ids", ""),
+            operator_ids=getattr(settings, "platform_operator_user_ids", ""),
+        )
+        membership_role = "viewer"
+        if platform_role != "super_admin":
+            membership = (
+                client.table("workspace_members")
+                .select("role,accepted_at")
+                .eq("user_id", principal_id)
+                .eq("workspace_id", payload.workspace_id)
+                .limit(1)
+                .execute()
+            )
+            accepted = [row for row in (membership.data or []) if row.get("accepted_at") is not None]
+            if not accepted:
+                raise HTTPException(status_code=403, detail="Workspace is not authorized for this identity")
+            membership_role = str(accepted[0].get("role") or "viewer")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("auth_workspace_resolution_failed type=%s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Workspace authorization unavailable")
+
+    return {
+        "ok": True,
+        "principal_id": principal_id,
+        "workspace_id": payload.workspace_id,
+        "role": normalize_role(membership_role),
+        "platformRole": platform_role or None,
+        "platformPermissions": platform_permissions,
         "principalType": "human",
     }
 

@@ -46,6 +46,7 @@ SERVICE_AUTH_ONLY_EXACT: Set[str] = {
     # FastAPI dependency. They deliberately do not bind a tenant workspace;
     # the exchange endpoint validates the supplied human Supabase JWT itself.
     "/api/v1/auth/exchange",
+    "/api/v1/auth/workspace",
     "/api/v1/system/auth/validate",
 }
 
