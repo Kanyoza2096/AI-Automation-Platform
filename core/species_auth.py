@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, List, Optional
@@ -33,7 +34,16 @@ logger = logging.getLogger("kanyoza.core.species_auth")
 
 def _configured_user_ids(raw: str) -> set[str]:
     """Parse server-only UUID allowlists; no email or client metadata matching."""
-    return {item.strip().lower() for item in str(raw or "").split(",") if item.strip()}
+    valid = set()
+    for item in str(raw or "").split(","):
+        candidate = item.strip().lower()
+        if not candidate:
+            continue
+        try:
+            valid.add(str(uuid.UUID(candidate)))
+        except (ValueError, AttributeError, TypeError):
+            logger.warning("Ignoring invalid platform authority UUID entry")
+    return valid
 
 def resolve_platform_authority(user_id: str, *, super_admin_ids: str = "", operator_ids: str = "") -> tuple[str, list[str]]:
     """Resolve a human platform grant from an explicit server-side UUID allowlist."""
