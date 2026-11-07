@@ -57,17 +57,20 @@ AS $$
             / NULLIF(COUNT(*), 0),
             0
         )::NUMERIC,
-        AVG(
-            EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000
-        ) FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)::NUMERIC,
-        percentile_cont(0.95) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000
-        ) FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)::NUMERIC,
+        (
+            AVG(EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000)
+            FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)
+        )::NUMERIC,
+        (
+            percentile_cont(0.95) WITHIN GROUP (
+                ORDER BY EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000
+            ) FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)
+        )::NUMERIC,
         COALESCE(
             EXTRACT(EPOCH FROM (
-                NOW() - MIN(d.created_at) FILTER (
+                NOW() - (MIN(d.created_at) FILTER (
                     WHERE NOT d.processed AND d.dead_lettered_at IS NULL
-                )
+                ))
             )),
             0
         )::NUMERIC
