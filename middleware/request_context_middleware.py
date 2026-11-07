@@ -10,6 +10,7 @@ authenticated by the source secret at the handler, not by a user token.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from types import SimpleNamespace
