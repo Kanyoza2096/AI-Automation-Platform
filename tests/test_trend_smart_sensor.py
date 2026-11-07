@@ -101,3 +101,15 @@ def test_trend_preflight_rejects_sources_without_database_workspace(caplog):
         assert plugin._preflight_sources() is False
     assert plugin._sources == {}
     assert "active tenant workspace_id required" in caplog.text
+
+def test_trend_scan_safely_skips_source_without_workspace_id(caplog):
+    plugin = TrendIntelligencePlugin(DB([]))
+    plugin._preflight_complete = True
+    plugin._sources = {
+        "unbound": {"id": "unbound", "name": "Unbound source", "platform": "rss"}
+    }
+    with caplog.at_level(logging.WARNING):
+        result = plugin.scan_all_sources()
+    assert result["failed"] == 1
+    assert "Unbound source" in caplog.text
+    assert "missing tenant workspace_id" in caplog.text
