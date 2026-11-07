@@ -6,8 +6,8 @@ from core.request_context import RequestContext, bind_from_auth_identity
 
 def test_platform_super_admin_requires_exact_server_configured_user_uuid():
     role, permissions = resolve_platform_authority(
-        "  8c2f-user-uuid  ",
-        super_admin_ids="8c2f-user-uuid",
+        "  8c2f0000-0000-4000-8000-000000000001  ",
+        super_admin_ids="8c2f0000-0000-4000-8000-000000000001",
         operator_ids="",
     )
     assert role == "super_admin"
@@ -16,7 +16,7 @@ def test_platform_super_admin_requires_exact_server_configured_user_uuid():
 
 def test_workspace_role_or_email_cannot_create_platform_grant():
     role, permissions = resolve_platform_authority(
-        "different-user-uuid",
+        "8c2f0000-0000-4000-8000-000000000003",
         super_admin_ids="owner@example.com",
         operator_ids="",
     )
@@ -26,9 +26,9 @@ def test_workspace_role_or_email_cannot_create_platform_grant():
 
 def test_platform_operator_is_limited_and_separate_from_super_admin():
     role, permissions = resolve_platform_authority(
-        "operator-uuid",
+        "8c2f0000-0000-4000-8000-000000000002",
         super_admin_ids="",
-        operator_ids="operator-uuid",
+        operator_ids="8c2f0000-0000-4000-8000-000000000002",
     )
     assert role == "operator"
     assert "platform:workspaces:read" in permissions
