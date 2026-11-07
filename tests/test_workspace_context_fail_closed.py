@@ -88,3 +88,27 @@ def test_global_plugin_started_event_is_platform_scoped():
         strict=True,
     )
     assert envelope.workspace_id == "platform"
+
+
+def test_species_identity_without_tenant_selector_binds_platform_scope(monkeypatch):
+    from types import SimpleNamespace
+    from core.workspace_context import bind_auth_identity, clear_workspace_context, get_workspace_context
+
+    monkeypatch.setenv("DEFAULT_WORKSPACE_ID", "ws-e6eb6528d5b9")
+    try:
+        bind_auth_identity(SimpleNamespace(valid=True, is_species=True, method="master"))
+        ctx = get_workspace_context()
+        assert ctx.workspace_id == "platform"
+        assert ctx.is_species is True
+    finally:
+        clear_workspace_context()
+
+
+def test_species_platform_scope_does_not_start_tenant_organism():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    middleware = (root / "middleware" / "request_context_middleware.py").read_text(encoding="utf-8")
+    assert 'effective_ws = "platform"' in middleware
+    assert 'if identity.is_species and bound_ws == "platform"' in middleware
+    assert 'getattr(get_settings(), "default_workspace_id"' not in middleware
