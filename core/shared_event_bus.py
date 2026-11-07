@@ -635,7 +635,15 @@ class SharedEventBus:
     def health_check(self) -> dict:
         stats = self.get_stats()
         status = "healthy" if self.supabase else "degraded"
-        return {"status": status, "stats": stats}
+        # Keep transport health and delivery evidence separate. A missing
+        # metrics migration is reported as unavailable, not misrepresented as
+        # a healthy zero-backlog measurement.
+        delivery_metrics = self.get_delivery_metrics()
+        return {
+            "status": status,
+            "stats": stats,
+            "delivery_metrics": delivery_metrics,
+        }
 
 
 _shared_bus: Optional[SharedEventBus] = None
