@@ -73,11 +73,7 @@ def get_workspace_context() -> WorkspaceContext:
     if hasattr(_thread_local, "workspace_context"):
         return _thread_local.workspace_context
 
-    from config.settings import get_settings
-
-    settings = get_settings()
-    default_id = getattr(settings, "default_workspace_id", "default") or "default"
-    return WorkspaceContext(workspace_id=default_id)
+    raise PermissionError("No trusted WorkspaceContext is bound. Authenticate and bind a workspace before performing tenant-scoped work.")
 
 
 def get_current_workspace() -> str:
@@ -189,7 +185,10 @@ def require_workspace_context(*, allow_default: bool = False) -> WorkspaceContex
         return _thread_local.workspace_context
 
     if allow_default:
-        return get_workspace_context()
+        from config.settings import get_settings
+        settings = get_settings()
+        default_id = getattr(settings, "default_workspace_id", "default") or "default"
+        return WorkspaceContext(workspace_id=default_id)
 
     raise PermissionError(
         "No trusted WorkspaceContext bound. "
