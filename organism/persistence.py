@@ -47,6 +47,8 @@ class OrganismRuntimeStore:
             row = (snapshot_result.data or [None])[0]
             restored_snapshot = False
             if row is not None:
+                if row.get("workspace_id") != workspace_id:
+                    raise OrganismRuntimeRecoveryError("snapshot_workspace_mismatch")
                 if int(row.get("schema_version", 0)) != self.SCHEMA_VERSION:
                     raise OrganismRuntimeRecoveryError("incompatible_snapshot_schema")
                 state_data = row.get("state")
