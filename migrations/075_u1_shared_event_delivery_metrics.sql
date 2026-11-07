@@ -58,23 +58,24 @@ AS $$
             0
         )::NUMERIC,
         (
-            AVG(EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000)
+            AVG(EXTRACT(EPOCH FROM (d.processed_at - e.created_at)) * 1000)
             FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)
         )::NUMERIC,
         (
             percentile_cont(0.95) WITHIN GROUP (
-                ORDER BY EXTRACT(EPOCH FROM (d.processed_at - d.created_at)) * 1000
+                ORDER BY EXTRACT(EPOCH FROM (d.processed_at - e.created_at)) * 1000
             ) FILTER (WHERE d.processed AND d.processed_at IS NOT NULL)
         )::NUMERIC,
         COALESCE(
             EXTRACT(EPOCH FROM (
-                NOW() - (MIN(d.created_at) FILTER (
+                NOW() - (MIN(e.created_at) FILTER (
                     WHERE NOT d.processed AND d.dead_lettered_at IS NULL
                 ))
             )),
             0
         )::NUMERIC
     FROM public.event_deliveries AS d
+    JOIN public.events AS e ON e.id = d.event_id
     WHERE p_consumer_group IS NULL OR d.consumer_group = p_consumer_group
     GROUP BY d.consumer_group;
 $$;
