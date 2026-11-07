@@ -311,8 +311,10 @@ class DreamSystem:
             try:
                 from core.unified_bus import get_bus_sync
                 bus = get_bus_sync()
-                if bus and insights:
-                    ws = getattr(self, "workspace_id", None) or "default"
+                # A platform-level DreamSystem has no tenant authority.
+                # Only a workspace-owned DreamSystem may publish tenant events.
+                ws = getattr(self, "workspace_id", None)
+                if bus and insights and isinstance(ws, str) and ws.strip():
                     await bus.publish(
                         "dream.insight",
                         {

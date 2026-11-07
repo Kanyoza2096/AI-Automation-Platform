@@ -40,6 +40,9 @@ class OrganismRuntimeStore:
             raise ValueError("runtime workspace_id is required")
 
         try:
+            # service_role bypasses RLS, so runtime recovery must independently
+            # prove the workspace is an active tenant in this database.
+            await asyncio.to_thread(self._validate_workspace_active, workspace_id)
             snapshot_result, event_result = await asyncio.gather(
                 asyncio.to_thread(self._load_snapshot, workspace_id),
                 asyncio.to_thread(self._load_events, workspace_id),
@@ -124,6 +127,7 @@ class OrganismRuntimeStore:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
+            await asyncio.to_thread(self._validate_workspace_active, runtime.workspace_id)
             result = await asyncio.to_thread(
                 lambda: self.client.table("organism_runtime_snapshots")
                 .upsert(record, on_conflict="workspace_id")
@@ -131,8 +135,25 @@ class OrganismRuntimeStore:
             )
             # A successful PostgREST request is the persistence acknowledgement.
             return 1
+        except OrganismRuntimeRecoveryError:
+            raise
         except Exception as exc:
             raise OrganismRuntimeRecoveryError("organism runtime snapshot persistence failed") from exc
+
+    def _validate_workspace_active(self, workspace_id: str) -> None:
+        result = (
+            self.client.table("workspaces")
+            .select("id,status")
+            .eq("id", workspace_id)
+            .limit(1)
+            .execute()
+        )
+        rows = list(result.data or [])
+        if not rows:
+            raise OrganismRuntimeRecoveryError("unknown_workspace")
+        status = str(rows[0].get("status") or "").strip().lower()
+        if status != "active":
+            raise OrganismRuntimeRecoveryError("inactive_workspace")
 
     def _load_snapshot(self, workspace_id: str):
         return (

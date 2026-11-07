@@ -48,8 +48,8 @@ def test_circuit_breaker_opens_after_threshold_and_recovers():
 
 def test_trend_preflight_excludes_unconfigured_sources(caplog):
     db = DB([
-        {"id": "news", "name": "AI News", "platform": "newsapi", "enabled": True},
-        {"id": "rss", "name": "RSS", "platform": "rss", "query": "https://example.com/feed", "enabled": True},
+        {"id": "news", "name": "AI News", "platform": "newsapi", "enabled": True, "workspace_id": "ws-test"},
+        {"id": "rss", "name": "RSS", "platform": "rss", "query": "https://example.com/feed", "enabled": True, "workspace_id": "ws-test"},
     ])
     plugin = TrendIntelligencePlugin(db)
     with caplog.at_level(logging.INFO):
@@ -60,8 +60,8 @@ def test_trend_preflight_excludes_unconfigured_sources(caplog):
 
 def test_trend_scan_logs_aggregate_not_per_source(caplog, monkeypatch):
     db = DB([
-        {"id": "rss1", "name": "RSS One", "platform": "rss", "query": "https://example.com/1", "enabled": True},
-        {"id": "rss2", "name": "RSS Two", "platform": "rss", "query": "https://example.com/2", "enabled": True},
+        {"id": "rss1", "name": "RSS One", "platform": "rss", "query": "https://example.com/1", "enabled": True, "workspace_id": "ws-test"},
+        {"id": "rss2", "name": "RSS Two", "platform": "rss", "query": "https://example.com/2", "enabled": True, "workspace_id": "ws-test"},
     ])
     plugin = TrendIntelligencePlugin(db)
     plugin._preflight_sources()
@@ -75,7 +75,7 @@ def test_trend_scan_logs_aggregate_not_per_source(caplog, monkeypatch):
 
 
 def test_trend_failed_source_opens_breaker(monkeypatch, caplog):
-    db = DB([{"id": "reddit", "name": "Reddit", "platform": "reddit", "query": "technology", "enabled": True}])
+    db = DB([{"id": "reddit", "name": "Reddit", "platform": "reddit", "query": "technology", "enabled": True, "workspace_id": "ws-test"}])
     plugin = TrendIntelligencePlugin(db)
     plugin._preflight_sources()
     monkeypatch.setattr(plugin, "_fetch_from_source", lambda source: (_ for _ in ()).throw(RuntimeError("HTTP 403")))
@@ -92,3 +92,24 @@ def test_trend_status_exposes_sensor_state():
     assert status["name"] == "trend_intelligence"
     assert "current_interval_seconds" in status
     assert "breakers" in status
+
+
+def test_trend_preflight_rejects_sources_without_database_workspace(caplog):
+    db = DB([{"id": "rss-unbound", "name": "Unbound RSS", "platform": "rss", "query": "https://example.com/feed", "enabled": True}])
+    plugin = TrendIntelligencePlugin(db)
+    with caplog.at_level(logging.WARNING):
+        assert plugin._preflight_sources() is False
+    assert plugin._sources == {}
+    assert "active tenant workspace_id required" in caplog.text
+
+def test_trend_scan_safely_skips_source_without_workspace_id(caplog):
+    plugin = TrendIntelligencePlugin(DB([]))
+    plugin._preflight_complete = True
+    plugin._sources = {
+        "unbound": {"id": "unbound", "name": "Unbound source", "platform": "rss"}
+    }
+    with caplog.at_level(logging.WARNING):
+        result = plugin.scan_all_sources()
+    assert result["failed"] == 1
+    assert "Unbound source" in caplog.text
+    assert "missing tenant workspace_id" in caplog.text

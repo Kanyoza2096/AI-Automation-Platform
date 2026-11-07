@@ -103,7 +103,7 @@ class TrendIntelligencePlugin:
         # Soft process cache only — DB is authoritative
         self._seen_urls: Set[str] = set()
         self._lock = threading.RLock()
-        self._default_workspace_id = os.environ.get("DEFAULT_WORKSPACE_ID", "platform")
+        # Tenant identity is sourced only from database-backed source rows.
 
     # ── Plugin API ────────────────────────────────────────────────────────
 
@@ -224,6 +224,10 @@ class TrendIntelligencePlugin:
             if not is_configured:
                 logger.info("TrendIntelligence: source '%s' disabled (not configured)", name)
                 continue
+            workspace_id = str(source.get("workspace_id") or "").strip()
+            if not workspace_id or workspace_id == "platform":
+                logger.warning("TrendIntelligence: source '%s' skipped — active tenant workspace_id required", name)
+                continue
             self._sources[str(source.get("id") or name)] = source
             configured += 1
 
@@ -243,22 +247,10 @@ class TrendIntelligencePlugin:
             self._metrics["scans_skipped"] += 1
             return {"items_fetched": 0, "sources": 0}
         t0 = time.monotonic()
-        _publish_event(
-            "trend.scan.started",
-            {"interval_s": self._scan_interval},
-            workspace_id=self._default_workspace_id,
-        )
-        try:
-            # Preflight is the configuration gate; DB remains authoritative for source rows.
-            sources = type("SourceResponse", (), {"data": list(self._sources.values())})()
-        except Exception as e:
-            logger.error("TrendIntelligence: failed to load sources: %s", e)
-            _publish_event(
-                "trend.scan.failed",
-                {"error": str(e)[:200]},
-                workspace_id=self._default_workspace_id,
-            )
-            return
+        sources = type("SourceResponse", (), {"data": list(self._sources.values())})()
+        workspace_ids = sorted({str(source.get("workspace_id") or "").strip() for source in sources.data if str(source.get("workspace_id") or "").strip()})
+        for workspace_id in workspace_ids:
+            _publish_event("trend.scan.started", {"interval_s": self._scan_interval}, workspace_id=workspace_id)
 
         total_fetched = 0
         total_new = 0
@@ -266,8 +258,12 @@ class TrendIntelligencePlugin:
         self._metrics["scans_total"] += 1
         for source in sources.data or []:
             source_id = str(source.get("id") or source.get("name"))
-            workspace_id = source.get("workspace_id") or self._default_workspace_id
             name = source.get("name") or source.get("id")
+            workspace_id = str(source.get("workspace_id") or "").strip()
+            if not workspace_id or workspace_id == "platform":
+                failed += 1
+                logger.warning("TrendIntelligence: source '%s' skipped — missing tenant workspace_id", name)
+                continue
             breaker = self._breakers.setdefault(source_id, CircuitBreaker())
             if not breaker.can_attempt():
                 skipped += 1
@@ -286,7 +282,7 @@ class TrendIntelligencePlugin:
                     # Empty is idle, not a failure.
                     breaker.record_success()
                 try:
-                    self.supabase.table("trend_sources").update({"last_fetched": datetime.now(timezone.utc).isoformat()}).eq("id", source_id).execute()
+                    self.supabase.table("trend_sources").update({"last_fetched": datetime.now(timezone.utc).isoformat()}).eq("id", source_id).eq("workspace_id", workspace_id).execute()
                 except Exception as e:
                     logger.debug("TrendIntelligence: last_fetched update failed: %s", e)
                 _publish_event("trend.source.fetched", {"source_id": source_id, "source_name": name, "items_fetched": len(posts), "items_new": new_posts}, workspace_id=workspace_id)
@@ -319,7 +315,8 @@ class TrendIntelligencePlugin:
             "items_new": total_new,
             "duration_ms": round((time.monotonic() - t0) * 1000, 1),
         }
-        _publish_event("trend.scan.completed", result, workspace_id=self._default_workspace_id)
+        for workspace_id in workspace_ids:
+            _publish_event("trend.scan.completed", result, workspace_id=workspace_id)
         self._frequency.on_result(total_fetched > 0)
         return result
 
@@ -393,6 +390,7 @@ class TrendIntelligencePlugin:
                     self.supabase.table("trend_posts")
                     .select("id")
                     .eq("url", url)
+                    .eq("workspace_id", workspace_id)
                     .limit(1)
                     .execute()
                 )
@@ -503,82 +501,49 @@ class TrendIntelligencePlugin:
     def process_trends(self):
         if not self.supabase:
             return
-        try:
-            rules_q = (
-                self.supabase.table("trend_brand_rules")
-                .select("*")
-                .eq("enabled", True)
-            )
-            if self._default_workspace_id and self._default_workspace_id != "platform":
-                try:
-                    rules_q = rules_q.eq("workspace_id", self._default_workspace_id)
-                except Exception:
-                    pass
-            rules = rules_q.execute()
-            trends_q = (
-                self.supabase.table("trend_posts")
-                .select("*")
-                .order("fetched_at", desc=True)
-                .limit(20)
-            )
-            if self._default_workspace_id and self._default_workspace_id != "platform":
-                try:
-                    trends_q = trends_q.eq("workspace_id", self._default_workspace_id)
-                except Exception:
-                    pass
-            trends = trends_q.execute()
-        except Exception as e:
-            logger.error("TrendIntelligence: process_trends load failed: %s", e)
+        workspace_ids = sorted({
+            str(source.get("workspace_id") or "").strip()
+            for source in self._sources.values()
+            if str(source.get("workspace_id") or "").strip()
+            and str(source.get("workspace_id") or "").strip() != "platform"
+        })
+        if not workspace_ids:
+            logger.info("TrendIntelligence: trend processing skipped — no tenant-bound sources")
             return
-
-        if not (trends.data or []):
-            self._diagnose_zero_activity()
-        for trend in trends.data or []:
-            for rule in rules.data or []:
-                # Workspace isolation when both sides have workspace_id
-                tw = trend.get("workspace_id")
-                rw = rule.get("workspace_id")
-                if tw and rw and tw != rw:
+        for workspace_id in workspace_ids:
+            try:
+                rules = (self.supabase.table("trend_brand_rules").select("*")
+                         .eq("enabled", True).eq("workspace_id", workspace_id).execute())
+                trends = (self.supabase.table("trend_posts").select("*")
+                          .eq("workspace_id", workspace_id)
+                          .order("fetched_at", desc=True).limit(20).execute())
+            except Exception as exc:
+                logger.error("TrendIntelligence: process_trends load failed workspace=%s: %s", workspace_id, exc)
+                continue
+            for trend in trends.data or []:
+                if str(trend.get("workspace_id") or "").strip() != workspace_id:
                     continue
-                try:
-                    existing = (
-                        self.supabase.table("trend_decisions")
-                        .select("id")
-                        .eq("trend_post_id", trend["id"])
-                        .eq("brand_id", rule["brand_id"])
-                        .limit(1)
-                        .execute()
-                    )
-                    if existing.data:
+                for rule in rules.data or []:
+                    if str(rule.get("workspace_id") or "").strip() != workspace_id:
                         continue
-                    relevance = self._calculate_relevance(trend, rule)
-                    relevance = self._maybe_web_verify(trend, rule, relevance)
-                    workspace_id = (
-                        rw or tw or rule.get("workspace_id") or self._default_workspace_id
-                    )
-                    correlation_id = uuid.uuid4().hex
-                    _publish_event(
-                        "trend.scored",
-                        {
-                            "trend_id": trend["id"],
-                            "brand_id": rule["brand_id"],
-                            "relevance": relevance,
-                            "topic": trend.get("title"),
-                        },
-                        workspace_id=workspace_id,
-                        correlation_id=correlation_id,
-                    )
-                    decision = self._make_decision(trend, rule, relevance)
-                    self._execute_decision(
-                        trend, rule, decision, relevance, workspace_id, correlation_id
-                    )
-                except Exception as e:
-                    logger.error(
-                        "TrendIntelligence: decision failed trend=%s brand=%s: %s",
-                        trend.get("id"),
-                        rule.get("brand_id"),
-                        e,
-                    )
+                    try:
+                        existing = (self.supabase.table("trend_decisions").select("id")
+                                    .eq("trend_post_id", trend["id"])
+                                    .eq("brand_id", rule["brand_id"])
+                                    .eq("workspace_id", workspace_id).limit(1).execute())
+                        if existing.data:
+                            continue
+                        relevance = self._calculate_relevance(trend, rule)
+                        relevance = self._maybe_web_verify(trend, rule, relevance)
+                        correlation_id = uuid.uuid4().hex
+                        _publish_event("trend.scored", {
+                            "trend_id": trend["id"], "brand_id": rule["brand_id"],
+                            "relevance": relevance, "topic": trend.get("title"),
+                        }, workspace_id=workspace_id, correlation_id=correlation_id)
+                        decision = self._make_decision(trend, rule, relevance)
+                        self._execute_decision(trend, rule, decision, relevance, workspace_id, correlation_id)
+                    except Exception as exc:
+                        logger.error("TrendIntelligence: decision failed workspace=%s trend=%s: %s", workspace_id, trend.get("id"), exc)
 
 
     def _maybe_web_verify(self, trend: dict, rule: dict, relevance: float) -> float:
@@ -851,6 +816,7 @@ class TrendIntelligencePlugin:
                 self.supabase.table("trend_decisions")
                 .select("id")
                 .eq("brand_id", brand_id)
+                .eq("workspace_id", str(rule.get("workspace_id") or ""))
                 .in_("decision", ["publish", "schedule"])
                 .gte("decided_at", f"{today}T00:00:00")
                 .limit(max_posts + 5)

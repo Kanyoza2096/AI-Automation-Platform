@@ -159,11 +159,11 @@ def validate_and_normalize(
 
     # Never treat empty / unbound as tenant isolation in strict mode
     if strict and str(ws) in ("", "unbound", "default") and not is_species_event(event_name):
-        # Allow explicit "default" only if bound via context earlier; still warn
-        if str(ws) == "unbound" or str(ws) == "":
-            raise NerveContractError(
-                f"Event '{event_name}' has invalid workspace_id={ws!r}"
-            )
+        # Strict tenant events must never use synthetic or legacy workspace IDs.
+        # A caller-supplied "default" is not proof of authenticated workspace binding.
+        raise NerveContractError(
+            f"Event '{event_name}' has invalid workspace_id={ws!r}"
+        )
 
     if ws != PLATFORM_WORKSPACE and is_species_event(event_name):
         # species events should stay platform-scoped

@@ -25,8 +25,18 @@ class AnalyticsTracker:
         
         from core.workspace_context import get_current_workspace, get_current_brand
         
-        ws_id = data.get("workspace_id") or get_current_workspace()
-        br_id = data.get("brand_id") or get_current_brand()
+        try:
+            ws_id = data.get("workspace_id") or get_current_workspace()
+        except PermissionError:
+            logger.warning(
+                "Skipping analytics %s event — no trusted workspace context",
+                table,
+            )
+            return
+        try:
+            br_id = data.get("brand_id") or get_current_brand()
+        except PermissionError:
+            br_id = data.get("brand_id")
         
         payload = {
             'id': uuid.uuid4().hex,

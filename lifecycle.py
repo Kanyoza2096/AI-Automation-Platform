@@ -1131,16 +1131,12 @@ async def _boot_event_bus(container: ServiceContainer) -> None:
         organism_registry.set_event_bus(bus)
         container.register_instance(OrganismRegistry, organism_registry)
 
-        default_ws = "default"
-        try:
-            from config.settings import settings
-            default_ws = getattr(settings, "default_workspace_id", None) or "default"
-        except Exception:
-            pass
-
-        org = organism_registry.get_or_create(default_ws, plan="free")
-        await org.start()
-        logger.info("OrganismRegistry ready (default workspace=%s).", default_ws)
+        # The process is not a tenant. Never create or start a workspace
+        # organism from a process-wide default during boot. Authenticated
+        # request middleware establishes the authoritative workspace first.
+        logger.info(
+            "OrganismRegistry ready (tenant organisms start after authenticated workspace binding)."
+        )
 
         from organism.event_bridge import OrganismEventBridge
         organism_event_bridge = OrganismEventBridge(organism_registry)

@@ -745,7 +745,8 @@ class Director:
 
         workspace_ids = await self._get_active_workspaces()
         if not workspace_ids:
-            workspace_ids = [os.getenv("DEFAULT_WORKSPACE_ID", "default")]
+            log.info("Director detector cycle skipped: no active database-backed workspaces")
+            return
 
         for ws_id in workspace_ids:
             for detector in self.detectors:
