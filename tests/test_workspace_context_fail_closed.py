@@ -21,3 +21,29 @@ def test_explicit_legacy_default_requires_opt_in(monkeypatch):
     context = require_workspace_context(allow_default=True)
     assert context.workspace_id == "explicit-legacy-workspace"
     clear_workspace_context()
+
+
+@pytest.mark.asyncio
+async def test_unified_bus_rejects_tenant_event_without_workspace():
+    from core.unified_bus import UnifiedEventBus
+
+    clear_workspace_context()
+    bus = UnifiedEventBus()
+    try:
+        event_id = await bus.publish("tenant.observation", {"value": 1})
+        assert event_id is None
+    finally:
+        await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_unified_bus_keeps_platform_events_without_tenant_context():
+    from core.unified_bus import UnifiedEventBus
+
+    clear_workspace_context()
+    bus = UnifiedEventBus()
+    try:
+        event_id = await bus.publish("heartbeat.system", {"healthy": True})
+        assert event_id is not None
+    finally:
+        await bus.stop()
