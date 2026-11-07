@@ -241,6 +241,7 @@ jobs:
             tests/test_organism_lifecycle.py \
             tests/test_organism_event_bridge.py \
             tests/test_organism_cycle_coordinator.py \
+            tests/test_organism_runtime_persistence.py \\
             tests/test_organism_event_to_ooda.py \
             tests/tenancy/test_request_context.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
