@@ -101,7 +101,7 @@ def test_defer_policy_waits_for_dispatch_queue_capacity():
         await bus._dispatch_queue.put(("occupied", {}, "test", "existing", None, None, None, None, None))
 
         publish_task = asyncio.create_task(
-            bus.publish("test.event", {"value": 2}, source="test")
+            bus.publish("test.event", {"value": 2}, source="test", workspace_id="ws-test")
         )
         await asyncio.sleep(0)
         assert not publish_task.done()
@@ -195,7 +195,7 @@ def test_publish_waits_for_durable_commit_before_dispatch():
 
         await bus.subscribe("durable.test", handler)
         publish_task = asyncio.create_task(
-            bus.publish("durable.test", {"value": "durable"}, source="test")
+            bus.publish("durable.test", {"value": "durable"}, source="test", workspace_id="ws-test")
         )
         assert await asyncio.to_thread(client.started.wait, 2)
         assert not publish_task.done()
