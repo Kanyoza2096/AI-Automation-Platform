@@ -1073,15 +1073,15 @@ async def _start_dream_system(app: FastAPI, container: ServiceContainer) -> None
 
         canonical_dream_system._container = container
         canonical_dream_system._council = council_for_dreams
-        canonical_dream_system.workspace_id = getattr(
-            settings, "default_workspace_id", "ws-e6eb6528d5b9"
-        )
+        # The global DreamSystem is platform-scoped. A process-wide default
+        # must never impersonate a tenant workspace in a multi-tenant runtime.
+        canonical_dream_system.workspace_id = None
         await canonical_dream_system.start()
         app.state.dream_system = canonical_dream_system
         logger.info(
             "DreamSystem started (council=%s, workspace=%s)",
             "yes" if council_for_dreams else "no",
-            canonical_dream_system.workspace_id,
+            canonical_dream_system.workspace_id or "platform",
         )
     except ImportError as exc:
         logger.warning("DreamSystem module not available: %s", exc)
