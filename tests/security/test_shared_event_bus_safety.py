@@ -62,18 +62,55 @@ def test_shared_bus_claim_returns_delivery_id_and_fencing_token():
     assert claim_token.startswith(bus.instance_id + ":")
 
 
-def test_shared_bus_failed_handler_delivery_remains_retryable_and_fenced():
+def test_shared_bus_failed_delivery_uses_fenced_retry_rpc():
     class Result:
-        data = [{"id": "delivery-1"}]
+        data = True
+
+    class RPC:
+        def __init__(self, db, name, params):
+            self.db = db
+            self.name = name
+            self.params = params
+        def execute(self):
+            self.db.calls.append((self.name, self.params))
+            return Result()
+
+    class DB:
+        def __init__(self):
+            self.calls = []
+        def rpc(self, name, params):
+            return RPC(self, name, params)
+
+    db = DB()
+    bus = SharedEventBus(db, source_service="worker-a")
+    token = "worker-a:claim-123"
+    acknowledged = bus._mark_delivery_processed(
+        "delivery-1", claim_token=token, success=False, error="handler failed"
+    )
+    assert acknowledged is True
+    name, params = db.calls[0]
+    assert name == "complete_shared_event_delivery"
+    assert params["p_delivery_id"] == "delivery-1"
+    assert params["p_consumer_group"] == "worker-a"
+    assert params["p_claim_token"] == token
+    assert params["p_success"] is False
+    assert params["p_error"] == "handler failed"
+    assert params["p_max_attempts"] == 5
+
+
+def test_failed_handler_receipt_releases_handler_lease_for_scheduled_group_retry():
+    class Result:
+        data = [{"id": "receipt-1"}]
 
     class Query:
-        def __init__(self, db):
-            self.db = db
+        def __init__(self):
+            self.filters = []
+            self.values = None
         def update(self, values):
-            self.db.update_values = values
+            self.values = values
             return self
         def eq(self, key, value):
-            self.db.filters.append((key, value))
+            self.filters.append((key, value))
             return self
         def select(self, *args):
             return self
@@ -82,31 +119,21 @@ def test_shared_bus_failed_handler_delivery_remains_retryable_and_fenced():
 
     class DB:
         def __init__(self):
-            self.filters = []
-            self.update_values = None
+            self.query = Query()
         def table(self, name):
-            assert name == "event_deliveries"
-            return Query(self)
+            assert name == "event_handler_deliveries"
+            return self.query
 
     db = DB()
     bus = SharedEventBus(db, source_service="worker-a")
-    token = "worker-a:claim-123"
-    acknowledged = bus._mark_delivery_processed(
-        "delivery-1",
-        claim_token=token,
-        success=False,
-        error="handler failed",
+    assert bus._mark_handler_delivery_processed(
+        "receipt-1", claim_token="worker-a:handler-claim",
+        success=False, error="temporary failure",
     )
-    assert acknowledged is True
-    assert db.update_values["processed"] is False
-    assert db.update_values["processed_at"] is None
-    assert db.update_values["processing_error"] == "handler failed"
-    assert ("claimed_by", token) in db.filters
-    assert ("processed", False) in db.filters
-    # Failed work retains claimed_by/claimed_at until lease expiry, preventing
-    # immediate hot-loop retries while still allowing recovery after timeout.
-    assert "claimed_by" not in db.update_values
-    assert "claimed_at" not in db.update_values
+    assert db.query.values["processed"] is False
+    assert db.query.values["claimed_by"] is None
+    assert db.query.values["claimed_at"] is None
+    assert ("claimed_by", "worker-a:handler-claim") in db.query.filters
 
 
 def test_shared_bus_ack_without_claim_token_fails_closed():
