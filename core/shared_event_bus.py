@@ -381,13 +381,16 @@ class SharedEventBus:
         """Acknowledge a handler only while the caller owns its lease."""
         if not receipt_id or not claim_token or not self.supabase:
             return False
+        # The consumer-group delivery lease is the retry/backoff gate. Once a
+        # handler has definitively completed (success or failure), release its
+        # per-handler lease; crashes still retain the lease until expiry.
         update = {
             "processed": bool(success),
             "processed_at": datetime.now(timezone.utc).isoformat() if success else None,
             "processing_error": (error or "")[:500] if error else None,
+            "claimed_by": None,
+            "claimed_at": None,
         }
-        if success:
-            update.update({"claimed_by": None, "claimed_at": None})
         try:
             result = self.supabase.table("event_handler_deliveries").update(update).eq(
                 "id", receipt_id
@@ -400,12 +403,15 @@ class SharedEventBus:
     def _claim_delivery(self, event_id: str) -> Optional[tuple[str, str]]:
         """Claim one consumer delivery and return its fencing token."""
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         claim_token = f"{self.instance_id}:{uuid.uuid4().hex}"
         try:
             result = self.supabase.table("event_deliveries").update({
-                "claimed_by": claim_token, "claimed_at": datetime.now(timezone.utc).isoformat(),
+                "claimed_by": claim_token, "claimed_at": now,
             }).eq("event_id", event_id).eq("consumer_group", self.source_service).eq(
                 "processed", False
+            ).is_("dead_lettered_at", "null").lte(
+                "next_attempt_at", now
             ).or_(f"claimed_at.is.null,claimed_at.lt.{cutoff}").select("id").execute()
             if result.data:
                 return str(result.data[0].get("id")), claim_token
@@ -514,30 +520,58 @@ class SharedEventBus:
         success: bool = True,
         error: str | None = None,
     ) -> bool:
-        """Acknowledge only the currently owned delivery lease.
-
-        Failed work remains unprocessed and retains its lease timestamp, making
-        it retryable after lease expiry instead of silently dead-lettering it.
-        """
+        """Complete a consumer delivery through the lease-fenced retry RPC."""
         if not delivery_id or not claim_token or not self.supabase:
             return False
         try:
-            update = {
-                "processed": bool(success),
-                "processed_at": datetime.now(timezone.utc).isoformat() if success else None,
-                "processing_error": (error or "")[:500] if error else None,
-            }
-            if success:
-                update.update({"claimed_by": None, "claimed_at": None})
-            result = self.supabase.table("event_deliveries").update(update).eq(
-                "id", delivery_id
-            ).eq("consumer_group", self.source_service).eq(
-                "claimed_by", claim_token
-            ).eq("processed", False).select("id").execute()
-            return bool(result.data)
+            result = self.supabase.rpc(
+                "complete_shared_event_delivery",
+                {
+                    "p_delivery_id": delivery_id,
+                    "p_consumer_group": self.source_service,
+                    "p_claim_token": claim_token,
+                    "p_success": bool(success),
+                    "p_error": (error or "")[:1000] if error else None,
+                    "p_max_attempts": 5,
+                },
+            ).execute()
+            acknowledged = result.data is True
+            if not acknowledged:
+                logger.warning(
+                    "SharedEventBus completion rejected for stale claim %s",
+                    delivery_id,
+                )
+            return acknowledged
         except Exception:
-            logger.exception("SharedEventBus failed to acknowledge delivery %s", delivery_id)
+            logger.exception("SharedEventBus failed to complete delivery %s", delivery_id)
             return False
+
+    def get_dead_letters(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return durable deliveries that exhausted their retry budget."""
+        if not self.supabase:
+            return []
+        result = self.supabase.table("event_deliveries").select(
+            "id,event_id,event_type,consumer_group,attempt_count,processing_error,dead_lettered_at"
+        ).eq("consumer_group", self.source_service).not_.is_(
+            "dead_lettered_at", "null"
+        ).order("dead_lettered_at", desc=True).limit(max(1, min(int(limit), 200))).execute()
+        return result.data or []
+
+    def requeue_dead_letter(self, delivery_id: str) -> bool:
+        """Explicitly return one of this consumer group's dead letters to retry."""
+        if not delivery_id or not self.supabase:
+            return False
+        result = self.supabase.table("event_deliveries").update({
+            "attempt_count": 0,
+            "dead_lettered_at": None,
+            "next_attempt_at": datetime.now(timezone.utc).isoformat(),
+            "processing_error": None,
+            "claimed_by": None,
+            "claimed_at": None,
+        }).eq("id", delivery_id).eq(
+            "consumer_group", self.source_service
+        ).not_.is_("dead_lettered_at", "null").select("id").execute()
+        return bool(result.data)
 
     def _mark_processed(self, event_id: Any, success: bool = True, error: str | None = None) -> None:
         try:

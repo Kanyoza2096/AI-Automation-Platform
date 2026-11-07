@@ -55,6 +55,12 @@ class StatefulQuery:
         self.or_filter = expression
         return self
 
+    def is_(self, *_args):
+        return self
+
+    def lte(self, *_args):
+        return self
+
     def order(self, *_args, **_kwargs):
         return self
 
@@ -125,6 +131,38 @@ class StatefulDB:
 
     def table(self, name):
         return StatefulQuery(self, name)
+
+    def rpc(self, name, params):
+        assert name == "complete_shared_event_delivery"
+
+        class RPC:
+            def __init__(self, db, values):
+                self.db = db
+                self.values = values
+
+            def execute(self):
+                delivery = next(
+                    (row for row in self.db.tables.setdefault("event_deliveries", [])
+                     if row.get("id") == self.values["p_delivery_id"]
+                     and row.get("consumer_group") == self.values["p_consumer_group"]
+                     and row.get("claimed_by") == self.values["p_claim_token"]),
+                    None,
+                )
+                if delivery is None:
+                    return Result(False)
+                success = bool(self.values["p_success"])
+                delivery.update({
+                    "processed": success,
+                    "processed_at": datetime.now(timezone.utc).isoformat() if success else None,
+                    "processing_error": None if success else self.values.get("p_error"),
+                    "attempt_count": delivery.get("attempt_count", 0) + (0 if success else 1),
+                    "dead_lettered_at": None,
+                    "claimed_by": None,
+                    "claimed_at": None,
+                })
+                return Result(True)
+
+        return RPC(self, params)
 
 
 def _event(event_id="event-1"):

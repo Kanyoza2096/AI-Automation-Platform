@@ -146,6 +146,47 @@ jobs:
               for statement in admission_receipt_sql.split(";"):
                   if statement.strip():
                       connection.execute(statement)
+
+              # Build a disposable event schema and apply the existing fan-out
+              # plus U1 retry migration. This is CI-only PostgreSQL, never staging.
+              connection.execute("CREATE SCHEMA IF NOT EXISTS auth")
+              connection.execute("""
+                  CREATE OR REPLACE FUNCTION auth.uid()
+                  RETURNS uuid LANGUAGE sql STABLE AS 'SELECT NULL::uuid'
+              """)
+              connection.execute("""
+                  CREATE TABLE public.workspace_members (
+                      workspace_id TEXT NOT NULL,
+                      user_id TEXT NOT NULL
+                  )
+              """)
+              connection.execute("""
+                  CREATE TABLE public.events (
+                      id TEXT PRIMARY KEY,
+                      event_type TEXT NOT NULL,
+                      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                      workspace_id TEXT,
+                      correlation_id TEXT,
+                      decision_id TEXT
+                  )
+              """)
+              for migration_path in (
+                  "migrations/037_durable_event_fanout.sql",
+                  "migrations/074_u1_shared_event_delivery_retry_dead_letter.sql",
+              ):
+                  migration_sql = Path(migration_path).read_text(encoding="utf-8")
+                  migration_sql = "\n".join(
+                      line for line in migration_sql.splitlines()
+                      if not line.lstrip().startswith("--")
+                  )
+                  # The retry migration includes a PL/pgSQL function body with
+                  # internal semicolons; send it as one PostgreSQL statement batch.
+                  if migration_path.endswith("074_u1_shared_event_delivery_retry_dead_letter.sql"):
+                      connection.execute(migration_sql, prepare=False)
+                  else:
+                      for statement in migration_sql.split(";"):
+                          if statement.strip():
+                              connection.execute(statement)
           PY
       - name: Run focused engineering vertical tests
         run: |
@@ -174,6 +215,8 @@ jobs:
             tests/security/test_phase6_production_tenant_hardening.py \
             tests/security/test_shared_event_bus_safety.py \
             tests/security/test_shared_event_bus_lifecycle.py \
+            tests/security/test_u1_shared_event_delivery_reliability.py \
+            tests/security/test_u1_shared_event_delivery_migration.py \
             tests/tenancy/test_request_context.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access
