@@ -177,5 +177,16 @@ class QueryFrameTests(unittest.TestCase):
         )
 
 
+    def test_what_should_contain_is_requirements_identification(self):
+        cursor = extract_query_frame(
+            "What should a cursor contain to paginate reliably?"
+        )
+        deletion = extract_query_frame(
+            "What should our data deletion process cover beyond the database?"
+        )
+        self.assertEqual(cursor["intent"], "requirements_identification")
+        self.assertEqual(deletion["intent"], "requirements_identification")
+
+
 if __name__ == "__main__":
     unittest.main()
