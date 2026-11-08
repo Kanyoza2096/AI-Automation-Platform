@@ -126,7 +126,7 @@ async def test_coordinator_replay_does_not_persist_same_health_event_twice():
             return tuple(item for item in self.items if item.workspace_id == workspace_id)
 
     store = ProposalStore()
-    runtime.persistence_store = SimpleNamespace(client=object())
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = store
     runtime.ingest(Observation(
         workspace_id="workspace-a",
@@ -168,7 +168,7 @@ async def test_coordinator_does_not_create_proposals_from_stale_health_events():
             return tuple(item for item in self.items if item.workspace_id == workspace_id)
 
     store = ProposalStore()
-    runtime.persistence_store = SimpleNamespace(client=object())
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = store
     runtime.ingest(Observation(
         workspace_id="workspace-a",
@@ -202,7 +202,7 @@ async def test_coordinator_fails_closed_when_fresh_goal_cannot_be_persisted():
         async def persist(self, _proposal):
             raise RuntimeError("database unavailable")
 
-    runtime.persistence_store = SimpleNamespace(client=object())
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = FailingStore()
     runtime.ingest(Observation(
         workspace_id="workspace-a",
