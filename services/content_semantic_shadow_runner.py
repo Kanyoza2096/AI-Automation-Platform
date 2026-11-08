@@ -63,9 +63,10 @@ async def resolve_staging_evidence(
     if not isinstance(repository, KnowledgeRepository) or repository.supabase is None:
         raise ShadowEvaluationRefused("a database-backed KnowledgeRepository is required")
     database_url = getattr(repository.supabase, "supabase_url", None)
-    if not isinstance(database_url, str):
+    if database_url is None:
         raise ShadowEvaluationRefused("the knowledge repository database identity is unavailable")
-    if urlparse(database_url).hostname != STAGING_SUPABASE_HOST:
+    # supabase-py exposes this as a URL object (not necessarily a str).
+    if urlparse(str(database_url)).hostname != STAGING_SUPABASE_HOST:
         raise ShadowEvaluationRefused("semantic shadow evaluation is bound to the staging database only")
     if not 1 <= top_k <= MAX_EVIDENCE_PER_CAPTION:
         raise ShadowEvaluationRefused("evidence retrieval is limited to 1–3 records")
