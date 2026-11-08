@@ -382,3 +382,37 @@ def test_missing_prompt_builder_blocks_generation():
         }))
 
     assert engine.called is False
+
+
+
+def test_validate_content_step_rejects_inconsistent_semantic_approval():
+    class AsyncPolicyValidator:
+        async def validate(self, **kwargs):
+            return _approved_policy_validator()
+
+    class InconsistentReviewer:
+        async def review(self, **kwargs):
+            return {
+                "approved": True,
+                "status": "needs_review",
+                "reason": "inconsistent result",
+            }
+
+    step = ValidateContentStep(
+        validator=AsyncPolicyValidator(),
+        semantic_reviewer=InconsistentReviewer(),
+    )
+    context = {
+        "caption": "A concise engineering post with a factual claim.",
+        "topic": "Kruskal's algorithm",
+        "content_result": {},
+        "brand": _brand(),
+        "knowledge_evidence": [{
+            "source_id": "kb-1",
+            "text": "Kruskal's algorithm uses disjoint sets.",
+            "metadata": {},
+        }],
+    }
+
+    with pytest.raises(Exception, match="Independent semantic review did not approve"):
+        asyncio.run(step.async_run(context))
