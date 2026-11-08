@@ -74,6 +74,10 @@ class ProductionKnowledgeBaseRetrievalTests(unittest.IsolatedAsyncioTestCase):
         results = await self.kb.search("quantum entanglement telescope", 5)
         self.assertEqual(results, [])
 
+    async def test_stopword_only_query_returns_no_results(self):
+        results = await self.kb.search("the and is to for", 5)
+        self.assertEqual(results, [])
+
     async def test_synthetic_workspace_scope_cannot_build_knowledge_index(self):
         kb = KnowledgeBase(
             brand_id=self.brand_id,
