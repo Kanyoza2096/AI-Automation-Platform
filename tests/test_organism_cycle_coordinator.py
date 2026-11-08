@@ -224,30 +224,14 @@ async def test_coordinator_fails_closed_when_fresh_goal_cannot_be_persisted():
 
 
 @pytest.mark.asyncio
-async def test_coordinator_binds_proposal_store_to_runtime_persistence_client(monkeypatch):
+async def test_coordinator_requires_explicit_goal_store_binding_even_with_db_client():
     from datetime import datetime, timezone
     from types import SimpleNamespace
-    import organism.goal_persistence as goal_persistence
 
     registry = OrganismRegistry()
     organism = await registry.ensure_started("workspace-a")
     runtime = organism.runtime
-    service_client = object()
-    runtime.persistence_store = SimpleNamespace(client=service_client, persist=_noop_snapshot_persist)
-
-    class ProposalStore:
-        def __init__(self, client):
-            assert client is service_client
-            self.items = []
-
-        async def persist(self, proposal):
-            self.items.append(proposal)
-            return 1
-
-        async def list_pending(self, workspace_id):
-            return tuple(item for item in self.items if item.workspace_id == workspace_id)
-
-    monkeypatch.setattr(goal_persistence, "GoalProposalStore", ProposalStore)
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.ingest(Observation(
         workspace_id="workspace-a",
         kind=ObservationKind.HEALTH,
@@ -256,14 +240,15 @@ async def test_coordinator_binds_proposal_store_to_runtime_persistence_client(mo
         confidence=0.9,
         source_trust=0.9,
         observed_at=datetime.now(timezone.utc),
-        observation_id="event:evt-bound-client",
-        metadata={"event_id": "evt-bound-client"},
+        observation_id="event:evt-no-store",
+        metadata={"event_id": "evt-no-store"},
     ))
 
     result = await cycle_started_organisms(registry)
 
-    assert result.completed == 1
-    assert len(runtime.goal_proposal_store.items) == 1
+    assert result.completed == 0
+    assert result.failed == 1
+    assert "event:evt-no-store" not in getattr(runtime, "_goal_proposal_observation_ids", set())
 
 
 @pytest.mark.asyncio
