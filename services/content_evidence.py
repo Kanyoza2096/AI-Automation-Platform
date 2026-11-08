@@ -11,8 +11,8 @@ import re
 from typing import Any, Iterable
 
 _METRIC_LANGUAGE = re.compile(
-    r"\b(?:reduc(?:e|ed|tion)|drop(?:ped)?|decreas(?:e|ed)|increas(?:e|ed)|"
-    r"improv(?:e|ed|ement)|cut|save(?:d)?|faster|slower|latency|throughput|"
+    r"\b(?:reduc(?:e|es|ed|tion)|drop(?:ped)?|decreas(?:e|es|ed)|increas(?:e|es|ed)|"
+    r"improv(?:e|es|ed|ement)|cut|save(?:d)?|faster|slower|latency|throughput|"
     r"response time|error rate|success rate|uptime|blast radius|traffic exposure|"
     r"detect(?:ion)? time|roll(?:back| back)|recovery time|failure rate|"
     r"percent(?:age)?|\d+(?:\.\d+)?\s?(?:%|milliseconds?|ms|seconds?|minutes?|hours?|x)\b)",
