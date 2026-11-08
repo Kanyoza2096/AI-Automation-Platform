@@ -207,3 +207,86 @@ async def test_coordinator_fails_closed_when_fresh_goal_cannot_be_persisted():
     assert result.completed == 0
     assert result.failed == 1
     assert "event:evt-fail" not in getattr(runtime, "_goal_proposal_observation_ids", set())
+
+
+@pytest.mark.asyncio
+async def test_coordinator_binds_proposal_store_to_runtime_persistence_client(monkeypatch):
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    import organism.goal_persistence as goal_persistence
+
+    registry = OrganismRegistry()
+    organism = await registry.ensure_started("workspace-a")
+    runtime = organism.runtime
+    service_client = object()
+    runtime.persistence_store = SimpleNamespace(client=service_client)
+
+    class ProposalStore:
+        def __init__(self, client):
+            assert client is service_client
+            self.items = []
+
+        async def persist(self, proposal):
+            self.items.append(proposal)
+            return 1
+
+    monkeypatch.setattr(goal_persistence, "GoalProposalStore", ProposalStore)
+    runtime.ingest(Observation(
+        workspace_id="workspace-a",
+        kind=ObservationKind.HEALTH,
+        source="unified_event:service_heartbeat",
+        value={"service": "api-worker", "status": "degraded"},
+        confidence=0.9,
+        source_trust=0.9,
+        observed_at=datetime.now(timezone.utc),
+        observation_id="event:evt-bound-client",
+        metadata={"event_id": "evt-bound-client"},
+    ))
+
+    result = await cycle_started_organisms(registry)
+
+    assert result.completed == 1
+    assert len(runtime.goal_proposal_store.items) == 1
+
+
+@pytest.mark.asyncio
+async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_proposals():
+    from datetime import datetime, timezone
+
+    registry = OrganismRegistry()
+    organism = await registry.ensure_started("workspace-a")
+    runtime = organism.runtime
+
+    class NoDecisionPlane:
+        async def evaluate(self, **_kwargs):
+            raise AssertionError("goal proposal path must not invoke cognitive decisions")
+
+        def _blocked(self, *_args, **_kwargs):
+            raise AssertionError("goal proposal path must not invoke cognitive decisions")
+
+    runtime.cognitive = NoDecisionPlane()
+
+    class ProposalStore:
+        async def persist(self, proposal):
+            assert proposal.authority == "suggest"
+            assert proposal.status == "proposed"
+            return 1
+
+    runtime.persistence_store = type("Persistence", (), {"client": object()})()
+    runtime.goal_proposal_store = ProposalStore()
+    runtime.ingest(Observation(
+        workspace_id="workspace-a",
+        kind=ObservationKind.HEALTH,
+        source="unified_event:engine_alert",
+        value={"service": "queue-worker", "status": "down"},
+        confidence=0.9,
+        source_trust=0.9,
+        observed_at=datetime.now(timezone.utc),
+        observation_id="event:evt-no-decision",
+        metadata={"event_id": "evt-no-decision"},
+    ))
+
+    result = await cycle_started_organisms(registry)
+
+    assert result.completed == 1
+    assert result.failed == 0
