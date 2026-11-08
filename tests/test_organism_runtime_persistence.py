@@ -257,3 +257,56 @@ async def test_persist_rejects_workspace_missing_from_current_database():
         await OrganismRuntimeStore(client).persist(runtime)
 
     assert "orphan-workspace" not in client.snapshots
+
+
+@pytest.mark.asyncio
+async def test_malformed_ledger_payload_does_not_abort_valid_event_recovery():
+    client = _Client(events=[
+        {
+            "id": "evt-malformed",
+            "event_type": "service_heartbeat",
+            "workspace_id": "workspace-a",
+            "created_at": "2026-11-07T10:00:00+00:00",
+            "payload": ["unexpected", "list"],
+        },
+        {
+            "id": "evt-valid",
+            "event_type": "service_heartbeat",
+            "workspace_id": "workspace-a",
+            "created_at": "2026-11-07T10:01:00+00:00",
+            "payload": {"status": "healthy"},
+        },
+    ])
+    runtime = OrganismRuntime("workspace-a")
+
+    status = await OrganismRuntimeStore(client).restore(runtime)
+
+    assert status == "restored"
+    observations = runtime.perception.recent("workspace-a")
+    assert len(observations) == 1
+    assert observations[0].observation_id == "event:evt-valid"
+
+
+@pytest.mark.asyncio
+async def test_repeated_restore_is_idempotent_and_recovered_observations_reach_ooda():
+    from organism.lifecycle import cycle_async
+
+    client = _Client(events=[{
+        "id": "evt-replayed",
+        "event_type": "service_heartbeat",
+        "workspace_id": "workspace-a",
+        "created_at": "2026-11-07T10:00:00+00:00",
+        "payload": {"service": "api", "status": "healthy"},
+    }])
+    store = OrganismRuntimeStore(client)
+    runtime = OrganismRuntime("workspace-a")
+
+    assert await store.restore(runtime) == "restored"
+    assert await store.restore(runtime) == "restored"
+    assert len(runtime.perception.recent("workspace-a")) == 1
+
+    result = await cycle_async(runtime)
+    assert result.workspace_id == "workspace-a"
+    assert result.observations == runtime.perception.recent("workspace-a")
+    assert result.state.workspace_id == "workspace-a"
+    assert result.state.authority == "suggest"
