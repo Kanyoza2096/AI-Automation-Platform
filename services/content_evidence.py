@@ -18,7 +18,12 @@ _METRIC_LANGUAGE = re.compile(
     r"percent(?:age)?|\d+(?:\.\d+)?\s?(?:%|milliseconds?|ms|seconds?|minutes?|hours?|x)\b)",
     re.IGNORECASE,
 )
-_NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
+_NUMBER = re.compile(
+    r"(?<![A-Za-z0-9/])(\\d+(?:\\.\\d+)?)(?:\\s*-\\s*|\\s*)"
+    r"(%|percent(?:age)?|ms|milliseconds?|seconds?|minutes?|hours?|x|times?)?"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 _WORD = re.compile(r"[a-z][a-z0-9-]{2,}", re.IGNORECASE)
 _STOP_WORDS = {
     "the", "and", "for", "with", "from", "that", "this", "when", "where",
@@ -49,6 +54,23 @@ def _tokens(text: str) -> set[str]:
         for token in _WORD.findall(text or "")
         if token.lower() not in _STOP_WORDS
     }
+
+
+def _numeric_facts(text: str) -> set[str]:
+    unit_aliases = {
+        "percent": "%", "percentage": "%", "%": "%",
+        "millisecond": "ms", "milliseconds": "ms", "ms": "ms",
+        "second": "s", "seconds": "s", "s": "s",
+        "minute": "min", "minutes": "min", "min": "min",
+        "hour": "h", "hours": "h", "h": "h",
+        "time": "x", "times": "x", "x": "x",
+    }
+    facts = set()
+    for value, unit in _NUMBER.findall(text or ""):
+        normalized_value = str(float(value)).rstrip("0").rstrip(".") if "." in value else str(int(value))
+        normalized_unit = unit_aliases.get(unit.lower(), unit.lower()) if unit else ""
+        facts.add(f"{normalized_value}:{normalized_unit}")
+    return facts
 
 
 def _verified_sources(evidence: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -94,12 +116,12 @@ def validate_caption_evidence(
 
     matched_source_ids: list[str] = []
     for sentence in metric_sentences:
-        numbers = set(_NUMBER.findall(sentence))
+        numbers = _numeric_facts(sentence)
         claim_tokens = _tokens(sentence)
         matched = None
         for source in sources:
             source_text = str(source.get("text") or "")
-            source_numbers = set(_NUMBER.findall(source_text))
+            source_numbers = _numeric_facts(source_text)
             source_tokens = _tokens(source_text)
             overlap = claim_tokens & source_tokens
             if numbers.issubset(source_numbers) and len(overlap) >= 2:
