@@ -181,3 +181,35 @@ Regression tests cover these distinctions. This is a correction to the diagnosti
 The 25-query inspection also confirmed useful coverage for explicit “between X and Y” operands, linear/logarithmic time constraints, and qualifiers such as “without”, “when”, and “while”. Coverage counts are not accuracy scores. The parser still needs independent human-labelled intent/relation annotations before it can be treated as a validated semantic parser.
 
 The holdout split was not opened. No corpus records, gold IDs, relevance labels, databases, LLMs, staging/production runtime, publishing, or deployment were used. Keep this work offline and unmerged pending test and review evidence.
+
+
+## Sixth experiment: compound-intent representation and CI correction
+
+The 25-query audit exposed two further gaps.
+
+First, the one-label intent model loses explicit secondary requests in compound questions:
+- KDO-RET-028 asks both why snapshot isolation can permit write skew and how to protect a business invariant.
+- KDO-RET-042 asks both how RPO and RTO differ and how restore drills should validate backups.
+
+The frame now preserves the primary intent and adds the field secondary_intents for additional explicit question clauses introduced by “and” or a semicolon. This is a shallow lexical extraction, not a complete clause parser. Tests cover both examples.
+
+Second, the first CI run after adding the broader intent tests failed: 37 passed and 13 failed. The failure was traced to incorrectly escaped regular-expression boundaries in _intent(), causing interrogative detection to return information_retrieval. The regex escaping has been corrected. This failure is a real Python test failure, distinct from the unrelated Vercel build-rate-limit status.
+
+The what-should classifier was also refined so questions asking what a process or cursor should contain/cover are labelled requirements_identification, while other “what should” prompts remain decision_guidance. “How should” prompts now distinguish design guidance from other decision guidance.
+
+The focused workflow was updated to run on pushes to this experiment branch as well as pull-request path changes. This makes subsequent verification easier to observe. The newest correction commits still require a fresh successful CI result; do not treat the earlier failed run as resolved until that evidence arrives.
+
+### Updated development-only intent trace
+
+Applying the corrected lexical rules to the 25 development prompts gives this provisional primary-intent distribution:
+- 7 causal explanation
+- 4 procedure
+- 4 decision guidance
+- 4 comparison
+- 3 selection
+- 2 design guidance
+- 1 requirements identification
+
+Two prompts (KDO-RET-028 and KDO-RET-042) also contain a separately captured secondary intent. These are heuristic labels and parser coverage counts, not independently measured semantic accuracy. In particular, a single primary intent plus extracted secondary clauses still cannot represent every implicit or nested request.
+
+The audit remains limited to the 25 development queries. The holdout split remains untouched. No corpus records, gold IDs, relevance labels, databases, LLMs, staging/production runtime, publishing, or deployment were used. Keep the prototype offline and unmerged pending fresh CI and further evaluation.
