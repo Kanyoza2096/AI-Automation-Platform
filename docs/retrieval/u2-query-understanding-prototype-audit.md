@@ -131,3 +131,19 @@ The bounded candidate reproduces the same top-five rankings as the prior clause-
 This is a more disciplined retrieval budget, but it is **not yet a runtime recommendation**. The gate is a lexical heuristic; the development set is small; binary judgments do not establish semantic correctness; and no hosted latency or cost has been measured. The unchanged ranking versus the prior weighted-RRF candidate means the gate has demonstrated call selection discipline, not an additional relevance gain. Keep the prototype offline and retain the original-query fallback.
 
 The experiment used the same 25 development queries and 112 knowledge chunks only. No holdout, database, LLM, staging/production runtime, publishing, or deployment was involved.
+
+
+## Fourth experiment: explicit query-frame extraction (prototype only)
+
+Added `services/experimental_query_frames.py` with a deterministic, explainable frame:
+- question intent (causal explanation, procedure, comparison, selection, conditions, etc.);
+- original query preserved verbatim;
+- token-level concept terms for inspection only;
+- explicit operands for the narrow `between X and Y` construction;
+- relation markers (contrast, cause/effect, condition, sequence, exclusion, comparison);
+- explicit complexity and numeric bounds, plus qualifier spans;
+- a negation/exclusion indicator.
+
+Six focused unit tests cover original-query preservation, comparison operands, complexity constraints, exclusion qualifiers, contrast markers, and empty input. Explicit comparison phrases take precedence over generic question openers (for example, “What is the difference between…” is classified as comparison).
+
+**This is not yet an evaluated retrieval strategy.** The extractor is rule-based, intentionally incomplete, and does not infer arbitrary entities or semantic relations. It does not rewrite the original query, expand terms, or access corpus records, gold IDs, labels, databases, or LLMs. No relevance improvement is claimed from this parser. The next evaluation must inspect all 25 development query frames for extraction errors before testing any frame-driven retrieval. Holdout remains untouched, and runtime integration remains prohibited.
