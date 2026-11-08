@@ -216,6 +216,105 @@ def test_publish_requires_both_validation_and_evidence_approval():
         asyncio.run(step.async_run(context))
     assert evidence_exc.value.code == "publish_evidence_not_approved"
 
+    context["evidence_validation"] = {"ok": True}
+    with pytest.raises(StepFailure) as semantic_exc:
+        asyncio.run(step.async_run(context))
+    assert semantic_exc.value.code == "publish_semantic_review_not_approved"
+
+
+def _approved_policy_validator():
+    return SimpleNamespace(
+        is_approved=True,
+        is_rejected=False,
+        status=SimpleNamespace(value="approved"),
+        error_messages=[],
+        warnings_count=0,
+        to_dict=lambda: {"status": "approved", "approved": True},
+    )
+
+
+def test_validate_content_step_blocks_when_semantic_review_needs_review():
+    class SemanticReviewer:
+        async def review(self, **kwargs):
+            assert kwargs["topic"] == "Kruskal's algorithm"
+            return {
+                "approved": False,
+                "status": "needs_review",
+                "reason": "one claim is uncertain",
+                "request_id": "review-123",
+            }
+
+    step = ValidateContentStep(
+        validator=SimpleNamespace(validate=lambda **kwargs: _approved_policy_validator()),
+        semantic_reviewer=SemanticReviewer(),
+    )
+    context = {
+        "caption": "A concise engineering post with a factual claim.",
+        "topic": "Kruskal's algorithm",
+        "content_result": {},
+        "brand": _brand(),
+        "knowledge_evidence": [{
+            "source_id": "kb-1",
+            "text": "Kruskal's algorithm uses disjoint sets.",
+            "metadata": {},
+        }],
+    }
+
+    class AsyncPolicyValidator:
+        async def validate(self, **kwargs):
+            return _approved_policy_validator()
+
+    step = ValidateContentStep(
+        validator=AsyncPolicyValidator(),
+        semantic_reviewer=SemanticReviewer(),
+    )
+    with pytest.raises(Exception, match="Independent semantic review did not approve"):
+        asyncio.run(step.async_run(context))
+    assert context["semantic_review"]["approved"] is False
+
+
+def test_validate_content_step_records_independent_semantic_approval():
+    class AsyncPolicyValidator:
+        async def validate(self, **kwargs):
+            return _approved_policy_validator()
+
+    class SemanticReviewer:
+        async def review(self, **kwargs):
+            return {
+                "approved": True,
+                "status": "approved",
+                "reason": "all claims supported",
+                "claims": [{"claim": "test", "support_status": "supported"}],
+                "supporting_source_ids": ["kb-1"],
+                "scores": {
+                    "brand_relevance": 0.9,
+                    "originality": 0.8,
+                    "audience_value": 0.8,
+                    "genericity": 0.1,
+                },
+                "request_id": "review-124",
+            }
+
+    step = ValidateContentStep(
+        validator=AsyncPolicyValidator(),
+        semantic_reviewer=SemanticReviewer(),
+    )
+    context = {
+        "caption": "A concise engineering post with a factual claim.",
+        "topic": "Kruskal's algorithm",
+        "content_result": {},
+        "brand": _brand(),
+        "knowledge_evidence": [{
+            "source_id": "kb-1",
+            "text": "Kruskal's algorithm uses disjoint sets.",
+            "metadata": {},
+        }],
+    }
+
+    result = asyncio.run(step.async_run(context))
+    assert result["semantic_review"]["approved"] is True
+    assert context["semantic_review"]["status"] == "approved"
+
 
 
 def test_prompt_builder_failure_does_not_fall_back_to_internal_prompt(monkeypatch):
