@@ -45,7 +45,7 @@ def test_operator_refuses_brand_outside_canonical_workspace():
         _brand(workspace_id="ws-e6eb6528d5b9"),
     ])
 
-    with pytest.raises(RuntimeError, match="could not be loaded"):
+    with pytest.raises(RuntimeError, match="canonical staging workspace"):
         operator._load_staging_brand(repository)
 
     assert repository.workspace_queries == [operator.STAGING_WORKSPACE_ID]
@@ -63,7 +63,7 @@ def test_operator_requires_staging_environment_and_explicit_flag(monkeypatch):
     monkeypatch.delenv("KDO_ENVIRONMENT", raising=False)
     monkeypatch.delenv("KDO_SEMANTIC_SHADOW_EVAL_ENABLED", raising=False)
 
-    with pytest.raises(RuntimeError, match="feature flag is disabled"):
+    with pytest.raises(RuntimeError, match="semantic shadow flag is disabled"):
         operator._assert_operator_boundary()
 
 
