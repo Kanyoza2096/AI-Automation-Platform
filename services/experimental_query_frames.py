@@ -94,11 +94,15 @@ def extract_query_frame(query: str) -> dict:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    intent = "information_retrieval"
-    for pattern, label in _INTENTS:
-        if re.search(pattern, query, re.I):
-            intent = label
-            break
+    # Explicit comparison structure takes precedence over a generic opener.
+    if re.search(r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to)\\b", query, re.I):
+        intent = "comparison"
+    else:
+        intent = "information_retrieval"
+        for pattern, label in _INTENTS:
+            if re.search(pattern, query, re.I):
+                intent = label
+                break
 
     complexity = [m.group(0) for m in _COMPLEXITY.finditer(query)]
     numeric = [m.group(0) for m in _NUMERIC.finditer(query)]
