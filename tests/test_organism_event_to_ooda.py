@@ -6,6 +6,19 @@ from organism.coordinator import cycle_started_organisms
 from organism.event_bridge import OrganismEventBridge
 
 
+class _RecordingStore:
+    def __init__(self):
+        self.persisted = []
+
+    async def persist(self, runtime):
+        self.persisted.append({
+            "workspace_id": runtime.workspace_id,
+            "state": runtime.state,
+            "observations": runtime.perception.recent(runtime.workspace_id),
+        })
+        return 1
+
+
 class _Bus:
     def __init__(self):
         self.handlers = []
@@ -28,6 +41,8 @@ async def test_workspace_event_flows_through_perception_into_ooda_state_without_
     registry = OrganismRegistry()
     workspace_a = await registry.ensure_started("workspace-a")
     workspace_b = registry.get_or_create("workspace-b")
+    store = _RecordingStore()
+    workspace_a.runtime.persistence_store = store
     bridge = OrganismEventBridge(registry)
     bus = _Bus()
     await bridge.start(bus)
@@ -67,5 +82,15 @@ async def test_workspace_event_flows_through_perception_into_ooda_state_without_
         assert workspace_a.runtime.state.health == 0.25
         assert workspace_b.runtime.state is None
         assert registry.get("workspace-b") is workspace_b
+
+        # The OODA coordinator must persist the state it just synthesized,
+        # not merely update an in-memory runtime. Persistence remains scoped
+        # to the started workspace and carries no execution authority.
+        assert len(store.persisted) == 1
+        saved = store.persisted[0]
+        assert saved["workspace_id"] == "workspace-a"
+        assert saved["state"].health == 0.25
+        assert saved["state"].authority == "suggest"
+        assert saved["observations"] == observations_a
     finally:
         await bridge.stop()
