@@ -203,8 +203,8 @@ def test_shadow_runner_evaluates_batch_sequentially(monkeypatch):
     repository = FakeKnowledgeRepository([_entry()])
     results = asyncio.run(evaluate_batch(
         cases=[
-            {"caption": "Caption A", "topic": "canary"},
-            {"caption": "Caption B", "topic": "rollout"},
+            {"caption": "Caption A", "topic": "canary rollouts expose limited traffic"},
+            {"caption": "Caption B", "topic": "canary rollouts expose limited traffic"},
         ],
         brand=_brand(),
         repository=repository,
@@ -212,7 +212,7 @@ def test_shadow_runner_evaluates_batch_sequentially(monkeypatch):
     ))
 
     assert len(results) == 2
-    assert [call["caption"] for call in reviewer.calls] == ["Canary rollout A", "Canary rollout B"]
+    assert [call["caption"] for call in reviewer.calls] == ["Caption A", "Caption B"]
 
 
 def test_shadow_runner_refuses_production_database_client(monkeypatch):
