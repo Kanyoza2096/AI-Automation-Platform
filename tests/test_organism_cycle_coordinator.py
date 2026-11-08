@@ -75,6 +75,9 @@ async def test_coordinator_persists_fresh_trusted_health_goal_as_suggest_only():
             self.items.append(proposal)
             return 1
 
+        async def list_pending(self, workspace_id):
+            return tuple(item for item in self.items if item.workspace_id == workspace_id)
+
     store = ProposalStore()
     runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = store
@@ -118,6 +121,9 @@ async def test_coordinator_replay_does_not_persist_same_health_event_twice():
             self.items.append(proposal)
             return 1
 
+        async def list_pending(self, workspace_id):
+            return tuple(item for item in self.items if item.workspace_id == workspace_id)
+
     store = ProposalStore()
     runtime.persistence_store = SimpleNamespace(client=object())
     runtime.goal_proposal_store = store
@@ -156,6 +162,9 @@ async def test_coordinator_does_not_create_proposals_from_stale_health_events():
         async def persist(self, proposal):
             self.items.append(proposal)
             return 1
+
+        async def list_pending(self, workspace_id):
+            return tuple(item for item in self.items if item.workspace_id == workspace_id)
 
     store = ProposalStore()
     runtime.persistence_store = SimpleNamespace(client=object())
@@ -234,6 +243,9 @@ async def test_coordinator_binds_proposal_store_to_runtime_persistence_client(mo
             self.items.append(proposal)
             return 1
 
+        async def list_pending(self, workspace_id):
+            return tuple(item for item in self.items if item.workspace_id == workspace_id)
+
     monkeypatch.setattr(goal_persistence, "GoalProposalStore", ProposalStore)
     runtime.ingest(Observation(
         workspace_id="workspace-a",
@@ -275,6 +287,9 @@ async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_propo
             assert proposal.authority == "suggest"
             assert proposal.status == "proposed"
             return 1
+
+        async def list_pending(self, workspace_id):
+            return ()
 
     runtime.persistence_store = type("Persistence", (), {"client": object(), "persist": _noop_snapshot_persist})()
     runtime.goal_proposal_store = ProposalStore()
