@@ -74,6 +74,15 @@ class ProductionKnowledgeBaseRetrievalTests(unittest.IsolatedAsyncioTestCase):
         results = await self.kb.search("quantum entanglement telescope", 5)
         self.assertEqual(results, [])
 
+    async def test_synthetic_workspace_scope_cannot_build_knowledge_index(self):
+        kb = KnowledgeBase(
+            brand_id=self.brand_id,
+            workspace_id="default",
+            repository=self.repo,
+        )
+        with self.assertRaisesRegex(RuntimeError, "active tenant workspace_id"):
+            await kb.initialize()
+
 
 if __name__ == "__main__":
     unittest.main()
