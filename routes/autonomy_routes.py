@@ -108,25 +108,15 @@ def _resolve_mode(loop) -> str:
 
 
 def _resolve_phase(loop) -> str:
-    """Best-effort OODA phase from loop activity; never invents a fake phase name."""
-    global _last_ooda_phase
+    """Return the loop's live phase; lifetime counters are not phase telemetry."""
     if loop is None or not getattr(loop, "_running", False):
         return "OBSERVE"
-    # Prefer explicit phase if the loop tracks one
     explicit = getattr(loop, "_current_phase", None) or getattr(loop, "current_phase", None)
     if explicit:
         return str(explicit).upper()
-    metrics = getattr(loop, "_metrics", None)
-    if metrics is not None:
-        processed = int(getattr(metrics, "events_processed", 0) or 0)
-        decisions = int(getattr(metrics, "decisions_made", 0) or 0)
-        if decisions > 0 and processed > 0:
-            _last_ooda_phase = "ACT"
-        elif processed > 0:
-            _last_ooda_phase = "ORIENT"
-        else:
-            _last_ooda_phase = "OBSERVE"
-    return _last_ooda_phase
+    # Older loop implementations do not expose a live phase. Prefer an honest
+    # idle label over inferring Orient/Act from cumulative counters.
+    return "OBSERVE"
 
 
 def _patterns_from_loop(loop) -> list:
