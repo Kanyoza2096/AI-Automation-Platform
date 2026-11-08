@@ -147,3 +147,19 @@ Added `services/experimental_query_frames.py` with a deterministic, explainable 
 Six focused unit tests cover original-query preservation, comparison operands, complexity constraints, exclusion qualifiers, contrast markers, and empty input. Explicit comparison phrases take precedence over generic question openers (for example, “What is the difference between…” is classified as comparison).
 
 **This is not yet an evaluated retrieval strategy.** The extractor is rule-based, intentionally incomplete, and does not infer arbitrary entities or semantic relations. It does not rewrite the original query, expand terms, or access corpus records, gold IDs, labels, databases, or LLMs. No relevance improvement is claimed from this parser. The next evaluation must inspect all 25 development query frames for extraction errors before testing any frame-driven retrieval. Holdout remains untouched, and runtime integration remains prohibited.
+
+
+### Development-prompt trace audit
+
+A manual trace inspection of all 25 development prompts found two concrete parser defects, both corrected before treating the frame output as stable enough for further research:
+1. Questions embedded after context statements (for example, “I need … Which data structure …?”) were missed by an opener-only intent classifier. Intent extraction now detects the interrogative within the full prompt.
+2. A comparison operand could absorb a following subordinate condition (for example, “... exactly-once effects when a consumer calls ...”). The operand parser now stops at recognized condition/sequence connectors.
+
+Current rule-based trace counts across the 25 development prompts:
+- 6 definition/identification, 11 procedure, 4 causal-explanation, 3 comparison, and 1 selection intent.
+- 14 prompts contain at least one recognized relation marker.
+- 10 contain a recognized qualifier span.
+- 2 explicitly state a supported time-complexity constraint.
+- 3 use an explicit “between X and Y” comparison form.
+
+These are parser-coverage counts, not accuracy scores. The finite rules do not capture every implied relation or constraint; for example, a natural-language relationship can exist without a listed connector. The trace audit used development prompts only. No gold labels or record IDs were used to create frames, and no holdout was opened.
