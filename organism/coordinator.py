@@ -14,7 +14,7 @@ logger = logging.getLogger("kanyoza.organism.coordinator")
 
 # Old events restored from the ledger are context, not fresh triggers for a new
 # goal proposal. Only recently observed health events can create suggestions.
-GOAL_EVENT_MAX_AGE = timedelta(minutes=5)
+GOAL_EVENT_MAX_AGE = timedelta(minutes=5)  # bounded freshness window for new suggestions
 
 
 @dataclass(frozen=True)
