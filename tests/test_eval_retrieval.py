@@ -1,6 +1,7 @@
 import unittest
 
-from scripts.eval_retrieval import build_index, evaluate, search
+from scripts.eval_retrieval import STOP_WORDS, build_index, evaluate, search, tokenize
+from services.knowledge_base import STOP_WORDS as PRODUCTION_STOP_WORDS, tokenize as production_tokenize
 
 
 class RetrievalEvaluationTests(unittest.TestCase):
@@ -21,6 +22,22 @@ class RetrievalEvaluationTests(unittest.TestCase):
                 {"query_id": "q2", "query": "hash maps locate keys with hashing", "split": "holdout", "expected_record_ids": ["negative"], "hard_negative_record_ids": ["gold"]},
             ],
         }
+
+    def test_evaluator_stopwords_match_production_configuration(self):
+        self.assertEqual(STOP_WORDS, PRODUCTION_STOP_WORDS)
+
+    def test_evaluator_tokenizer_matches_production_tokenizer(self):
+        samples = [
+            "The system is designed for reliable event delivery.",
+            "Fenwick trees support prefix-sum queries and updates.",
+            "Can the index handle range scans between keys?",
+        ]
+        for sample in samples:
+            self.assertEqual(tokenize(sample), production_tokenize(sample))
+
+    def test_stopword_only_query_returns_no_results(self):
+        index = build_index(self.corpus["records"])
+        self.assertEqual(search("the and is to for", index), [])
 
     def test_search_returns_relevant_record_first(self):
         index = build_index([r for r in self.corpus["records"] if r["record_type"] == "knowledge_chunk"])
