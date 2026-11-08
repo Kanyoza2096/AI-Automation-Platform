@@ -386,6 +386,7 @@ class KnowledgeStep(Step):
                 text = str(getattr(entry, "content", "") or "").strip()
                 if not text:
                     continue
+                facts.append(text)
                 metadata = getattr(entry, "metadata", None)
                 if not isinstance(metadata, dict):
                     metadata = {}
@@ -394,7 +395,6 @@ class KnowledgeStep(Step):
                 ).strip()
                 if not source_id:
                     continue
-                facts.append(text)
                 evidence.append({
                     "source_id": source_id,
                     "text": text,
@@ -408,7 +408,7 @@ class KnowledgeStep(Step):
                 "[Stage 3] Knowledge retrieved: %d traceable entries.",
                 len(evidence),
             )
-            return evidence
+            return facts
         except asyncio.TimeoutError:
             logger.warning("[Stage 3] Knowledge retrieval timed out")
             context["knowledge_context"] = ""
