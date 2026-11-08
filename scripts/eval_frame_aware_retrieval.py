@@ -38,7 +38,7 @@ def candidate_clauses(query: str, include_secondary: bool = False,
     if include_secondary:
         frame = extract_query_frame(query)
         for item in frame.get("secondary_intents", []):
-            clause = re.sub(r"^(?:and|;)\\s*", "", item.get("clause", ""),
+            clause = re.sub(r"^(?:and|;)\s*", "", item.get("clause", ""),
                             flags=re.IGNORECASE).strip(" ,")
             key = " ".join(tokenize(clause))
             if key and key not in seen:
@@ -198,7 +198,7 @@ def main() -> None:
         json.loads(args.corpus.read_text(encoding="utf-8")),
         json.loads(args.evaluation.read_text(encoding="utf-8")),
     )
-    rendered = json.dumps(report, indent=2, ensure_ascii=False) + "\\n"
+    rendered = json.dumps(report, indent=2, ensure_ascii=False) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")
