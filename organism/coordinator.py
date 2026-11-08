@@ -115,19 +115,16 @@ async def _persist_fresh_goal_proposals(runtime: Any, workspace_id: str) -> int:
             pending.pop(observation_id, None)
             processed.add(observation_id)
 
-    persistence = getattr(runtime, "persistence_store", None)
-    has_client = persistence is not None and getattr(persistence, "client", None) is not None
-    if pending and not has_client:
-        raise RuntimeError("goal proposal store unavailable: runtime persistence client is not bound")
-
-    store = getattr(runtime, "goal_proposal_store", None)
-    if store is None and has_client:
-        from organism.goal_persistence import GoalProposalStore
-        store = GoalProposalStore(persistence.client)
-        runtime.goal_proposal_store = store
-
     if not pending:
         return 0
+
+    # The authenticated organism bootstrap must explicitly inject this store
+    # after the proposal table migration is verified. Do not instantiate it
+    # opportunistically: that would query a table that may not exist yet and
+    # could turn every OODA cycle into a persistence failure.
+    store = getattr(runtime, "goal_proposal_store", None)
+    if store is None:
+        raise RuntimeError("goal proposal store is not enabled for this workspace runtime")
 
     persisted = 0
     for observation_id, proposal in tuple(pending.items()):
