@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from core.organism import OrganismRegistry
 from organism.coordinator import cycle_started_organisms
