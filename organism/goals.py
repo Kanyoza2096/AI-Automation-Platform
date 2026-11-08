@@ -145,7 +145,8 @@ def derive_goal_proposal(
     if status not in {"degraded", "unhealthy", "down", "critical"}:
         return None
 
-    event_id = str(observation.metadata.get("event_id") or "").strip()
+    metadata = observation.metadata if isinstance(observation.metadata, Mapping) else {}
+    event_id = str(metadata.get("event_id") or "").strip()
     if not event_id or len(event_id) > 160:
         return None
     raw_service = (
