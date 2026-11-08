@@ -99,16 +99,22 @@ def search(query, index, top_k=5):
 
 def evaluate_split(queries, index, top_k=5):
     if not queries:
-        return {"queries": 0, "recall_at_5": None, "mrr": None, "hard_negative_top1_rate": None, "hard_negative_outrank_rate": None, "per_query": []}
-    recall, reciprocal, top1_negative, outrank, per_query = [], [], [], [], []
+        return {
+            "queries": 0, "recall_at_k": None, "gold_hit_rate_at_k": None,
+            "mrr": None, "hard_negative_top1_rate": None,
+            "hard_negative_outrank_rate": None, "per_query": [],
+        }
+    recall, gold_hit, reciprocal, top1_negative, outrank, per_query = [], [], [], [], [], []
     for q in queries:
         ranked = search(q["query"], index, top_k)
         ids = [rid for rid, _ in ranked]
         gold, negatives = set(q.get("expected_record_ids", [])), set(q.get("hard_negative_record_ids", []))
+        retrieved_gold = gold.intersection(ids)
         gold_ranks = [ids.index(rid) + 1 for rid in gold if rid in ids]
         negative_ranks = [ids.index(rid) + 1 for rid in negatives if rid in ids]
         best_gold = min(gold_ranks) if gold_ranks else None
-        recall.append(float(best_gold is not None))
+        recall.append(len(retrieved_gold) / len(gold) if gold else 0.0)
+        gold_hit.append(float(bool(retrieved_gold)))
         reciprocal.append(1 / best_gold if best_gold else 0.0)
         top1_negative.append(float(bool(ids and ids[0] in negatives)))
         if best_gold is not None and negative_ranks:
@@ -116,12 +122,17 @@ def evaluate_split(queries, index, top_k=5):
         per_query.append({
             "query_id": q.get("query_id"), "query": q["query"],
             "gold_record_ids": sorted(gold), "gold_rank": best_gold,
+            "gold_retrieved_count": len(retrieved_gold),
+            "gold_count": len(gold),
+            "gold_recall_at_k": round(len(retrieved_gold) / len(gold), 4) if gold else 0.0,
             "hard_negative_rank": min(negative_ranks) if negative_ranks else None,
             "top1_is_hard_negative": bool(ids and ids[0] in negatives),
             "ranked_results": [{"record_id": rid, "score": round(score, 6)} for rid, score in ranked],
         })
     return {
-        "queries": len(queries), "recall_at_5": round(sum(recall) / len(recall), 4),
+        "queries": len(queries),
+        "recall_at_k": round(sum(recall) / len(recall), 4),
+        "gold_hit_rate_at_k": round(sum(gold_hit) / len(gold_hit), 4),
         "mrr": round(sum(reciprocal) / len(reciprocal), 4),
         "hard_negative_top1_rate": round(sum(top1_negative) / len(top1_negative), 4),
         "hard_negative_outrank_rate": round(sum(outrank) / len(outrank), 4) if outrank else None,
