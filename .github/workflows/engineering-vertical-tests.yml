@@ -36,6 +36,8 @@ on:
       - "tests/test_autonomy_phase_reporting.py"
       - "tests/test_organism_lifecycle.py"
       - "core/unified_bus.py"
+      - "core/event_provenance.py"
+      - "tests/test_event_provenance.py"
       - "utils/ids.py"
       - "tests/security/**"
       - "dependency_registry.py"
