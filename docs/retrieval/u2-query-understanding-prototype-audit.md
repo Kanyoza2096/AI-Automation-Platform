@@ -170,7 +170,7 @@ These are parser-coverage counts, not accuracy scores. The finite rules do not c
 A second manual inspection reviewed all 25 development prompts (KDO-RET-002 through KDO-RET-050, development split only). It found that the first-question-word classifier was too coarse: several prompts beginning with “What” were actually asking for a decision, a selection, or a set of requirements; some “How” prompts asked for causal explanation rather than a procedure.
 
 The offline parser now uses conservative lexical distinctions:
-- “What should …” → decision guidance.
+- “What should …” → decision guidance, unless it asks what a process or object should contain/cover/include/need/require; those are requirements identification.
 - “What … method/structure/tool/approach/strategy …” → selection.
 - “What … contain/cover/include/need/require …” → requirements identification.
 - “How … help/reduce/increase/worsen/protect/enable/allow/cause/lead …” → causal explanation.
@@ -204,12 +204,15 @@ The focused workflow was updated to run on pushes to this experiment branch as w
 Applying the corrected lexical rules to the 25 development prompts gives this provisional primary-intent distribution:
 - 7 causal explanation
 - 4 procedure
-- 4 decision guidance
+- 2 decision guidance
 - 4 comparison
 - 3 selection
 - 2 design guidance
-- 1 requirements identification
+- 3 requirements identification
 
 Two prompts (KDO-RET-028 and KDO-RET-042) also contain a separately captured secondary intent. These are heuristic labels and parser coverage counts, not independently measured semantic accuracy. In particular, a single primary intent plus extracted secondary clauses still cannot represent every implicit or nested request.
 
 The audit remains limited to the 25 development queries. The holdout split remains untouched. No corpus records, gold IDs, relevance labels, databases, LLMs, staging/production runtime, publishing, or deployment were used. Keep the prototype offline and unmerged pending fresh CI and further evaluation.
+
+
+A subsequent CI run then passed 49 tests and failed 2. One failure showed that “How do I protect a business invariant?” was incorrectly classified as causal because the verb “protect” was too broad a causal cue; that cue was removed. The other was an outdated test expectation: “How should tools be designed?” is now correctly asserted as design guidance. A fresh run against the latest commit is still required.
