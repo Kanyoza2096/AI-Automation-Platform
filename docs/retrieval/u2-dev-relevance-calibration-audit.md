@@ -97,3 +97,27 @@ Important interpretation:
 - Porter-stemmed TF-IDF scores 0.2777 on KDO-RET-014 and is not selected.
 - No candidate is selected or promoted. KDO-RET-014 remains the priority for query/corpus diagnosis.
 - No holdout data was read, scored, or used.
+
+
+## KDO-RET-014 query-alignment investigation
+
+The query's wording is lexically misaligned with the strongest evidence. The query says "users are correcting the answers more often"; the corpus record uses the canonical phrase "user correction rate" and frames the distinction as offline versus online evaluation. The current lexical retriever therefore overweights generic evaluation passages and misses the online-evaluation record.
+
+An exploratory, manually authored paraphrase was tested:
+`Why does offline evaluation score improve while online user correction rate increases? controlled comparisons representative evaluation sets failure categories regression`
+
+It ranked the two gold records first and second:
+1. `knowledge.ai-failure-taxonomy.v1`
+2. `knowledge.ai.online-evaluation.v1`
+
+On the five calibrated-query slice, changing only KDO-RET-014 produced:
+- Mean nDCG@5: 0.7193 → 0.8412
+- True Recall@5: 0.80 → 1.00
+- Gold hit rate@5: 0.80 → 1.00
+- MRR: 0.50 → 0.70
+
+KDO-RET-014 nDCG@5 increased from 0.2867 to 0.8960; its two gold records moved from ranks 10 / not in top five to ranks 1 / 2.
+
+This is **not** evidence that a production query rewriter should use this exact string. The paraphrase was manually authored after inspecting the target evidence, so it is a corpus-informed exploratory demonstration and vulnerable to overfitting. The full experiment and limitations are recorded in `docs/retrieval/calibration/kdo_u2_ret014_query_alignment_experiment_v1.json`.
+
+Next: test a general, corpus-independent query decomposition/terminology expansion approach across all 25 development queries, without using gold IDs or holdout data to generate expansions. Report ranking quality and query latency/token overhead together. No ranking candidate or rewrite is selected for production.
