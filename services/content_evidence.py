@@ -19,7 +19,7 @@ _METRIC_LANGUAGE = re.compile(
     re.IGNORECASE,
 )
 _NUMBER = re.compile(
-    r"(?<![A-Za-z0-9/])(\\d+(?:\\.\\d+)?)(?:\\s*-\\s*|\\s*)"
+    r"(?<![A-Za-z0-9/])(\d+(?:\.\d+)?)(?:\s*-\s*|\s*)"
     r"(%|percent(?:age)?|ms|milliseconds?|seconds?|minutes?|hours?|x|times?)?"
     r"(?![A-Za-z0-9])",
     re.IGNORECASE,
