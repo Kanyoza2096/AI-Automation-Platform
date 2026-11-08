@@ -124,7 +124,7 @@ def decompose_query(query: str) -> dict:
         next_parts = []
         for part in parts:
             split_parts = re.split(
-                r"\\b" + re.escape(connector) + r"\\b",
+                r"\b" + re.escape(connector) + r"\b",
                 part,
                 flags=re.IGNORECASE,
             )
@@ -141,7 +141,7 @@ def decompose_query(query: str) -> dict:
         if len(tokenize_query(part)) >= 2
     ]
     trace = understand_query(query)
-    words = re.findall(r"\\w+", query.lower())
+    words = re.findall(r"\w+", query.lower())
     if "why" in words:
         intent = "causal_explanation"
     elif "how" in words:
