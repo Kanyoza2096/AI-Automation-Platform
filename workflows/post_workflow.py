@@ -575,9 +575,15 @@ class ValidateContentStep(Step):
     """Validate AI-generated content before proceeding (async)."""
     name = "validate_content"
 
-    def __init__(self, validator: "ContentValidator" = None) -> None:
+    def __init__(
+        self,
+        validator: "ContentValidator" = None,
+        semantic_reviewer=None,
+    ) -> None:
         from services.content_validator import ContentValidator
+        from services.content_semantic_reviewer import ContentSemanticReviewer
         self._validator = validator or ContentValidator()
+        self._semantic_reviewer = semantic_reviewer or ContentSemanticReviewer()
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         caption = context.get("caption", "")
@@ -633,7 +639,75 @@ class ValidateContentStep(Step):
             "PostWorkflow: validation passed (warnings=%d)",
             validation_result.warnings_count,
         )
-        return validation_result.to_dict()
+
+        semantic_review = await self._semantic_reviewer.review(
+            caption=caption,
+            topic=topic,
+            evidence=context.get("knowledge_evidence") or [],
+            brand=brand,
+            platform=platform,
+        )
+        context["semantic_review"] = semantic_review
+        if (
+            not isinstance(semantic_review, dict)
+            or semantic_review.get("approved") is not True
+            or semantic_review.get("status") != "approved"
+        ):
+            review_status = (
+                semantic_review.get("status", "invalid")
+                if isinstance(semantic_review, dict)
+                else "invalid"
+            )
+            review_reason = (
+                semantic_review.get("reason", "semantic reviewer returned no decision")
+                if isinstance(semantic_review, dict)
+                else "semantic reviewer returned no decision"
+            )
+            logger.warning(
+                "PostWorkflow: semantic review blocked publication "
+                "(status=%s topic=%s reason=%s)",
+                review_status, topic[:80], review_reason,
+            )
+            raise AIValidationError(
+                message=(
+                    "Independent semantic review did not approve publication "
+                    f"(status={review_status}): {review_reason}"
+                ),
+                context={
+                    "topic": topic,
+                    "semantic_review_status": review_status,
+                    "semantic_review_reason": review_reason,
+                    "semantic_review_request_id": (
+                        semantic_review.get("request_id")
+                        if isinstance(semantic_review, dict)
+                        else None
+                    ),
+                },
+            )
+
+        logger.info(
+            "PostWorkflow: independent semantic review approved "
+            "(topic=%s claims=%d sources=%d request_id=%s)",
+            topic[:80],
+            len(semantic_review.get("claims", [])),
+            len(semantic_review.get("supporting_source_ids", [])),
+            semantic_review.get("request_id") or "none",
+        )
+        return {
+            **validation_result.to_dict(),
+            "semantic_review": {
+                "status": semantic_review.get("status"),
+                "approved": True,
+                "scores": semantic_review.get("scores", {}),
+                "claims": semantic_review.get("claims", []),
+                "supporting_source_ids": semantic_review.get("supporting_source_ids", []),
+                "rationale": semantic_review.get("rationale", ""),
+                "improvements": semantic_review.get("improvements", []),
+                "request_id": semantic_review.get("request_id"),
+                "provider": semantic_review.get("provider"),
+                "model": semantic_review.get("model"),
+            },
+        }
 
     def run(self, context: dict[str, Any]) -> Any:
         raise RuntimeError(
@@ -733,6 +807,14 @@ class PublishStep(Step):
             raise StepFailure(
                 message="Publish blocked because factual evidence validation is missing or failed",
                 code="publish_evidence_not_approved",
+                detail={"brand_id": getattr(self._brand, "id", None)},
+            )
+
+        semantic_review = context.get("semantic_review")
+        if not isinstance(semantic_review, dict) or semantic_review.get("approved") is not True or semantic_review.get("status") != "approved":
+            raise StepFailure(
+                message="Publish blocked because independent semantic review is missing or not approved",
+                code="publish_semantic_review_not_approved",
                 detail={"brand_id": getattr(self._brand, "id", None)},
             )
 
@@ -1169,7 +1251,7 @@ class PostPublishWorkflow(Workflow):
       1. Select Topic          — from brand KB or custom_topics
       2. Knowledge Context     — retrieve relevant KB facts
       3. Generate Content      — LLM caption + Cloudflare image
-      4. Validate Content      — ContentValidator
+      4. Validate Content      — policy validator + independent semantic reviewer
       5. Render Image          — verify MediaArtifact
       6. Publish               — governed canonical publish
       7. Record Analytics      — persist metrics
@@ -1190,6 +1272,7 @@ class PostPublishWorkflow(Workflow):
         content_validator: "ContentValidator" = None,
         knowledge_repo=None,
         prompt_builder=None,
+        semantic_reviewer=None,
         container=None,
     ) -> None:
         self._container = container
@@ -1201,7 +1284,10 @@ class PostPublishWorkflow(Workflow):
                     content_engine, brand, ai_profile,
                     prompt_builder=prompt_builder,
                 ),
-                ValidateContentStep(validator=content_validator),
+                ValidateContentStep(
+                    validator=content_validator,
+                    semantic_reviewer=semantic_reviewer,
+                ),
                 RenderImageStep(content_engine),
                 PublishStep(registry, brand, container=container),
                 RecordAnalyticsStep(analytics_repo),
