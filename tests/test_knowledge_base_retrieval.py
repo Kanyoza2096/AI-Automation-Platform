@@ -8,8 +8,11 @@ class FakeKnowledgeRepository:
     def __init__(self, entries):
         self.entries = list(entries)
 
-    def find_by_brand(self, brand_id):
-        return [entry for entry in self.entries if entry.brand_id == brand_id]
+    def find_by_brand(self, brand_id, workspace_id):
+        return [
+            entry for entry in self.entries
+            if entry.brand_id == brand_id and entry.workspace_id == workspace_id
+        ]
 
 
 class ProductionKnowledgeBaseRetrievalTests(unittest.IsolatedAsyncioTestCase):
@@ -33,6 +36,14 @@ class ProductionKnowledgeBaseRetrievalTests(unittest.IsolatedAsyncioTestCase):
                 doc_type="knowledge_chunk",
                 metadata={"record_id": "negative-hash"},
             ),
+            KnowledgeEntry(
+                id="foreign-workspace-record",
+                workspace_id="another-workspace",
+                brand_id=self.brand_id,
+                content="Disjoint sets and union-find support Kruskal minimum spanning tree cycle detection.",
+                doc_type="knowledge_chunk",
+                metadata={"record_id": "foreign-workspace-record"},
+            ),
         ]
         self.repo = FakeKnowledgeRepository(self.entries)
         self.kb = KnowledgeBase(
@@ -52,6 +63,12 @@ class ProductionKnowledgeBaseRetrievalTests(unittest.IsolatedAsyncioTestCase):
         stats = self.kb.get_stats()
         self.assertEqual(stats["documents"], 2)
         self.assertGreater(stats["unique_terms"], 0)
+
+    async def test_same_brand_id_in_another_workspace_is_not_indexed(self):
+        stats = self.kb.get_stats()
+        self.assertEqual(stats["documents"], 2)
+        results = await self.kb.search("disjoint sets union-find Kruskal", 5)
+        self.assertEqual(results, [])
 
     async def test_unmatched_query_returns_no_results(self):
         results = await self.kb.search("quantum entanglement telescope", 5)
