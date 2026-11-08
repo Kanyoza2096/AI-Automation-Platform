@@ -212,7 +212,7 @@ def test_shadow_runner_evaluates_batch_sequentially(monkeypatch):
     ))
 
     assert len(results) == 2
-    assert [call["caption"] for call in reviewer.calls] == ["Caption A", "Caption B"]
+    assert [call["caption"] for call in reviewer.calls] == ["Canary rollout A", "Canary rollout B"]
 
 
 def test_shadow_runner_refuses_production_database_client(monkeypatch):
