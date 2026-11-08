@@ -48,6 +48,35 @@ class QueryFrameTests(unittest.TestCase):
             frame["relations"],
         )
 
+    def test_numeric_upper_bound_is_not_an_exclusion(self):
+        frame = extract_query_frame("Retry no more than 5 times before failing.")
+        self.assertFalse(frame["has_negation_or_exclusion"])
+        self.assertIn(
+            {"kind": "numeric_bound", "text": "no more than 5"},
+            frame["constraints"],
+        )
+
+    def test_not_only_idiom_is_not_an_exclusion(self):
+        frame = extract_query_frame("Why does caching improve not only speed but also consistency?")
+        self.assertFalse(frame["has_negation_or_exclusion"])
+
+    def test_explicit_negation_is_an_exclusion(self):
+        frame = extract_query_frame("Why is this operation not idempotent?")
+        self.assertTrue(frame["has_negation_or_exclusion"])
+
+    def test_ambiguous_while_is_reported_as_ambiguous(self):
+        contrast = extract_query_frame("Why can latency rise while throughput falls?")
+        temporal = extract_query_frame("How does the cache refresh while requests arrive?")
+        expected = {"connector": "while", "type": "contrast_or_temporal"}
+        self.assertIn(expected, contrast["relations"])
+        self.assertIn(expected, temporal["relations"])
+
+    def test_when_is_not_forced_into_condition_or_cause(self):
+        frame = extract_query_frame("Why can a hash map degrade when many keys collide?")
+        self.assertIn(
+            {"connector": "when", "type": "temporal_or_condition"},
+            frame["relations"],
+        )
     def test_rejects_empty_input(self):
         with self.assertRaises(ValueError):
             extract_query_frame("  ")
