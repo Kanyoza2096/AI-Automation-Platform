@@ -110,3 +110,24 @@ python -m unittest tests.test_experimental_query_understanding
 ```
 
 The detailed machine-readable run, including all per-query top-five ranked outputs and query traces, is retained as the accompanying experiment artifact.
+
+## Third experiment: bounded, informative-clause retrieval
+
+A follow-up offline run added a deterministic clause gate and query budget. The original query is always retrieved. A clause is eligible only when it has at least three non-stopword terms and at least two terms not present in the other extracted clause(s). At most two eligible clauses are added, selected by a deterministic term-information proxy. This avoids sending weak fragments to retrieval. The candidate uses original-query RRF weight 1.0, clause weight 1.5, RRF k=10, and at most 20 results per subquery.
+
+| Metric | Baseline | Bounded clause candidate |
+|---|---:|---:|
+| Recall@5 | 0.9400 | **0.9600** |
+| Gold hit rate@5 | 0.9600 | **1.0000** |
+| MRR | 0.8280 | **0.8560** |
+| Binary nDCG@5 | 0.8381 | **0.8623** |
+| Hard-negative top-1 rate | 0.2000 | **0.1600** |
+| Hard-negative outrank rate | 0.3333 (6/18) | 0.3158 (6/19) |
+
+The bounded candidate reproduces the same top-five rankings as the prior clause-weight-1.5 experiment across all 25 development queries. It uses two retrieval calls for 20 queries and three calls for five queries (2.2 calls/query on average), rather than assuming every query needs every possible clause. KDO-RET-014 still retrieves only one of its two gold records in the top five; its best gold remains at rank 5 and a hard negative remains at rank 2.
+
+### Interpretation and decision
+
+This is a more disciplined retrieval budget, but it is **not yet a runtime recommendation**. The gate is a lexical heuristic; the development set is small; binary judgments do not establish semantic correctness; and no hosted latency or cost has been measured. The unchanged ranking versus the prior weighted-RRF candidate means the gate has demonstrated call selection discipline, not an additional relevance gain. Keep the prototype offline and retain the original-query fallback.
+
+The experiment used the same 25 development queries and 112 knowledge chunks only. No holdout, database, LLM, staging/production runtime, publishing, or deployment was involved.
