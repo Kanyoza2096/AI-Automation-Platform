@@ -11,14 +11,14 @@ import re
 from typing import Any, Iterable
 
 _METRIC_LANGUAGE = re.compile(
-    r"\\b(?:reduc(?:e|ed|tion)|drop(?:ped)?|decreas(?:e|ed)|increas(?:e|ed)|"
+    r"\b(?:reduc(?:e|ed|tion)|drop(?:ped)?|decreas(?:e|ed)|increas(?:e|ed)|"
     r"improv(?:e|ed|ement)|cut|save(?:d)?|faster|slower|latency|throughput|"
     r"response time|error rate|success rate|uptime|blast radius|traffic exposure|"
     r"detect(?:ion)? time|roll(?:back| back)|recovery time|failure rate|"
-    r"percent(?:age)?|\\d+(?:\\.\\d+)?\\s?(?:%|milliseconds?|ms|seconds?|minutes?|hours?|x)\\b)",
+    r"percent(?:age)?|\d+(?:\.\d+)?\s?(?:%|milliseconds?|ms|seconds?|minutes?|hours?|x)\b)",
     re.IGNORECASE,
 )
-_NUMBER = re.compile(r"(?<![A-Za-z])\\d+(?:\\.\\d+)?")
+_NUMBER = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
 _WORD = re.compile(r"[a-z][a-z0-9-]{2,}", re.IGNORECASE)
 _STOP_WORDS = {
     "the", "and", "for", "with", "from", "that", "this", "when", "where",
@@ -29,18 +29,18 @@ _STOP_WORDS = {
     "key", "important", "effective", "particularly", "instance", "contrast",
 }
 _EDITORIAL_TEMPLATES = (
-    re.compile(r"\\ba specific example is\\b", re.IGNORECASE),
-    re.compile(r"\\bthe key to (?:using|understanding|solving|building)\\b", re.IGNORECASE),
-    re.compile(r"\\bin the context of\\b", re.IGNORECASE),
-    re.compile(r"\\bthe next step is to consider\\b", re.IGNORECASE),
-    re.compile(r"\\bthis approach is often more effective than\\b", re.IGNORECASE),
-    re.compile(r"\\bfor instance\\b", re.IGNORECASE),
-    re.compile(r"\\bin contrast\\b", re.IGNORECASE),
+    re.compile(r"\ba specific example is\b", re.IGNORECASE),
+    re.compile(r"\bthe key to (?:using|understanding|solving|building)\b", re.IGNORECASE),
+    re.compile(r"\bin the context of\b", re.IGNORECASE),
+    re.compile(r"\bthe next step is to consider\b", re.IGNORECASE),
+    re.compile(r"\bthis approach is often more effective than\b", re.IGNORECASE),
+    re.compile(r"\bfor instance\b", re.IGNORECASE),
+    re.compile(r"\bin contrast\b", re.IGNORECASE),
 )
 
 
 def _sentences(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"(?<=[.!?])\\s+", text or "") if part.strip()]
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text or "") if part.strip()]
 
 
 def _tokens(text: str) -> set[str]:
