@@ -57,6 +57,17 @@ def test_metric_claim_without_evidence_is_rejected():
     assert sources == []
 
 
+def test_canary_example_is_blocked_without_verified_metric_source():
+    evidence = [{
+        "source_id": "kb-canary-unverified",
+        "text": "Canary deployments expose a small portion of traffic before a full rollout.",
+        "metadata": {"verified": False},
+    }]
+    ok, reason, _ = validate_caption_evidence(CANARY_STYLE_CAPTION, evidence)
+    assert not ok
+    assert "verified KB source" in reason
+
+
 def test_metric_claim_requires_explicitly_verified_source():
     evidence = [{
         "source_id": "kb-1",
