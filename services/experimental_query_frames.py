@@ -34,7 +34,7 @@ def _intent(query: str) -> str:
         if re.match(r"\\s+should\\b", tail, re.I):
             return "decision_guidance"
         if re.search(
-            r"\\b(?:method|structure|tool|approach|strategy)\\b.{0,60}\\b(?:fit|suit|support|use|choose)\\w*\\b",
+            r"\\b(?:method|structure|tool|approach|strategy)\\b",
             tail, re.I,
         ):
             return "selection"
