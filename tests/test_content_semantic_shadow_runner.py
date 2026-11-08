@@ -36,6 +36,7 @@ class FakeKnowledgeRepository(KnowledgeRepository):
         super().__init__()
         self.entries = entries
         self.calls = []
+        self.supabase = SimpleNamespace(supabase_url="https://kkzshurcmcptleyqjgzo.supabase.co")
 
     def find_by_brand(self, brand_id, workspace_id):
         self.calls.append((brand_id, workspace_id))
@@ -154,6 +155,10 @@ def test_shadow_runner_rejects_unscoped_repository_results(monkeypatch):
     _enable_staging(monkeypatch)
 
     class UnsafeRepository(KnowledgeRepository):
+        def __init__(self):
+            super().__init__()
+            self.supabase = SimpleNamespace(supabase_url="https://kkzshurcmcptleyqjgzo.supabase.co")
+
         def find_by_brand(self, brand_id, workspace_id):
             return [_entry("forged", workspace_id="ws-e6eb6528d5b9")]
 
@@ -208,3 +213,20 @@ def test_shadow_runner_evaluates_batch_sequentially(monkeypatch):
 
     assert len(results) == 2
     assert [call["caption"] for call in reviewer.calls] == ["Caption A", "Caption B"]
+
+
+def test_shadow_runner_refuses_production_database_client(monkeypatch):
+    _enable_staging(monkeypatch)
+    repository = FakeKnowledgeRepository([_entry()])
+    repository.supabase.supabase_url = "https://kfgutijhrywnxpsjjacd.supabase.co"
+    reviewer = FakeReviewer()
+
+    with pytest.raises(ShadowEvaluationRefused, match="staging database only"):
+        asyncio.run(evaluate_caption(
+            caption="Canary rollouts limit initial exposure.",
+            topic="canary rollout",
+            brand=_brand(),
+            repository=repository,
+            reviewer=reviewer,
+        ))
+    assert reviewer.calls == []
