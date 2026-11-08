@@ -53,3 +53,16 @@ For asynchronous work, provenance must cross the queue through a server-authenti
 ## Current gate
 
 **Blocked by missing authenticated producer provenance.** The present implementation intentionally fails closed. Migration 157 remains unapplied to staging; PRs #83–#85 remain drafts; no Render deployment, production access, database mutation, publishing, or external action was performed as part of this audit.
+
+
+## Contract prototype added (not yet wired into publishing)
+
+The branch now contains `core/event_provenance.py` and `tests/test_event_provenance.py`.
+
+- `ActorPrincipal.from_auth_identity()` derives actor classification and subject only from an already validated `AuthIdentity`. It deliberately leaves subject ID unset for credential classes whose stable identifier is not currently available.
+- `ProducerRegistry` models a composition-root-owned registry. It mints opaque in-process `ProducerCapability` objects for explicitly registered producer IDs.
+- `verify()` rejects arbitrary strings/dictionaries, capabilities issued by another registry, unregistered producers, missing workspace scope, and actor/event workspace mismatches.
+- `VerifiedEventProvenance` is an in-process result. It is not a signature and must not be accepted merely because a serialized object claims `verification=composition_root_capability`.
+- The registry and issuance method must remain confined to trusted startup composition. Runtime components receive only their own publisher capability. This is an application architecture boundary, not a sandbox against malicious code already executing inside the Python process.
+
+This is a tested contract prototype only. It is not yet connected to `UnifiedEventBus.publish()`, request ContextVars, durable event storage, or queue replay. Until those integrations are implemented and adversarially tested, the event bridge remains at `source_trust=0.0` and goal proposals remain blocked.
