@@ -129,11 +129,11 @@ class QueryFrameTests(unittest.TestCase):
         self.assertEqual(helps["intent"], "causal_explanation")
         self.assertEqual(worsens["intent"], "causal_explanation")
 
-    def test_how_design_question_remains_procedural(self):
+    def test_how_should_tools_be_designed_is_design_guidance(self):
         frame = extract_query_frame(
             "How should an agent's tools be designed with explicit permissions?"
         )
-        self.assertEqual(frame["intent"], "procedure")
+        self.assertEqual(frame["intent"], "design_guidance")
 
 
     def test_how_do_two_metrics_differ_is_comparison(self):
