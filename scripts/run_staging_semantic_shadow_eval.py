@@ -12,7 +12,15 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 from urllib.parse import urlparse
+
+# Executing this file by path puts scripts/ (not the repository root) on
+# sys.path. Add the project root so top-level packages such as config resolve
+# consistently in local and GitHub Actions execution.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from config.settings import settings
 from models.brand import Brand
