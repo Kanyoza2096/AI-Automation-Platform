@@ -115,18 +115,19 @@ async def _persist_fresh_goal_proposals(runtime: Any, workspace_id: str) -> int:
             pending.pop(observation_id, None)
             processed.add(observation_id)
 
-    if not pending:
-        return 0
-
     persistence = getattr(runtime, "persistence_store", None)
-    if persistence is None or getattr(persistence, "client", None) is None:
+    has_client = persistence is not None and getattr(persistence, "client", None) is not None
+    if pending and not has_client:
         raise RuntimeError("goal proposal store unavailable: runtime persistence client is not bound")
 
     store = getattr(runtime, "goal_proposal_store", None)
-    if store is None:
+    if store is None and has_client:
         from organism.goal_persistence import GoalProposalStore
         store = GoalProposalStore(persistence.client)
         runtime.goal_proposal_store = store
+
+    if not pending:
+        return 0
 
     persisted = 0
     for observation_id, proposal in tuple(pending.items()):
