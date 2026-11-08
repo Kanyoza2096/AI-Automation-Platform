@@ -216,3 +216,15 @@ The audit remains limited to the 25 development queries. The holdout split remai
 
 
 A subsequent CI run then passed 49 tests and failed 2. One failure showed that “How do I protect a business invariant?” was incorrectly classified as causal because the verb “protect” was too broad a causal cue; that cue was removed. The other was an outdated test expectation: “How should tools be designed?” is now correctly asserted as design guidance. A fresh run against the latest commit is still required.
+
+
+### Fresh CI verification after corrections
+
+The latest head was verified by GitHub Actions:
+- Workflow: Knowledge indexing regression tests
+- Run: 42501304074
+- Job: knowledge-indexing-tests
+- Result: success
+- Test output: 51 passed in 0.49s
+
+This run includes the query-frame tests, compound secondary-intent cases, and corrected intent rules. The earlier 37/13 and 49/2 failures remain part of the audit trail; they were not hidden or treated as successes. This green run verifies the current tested commit only. It does not validate semantic accuracy or retrieval quality.
