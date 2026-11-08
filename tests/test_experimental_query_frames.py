@@ -156,5 +156,26 @@ class QueryFrameTests(unittest.TestCase):
         self.assertEqual(frame["intent"], "decision_guidance")
 
 
+    def test_extracts_secondary_intent_for_compound_question(self):
+        frame = extract_query_frame(
+            "Why can snapshot isolation allow write skew, and how do I protect a business invariant?"
+        )
+        self.assertEqual(frame["intent"], "causal_explanation")
+        self.assertEqual(len(frame["secondary_intents"]), 1)
+        self.assertEqual(
+            frame["secondary_intents"][0]["intent"], "procedure"
+        )
+
+    def test_extracts_secondary_decision_intent_after_comparison(self):
+        frame = extract_query_frame(
+            "How do RPO and RTO differ, and how should restore drills validate our backup plan?"
+        )
+        self.assertEqual(frame["intent"], "comparison")
+        self.assertEqual(len(frame["secondary_intents"]), 1)
+        self.assertEqual(
+            frame["secondary_intents"][0]["intent"], "decision_guidance"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
