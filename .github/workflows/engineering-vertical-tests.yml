@@ -40,6 +40,7 @@ on:
       - "api/dependencies.py"
       - "api/support.py"
       - "tests/test_authenticated_actor_context.py"
+      - "docs/organism/u2-producer-provenance-audit.md"
       - "tests/test_event_provenance.py"
       - "utils/ids.py"
       - "tests/security/**"
