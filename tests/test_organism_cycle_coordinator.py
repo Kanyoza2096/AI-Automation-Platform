@@ -233,7 +233,7 @@ async def test_coordinator_binds_proposal_store_to_runtime_persistence_client(mo
     organism = await registry.ensure_started("workspace-a")
     runtime = organism.runtime
     service_client = object()
-    runtime.persistence_store = SimpleNamespace(client=service_client)
+    runtime.persistence_store = SimpleNamespace(client=service_client, persist=_noop_snapshot_persist)
 
     class ProposalStore:
         def __init__(self, client):
