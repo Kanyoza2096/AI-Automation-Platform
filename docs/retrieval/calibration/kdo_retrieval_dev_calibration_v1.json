@@ -1,0 +1,95 @@
+{
+  "artifact_id": "kdo_retrieval_dev_calibration_v1",
+  "version": "1.0",
+  "status": "human_approved_development_only",
+  "approved_in_conversation": "2026-11-08",
+  "source_benchmark": {
+    "dataset_id": "kdo_retrieval_evaluation_v1",
+    "version": "1.0",
+    "path": "kdo_retrieval_evaluation_v1.json",
+    "modified": false
+  },
+  "scope": {
+    "split": "dev",
+    "query_ids": [
+      "KDO-RET-002",
+      "KDO-RET-014",
+      "KDO-RET-020",
+      "KDO-RET-024",
+      "KDO-RET-044"
+    ],
+    "holdout_accessed": false,
+    "runtime_or_production_changes": false
+  },
+  "relevance_scale": {
+    "3": "Highly relevant; directly answers the main information need",
+    "2": "Relevant supporting evidence",
+    "1": "Marginal context",
+    "0": "Not relevant to this query's information need"
+  },
+  "judgment_overrides": [
+    {
+      "query_id": "KDO-RET-002",
+      "record_id": "knowledge.ai-tool-schema-design.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Explicitly describes schema validation catching malformed tool arguments."
+    },
+    {
+      "query_id": "KDO-RET-014",
+      "record_id": "knowledge.ai.llm-judge-calibration.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Explains evaluator bias, score error, judge drift, and score improvements that do not reflect real quality improvements."
+    },
+    {
+      "query_id": "KDO-RET-014",
+      "record_id": "knowledge.ai.eval-dataset-design.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Explains evaluation coverage gaps and aggregate metrics that can hide regressions."
+    },
+    {
+      "query_id": "KDO-RET-014",
+      "record_id": "knowledge.ai-rag-evaluation.v1",
+      "previous_grade": null,
+      "relevance_grade": 1,
+      "label": "marginal_context",
+      "rationale": "Provides broad evaluation and error-isolation context, but is less direct than online evaluation and judge calibration."
+    },
+    {
+      "query_id": "KDO-RET-020",
+      "record_id": "knowledge.dsa.range-query-structures.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Explicitly describes segment trees and lazy propagation for range updates, though less specifically than the dedicated lazy-segment-tree record."
+    },
+    {
+      "query_id": "KDO-RET-024",
+      "record_id": "knowledge.dsa.hash-tables.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Discusses collision costs, expected constant-time behavior, and degradation under collisions."
+    },
+    {
+      "query_id": "KDO-RET-044",
+      "record_id": "knowledge.hld.resilience.v1",
+      "previous_grade": 0,
+      "relevance_grade": 2,
+      "label": "relevant_supporting",
+      "rationale": "Covers retries amplifying overload, deadlines/timeouts, and bulkheads; relevant supporting evidence for the query."
+    }
+  ],
+  "invariants": [
+    "The original benchmark file and its labels remain unchanged.",
+    "No holdout query, label, or result was used to create this artifact.",
+    "Overrides apply only to the listed development query-record pairs.",
+    "Gold labels remain unchanged.",
+    "This artifact does not authorize production ranking changes or release gating."
+  ]
+}
