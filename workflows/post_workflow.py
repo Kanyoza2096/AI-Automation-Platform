@@ -592,7 +592,13 @@ class ValidateContentStep(Step):
         context["validation_result"] = validation_result
 
         if not validation_result.is_approved:
-            errors = validation_result.error_messages
+            errors = getattr(validation_result, "error_messages", None)
+            if errors is None:
+                errors = [
+                    violation.message
+                    for violation in getattr(validation_result, "violations", [])
+                    if getattr(getattr(violation, "severity", None), "value", None) == "error"
+                ]
             logger.error(
                 "PostWorkflow: validation did not approve content (status=%s) — %s",
                 validation_result.status.value,
