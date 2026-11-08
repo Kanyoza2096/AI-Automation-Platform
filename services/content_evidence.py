@@ -15,7 +15,7 @@ _METRIC_LANGUAGE = re.compile(
     r"improv(?:e|es|ed|ement)|cut|save(?:d)?|faster|slower|latency|throughput|"
     r"response time|error rate|success rate|uptime|blast radius|traffic exposure|"
     r"detect(?:ion)? time|roll(?:back| back)|recovery time|failure rate|"
-    r"percent(?:age)?|\d+(?:\.\d+)?\s?(?:%|milliseconds?|ms|seconds?|minutes?|hours?|x)\b)",
+    r"percent(?:age)?|\d+(?:\.\d+)?(?:\s*-\s*|\s*)(?:%|percent|milliseconds?|ms|seconds?|minutes?|hours?|x)(?=\s|[.,;:!?)]|$))",
     re.IGNORECASE,
 )
 _NUMBER = re.compile(
