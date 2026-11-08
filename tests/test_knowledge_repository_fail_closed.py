@@ -45,7 +45,7 @@ def test_find_by_brand_raises_when_supabase_read_fails():
     repo = KnowledgeRepository(supabase_client=FailingSupabase())
 
     with pytest.raises(RuntimeError, match="could not be loaded"):
-        repo.find_by_brand("brand-shipsandshrugs-550cb543")
+        repo.find_by_brand("brand-shipsandshrugs-550cb543", "workspace-test")
 
 
 class EmptyResult:
