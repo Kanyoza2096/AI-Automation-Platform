@@ -113,8 +113,12 @@ def test_topic_selector_refuses_kb_lookup_without_workspace():
             self.called = True
             return []
 
-    repo = UnscopedRepository()
-    brand = SimpleNamespace(id="brand-shared-id", name="Brand A", workspace_id=None)
-
-    assert _build_categories_from_knowledge_base(brand, repo) is None
-    assert repo.called is False
+    for workspace_id in (None, "default", "unbound", "platform"):
+        repo = UnscopedRepository()
+        brand = SimpleNamespace(
+            id="brand-shared-id",
+            name="Brand A",
+            workspace_id=workspace_id,
+        )
+        assert _build_categories_from_knowledge_base(brand, repo) is None
+        assert repo.called is False
