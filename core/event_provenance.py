@@ -86,6 +86,18 @@ class VerifiedEventProvenance:
     verification: str = "composition_root_capability"
 
 
+def current_actor_principal() -> ActorPrincipal | None:
+    """Return actor provenance only from the validated request auth context."""
+    try:
+        from api.support import auth_identity_var
+        identity = auth_identity_var.get()
+    except Exception:
+        return None
+    if identity is None:
+        return None
+    return ActorPrincipal.from_auth_identity(identity)
+
+
 class ProducerRegistry:
     """Registry owned by the application composition root.
 
@@ -148,4 +160,5 @@ __all__ = [
     "ProducerRegistry",
     "VerifiedEventProvenance",
     "ProvenanceError",
+    "current_actor_principal",
 ]
