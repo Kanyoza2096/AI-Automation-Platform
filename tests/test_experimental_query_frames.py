@@ -136,5 +136,12 @@ class QueryFrameTests(unittest.TestCase):
         self.assertEqual(frame["intent"], "procedure")
 
 
+    def test_how_do_two_metrics_differ_is_comparison(self):
+        frame = extract_query_frame(
+            "How do RPO and RTO differ?"
+        )
+        self.assertEqual(frame["intent"], "comparison")
+
+
 if __name__ == "__main__":
     unittest.main()
