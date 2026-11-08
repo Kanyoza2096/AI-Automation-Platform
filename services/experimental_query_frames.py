@@ -29,7 +29,7 @@ def _intent(query: str) -> str:
                 return "design_guidance"
             return "decision_guidance"
         if re.search(
-            r"\b(?:help|reduce|increase|worsen|protect|enable|allow|cause|lead)\b",
+            r"\b(?:help|reduce|increase|worsen|enable|allow|cause|lead)\b",
             tail, re.I,
         ):
             return "causal_explanation"
