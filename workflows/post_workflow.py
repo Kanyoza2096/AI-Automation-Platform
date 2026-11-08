@@ -299,8 +299,9 @@ class GenerateContentStep(Step):
     - Async-native. ContentEngine.generate_post is async.
     - Rejects malformed/truncated captions before they reach
       ValidateContentStep and PublishStep (_caption_is_well_formed).
-    - PromptBuilder.build_post_prompt() is always used when a builder is
-      present, regardless of whether the brand has KB entries.
+    - PromptBuilder is mandatory. Missing or failed grounded prompt assembly
+      blocks generation; the ContentEngine's generic internal prompt is not
+      used as a fallback in this canonical scheduled workflow.
     - Topic axis rotation: reads the brand's last published axis, passes it
       to the builder, and captures the chosen axis into
       context["topic_axis"] for PublishStep to persist.
