@@ -143,5 +143,18 @@ class QueryFrameTests(unittest.TestCase):
         self.assertEqual(frame["intent"], "comparison")
 
 
+    def test_how_should_build_is_design_guidance(self):
+        frame = extract_query_frame(
+            "How should we build a benchmark that avoids tuning on test questions?"
+        )
+        self.assertEqual(frame["intent"], "design_guidance")
+
+    def test_how_should_route_is_decision_guidance(self):
+        frame = extract_query_frame(
+            "How should we route simple tasks to cheaper models while keeping a quality threshold?"
+        )
+        self.assertEqual(frame["intent"], "decision_guidance")
+
+
 if __name__ == "__main__":
     unittest.main()
