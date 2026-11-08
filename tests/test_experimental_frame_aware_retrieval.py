@@ -6,10 +6,14 @@ from scripts.eval_frame_aware_retrieval import candidate_clauses
 class FrameAwareRetrievalTests(unittest.TestCase):
     def test_does_not_retrieve_duplicate_of_original_query(self):
         query = "What is a hash table and how does it store keys?"
-        clauses = candidate_clauses(query)
-        self.assertNotIn(" ".join(clauses[0].lower().split()) if clauses else "", {
-            " ".join(query.lower().split())
-        })
+        self.assertEqual(candidate_clauses(query), [])
+
+    def test_secondary_clause_is_added_only_when_enabled(self):
+        query = "What is a hash table and how does it store keys?"
+        self.assertEqual(
+            candidate_clauses(query, include_secondary=True),
+            ["how does it store keys"],
+        )
 
     def test_extracts_explicit_secondary_question(self):
         query = (
