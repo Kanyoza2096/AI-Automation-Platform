@@ -699,8 +699,13 @@ class ValidateContentStep(Step):
                 "status": semantic_review.get("status"),
                 "approved": True,
                 "scores": semantic_review.get("scores", {}),
+                "claims": semantic_review.get("claims", []),
                 "supporting_source_ids": semantic_review.get("supporting_source_ids", []),
+                "rationale": semantic_review.get("rationale", ""),
+                "improvements": semantic_review.get("improvements", []),
                 "request_id": semantic_review.get("request_id"),
+                "provider": semantic_review.get("provider"),
+                "model": semantic_review.get("model"),
             },
         }
 
