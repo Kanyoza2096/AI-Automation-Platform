@@ -102,6 +102,7 @@ async def test_coordinator_persists_fresh_trusted_health_goal_as_suggest_only():
     assert store.items[0].source_event_ids == ("evt-health-1",)
     assert store.items[0].authority == "suggest"
     assert store.items[0].status == "proposed"
+    assert runtime.pending_goal_proposals == tuple(store.items)
 
 
 @pytest.mark.asyncio
@@ -309,3 +310,43 @@ async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_propo
 
     assert result.completed == 1
     assert result.failed == 0
+
+
+@pytest.mark.asyncio
+async def test_coordinator_recovers_pending_suggestions_without_activating_them():
+    from types import SimpleNamespace
+    from organism.goals import GoalPriority, GoalProposal
+    from datetime import datetime, timedelta, timezone
+
+    registry = OrganismRegistry()
+    organism = await registry.ensure_started("workspace-a")
+    runtime = organism.runtime
+    now = datetime.now(timezone.utc)
+    pending = GoalProposal(
+        proposal_id="gprop_recovered",
+        workspace_id="workspace-a",
+        title="Restore queue-worker",
+        success_condition="queue-worker reports healthy",
+        source_event_ids=("evt-recovered",),
+        priority=GoalPriority.HIGH,
+        risk_level="medium",
+        expected_outcome="queue-worker reports healthy",
+        created_at=now,
+        expires_at=now + timedelta(minutes=30),
+    )
+
+    class ProposalStore:
+        async def list_pending(self, workspace_id):
+            assert workspace_id == "workspace-a"
+            return (pending,)
+
+    runtime.goal_proposal_store = ProposalStore()
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
+
+    result = await cycle_started_organisms(registry)
+
+    assert result.completed == 1
+    assert runtime.pending_goal_proposals == (pending,)
+    assert runtime.pending_goal_proposals[0].authority == "suggest"
+    assert runtime.pending_goal_proposals[0].status == "proposed"
+    assert runtime.state is not None
