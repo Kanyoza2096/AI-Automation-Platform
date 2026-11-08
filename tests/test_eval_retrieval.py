@@ -43,6 +43,21 @@ class RetrievalEvaluationTests(unittest.TestCase):
         index = build_index([r for r in self.corpus["records"] if r["record_type"] == "knowledge_chunk"])
         self.assertEqual(search("B-tree ordered database range scans", index)[0][0], "gold")
 
+    def test_structured_metadata_is_not_indexed_separately(self):
+        record = {
+            "record_id": "content-only",
+            "record_type": "knowledge_chunk",
+            "title": "metadata-only-unique-phrase",
+            "content": "The stored body describes durable event delivery.",
+            "topics": ["metadata-only-unique-topic"],
+            "examples": ["metadata-only-unique-example"],
+        }
+        index = build_index([record])
+        self.assertEqual(search("metadata-only-unique-phrase", index), [])
+        self.assertEqual(search("metadata-only-unique-topic", index), [])
+        self.assertEqual(search("metadata-only-unique-example", index), [])
+        self.assertEqual(search("durable event delivery", index)[0][0], "content-only")
+
     def test_metrics_and_splits_are_computed(self):
         report = evaluate(self.corpus, self.evaluation)
         self.assertEqual(report["dev"]["queries"], 1)

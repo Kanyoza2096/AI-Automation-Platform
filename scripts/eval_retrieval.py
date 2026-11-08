@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate KDO's current TF-IDF/inverted-index retriever against labeled JSON.
 
-Mirrors KnowledgeBase v3.1 tokenization, IDF, normalized TF-IDF and cosine
-scoring. No model calls are made and evaluation labels are never indexed.
+Mirrors KnowledgeBase v3.1 tokenization, IDF, normalized TF-IDF, cosine
+scoring, and the runtime content-only document representation. No model
+calls are made and evaluation labels are never indexed.
 """
 import argparse
 import json
@@ -12,29 +13,15 @@ from collections import defaultdict
 from pathlib import Path
 
 
-def _text(value):
-    if value is None or value == "":
-        return ""
-    if isinstance(value, list):
-        return "; ".join(x if isinstance(x, str) else json.dumps(x, ensure_ascii=False) for x in value)
-    if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
-
-
 def record_content(record):
-    parts = [
-        record.get("title"), record.get("chapter_title"), record.get("content"),
-        "Key principles: " + _text(record.get("key_principles")) if record.get("key_principles") else "",
-        "How it works: " + _text(record.get("how_it_works")) if record.get("how_it_works") else "",
-        "Trade-offs: " + _text(record.get("tradeoffs")) if record.get("tradeoffs") else "",
-        "Examples: " + _text(record.get("examples")) if record.get("examples") else "",
-        "Failure modes: " + _text(record.get("failure_modes")) if record.get("failure_modes") else "",
-        "When to use: " + _text(record.get("when_to_use")) if record.get("when_to_use") else "",
-        "Topics: " + _text(record.get("topics")) if record.get("topics") else "",
-        "Technologies: " + _text(record.get("technologies")) if record.get("technologies") else "",
-    ]
-    return "\n\n".join(part for part in parts if part)
+    """Return exactly the text indexed by KnowledgeBase at runtime.
+
+    The production KnowledgeBase tokenizes KnowledgeEntry.content only.
+    Structured corpus metadata (title, topics, examples, etc.) is not added
+    to the indexed document unless an ingestion caller explicitly flattens
+    it into the content field before persistence.
+    """
+    return record.get("content", "")
 
 
 STOP_WORDS = {
