@@ -115,9 +115,9 @@ class QueryFrameTests(unittest.TestCase):
 
     def test_what_cover_question_is_requirements_identification(self):
         frame = extract_query_frame(
-            "What should our data deletion process cover beyond the database?"
+            "What does our data deletion process cover beyond the database?"
         )
-        self.assertEqual(frame["intent"], "decision_guidance")
+        self.assertEqual(frame["intent"], "requirements_identification")
 
     def test_how_help_and_worsen_questions_are_causal(self):
         helps = extract_query_frame(
