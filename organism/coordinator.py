@@ -60,6 +60,7 @@ async def cycle_started_organisms(
         try:
             await cycle_async(runtime)
             await _persist_fresh_goal_proposals(runtime, workspace_id)
+            await _restore_pending_goal_proposals(runtime, workspace_id)
             store = getattr(runtime, "persistence_store", None)
             if store is not None:
                 await store.persist(runtime)
@@ -147,3 +148,26 @@ def _fresh_health_observations(runtime: Any, workspace_id: str):
         and item.observed_at <= now + timedelta(seconds=30)
         and now - item.observed_at <= GOAL_EVENT_MAX_AGE
     )
+
+
+async def _restore_pending_goal_proposals(runtime: Any, workspace_id: str) -> int:
+    """Attach durable unexpired suggestions to the same workspace runtime."""
+    if runtime.workspace_id != workspace_id:
+        raise RuntimeError("goal proposal recovery workspace identity mismatch")
+    store = getattr(runtime, "goal_proposal_store", None)
+    if store is None:
+        runtime.pending_goal_proposals = ()
+        return 0
+    list_pending = getattr(store, "list_pending", None)
+    if not callable(list_pending):
+        raise RuntimeError("goal proposal store does not support pending recovery")
+    proposals = await list_pending(workspace_id)
+    if any(
+        proposal.workspace_id != workspace_id
+        or proposal.authority != "suggest"
+        or proposal.status != "proposed"
+        for proposal in proposals
+    ):
+        raise RuntimeError("recovered goal proposal violates workspace or authority boundary")
+    runtime.pending_goal_proposals = tuple(proposals)
+    return len(proposals)
