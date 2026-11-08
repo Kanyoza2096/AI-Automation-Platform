@@ -1115,12 +1115,14 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
     from repositories.knowledge_repository import KnowledgeRepository
     from services.content_engine import ContentEngine
     from services.prompt_builder import PromptBuilder
+    from services.content_semantic_reviewer import ContentSemanticReviewer
     from services.pipeline.pipeline import ContentGenerationPipeline
     from workflows.post_workflow import PostPublishWorkflow
     from plugins.base import PluginRegistry
 
     content_engine = ContentEngine(container=c)
     prompt_builder = PromptBuilder()
+    semantic_reviewer = ContentSemanticReviewer()
     analytics_repo = c.resolve(AnalyticsRepository)
     bus = c.resolve(UnifiedEventBus)
     knowledge_repo = c.resolve(KnowledgeRepository)
@@ -1159,6 +1161,7 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
             content_validator=content_validator,
             knowledge_repo=knowledge_repo,
             prompt_builder=prompt_builder,
+            semantic_reviewer=semantic_reviewer,
             container=c,
         )
 

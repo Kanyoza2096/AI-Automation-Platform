@@ -380,10 +380,34 @@ class KnowledgeStep(Step):
                 loop.run_in_executor(None, kb.search, topic, self._config.knowledge_top_k),
                 timeout=self._config.knowledge_timeout_seconds,
             )
-            facts = [entry.content for entry, _ in result]
+            facts = []
+            evidence = []
+            for entry, score in result or []:
+                text = str(getattr(entry, "content", "") or "").strip()
+                if not text:
+                    continue
+                facts.append(text)
+                metadata = getattr(entry, "metadata", None)
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                source_id = str(
+                    metadata.get("source_id") or getattr(entry, "id", "") or ""
+                ).strip()
+                if not source_id:
+                    continue
+                evidence.append({
+                    "source_id": source_id,
+                    "text": text,
+                    "metadata": metadata,
+                    "score": score if isinstance(score, (int, float)) else None,
+                })
             knowledge_context = "\n".join(facts)
             context["knowledge_context"] = knowledge_context
-            logger.info("[Stage 3] Knowledge retrieved: %d entries.", len(facts))
+            context["knowledge_evidence"] = evidence
+            logger.info(
+                "[Stage 3] Knowledge retrieved: %d traceable entries.",
+                len(evidence),
+            )
             return facts
         except asyncio.TimeoutError:
             logger.warning("[Stage 3] Knowledge retrieval timed out")
@@ -631,6 +655,59 @@ class ReviewerStep(Step):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 7b. INDEPENDENT SEMANTIC REVIEW (mandatory publication gate)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class SemanticReviewStep(Step):
+    """Require independent evidence- and brand-aware approval before rendering."""
+
+    name = "semantic_review"
+    continue_on_failure = False
+
+    def __init__(self, semantic_reviewer=None) -> None:
+        if semantic_reviewer is None:
+            from services.content_semantic_reviewer import ContentSemanticReviewer
+            semantic_reviewer = ContentSemanticReviewer()
+        self._semantic_reviewer = semantic_reviewer
+
+    async def run_async(self, context: dict[str, Any]) -> Any:
+        brand = context.get("brand")
+        result = await self._semantic_reviewer.review(
+            caption=str(context.get("caption") or ""),
+            topic=str(context.get("topic") or ""),
+            evidence=context.get("knowledge_evidence") or [],
+            brand=brand,
+            platform=str(context.get("platform") or "facebook"),
+        )
+        context["semantic_review"] = result
+        if (
+            not isinstance(result, dict)
+            or result.get("approved") is not True
+            or result.get("status") != "approved"
+        ):
+            status = result.get("status", "invalid") if isinstance(result, dict) else "invalid"
+            reason = result.get("reason", "semantic reviewer returned no decision") if isinstance(result, dict) else "semantic reviewer returned no decision"
+            raise AIValidationError(
+                message=f"Independent semantic review blocked publication (status={status}): {reason}",
+                context={
+                    "topic": context.get("topic"),
+                    "semantic_review_status": status,
+                    "semantic_review_reason": reason,
+                },
+            )
+        return {
+            "status": "approved",
+            "approved": True,
+            "scores": result.get("scores", {}),
+            "supporting_source_ids": result.get("supporting_source_ids", []),
+            "request_id": result.get("request_id"),
+        }
+
+    def run(self, context: dict[str, Any]) -> Any:
+        raise RuntimeError("SemanticReviewStep must be executed via run_async().")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 8. CARD RENDERER STEP (Async — preserved)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -683,6 +760,17 @@ class PublisherStep(Step):
             raise RuntimeError("Publisher circuit breaker OPEN — too many recent failures")
         
         caption = context.get("caption", "")
+        semantic_review = context.get("semantic_review")
+        if (
+            not isinstance(semantic_review, dict)
+            or semantic_review.get("approved") is not True
+            or semantic_review.get("status") != "approved"
+        ):
+            raise AIValidationError(
+                message="Publisher blocked because independent semantic approval is missing or invalid",
+                context={"brand_id": getattr(self._brand, "id", None)},
+            )
+
         media_artifact: MediaArtifact = context.get("media_artifact")
         image_bytes: Optional[bytes] = None
         
@@ -818,6 +906,7 @@ class ContentGenerationPipeline(Workflow):
         container,
         category: Optional[str] = None,
         content_validator: Optional[ContentValidator] = None,
+        semantic_reviewer=None,
         config: Optional[PipelineConfig] = None,
     ) -> None:
         self._config = config or PipelineConfig()
@@ -840,6 +929,7 @@ class ContentGenerationPipeline(Workflow):
                 LLMStep(content_engine, brand=brand, ai_profile=ai_profile, config=self._config),
                 ValidatorStep(validator=content_validator, config=self._config),
                 ReviewerStep(config=self._config),
+                SemanticReviewStep(semantic_reviewer=semantic_reviewer),
                 CardRendererStep(content_engine),
                 PublisherStep(brand, container, config=self._config),
                 AnalyticsStep(analytics_repo, bus, config=self._config),
@@ -932,6 +1022,7 @@ __all__ = [
     "LLMStep",
     "ValidatorStep",
     "ReviewerStep",
+    "SemanticReviewStep",
     "CardRendererStep",
     "PublisherStep",
     "AnalyticsStep",

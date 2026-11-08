@@ -225,9 +225,14 @@ class KnowledgeBase:
     # ── Index management ──────────────────────────────────────────────
 
     async def _rebuild_index(self) -> None:
+        workspace_id = str(self.workspace_id or "").strip()
+        if not workspace_id or workspace_id.lower() in {"default", "unbound", "platform"}:
+            raise RuntimeError(
+                "an active tenant workspace_id is required to build a knowledge index"
+            )
         loop = asyncio.get_running_loop()
         entries = await loop.run_in_executor(
-            None, self.repo.find_by_brand, self.brand_id
+            None, self.repo.find_by_brand, self.brand_id, workspace_id
         )
 
         async with self._lock:

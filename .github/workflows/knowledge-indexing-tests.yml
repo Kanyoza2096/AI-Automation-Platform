@@ -12,6 +12,18 @@ on:
       - "tests/test_eval_retrieval.py"
       - "tests/test_knowledge_base_retrieval.py"
       - "scripts/eval_retrieval.py"
+      - "workflows/post_workflow.py"
+      - "services/content_evidence.py"
+      - "services/content_semantic_reviewer.py"
+      - "services/pipeline/pipeline.py"
+      - "dependency_registry.py"
+      - "domain/content/topic_selector.py"
+      - "repositories/knowledge_repository.py"
+      - "tests/test_post_workflow_evidence_gate.py"
+      - "tests/test_content_semantic_reviewer.py"
+      - "tests/test_content_pipeline_semantic_gate.py"
+      - "tests/test_knowledge_repository_workspace_scope.py"
+      - ".github/workflows/post-workflow-evidence-gate.yml"
       - ".github/workflows/knowledge-indexing-tests.yml"
   push:
     branches:
@@ -28,7 +40,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install focused test dependencies
-        run: python -m pip install "pytest>=8,<9" "pytest-asyncio>=0.23" "pydantic>=2.5,<3"
-      - name: Run knowledge repository and retrieval evaluation tests
-        run: python -m pytest -q tests/test_knowledge_repository_fail_closed.py tests/test_eval_retrieval.py tests/test_knowledge_base_retrieval.py
+      - name: Install system libraries for workflow tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libcairo2-dev
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pytest>=8,<9" "pytest-asyncio>=0.23"
+      - name: Run knowledge, evidence, and semantic publication tests
+        run: python -m pytest -q tests/test_knowledge_repository_fail_closed.py tests/test_eval_retrieval.py tests/test_knowledge_base_retrieval.py tests/test_post_workflow_evidence_gate.py tests/test_content_semantic_reviewer.py tests/test_content_pipeline_semantic_gate.py tests/test_knowledge_repository_workspace_scope.py
