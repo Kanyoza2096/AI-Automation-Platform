@@ -696,11 +696,27 @@ def reload_style_registry() -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_kb_themes(brand: Brand) -> Dict[str, str]:
+    """Load themes only for a concrete tenant workspace.
+
+    PromptBuilder's compatibility/health-check paths can construct a
+    synthetic default Brand. Platform and unbound scopes are not tenant
+    workspaces and must never be used for tenant knowledge lookups.
+    """
+    workspace_id = getattr(brand, "workspace_id", None)
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        return {}
+    if workspace_id.strip().lower() in {"default", "unbound", "platform"}:
+        logger.debug(
+            "Skipping tenant KB theme lookup for synthetic workspace scope=%s",
+            workspace_id,
+        )
+        return {}
+
     try:
         from services.knowledge_base import get_brand_themes
         themes = get_brand_themes(
             brand_id=getattr(brand, "id", None),
-            workspace_id=getattr(brand, "workspace_id", None),
+            workspace_id=workspace_id,
         )
         return dict(themes) if themes else {}
     except Exception as exc:
