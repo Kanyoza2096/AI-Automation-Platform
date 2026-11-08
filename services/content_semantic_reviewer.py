@@ -119,8 +119,10 @@ class ContentSemanticReviewer:
             "general textbook facts from claims about measured outcomes, "
             "specific deployments, customer experiences, or statistics. "
             "A specific anecdote or metric requires direct evidence.\n\n"
-            "Score brand_relevance, originality, audience_value, and genericity "
-            "from 0.0 to 1.0. Higher genericity is worse. Assess whether the "
+            "Score claim_coverage, brand_relevance, originality, audience_value, "
+            "and genericity from 0.0 to 1.0. claim_coverage estimates the "
+            "proportion of all material factual claims explicitly assessed; "
+            "it must be at least 0.90. Higher genericity is worse. Assess whether the "
             "caption is genuinely useful to the intended audience, has a "
             "specific insight, and sounds like a considered brand post rather "
             "than a generic textbook essay. Avoid rewarding length or a "
@@ -130,8 +132,9 @@ class ContentSemanticReviewer:
             "and genericity <= 0.55. Choose reject for clearly unsupported "
             "claims or clearly irrelevant content. Choose needs_review when "
             "evidence or quality is ambiguous. Do not rewrite the caption.\n\n"
-            "Return JSON with keys: decision, claims, brand_relevance, "
-            "originality, audience_value, genericity, rationale, improvements. "
+            "Return JSON with keys: decision, claims, claim_coverage, "
+            "brand_relevance, originality, audience_value, genericity, "
+            "rationale, improvements. "
             "Each claims item has claim, support_status, source_ids, rationale. "
             "improvements is an array of concise strings.\n\n"
             "Review input JSON:\n"
@@ -141,8 +144,9 @@ class ContentSemanticReviewer:
             "Return one JSON object only. decision is approve, reject, or needs_review. "
             "claims is an array of objects with string claim, support_status "
             "(supported|unsupported|uncertain), array source_ids, and string rationale. "
-            "brand_relevance, originality, audience_value, genericity are numbers "
-            "from 0 to 1. rationale is a string. improvements is an array of strings."
+            "claim_coverage, brand_relevance, originality, audience_value, "
+            "genericity are numbers from 0 to 1. rationale is a string. "
+            "improvements is an array of strings."
         )
         try:
             gateway = self._get_gateway()
@@ -153,8 +157,9 @@ class ContentSemanticReviewer:
                 temperature=0.1,
                 max_tokens=1400,
                 required_keys=[
-                    "decision", "claims", "brand_relevance", "originality",
-                    "audience_value", "genericity", "rationale", "improvements",
+                    "decision", "claims", "claim_coverage", "brand_relevance",
+                    "originality", "audience_value", "genericity", "rationale",
+                    "improvements",
                 ],
                 caller="content_intelligence",
             )
@@ -184,7 +189,7 @@ class ContentSemanticReviewer:
             )
 
         scores = {}
-        for field in ("brand_relevance", "originality", "audience_value", "genericity"):
+        for field in ("claim_coverage", "brand_relevance", "originality", "audience_value", "genericity"):
             value = data.get(field)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 return self._blocked(
@@ -256,6 +261,8 @@ class ContentSemanticReviewer:
             final_status, reason = "rejected", "one or more material claims lack evidence support"
         elif uncertain_claim:
             final_status, reason = "needs_review", "one or more claims remain uncertain"
+        elif scores["claim_coverage"] < 0.90:
+            final_status, reason = "needs_review", "the reviewer did not assess enough of the caption's material claims"
         elif scores["brand_relevance"] < 0.60:
             final_status, reason = "rejected", "content is not sufficiently relevant to this brand"
         elif scores["genericity"] > 0.55:
