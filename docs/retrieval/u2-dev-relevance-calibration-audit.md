@@ -1,6 +1,6 @@
 # U2 retrieval relevance calibration audit — development split only
 
-**Status:** proposal for human review; no benchmark labels changed  
+**Status:** proposed development judgments approved by the user on 2026-11-08; source benchmark unchanged  
 **Scope:** five development queries inspected against the corpus record bodies  
 **Holdout policy:** no holdout query, label, or ranking result was used to propose calibration changes. In particular, KDO-RET-001 remains sealed.
 
@@ -8,7 +8,7 @@
 
 The original benchmark assigns grade 0 / `hard_negative` to records that are sometimes substantively relevant but less specific than the designated gold record. A less-specific relevant passage is not an irrelevant passage. Treating it as grade 0 can reward a retriever for suppressing useful evidence and can make hard-negative metrics misleading.
 
-The recommendations below are candidate judgments, not automatic changes. A human owner should approve the final relevance grades before the benchmark file is updated.
+The judgments below were approved by the user on 2026-11-08. They are stored as a separate, versioned development-only overlay at `docs/retrieval/calibration/kdo_retrieval_dev_calibration_v1.json`; the original benchmark remains unchanged. The overlay changes only the listed query-record grades and does not authorize production ranking changes.
 
 ## Proposed development-set judgments
 
@@ -66,15 +66,14 @@ The stemmed candidate improves development MRR while preserving the baseline rec
 
 ## Recommended next actions
 
-1. Have a human reviewer approve or adjust the proposed development relevance grades.
-2. Update a versioned development-label artifact only after approval; retain the original benchmark unchanged for auditability.
-3. Recompute development metrics using graded relevance (e.g. nDCG@5) as well as true Recall@5 and MRR.
-4. Investigate query formulation / corpus wording for KDO-RET-014 before adding query expansion or changing runtime ranking.
-5. Compare a small number of predeclared ranking candidates on development only. Freeze one candidate before a single independent holdout measurement.
+1. **Completed:** user approved the development relevance judgments; the versioned overlay was created without modifying the source benchmark.
+2. Recompute development metrics with the overlay, including nDCG@5, true Recall@5, and MRR. This requires preserving/exporting the per-query ranked result lists for each candidate; aggregate-only metrics are insufficient to calculate graded nDCG retrospectively.
+3. Investigate query formulation / corpus wording for KDO-RET-014 before adding query expansion or changing runtime ranking.
+4. Compare a small number of predeclared ranking candidates on development only. Freeze one candidate before a single independent holdout measurement.
 
 ## Safety and scope
 
 - No Supabase project was queried or modified.
 - No production workspace, credentials, database, Render service, publishing path, or external account was accessed.
-- No runtime ranking code, scoring weights, thresholds, or benchmark labels were changed.
+- No runtime ranking code, scoring weights, thresholds, or source benchmark labels were changed. The approved grade overrides exist only in the separate development calibration overlay.
 - No holdout data was used to tune or select the BM25 candidate.
