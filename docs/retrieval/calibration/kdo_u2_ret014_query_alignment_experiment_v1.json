@@ -1,0 +1,89 @@
+{
+  "artifact_id": "kdo_u2_ret014_query_alignment_experiment_v1",
+  "version": "1.0",
+  "status": "development_only_exploratory_candidate_not_selected",
+  "scope": {
+    "query_id": "KDO-RET-014",
+    "split": "dev",
+    "corpus_records": 112,
+    "holdout_accessed": false,
+    "runtime_changed": false,
+    "production_or_database_access": false
+  },
+  "query": "Why can my model evaluation score improve even though users are correcting the answers more often?",
+  "relevant_records": [
+    "knowledge.ai.online-evaluation.v1",
+    "knowledge.ai-failure-taxonomy.v1"
+  ],
+  "diagnosis": {
+    "type": "lexical_concept_mismatch",
+    "user_wording": [
+      "model evaluation score improve",
+      "users are correcting the answers more often"
+    ],
+    "corpus_concepts": [
+      "offline evaluation",
+      "online evaluation",
+      "user correction rate",
+      "task quality",
+      "completion rate",
+      "failure classification",
+      "controlled comparisons",
+      "regression"
+    ],
+    "observation": "The current lexical retriever overweights generic evaluation vocabulary and ranks RAG evaluation and judge-calibration records above the online-evaluation record. The user phrase 'users are correcting answers more often' does not overlap strongly with the corpus phrase 'user correction rate'."
+  },
+  "candidate_query": "Why does offline evaluation score improve while online user correction rate increases? controlled comparisons representative evaluation sets failure categories regression",
+  "candidate_ranking_top5": [
+    {"rank": 1, "record_id": "knowledge.ai-failure-taxonomy.v1", "score": 0.235},
+    {"rank": 2, "record_id": "knowledge.ai.online-evaluation.v1", "score": 0.1982},
+    {"rank": 3, "record_id": "knowledge.ai-rag-evaluation.v1", "score": 0.1335},
+    {"rank": 4, "record_id": "knowledge.ai.evaluating-agents.v1", "score": 0.1072},
+    {"rank": 5, "record_id": "knowledge.ai.eval-dataset-design.v1", "score": 0.0993}
+  ],
+  "five_calibrated_query_slice_comparison": {
+    "method": "Current TF-IDF scoring replica; apply candidate rewrite only to KDO-RET-014 and leave the other four queries unchanged.",
+    "baseline": {
+      "mean_ndcg_at_5": 0.7193,
+      "true_recall_at_5": 0.8,
+      "gold_hit_rate_at_5": 0.8,
+      "mrr": 0.5
+    },
+    "candidate": {
+      "mean_ndcg_at_5": 0.8412,
+      "true_recall_at_5": 1.0,
+      "gold_hit_rate_at_5": 1.0,
+      "mrr": 0.7
+    },
+    "kdo_ret_014": {
+      "baseline_ndcg_at_5": 0.2867,
+      "candidate_ndcg_at_5": 0.896,
+      "baseline_gold_ranks": {
+        "knowledge.ai-failure-taxonomy.v1": 10,
+        "knowledge.ai.online-evaluation.v1": null
+      },
+      "candidate_gold_ranks": {
+        "knowledge.ai-failure-taxonomy.v1": 1,
+        "knowledge.ai.online-evaluation.v1": 2
+      }
+    }
+  },
+  "interpretation": [
+    "The result supports a query-understanding/terminology-alignment diagnosis for this one query.",
+    "The candidate is a manually authored, corpus-informed paraphrase; this is an exploratory upper-bound demonstration, not an unbiased test of an automated query rewriter.",
+    "The five-query slice is too small to select a system-wide strategy.",
+    "Do not deploy this rewrite as a hardcoded query rule. Test a general query decomposition or terminology expansion approach on the full development split, with predeclared rules and per-query outputs."
+  ],
+  "next_steps": [
+    "Define a small, corpus-independent query decomposition template that identifies metric mismatch, offline-versus-online context, user outcome, and failure diagnosis.",
+    "Generate expansions without reading gold labels or selecting target record IDs.",
+    "Compare baseline and candidate on all 25 development queries; report nDCG@5, true Recall@5, gold-hit rate, MRR, query latency, and expansion-token overhead.",
+    "Inspect false-positive rank movement and query-level regressions.",
+    "Freeze a candidate before any independent holdout measurement."
+  ],
+  "safety": [
+    "No holdout query, label, or result accessed.",
+    "No production runtime, dependency, database, credentials, deployment, publishing, or external account changed.",
+    "No source benchmark labels modified."
+  ]
+}
