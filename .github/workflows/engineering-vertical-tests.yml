@@ -199,6 +199,7 @@ jobs:
                   "migrations/075_u1_shared_event_delivery_metrics.sql",
                   "migrations/155_u2_organism_runtime_snapshots.sql",
                   "migrations/156_u2_organism_runtime_snapshot_minimum_grants.sql",
+                  "migrations/157_u2_organism_goal_proposals.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
