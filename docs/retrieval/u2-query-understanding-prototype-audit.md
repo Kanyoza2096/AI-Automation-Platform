@@ -228,3 +228,28 @@ The latest head was verified by GitHub Actions:
 - Test output: 51 passed in 0.49s
 
 This run includes the query-frame tests, compound secondary-intent cases, and corrected intent rules. The earlier 37/13 and 49/2 failures remain part of the audit trail; they were not hidden or treated as successes. This green run verifies the current tested commit only. It does not validate semantic accuracy or retrieval quality.
+
+
+## Seventh experiment: frame-aware secondary-intent retrieval ablation
+
+Added an offline runner (scripts/eval_frame_aware_retrieval.py) and focused tests. It compares:
+1. Original-query TF-IDF baseline.
+2. Relation-aware RRF using unique relation clauses.
+3. Frame-aware RRF adding explicit secondary interrogative clauses.
+
+The runner excludes a clause whose normalized tokens are identical to the original query. This corrects an accounting defect in the earlier experiment: when no relation connector existed, the decomposition helper returned the whole query as a “clause”, and the earlier call count counted that duplicate retrieval as an extra call. Rankings were unchanged by removing the duplicate. The relation-aware mean is therefore 1.4 distinct retrieval calls/query, not the previously reported 2.2.
+
+| Metric | Baseline | Relation-aware (deduplicated) | Frame-aware + secondary intents |
+|---|---:|---:|---:|
+| Recall@5 | 0.9400 | 0.9600 | 0.9600 |
+| Gold hit rate@5 | 0.9600 | 1.0000 | 1.0000 |
+| MRR | 0.8280 | **0.8560** | 0.8293 |
+| Hard-negative top-1 | 0.2000 | 0.1600 | 0.1600 |
+| Hard-negative outrank | 0.3333 | 0.3158 | 0.3158 |
+| Mean distinct retrieval calls/query | 1.00 | 1.40 | 1.56 |
+
+Four development prompts have explicit secondary interrogative clauses: KDO-RET-028, 042, 044 and 050. Adding those clauses changes the top five for all four, but yields no gold-rank improvement. In KDO-RET-028, the gold record falls from rank 1 to rank 3. The aggregate MRR falls from 0.8560 to 0.8293.
+
+**Decision:** do not automatically retrieve secondary-intent clauses. Preserve them in the query frame as diagnostic information, but let a later, separately validated planning stage decide whether they warrant retrieval. This is an example where richer question interpretation does not automatically improve retrieval.
+
+The reproducible offline runner and focused tests are in the PR. A machine-readable summary is stored at docs/retrieval/calibration/kdo_u2_frame_secondary_intent_ablation_v1.json. All results use 112 knowledge chunks and 25 development queries only. Holdout remains unopened. No hosted latency or cost is claimed.
