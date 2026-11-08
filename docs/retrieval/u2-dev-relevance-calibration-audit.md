@@ -77,3 +77,23 @@ The stemmed candidate improves development MRR while preserving the baseline rec
 - No production workspace, credentials, database, Render service, publishing path, or external account was accessed.
 - No runtime ranking code, scoring weights, thresholds, or source benchmark labels were changed. The approved grade overrides exist only in the separate development calibration overlay.
 - No holdout data was used to tune or select the BM25 candidate.
+
+
+## Graded relevance diagnostic — five calibrated development queries
+
+After approval, nDCG@5 was calculated for the five queries covered by the overlay, using gains of `2^grade - 1` and the explicitly judged pool (gold IDs, original hard-negative IDs, and approved overlay judgments). Unjudged retrieved records were assigned grade 0, so this is a limited judged-pool diagnostic rather than a complete relevance assessment.
+
+| Candidate | Mean nDCG@5 across five calibrated queries |
+|---|---:|
+| Current TF-IDF | 0.7193 |
+| BM25 (k1=1.5, b=0.75) | 0.7796 |
+| Porter-stemmed TF-IDF | 0.7507 |
+
+The per-query ranked IDs and scores are recorded in `docs/retrieval/calibration/kdo_u2_calibrated_dev_ndcg_snapshot_v1.json`.
+
+Important interpretation:
+- This is only five of the 25 development queries; it is not a full development benchmark result.
+- BM25 has the highest mean on this small slice, but performs poorly on KDO-RET-014 (nDCG@5 0.1318), and the earlier full-development comparison showed lower Recall@5 and gold-hit rate than baseline.
+- Porter-stemmed TF-IDF scores 0.2777 on KDO-RET-014 and is not selected.
+- No candidate is selected or promoted. KDO-RET-014 remains the priority for query/corpus diagnosis.
+- No holdout data was read, scored, or used.
