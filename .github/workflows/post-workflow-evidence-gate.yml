@@ -6,7 +6,6 @@ on:
       - "workflows/post_workflow.py"
       - "services/content_evidence.py"
       - "services/content_semantic_reviewer.py"
-      - "workflows/post_workflow.py"
       - "dependency_registry.py"
       - "services/knowledge_base.py"
       - "repositories/knowledge_repository.py"
