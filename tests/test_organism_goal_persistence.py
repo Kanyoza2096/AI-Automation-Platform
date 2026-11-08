@@ -69,7 +69,10 @@ class Query:
 class Client:
     def __init__(self):
         self.proposals = {}
-        self.workspaces = [{"id": "workspace-a", "status": "active"}]
+        self.workspaces = [
+            {"id": "workspace-a", "status": "active"},
+            {"id": "workspace-b", "status": "active"},
+        ]
         self.fail = False
 
     def table(self, name):
