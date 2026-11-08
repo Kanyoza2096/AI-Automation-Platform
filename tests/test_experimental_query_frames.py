@@ -52,6 +52,20 @@ class QueryFrameTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_query_frame("  ")
 
+    def test_detects_question_inside_context_statement(self):
+        frame = extract_query_frame(
+            "I need range additions and range-sum queries. Which data structure supports lazy updates?"
+        )
+        self.assertEqual(frame["intent"], "selection")
+
+    def test_comparison_operand_excludes_subordinate_condition(self):
+        frame = extract_query_frame(
+            "What is the difference between at-least-once delivery and exactly-once effects when a consumer calls an external API?"
+        )
+        self.assertEqual(frame["comparison_operands"], [
+            "at-least-once delivery", "exactly-once effects"
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
