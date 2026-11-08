@@ -65,3 +65,56 @@ def test_supabase_query_filters_by_both_brand_and_workspace():
         ("brand_id", "brand-shared-id"),
         ("workspace_id", "workspace-a"),
     ]
+
+
+def test_topic_selector_uses_brand_workspace_for_kb_topics():
+    from types import SimpleNamespace
+
+    from domain.content.topic_selector import _build_categories_from_knowledge_base
+
+    entry = KnowledgeEntry(
+        id="kb-topic-a",
+        workspace_id="workspace-a",
+        brand_id="brand-shared-id",
+        content="B-tree indexes support ordered lookups.",
+        metadata={"theme": "databases", "title": "B-tree indexes"},
+    )
+
+    class ScopedRepository:
+        def __init__(self):
+            self.args = None
+
+        def find_by_brand(self, brand_id, workspace_id):
+            self.args = (brand_id, workspace_id)
+            return [entry]
+
+    repo = ScopedRepository()
+    brand = SimpleNamespace(
+        id="brand-shared-id",
+        name="Brand A",
+        workspace_id="workspace-a",
+    )
+
+    categories = _build_categories_from_knowledge_base(brand, repo)
+
+    assert repo.args == ("brand-shared-id", "workspace-a")
+    assert categories == {"Databases": ["B-tree indexes"]}
+
+
+def test_topic_selector_refuses_kb_lookup_without_workspace():
+    from types import SimpleNamespace
+
+    from domain.content.topic_selector import _build_categories_from_knowledge_base
+
+    class UnscopedRepository:
+        called = False
+
+        def find_by_brand(self, *_args):
+            self.called = True
+            return []
+
+    repo = UnscopedRepository()
+    brand = SimpleNamespace(id="brand-shared-id", name="Brand A", workspace_id=None)
+
+    assert _build_categories_from_knowledge_base(brand, repo) is None
+    assert repo.called is False
