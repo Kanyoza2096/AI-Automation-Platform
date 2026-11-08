@@ -1,0 +1,77 @@
+name: Staging Semantic Shadow Evaluation
+
+on:
+  push:
+    branches:
+      - staging
+    paths:
+      - ".github/workflows/staging-semantic-shadow-eval.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kdo-staging-semantic-shadow-eval
+  cancel-in-progress: false
+
+jobs:
+  semantic-shadow-eval:
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Enforce staging-only execution and required secrets
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.KDO_STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_KEY: ${{ secrets.KDO_STAGING_GEMINI_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/staging"
+          test -n "${SUPABASE_SERVICE_ROLE_KEY}" || { echo "::error::Missing KDO_STAGING_SUPABASE_SERVICE_ROLE_KEY repository secret"; exit 1; }
+          test -n "${GEMINI_KEY}" || { echo "::error::Missing KDO_STAGING_GEMINI_KEY repository secret"; exit 1; }
+          echo "Staging ref and required secrets verified; secret values are not printed."
+
+      - name: Check out staging
+        uses: actions/checkout@v4
+        with:
+          ref: staging
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libcairo2-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run bounded staging-only semantic evaluation
+        env:
+          APP_ENV: staging
+          ENVIRONMENT: staging
+          KDO_ENVIRONMENT: staging
+          KDO_SEMANTIC_SHADOW_EVAL_ENABLED: "1"
+          AI_PROVIDER: gemini
+          SUPABASE_URL: https://kkzshurcmcptleyqjgzo.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.KDO_STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_KEY: ${{ secrets.KDO_STAGING_GEMINI_KEY }}
+        run: |
+          set -euo pipefail
+          python scripts/run_staging_semantic_shadow_eval.py | tee semantic-shadow-results.json
+
+      - name: Preserve evaluation output for review
+        if: always() && hashFiles('semantic-shadow-results.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: kdo-staging-semantic-shadow-results
+          path: semantic-shadow-results.json
+          retention-days: 7
