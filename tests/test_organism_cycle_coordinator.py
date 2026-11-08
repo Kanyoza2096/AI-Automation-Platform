@@ -292,7 +292,7 @@ async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_propo
         async def list_pending(self, workspace_id):
             return ()
 
-    runtime.persistence_store = type("Persistence", (), {"client": object(), "persist": _noop_snapshot_persist})()
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = ProposalStore()
     runtime.ingest(Observation(
         workspace_id="workspace-a",
