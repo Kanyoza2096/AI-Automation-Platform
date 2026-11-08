@@ -648,7 +648,11 @@ class ValidateContentStep(Step):
             platform=platform,
         )
         context["semantic_review"] = semantic_review
-        if not isinstance(semantic_review, dict) or semantic_review.get("approved") is not True:
+        if (
+            not isinstance(semantic_review, dict)
+            or semantic_review.get("approved") is not True
+            or semantic_review.get("status") != "approved"
+        ):
             review_status = (
                 semantic_review.get("status", "invalid")
                 if isinstance(semantic_review, dict)
