@@ -53,4 +53,5 @@ class QueryFrameTests(unittest.TestCase):
             extract_query_frame("  ")
 
 
-if __ (unittest.main())
+if __name__ == "__main__":
+    unittest.main()
