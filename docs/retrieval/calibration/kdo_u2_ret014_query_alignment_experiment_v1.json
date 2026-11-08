@@ -35,11 +35,31 @@
   },
   "candidate_query": "Why does offline evaluation score improve while online user correction rate increases? controlled comparisons representative evaluation sets failure categories regression",
   "candidate_ranking_top5": [
-    {"rank": 1, "record_id": "knowledge.ai-failure-taxonomy.v1", "score": 0.235},
-    {"rank": 2, "record_id": "knowledge.ai.online-evaluation.v1", "score": 0.1982},
-    {"rank": 3, "record_id": "knowledge.ai-rag-evaluation.v1", "score": 0.1335},
-    {"rank": 4, "record_id": "knowledge.ai.evaluating-agents.v1", "score": 0.1072},
-    {"rank": 5, "record_id": "knowledge.ai.eval-dataset-design.v1", "score": 0.0993}
+    {
+      "rank": 1,
+      "record_id": "knowledge.ai-failure-taxonomy.v1",
+      "score": 0.235
+    },
+    {
+      "rank": 2,
+      "record_id": "knowledge.ai.online-evaluation.v1",
+      "score": 0.1982
+    },
+    {
+      "rank": 3,
+      "record_id": "knowledge.ai-rag-evaluation.v1",
+      "score": 0.1335
+    },
+    {
+      "rank": 4,
+      "record_id": "knowledge.ai.evaluating-agents.v1",
+      "score": 0.1072
+    },
+    {
+      "rank": 5,
+      "record_id": "knowledge.ai.eval-dataset-design.v1",
+      "score": 0.0993
+    }
   ],
   "five_calibrated_query_slice_comparison": {
     "method": "Current TF-IDF scoring replica; apply candidate rewrite only to KDO-RET-014 and leave the other four queries unchanged.",
@@ -51,8 +71,8 @@
     },
     "candidate": {
       "mean_ndcg_at_5": 0.8412,
-      "true_recall_at_5": 1.0,
-      "gold_hit_rate_at_5": 1.0,
+      "true_recall_at_5": 1,
+      "gold_hit_rate_at_5": 1,
       "mrr": 0.7
     },
     "kdo_ret_014": {
@@ -72,7 +92,8 @@
     "The result supports a query-understanding/terminology-alignment diagnosis for this one query.",
     "The candidate is a manually authored, corpus-informed paraphrase; this is an exploratory upper-bound demonstration, not an unbiased test of an automated query rewriter.",
     "The five-query slice is too small to select a system-wide strategy.",
-    "Do not deploy this rewrite as a hardcoded query rule. Test a general query decomposition or terminology expansion approach on the full development split, with predeclared rules and per-query outputs."
+    "Do not deploy this rewrite as a hardcoded query rule. Test a general query decomposition or terminology expansion approach on the full development split, with predeclared rules and per-query outputs.",
+    "Two additional manually authored, corpus-informed paraphrases on development queries KDO-RET-032 and KDO-RET-046 also moved their gold records into the top two and rank one respectively. These are corroborating examples only, not a representative automated-rewriter evaluation."
   ],
   "next_steps": [
     "Define a small, corpus-independent query decomposition template that identifies metric mismatch, offline-versus-online context, user outcome, and failure diagnosis.",
@@ -85,5 +106,33 @@
     "No holdout query, label, or result accessed.",
     "No production runtime, dependency, database, credentials, deployment, publishing, or external account changed.",
     "No source benchmark labels modified."
+  ],
+  "secondary_examples": [
+    {
+      "query_id": "KDO-RET-032",
+      "original_query": "Why does majority replication not automatically prove linearizability?",
+      "exploratory_paraphrase": "Why do intersecting read and write quorums (R+W>N) not guarantee linearizable operations? consensus protocol read/write rules",
+      "gold_ranks_before": {
+        "knowledge.hld.consensus-quorum.v1": 1,
+        "knowledge.hld.quorums-replication.v1": null
+      },
+      "gold_ranks_after": {
+        "knowledge.hld.consensus-quorum.v1": 2,
+        "knowledge.hld.quorums-replication.v1": 1
+      },
+      "interpretation": "The paraphrase makes the quorum read/write intersection concept explicit; both intended records enter the top two."
+    },
+    {
+      "query_id": "KDO-RET-046",
+      "original_query": "How should an agent's tools be designed so permissions and side effects are explicit and validated?",
+      "exploratory_paraphrase": "How should model-facing tool API contracts specify typed input schemas, authorization, resource ownership, side effects, idempotency, and approval?",
+      "gold_ranks_before": {
+        "knowledge.ai-tool-schema-design.v1": 5
+      },
+      "gold_ranks_after": {
+        "knowledge.ai-tool-schema-design.v1": 1
+      },
+      "interpretation": "The paraphrase aligns the user wording with the corpus concepts of tool API contracts, typed schemas, authorization, resource ownership, and explicit side effects."
+    }
   ]
 }
