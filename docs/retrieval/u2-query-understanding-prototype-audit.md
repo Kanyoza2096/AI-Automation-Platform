@@ -60,6 +60,22 @@ The second clause retrieves `knowledge.ai.online-evaluation.v1` at rank 1 in its
 
 This is partial improvement, not a resolution. It also shows why query decomposition should preserve clause-level evidence and explain which subquery contributed each result.
 
+
+### Five-query approved graded-overlay check
+
+A separate check applied the already human-approved, development-only relevance overlay to the same five calibrated development queries (KDO-RET-002, 014, 020, 024, 044). The calculation uses gain (2^grade - 1), log discount, the explicitly judged pool, and grade 0 for unjudged retrieved records. It does not access holdout data.
+
+| Metric | Baseline TF-IDF | Generic aliases | Relation-aware weighted RRF |
+|---|---:|---:|---:|
+| Mean judged-pool nDCG@5 | 0.7193 | 0.7774 | **0.7968** |
+| KDO-RET-002 | 0.6419 | 0.9324 | **0.9324** |
+| KDO-RET-014 | 0.2867 | 0.2867 | **0.3837** |
+| KDO-RET-020 | 0.8340 | 0.8340 | 0.8340 |
+| KDO-RET-024 | 0.8340 | 0.8340 | 0.8340 |
+| KDO-RET-044 | 1.0000 | 1.0000 | 1.0000 |
+
+This confirms a promising improvement on the five calibrated cases, including KDO-RET-014, but that query remains weak: only one of its two gold records is retrieved in the top five. This five-query judged-pool result is a limited diagnostic, not a full-dev graded score or a release gate. It must not be confused with the full 25-query binary nDCG results above.
+
 ### Weight sensitivity
 
 A small development-only sweep tested clause weights 0.5, 1.0, 1.5, 2.0, and 3.0. Weight 0.5 reproduced the baseline ranking. Weights 1.5, 2.0, and 3.0 produced identical rankings on these 25 queries; 1.5 is retained as the least aggressive setting in that observed plateau. This is exploratory tuning on development data, not a final parameter selection.
