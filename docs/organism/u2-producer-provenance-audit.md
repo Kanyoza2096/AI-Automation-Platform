@@ -66,3 +66,18 @@ The branch now contains `core/event_provenance.py` and `tests/test_event_provena
 - The registry and issuance method must remain confined to trusted startup composition. Runtime components receive only their own publisher capability. This is an application architecture boundary, not a sandbox against malicious code already executing inside the Python process.
 
 This is a tested contract prototype only. It is not yet connected to `UnifiedEventBus.publish()`, request ContextVars, durable event storage, or queue replay. Until those integrations are implemented and adversarially tested, the event bridge remains at `source_trust=0.0` and goal proposals remain blocked.
+
+
+## Authenticated request actor context implementation
+
+The current branch now adds `auth_identity_var` to the canonical `api.support` context module. The canonical `require_auth` dependency sets it only after `SpeciesAuth.validate()` returns a valid `AuthIdentity`, then yields control to FastAPI and resets the identity plus the existing auth method/workspace/email ContextVars in a `finally` block.
+
+`core.event_provenance.current_actor_principal()` reads only this validated context and converts it to the actor model. Credential types without a stable subject ID remain subject-less rather than inventing an identifier.
+
+Regression coverage now exercises:
+- validated identity is visible during the dependency lifetime;
+- identity and auth ContextVars are reset after normal dependency cleanup;
+- cleanup still happens when endpoint execution raises;
+- actor principal lookup returns no identity outside the authenticated context and rejects invalid identities.
+
+The request actor path is now implemented as a request-scoped context boundary. It does not yet alter event publishing or event persistence. In particular, it does not prove which internal component emitted an event. The producer capability remains a separate, not-yet-integrated requirement, and the organism event bridge continues to assign `source_trust=0.0`.
