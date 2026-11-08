@@ -210,5 +210,66 @@ class QueryFrameTests(unittest.TestCase):
         )
 
 
+    def test_distinguishes_causal_reason_from_correlation(self):
+        causal = extract_query_frame(
+            "Why did retries increase latency because the queue was overloaded?"
+        )
+        correlated = extract_query_frame(
+            "Why is retry volume associated with higher latency?"
+        )
+        self.assertIn(
+            {"connector": "because", "type": "cause_or_reason"},
+            causal["relations"],
+        )
+        self.assertIn(
+            {"connector": "associated with", "type": "correlation_or_association"},
+            correlated["relations"],
+        )
+        self.assertNotIn(
+            {"connector": "associated with", "type": "cause_or_reason"},
+            correlated["relations"],
+        )
+
+    def test_correlates_with_is_not_labelled_as_causation(self):
+        frame = extract_query_frame(
+            "How does cache size correlate with response latency?"
+        )
+        self.assertIn(
+            {"connector": "correlates with", "type": "correlation_or_association"},
+            frame["relations"],
+        )
+        self.assertNotIn(
+            {"connector": "correlates with", "type": "cause_or_reason"},
+            frame["relations"],
+        )
+
+    def test_therefore_is_an_inference_marker_not_a_causal_proof(self):
+        frame = extract_query_frame(
+            "The queue is saturated; therefore latency is increasing."
+        )
+        self.assertIn(
+            {"connector": "therefore", "type": "inference_or_result"},
+            frame["relations"],
+        )
+
+    def test_since_remains_temporally_or_causally_ambiguous(self):
+        frame = extract_query_frame(
+            "Since the worker restarted, the queue has been draining."
+        )
+        self.assertIn(
+            {"connector": "since", "type": "temporal_or_causal"},
+            frame["relations"],
+        )
+
+    def test_numeric_limits_and_real_exclusions_remain_distinct(self):
+        bounded = extract_query_frame("Retry no more than 5 times.")
+        excluded = extract_query_frame("Do not retry failed payments.")
+        self.assertFalse(bounded["has_negation_or_exclusion"])
+        self.assertTrue(excluded["has_negation_or_exclusion"])
+        self.assertIn(
+            {"kind": "numeric_bound", "text": "no more than 5"},
+            bounded["constraints"],
+        )
+
 if __name__ == "__main__":
     unittest.main()
