@@ -70,7 +70,11 @@ def _build_categories_from_knowledge_base(
 
     try:
         workspace_id = getattr(brand, "workspace_id", None)
-        if not isinstance(workspace_id, str) or not workspace_id.strip():
+        if (
+            not isinstance(workspace_id, str)
+            or not workspace_id.strip()
+            or workspace_id.strip().lower() in {"default", "unbound", "platform"}
+        ):
             logger.warning(
                 "TopicSelector: refusing unscoped KB topic lookup for brand '%s'",
                 getattr(brand, "name", "unknown"),
