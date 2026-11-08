@@ -10,7 +10,7 @@ import re
 def _intent(query: str) -> str:
     """Classify the primary information need using conservative lexical cues."""
     if re.search(
-        r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ from)\\b",
+        r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ(?: from)?)\\b",
         query, re.I,
     ):
         return "comparison"
