@@ -99,3 +99,85 @@ def understand_query(query: str) -> dict:
         "expansion_terms": [term for term in expanded if term not in terms],
         "normalized_query": " ".join(expanded),
     }
+
+RELATION_CONNECTORS = (
+    ("even though", "contrast"),
+    ("although", "contrast"),
+    ("whereas", "contrast"),
+    ("while", "contrast"),
+    ("but", "contrast"),
+    ("despite", "contrast"),
+    ("versus", "comparison"),
+    ("compared with", "comparison"),
+    ("compared to", "comparison"),
+    ("because", "causal"),
+    ("since", "causal"),
+    ("therefore", "causal"),
+)
+
+
+def decompose_query(query: str) -> dict:
+    """Extract shallow clause/relationship structure without corpus access."""
+    parts = [query]
+    relations = []
+    for connector, relation in RELATION_CONNECTORS:
+        next_parts = []
+        for part in parts:
+            split_parts = re.split(
+                r"\\b" + re.escape(connector) + r"\\b",
+                part,
+                flags=re.IGNORECASE,
+            )
+            if len(split_parts) > 1:
+                relations.append({"connector": connector, "relation": relation})
+                next_parts.extend(split_parts)
+            else:
+                next_parts.append(part)
+        parts = next_parts
+
+    clauses = [
+        part.strip(" ,?.;:")
+        for part in parts
+        if len(tokenize_query(part)) >= 2
+    ]
+    trace = understand_query(query)
+    words = re.findall(r"\\w+", query.lower())
+    if "why" in words:
+        intent = "causal_explanation"
+    elif "how" in words:
+        intent = "procedure"
+    elif any(item["relation"] == "comparison" for item in relations):
+        intent = "comparison"
+    else:
+        intent = trace["intent"]
+    return {
+        **trace,
+        "intent": intent,
+        "relations": relations,
+        "clauses": clauses,
+    }
+
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[list[str]],
+    weights: list[float] | None = None,
+    rrf_k: int = 10,
+    top_k: int = 5,
+) -> list[tuple[str, float]]:
+    """Fuse ranked record IDs; weights are explicit and independently testable."""
+    if rrf_k < 1 or top_k < 1:
+        raise ValueError("rrf_k and top_k must be positive")
+    if weights is None:
+        weights = [1.0] * len(ranked_lists)
+    if len(weights) != len(ranked_lists):
+        raise ValueError("weights must match ranked_lists")
+    if any(weight <= 0 for weight in weights):
+        raise ValueError("all weights must be positive")
+
+    scores = {}
+    for ranked, weight in zip(ranked_lists, weights):
+        for rank, record_id in enumerate(ranked, start=1):
+            scores[record_id] = scores.get(record_id, 0.0) + (
+                weight / (rrf_k + rank)
+            )
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:top_k]
