@@ -188,5 +188,27 @@ class QueryFrameTests(unittest.TestCase):
         self.assertEqual(deletion["intent"], "requirements_identification")
 
 
+    def test_and_between_comparison_operands_is_not_secondary_intent(self):
+        frame = extract_query_frame(
+            "What is the difference between KMP and Aho-Corasick?"
+        )
+        self.assertEqual(frame["secondary_intents"], [])
+
+    def test_and_without_new_interrogative_is_not_secondary_intent(self):
+        frame = extract_query_frame(
+            "How do I design an API and validate its schema?"
+        )
+        self.assertEqual(frame["secondary_intents"], [])
+
+    def test_semicolon_can_introduce_a_secondary_question(self):
+        frame = extract_query_frame(
+            "Why can a worker crash?; how should the queue recover?"
+        )
+        self.assertEqual(len(frame["secondary_intents"]), 1)
+        self.assertEqual(
+            frame["secondary_intents"][0]["intent"], "decision_guidance"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
