@@ -309,6 +309,8 @@ def test_validate_content_step_records_independent_semantic_approval():
 
     result = asyncio.run(step.async_run(context))
     assert result["semantic_review"]["approved"] is True
+    assert result["semantic_review"]["claims"][0]["support_status"] == "supported"
+    assert result["semantic_review"]["supporting_source_ids"] == ["kb-1"]
     assert context["semantic_review"]["status"] == "approved"
 
 
