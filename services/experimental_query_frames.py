@@ -92,6 +92,16 @@ def _relations(query: str) -> list[dict[str, str]]:
     return found
 
 
+def _has_negation_or_exclusion(query: str) -> bool:
+    """Detect exclusions without misclassifying numeric bounds or idioms."""
+    candidate = _NUMERIC.sub(" ", query)
+    candidate = re.sub(r"\bnot\s+(?:only|just)\b", " ", candidate, flags=re.I)
+    return bool(re.search(
+        r"\b(?:not|no|never|without|unless|avoid|prevent)\b",
+        candidate,
+        re.I,
+    ))
+
 def extract_query_frame(query: str) -> dict:
     """Return intent, concepts, explicit operands, relations and constraints."""
     if not isinstance(query, str) or not query.strip():
@@ -132,9 +142,6 @@ def extract_query_frame(query: str) -> dict:
         "comparison_operands": _comparison_operands(query),
         "relations": _relations(query),
         "constraints": constraints,
-        "has_negation_or_exclusion": bool(
-            re.search(r"\b(?:not|no|never|without|unless|avoid|prevent)\b",
-                      query, re.I)
-        ),
+        "has_negation_or_exclusion": _has_negation_or_exclusion(query),
         "frame_version": "u2-query-frame-v1",
     }
