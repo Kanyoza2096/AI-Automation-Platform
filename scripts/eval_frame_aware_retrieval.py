@@ -159,6 +159,28 @@ def evaluate(corpus: dict, evaluation: dict) -> dict:
         query for query in evaluation.get("queries", [])
         if query.get("split") == "dev"
     ]
+    if not dev_queries:
+        raise ValueError("evaluation contains no development queries")
+
+    available = set(index["entries"])
+    missing_gold = sorted({
+        record_id
+        for query in dev_queries
+        for record_id in query.get("expected_record_ids", [])
+        if record_id not in available
+    })
+    missing_negatives = sorted({
+        record_id
+        for query in dev_queries
+        for record_id in query.get("hard_negative_record_ids", [])
+        if record_id not in available
+    })
+    if missing_gold or missing_negatives:
+        raise ValueError(
+            f"Corpus coverage incomplete: missing gold={missing_gold}; "
+            f"missing hard negatives={missing_negatives}"
+        )
+
     return {
         "experiment": "U2 frame-aware secondary-intent retrieval ablation",
         "scope": {
