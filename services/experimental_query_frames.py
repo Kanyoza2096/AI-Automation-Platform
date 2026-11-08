@@ -136,6 +136,25 @@ def _has_negation_or_exclusion(query: str) -> bool:
         re.I,
     ))
 
+def _secondary_intents(query: str) -> list[dict[str, str]]:
+    """Capture additional explicit question clauses joined by and/semicolon."""
+    found = []
+    pattern = re.compile(
+        r"\\b(?:and|;)\\s*(why|how|what|when|where|which)\\b[^?;]*",
+        re.I,
+    )
+    for match in pattern.finditer(query):
+        clause = match.group(0)
+        question = re.search(r"(why|how|what|when|where|which)\\b", clause, re.I)
+        if question:
+            found.append({
+                "question_word": question.group(1).lower(),
+                "intent": _intent(clause[question.start():]),
+                "clause": clause.strip(" ,"),
+            })
+    return found
+
+
 def extract_query_frame(query: str) -> dict:
     """Return intent, concepts, explicit operands, relations and constraints."""
     if not isinstance(query, str) or not query.strip():
@@ -157,6 +176,7 @@ def extract_query_frame(query: str) -> dict:
     return {
         "original_query": query,
         "intent": intent,
+        "secondary_intents": _secondary_intents(query),
         "concept_terms": list(dict.fromkeys(terms)),
         "comparison_operands": _comparison_operands(query),
         "relations": _relations(query),
