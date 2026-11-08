@@ -133,3 +133,10 @@ A read-only source inspection of the staging branch found the same lexical `Know
 No shared query-rewrite, synonym-expansion, or semantic query-planning layer was found in these call paths. The runtime retriever tokenizes the supplied query and ranks content-only records with TF-IDF/cosine similarity. This confirms where a future query-understanding layer could be introduced, but does not prove that the RET-014 benchmark failure caused the previously observed generic Facebook posts: those publishing paths pass a topic string, and the benchmark query is a separate diagnostic.
 
 No runtime call site was edited. Any future query understanding should be an explicit, bounded pre-retrieval component with traceable original and normalized queries, workspace/brand scope preserved, deterministic fallback to the original query, bounded expansion length, and evidence-based tests. It must not silently widen tenant scope or invent unsupported facts.
+
+
+Two additional development-only spot checks showed the same vocabulary-alignment pattern:
+- KDO-RET-032: adding explicit "read and write quorums (R+W>N)" language moved the two gold records to ranks 1 and 2 (baseline had one gold absent from top five).
+- KDO-RET-046: expressing "permissions and side effects" as "typed input schemas, authorization, resource ownership, side effects, idempotency, and approval" moved the gold tool-schema record from rank 5 to rank 1.
+
+These are manually authored, corpus-informed examples, not an unbiased evaluation of an automated rewriter. They support testing a general query-understanding stage, but they do not establish its full-development effectiveness. The additional ranked examples are recorded in the query-alignment experiment artifact.
