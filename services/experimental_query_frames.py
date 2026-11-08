@@ -10,12 +10,12 @@ import re
 def _intent(query: str) -> str:
     """Classify the primary information need using conservative lexical cues."""
     if re.search(
-        r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ(?: from)?)\\b",
+        r"\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ(?: from)?)\b",
         query, re.I,
     ):
         return "comparison"
 
-    question = re.search(r"\\b(why|how|what|when|where|which)\\b", query, re.I)
+    question = re.search(r"\b(why|how|what|when|where|which)\b", query, re.I)
     if not question:
         return "information_retrieval"
 
@@ -24,27 +24,27 @@ def _intent(query: str) -> str:
     if word == "why":
         return "causal_explanation"
     if word == "how":
-        if re.match(r"\\s+should\\b", tail, re.I):
-            if re.search(r"\\b(?:build|design|architect|develop|create)\\w*\\b", tail, re.I):
+        if re.match(r"\s+should\b", tail, re.I):
+            if re.search(r"\b(?:build|design|architect|develop|create)\w*\b", tail, re.I):
                 return "design_guidance"
             return "decision_guidance"
         if re.search(
-            r"\\b(?:help|reduce|increase|worsen|protect|enable|allow|cause|lead)\\b",
+            r"\b(?:help|reduce|increase|worsen|protect|enable|allow|cause|lead)\b",
             tail, re.I,
         ):
             return "causal_explanation"
         return "procedure"
     if word == "what":
-        if re.match(r"\\s+should\\b", tail, re.I):
-            if re.search(r"\\b(?:contain|cover|include|need|require)\\w*\\b", tail, re.I):
+        if re.match(r"\s+should\b", tail, re.I):
+            if re.search(r"\b(?:contain|cover|include|need|require)\w*\b", tail, re.I):
                 return "requirements_identification"
             return "decision_guidance"
         if re.search(
-            r"\\b(?:method|structure|tool|approach|strategy)\\b",
+            r"\b(?:method|structure|tool|approach|strategy)\b",
             tail, re.I,
         ):
             return "selection"
-        if re.search(r"\\b(?:contain|cover|include|need|require)\\w*\\b", tail, re.I):
+        if re.search(r"\b(?:contain|cover|include|need|require)\w*\b", tail, re.I):
             return "requirements_identification"
         return "definition_or_identification"
     return {
