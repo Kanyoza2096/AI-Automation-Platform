@@ -68,7 +68,10 @@ class ContentSemanticReviewer:
         brand: Any,
         platform: str = "facebook",
     ) -> dict[str, Any]:
-        workspace_id = str(getattr(brand, "workspace_id", "") or "").strip()
+        raw_workspace_id = getattr(brand, "workspace_id", None)
+        if not isinstance(raw_workspace_id, str) or not raw_workspace_id.strip():
+            return self._blocked("semantic review requires a concrete tenant workspace")
+        workspace_id = raw_workspace_id.strip()
         if workspace_id.lower() in _SYNTHETIC_WORKSPACES:
             return self._blocked("semantic review requires a concrete tenant workspace")
         if not caption or not caption.strip():
