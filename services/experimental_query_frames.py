@@ -95,7 +95,7 @@ def extract_query_frame(query: str) -> dict:
         raise ValueError("query must be a non-empty string")
 
     # Explicit comparison structure takes precedence over a generic opener.
-    if re.search(r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to)\\b", query, re.I):
+    if re.search(r"\b(?:difference between|trade-offs? between|versus|compared with|compared to)\b", query, re.I):
         intent = "comparison"
     else:
         intent = "information_retrieval"
