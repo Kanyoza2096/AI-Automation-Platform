@@ -77,6 +77,7 @@ class QueryFrameTests(unittest.TestCase):
             {"connector": "when", "type": "temporal_or_condition"},
             frame["relations"],
         )
+
     def test_rejects_empty_input(self):
         with self.assertRaises(ValueError):
             extract_query_frame("  ")
