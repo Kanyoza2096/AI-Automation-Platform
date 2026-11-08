@@ -206,3 +206,33 @@ def test_semantic_reviewer_requires_high_claim_coverage():
     assert result["approved"] is False
     assert result["status"] == "needs_review"
     assert "did not assess enough" in result["reason"]
+
+
+
+def test_semantic_reviewer_receives_brand_model_audience_and_style_fields():
+    gateway = FakeGateway()
+    brand = SimpleNamespace(
+        id="brand-test",
+        name="Engineering Notes",
+        workspace_id="workspace-test",
+        tone="technical and approachable",
+        language="en",
+        audience_description="Backend engineers maintaining production systems",
+        style_category="technical_education",
+        custom_style_guide="Use concrete engineering trade-offs and avoid generic filler.",
+        metadata={},
+    )
+    reviewer = ContentSemanticReviewer(gateway=gateway)
+
+    result = asyncio.run(reviewer.review(
+        caption="A specific engineering post.",
+        topic="Production systems",
+        evidence=_evidence(),
+        brand=brand,
+    ))
+
+    assert result["approved"] is True
+    prompt = gateway.calls[0][0]
+    assert "Backend engineers maintaining production systems" in prompt
+    assert "technical and approachable" in prompt
+    assert "avoid generic filler" in prompt
