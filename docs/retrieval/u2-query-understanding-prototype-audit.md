@@ -163,3 +163,21 @@ Current rule-based trace counts across the 25 development prompts:
 - 3 use an explicit “between X and Y” comparison form.
 
 These are parser-coverage counts, not accuracy scores. The finite rules do not capture every implied relation or constraint; for example, a natural-language relationship can exist without a listed connector. The trace audit used development prompts only. No gold labels or record IDs were used to create frames, and no holdout was opened.
+
+
+## Fifth experiment: development-slice intent audit and correction
+
+A second manual inspection reviewed all 25 development prompts (KDO-RET-002 through KDO-RET-050, development split only). It found that the first-question-word classifier was too coarse: several prompts beginning with “What” were actually asking for a decision, a selection, or a set of requirements; some “How” prompts asked for causal explanation rather than a procedure.
+
+The offline parser now uses conservative lexical distinctions:
+- “What should …” → decision guidance.
+- “What … method/structure/tool/approach/strategy …” → selection.
+- “What … contain/cover/include/need/require …” → requirements identification.
+- “How … help/reduce/increase/worsen/protect/enable/allow/cause/lead …” → causal explanation.
+- Other “How …” questions remain procedural; “Why …” remains causal.
+
+Regression tests cover these distinctions. This is a correction to the diagnostic intent label only; it does not rewrite queries, change retrieval rankings, or claim semantic understanding. Ambiguous and compound prompts remain a limitation: one primary intent cannot represent every information need in a multi-part question. Relation and qualifier markers are still lexical cues, not resolved semantic roles.
+
+The 25-query inspection also confirmed useful coverage for explicit “between X and Y” operands, linear/logarithmic time constraints, and qualifiers such as “without”, “when”, and “while”. Coverage counts are not accuracy scores. The parser still needs independent human-labelled intent/relation annotations before it can be treated as a validated semantic parser.
+
+The holdout split was not opened. No corpus records, gold IDs, relevance labels, databases, LLMs, staging/production runtime, publishing, or deployment were used. Keep this work offline and unmerged pending test and review evidence.
