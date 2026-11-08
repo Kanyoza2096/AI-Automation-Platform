@@ -262,7 +262,7 @@ class KnowledgeContextStep(Step):
                     },
                 )
 
-            context["knowledge_context"] = "\\n".join(facts)
+            context["knowledge_context"] = "\n".join(facts)
             context["knowledge_evidence"] = evidence
             logger.info(
                 "PostWorkflow: KB retrieved %d traceable entries for topic='%s' brand='%s'",
