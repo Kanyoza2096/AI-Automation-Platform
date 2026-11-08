@@ -177,7 +177,7 @@ class ContentSemanticReviewer:
                     "originality", "audience_value", "genericity", "rationale",
                     "improvements",
                 ],
-                caller="content_intelligence",
+                caller="content",
             )
         except Exception as exc:
             logger.error("Semantic reviewer invocation failed closed: %s", exc)
