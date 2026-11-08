@@ -140,12 +140,12 @@ def _secondary_intents(query: str) -> list[dict[str, str]]:
     """Capture additional explicit question clauses joined by and/semicolon."""
     found = []
     pattern = re.compile(
-        r"\\b(?:and|;)\\s*(why|how|what|when|where|which)\\b[^?;]*",
+        r"\b(?:and|;)\s*(why|how|what|when|where|which)\b[^?;]*",
         re.I,
     )
     for match in pattern.finditer(query):
         clause = match.group(0)
-        question = re.search(r"(why|how|what|when|where|which)\\b", clause, re.I)
+        question = re.search(r"(why|how|what|when|where|which)\b", clause, re.I)
         if question:
             found.append({
                 "question_word": question.group(1).lower(),
