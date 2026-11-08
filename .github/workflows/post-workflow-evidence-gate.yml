@@ -6,12 +6,16 @@ on:
       - "workflows/post_workflow.py"
       - "services/content_evidence.py"
       - "services/content_semantic_reviewer.py"
+      - "services/content_semantic_shadow_runner.py"
+      - "scripts/run_staging_semantic_shadow_eval.py"
       - "dependency_registry.py"
       - "services/knowledge_base.py"
       - "repositories/knowledge_repository.py"
       - "domain/content/topic_selector.py"
       - "tests/test_post_workflow_evidence_gate.py"
       - "tests/test_content_semantic_reviewer.py"
+      - "tests/test_content_semantic_shadow_runner.py"
+      - "tests/test_staging_semantic_shadow_operator.py"
       - "tests/test_knowledge_base_retrieval.py"
       - "tests/test_knowledge_repository_fail_closed.py"
       - "tests/test_knowledge_repository_workspace_scope.py"
@@ -47,5 +51,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install "pytest>=8,<9"
+      - name: Compile staging shadow operator script
+        run: python -m py_compile scripts/run_staging_semantic_shadow_eval.py
       - name: Run post workflow evidence gate tests
-        run: python -m pytest -q tests/test_post_workflow_evidence_gate.py tests/test_content_semantic_reviewer.py tests/test_knowledge_base_retrieval.py tests/test_knowledge_repository_fail_closed.py tests/test_knowledge_repository_workspace_scope.py
+        run: python -m pytest -q tests/test_post_workflow_evidence_gate.py tests/test_content_semantic_reviewer.py tests/test_content_semantic_shadow_runner.py tests/test_staging_semantic_shadow_operator.py tests/test_knowledge_base_retrieval.py tests/test_knowledge_repository_fail_closed.py tests/test_knowledge_repository_workspace_scope.py
