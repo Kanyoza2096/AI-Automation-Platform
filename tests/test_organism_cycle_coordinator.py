@@ -5,6 +5,10 @@ from organism.coordinator import cycle_started_organisms
 from organism.perception import Observation, ObservationKind
 
 
+async def _noop_snapshot_persist(_runtime):
+    return 1
+
+
 @pytest.mark.asyncio
 async def test_coordinator_synthesizes_observations_for_started_workspace_only():
     registry = OrganismRegistry()
@@ -72,7 +76,7 @@ async def test_coordinator_persists_fresh_trusted_health_goal_as_suggest_only():
             return 1
 
     store = ProposalStore()
-    runtime.persistence_store = SimpleNamespace(client=object())
+    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
     runtime.goal_proposal_store = store
     runtime.ingest(Observation(
         workspace_id="workspace-a",
@@ -272,7 +276,7 @@ async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_propo
             assert proposal.status == "proposed"
             return 1
 
-    runtime.persistence_store = type("Persistence", (), {"client": object()})()
+    runtime.persistence_store = type("Persistence", (), {"client": object(), "persist": _noop_snapshot_persist})()
     runtime.goal_proposal_store = ProposalStore()
     runtime.ingest(Observation(
         workspace_id="workspace-a",
