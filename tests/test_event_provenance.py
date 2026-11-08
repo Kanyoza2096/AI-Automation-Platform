@@ -7,6 +7,7 @@ from core.event_provenance import (
     ProducerRegistry,
     ProvenanceError,
     VerifiedEventProvenance,
+    current_actor_principal,
 )
 
 
@@ -109,3 +110,30 @@ def test_duplicate_or_invalid_producer_registration_is_rejected():
         ProducerRegistry({"": "internal_service"})
     with pytest.raises(ProvenanceError, match="registration"):
         ProducerRegistry({"health-monitor": ""})
+
+
+def test_current_actor_principal_reads_only_validated_auth_context(monkeypatch):
+    from api.support import auth_identity_var
+
+    assert current_actor_principal() is None
+    identity = FakeAuthIdentity()
+    token = auth_identity_var.set(identity)
+    try:
+        actor = current_actor_principal()
+        assert actor is not None
+        assert actor.subject_id == "user-123"
+        assert actor.workspace_id == "workspace-a"
+    finally:
+        auth_identity_var.reset(token)
+    assert current_actor_principal() is None
+
+
+def test_current_actor_principal_rejects_invalid_identity_in_context():
+    from api.support import auth_identity_var
+
+    token = auth_identity_var.set(FakeAuthIdentity(valid=False))
+    try:
+        with pytest.raises(ProvenanceError, match="authenticated"):
+            current_actor_principal()
+    finally:
+        auth_identity_var.reset(token)
