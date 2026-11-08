@@ -265,3 +265,20 @@ The offline frame-aware retrieval runner, its clause-selection tests, dev-only e
 Added negative cases to ensure ordinary “and” inside a comparison or procedural request is not treated as a new question, plus a semicolon-introduced secondary question. CI caught that a word-boundary before a semicolon prevented the parser from matching it; the regex now treats “and” and semicolon as separate alternatives.
 
 GitHub Actions run 42501902904 completed successfully: **63 passed in 0.47s**. This includes the new negative and semicolon cases, the offline retrieval runner tests, and the existing knowledge retrieval regressions. No runtime integration or deployment occurred.
+
+
+## Relation and constraint interpretation audit
+
+The diagnostic query-frame parser now distinguishes several linguistic markers without treating them as proof of the underlying relationship:
+
+- `because` is tagged `cause_or_reason`; it records the wording of the question, not a verified causal conclusion.
+- `associated with`, `correlates with`, `correlated with`, and `linked to` are tagged `correlation_or_association`, never as causal markers.
+- `therefore` is tagged `inference_or_result`; an inference connector does not establish causation.
+- `since` remains `temporal_or_causal` because it can express either meaning.
+- `while` remains `contrast_or_temporal`, and `when` remains `temporal_or_condition`; the parser deliberately does not force a single interpretation.
+
+Regression tests also verify that a numeric bound such as `no more than 5` is not treated as a semantic exclusion, while an instruction such as `Do not retry failed payments` is.
+
+These are lexical diagnostic labels, not semantic truth judgments. Ambiguous relations must remain ambiguous until context or evidence resolves them. No relation label may independently justify a factual answer, retrieval rewrite, task delegation, or action. The original query remains preserved.
+
+This remains an offline-only experiment. No production or staging runtime integration, database access, LLM calls, publishing, or deployment was performed.
