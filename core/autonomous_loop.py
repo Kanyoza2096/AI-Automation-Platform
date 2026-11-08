@@ -1138,6 +1138,8 @@ class AutonomousLoop:
 
         # Async-native state
         self._running = False
+        # Expose the live phase, not a phase inferred from lifetime counters.
+        self._current_phase = "OBSERVE"
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
 
@@ -1368,8 +1370,11 @@ class AutonomousLoop:
         4. ACT — execute + capture immediate feedback
         Then: update model, reshape observation, adapt frequency.
         """
-        # 1. OBSERVE
+        self._current_phase = "OBSERVE"
         events_processed = await self._observe_phase()
+        # A completed batch is idle/ready for the next observation. Never leave
+        # a historical event's Orient/Decide/Act label on the live status API.
+        self._current_phase = "OBSERVE"
 
         # Feed the just-drained, workspace-scoped perception into each
         # already-running organism. This is state synthesis only: no goals,
@@ -1629,6 +1634,7 @@ class AutonomousLoop:
             return
 
         # ── 2. ORIENT ───────────────────────────────────────────────
+        self._current_phase = "ORIENT"
         event_context = {
             "event_type": str(event_type),
             "payload": payload,
@@ -1649,6 +1655,7 @@ class AutonomousLoop:
 
             # ── 3. DECIDE ───────────────────────────────────────────
             try:
+                self._current_phase = "DECIDE"
                 async with asyncio.timeout(self.HANDLER_TIMEOUT_SECONDS):
                     # Execute the handler (which decides internally)
                     await handler(payload)
@@ -1665,6 +1672,8 @@ class AutonomousLoop:
             self.intelligence.end_event_scope(scope_token)
 
         # ── 4. ACT (already done inside handler) + Capture feedback ─
+        if decision_success:
+            self._current_phase = "ACT"
         # v4.0: Record the real action result for orientation feedback —
         # failures included, so _reshape_observation_priorities can watch
         # failing signals harder.
