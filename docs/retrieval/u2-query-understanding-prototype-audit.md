@@ -282,3 +282,12 @@ Regression tests also verify that a numeric bound such as `no more than 5` is no
 These are lexical diagnostic labels, not semantic truth judgments. Ambiguous relations must remain ambiguous until context or evidence resolves them. No relation label may independently justify a factual answer, retrieval rewrite, task delegation, or action. The original query remains preserved.
 
 This remains an offline-only experiment. No production or staging runtime integration, database access, LLM calls, publishing, or deployment was performed.
+
+
+### CI verification for relation and constraint audit
+
+- Latest tested code commit: `c150ce46bfd77fd1dd836de7d3343353baade7cf`.
+- GitHub Actions run `42502958585` completed successfully.
+- Focused knowledge/retrieval and experimental query-understanding suite: **68 passed in 0.54s**.
+- An earlier run exposed a mismatch between the grammatical base form `correlate with` and the test's expected marker. The parser and assertion were corrected, and the latest run is green.
+- The subsequent change to this audit document records the result only; no runtime behavior changed.
