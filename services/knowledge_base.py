@@ -40,7 +40,7 @@ logger = logging.getLogger("kanyoza.services.knowledge_base")
 # ═══════════════════════════════════════════════════════════════════════════
 
 def tokenize(text: str) -> List[str]:
-    return re.findall(r"\w+", text.lower())
+    return [token for token in re.findall(r"\w+", text.lower()) if token not in STOP_WORDS]
 
 
 STOP_WORDS = {
