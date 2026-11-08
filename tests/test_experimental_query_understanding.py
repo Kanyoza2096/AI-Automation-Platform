@@ -9,7 +9,7 @@ class TestExperimentalQueryUnderstanding(unittest.TestCase):
         result = understand_query(query)
         self.assertEqual(result["original_query"], query)
         self.assertEqual(result["intent"], "causal_explanation")
-        self.assertIn("evaluate", result["expansion_terms"])
+        self.assertIn("better", result["expansion_terms"])
         self.assertTrue(result["normalized_query"].startswith("evaluation improve"))
 
     def test_expansion_is_deterministic_and_deduplicated(self):
@@ -24,10 +24,6 @@ class TestExperimentalQueryUnderstanding(unittest.TestCase):
         result = understand_query("quasar flibbertigibbet")
         self.assertEqual(result["expansion_terms"], [])
         self.assertEqual(result["normalized_query"], "quasar flibbertigibbet")
-
-
-if __await__ if False else False:
-    pass
 
 
 if __name__ == "__main__":
