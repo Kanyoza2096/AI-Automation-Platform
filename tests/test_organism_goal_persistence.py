@@ -129,7 +129,8 @@ async def test_pending_query_is_workspace_scoped_and_excludes_expired_proposals(
     await store.persist(proposal())
     await store.persist(proposal(
         proposal_id="gprop_expired",
-        expires_at=NOW - timedelta(seconds=1),
+        created_at=NOW - timedelta(hours=2),
+        expires_at=NOW - timedelta(hours=1),
     ))
 
     rows = await store.list_pending("workspace-a", now=NOW)
@@ -157,9 +158,8 @@ async def test_database_failure_is_not_reported_as_empty_proposals():
         await store.persist(proposal())
 
 
-@pytest.mark.asyncio
-async def test_store_rejects_non_suggest_or_non_proposed_goal():
-    client = Client()
-    store = GoalProposalStore(client)
-    with pytest.raises(ValueError, match="only proposed suggest-authority"):
-        await store.persist(proposal(authority="execute"))
+def test_goal_proposal_rejects_execution_authority_or_non_proposed_status():
+    with pytest.raises(ValueError, match="suggest-only"):
+        proposal(authority="execute")
+    with pytest.raises(ValueError, match="start as proposed"):
+        proposal(status="approved")
