@@ -9,6 +9,7 @@ from services.content_evidence import (
 )
 from workflows.base import StepFailure
 from workflows.post_workflow import (
+    GenerateContentStep,
     KnowledgeContextStep,
     PublishStep,
     ValidateContentStep,
@@ -214,3 +215,75 @@ def test_publish_requires_both_validation_and_evidence_approval():
     with pytest.raises(StepFailure) as evidence_exc:
         asyncio.run(step.async_run(context))
     assert evidence_exc.value.code == "publish_evidence_not_approved"
+
+
+
+def test_prompt_builder_failure_does_not_fall_back_to_internal_prompt(monkeypatch):
+    import services.knowledge_base as knowledge_base
+
+    async def no_themes(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(knowledge_base, "aget_brand_themes", no_themes)
+
+    class BrokenPromptBuilder:
+        def build_post_prompt(self, **_kwargs):
+            raise RuntimeError("simulated prompt assembly failure")
+
+    class FakeContentEngine:
+        called = False
+
+        async def generate_post(self, **_kwargs):
+            self.called = True
+            return {"caption": "This should never be generated."}
+
+    engine = FakeContentEngine()
+    step = GenerateContentStep(
+        content_engine=engine,
+        brand=_brand(),
+        ai_profile=None,
+        prompt_builder=BrokenPromptBuilder(),
+    )
+
+    with pytest.raises(Exception, match="Prompt assembly failed"):
+        asyncio.run(step.async_run({
+            "topic": "Kruskal's algorithm",
+            "knowledge_context": "Kruskal's algorithm uses disjoint sets.",
+            "knowledge_evidence": [{
+                "source_id": "kb-1",
+                "text": "Kruskal's algorithm uses disjoint sets.",
+                "metadata": {},
+            }],
+        }))
+
+    assert engine.called is False
+
+
+def test_missing_prompt_builder_blocks_generation():
+    class FakeContentEngine:
+        called = False
+
+        async def generate_post(self, **_kwargs):
+            self.called = True
+            return {"caption": "This should never be generated."}
+
+    engine = FakeContentEngine()
+    step = GenerateContentStep(
+        content_engine=engine,
+        brand=_brand(),
+        ai_profile=None,
+        prompt_builder=None,
+    )
+
+    with pytest.raises(Exception, match="PromptBuilder is unavailable"):
+        asyncio.run(step.async_run({
+            "topic": "Kruskal's algorithm",
+            "knowledge_context": "Kruskal's algorithm uses disjoint sets.",
+            "knowledge_evidence": [{
+                "source_id": "kb-1",
+                "text": "Kruskal's algorithm uses disjoint sets.",
+                "metadata": {},
+            }],
+        }))
+
+    assert engine.called is False
