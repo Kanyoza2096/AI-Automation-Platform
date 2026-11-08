@@ -97,5 +97,44 @@ class QueryFrameTests(unittest.TestCase):
         ])
 
 
+    def test_what_should_question_is_decision_guidance(self):
+        frame = extract_query_frame(
+            "What should our agent tool evaluation measure?"
+        )
+        self.assertEqual(frame["intent"], "decision_guidance")
+
+    def test_method_and_structure_questions_are_selection(self):
+        method = extract_query_frame(
+            "What rollout method lets us compare prompts safely?"
+        )
+        structure = extract_query_frame(
+            "What structure fits dynamic connectivity queries?"
+        )
+        self.assertEqual(method["intent"], "selection")
+        self.assertEqual(structure["intent"], "selection")
+
+    def test_what_cover_question_is_requirements_identification(self):
+        frame = extract_query_frame(
+            "What should our data deletion process cover beyond the database?"
+        )
+        self.assertEqual(frame["intent"], "decision_guidance")
+
+    def test_how_help_and_worsen_questions_are_causal(self):
+        helps = extract_query_frame(
+            "How do software bills of materials help protect a build pipeline?"
+        )
+        worsens = extract_query_frame(
+            "How can retries worsen an overloaded service?"
+        )
+        self.assertEqual(helps["intent"], "causal_explanation")
+        self.assertEqual(worsens["intent"], "causal_explanation")
+
+    def test_how_design_question_remains_procedural(self):
+        frame = extract_query_frame(
+            "How should an agent's tools be designed with explicit permissions?"
+        )
+        self.assertEqual(frame["intent"], "procedure")
+
+
 if __name__ == "__main__":
     unittest.main()
