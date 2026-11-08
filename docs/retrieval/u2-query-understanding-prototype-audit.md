@@ -124,7 +124,7 @@ A follow-up offline run added a deterministic clause gate and query budget. The 
 | Hard-negative top-1 rate | 0.2000 | **0.1600** |
 | Hard-negative outrank rate | 0.3333 (6/18) | 0.3158 (6/19) |
 
-The bounded candidate reproduces the same top-five rankings as the prior clause-weight-1.5 experiment across all 25 development queries. It uses two retrieval calls for 20 queries and three calls for five queries (2.2 calls/query on average), rather than assuming every query needs every possible clause. KDO-RET-014 still retrieves only one of its two gold records in the top five; its best gold remains at rank 5 and a hard negative remains at rank 2.
+The bounded candidate reproduces the same top-five rankings as the prior clause-weight-1.5 experiment across all 25 development queries. Its originally reported 2.2 calls/query was later corrected because unchanged full-query clauses had been counted as separate retrievals; see the seventh experiment for the deduplicated call count. KDO-RET-014 still retrieves only one of its two gold records in the top five; its best gold remains at rank 5 and a hard negative remains at rank 2.
 
 ### Interpretation and decision
 
@@ -253,3 +253,8 @@ Four development prompts have explicit secondary interrogative clauses: KDO-RET-
 **Decision:** do not automatically retrieve secondary-intent clauses. Preserve them in the query frame as diagnostic information, but let a later, separately validated planning stage decide whether they warrant retrieval. This is an example where richer question interpretation does not automatically improve retrieval.
 
 The reproducible offline runner and focused tests are in the PR. A machine-readable summary is stored at docs/retrieval/calibration/kdo_u2_frame_secondary_intent_ablation_v1.json. All results use 112 knowledge chunks and 25 development queries only. Holdout remains unopened. No hosted latency or cost is claimed.
+
+
+### Latest runner CI verification
+
+The offline frame-aware retrieval runner, its clause-selection tests, dev-only evaluation guard, and missing-gold fail-closed checks were included in GitHub Actions run 42501769747. The knowledge-indexing regression job completed successfully: **60 passed in 0.50s**. This verifies the experimental code and tests at the tested head; it does not establish retrieval quality beyond the reported development-only ablation.
