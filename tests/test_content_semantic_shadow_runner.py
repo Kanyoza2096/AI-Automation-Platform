@@ -230,3 +230,16 @@ def test_shadow_runner_refuses_production_database_client(monkeypatch):
             reviewer=reviewer,
         ))
     assert reviewer.calls == []
+
+def test_shadow_runner_accepts_supabase_url_object(monkeypatch):
+    _enable_staging(monkeypatch)
+    repository = FakeKnowledgeRepository([_entry()])
+    repository.supabase.supabase_url = type(
+        "URLValue", (), {"__str__": lambda self: "https://kkzshurcmcptleyqjgzo.supabase.co"}
+    )()
+    evidence = asyncio.run(resolve_staging_evidence(
+        query="canary rollout limited traffic",
+        brand=_brand(),
+        repository=repository,
+    ))
+    assert evidence
