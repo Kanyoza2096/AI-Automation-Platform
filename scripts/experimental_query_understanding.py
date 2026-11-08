@@ -69,7 +69,7 @@ INTENT_HINTS = {
 def tokenize_query(query: str) -> list[str]:
     """Apply the same stopword policy as the current offline evaluator."""
     return [
-        token for token in re.findall(r"\\w+", query.lower())
+        token for token in re.findall(r"\w+", query.lower())
         if token not in STOP_WORDS
     ]
 
@@ -84,7 +84,7 @@ def understand_query(query: str) -> dict:
                 expanded.append(alias)
 
     first_intent_word = next(
-        (word for word in re.findall(r"\\w+", query.lower())
+        (word for word in re.findall(r"\w+", query.lower())
          if word in INTENT_HINTS),
         None,
     )
