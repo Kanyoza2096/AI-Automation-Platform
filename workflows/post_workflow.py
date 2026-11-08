@@ -190,22 +190,30 @@ class SelectTopicStep(Step):
 class KnowledgeContextStep(Step):
     """Retrieve relevant KB facts for the chosen topic.
 
-    Async-native. continue_on_failure=True so a missing or empty KB never
-    blocks the pipeline — the content engine will still generate without
-    context.
+    Async-native and fail-closed: generation must not proceed without
+    retrieved, traceable knowledge evidence.
     """
     name = "knowledge_context"
-    continue_on_failure = True
+    continue_on_failure = False
 
     def __init__(self, brand: "Brand", knowledge_repo=None) -> None:
         self._brand = brand
         self._repo = knowledge_repo
 
     async def async_run(self, context: dict[str, Any]) -> Any:
-        topic = context.get("topic", "")
-        if not topic or not self._repo:
-            context["knowledge_context"] = ""
-            return []
+        topic = str(context.get("topic") or "").strip()
+        if not topic:
+            raise StepFailure(
+                message="Cannot generate content without a selected topic",
+                code="content_topic_missing",
+                detail={"brand_id": getattr(self._brand, "id", None)},
+            )
+        if self._repo is None:
+            raise StepFailure(
+                message="Knowledge repository is unavailable; refusing ungrounded generation",
+                code="knowledge_repository_unavailable",
+                detail={"brand_id": getattr(self._brand, "id", None), "topic": topic},
+            )
 
         try:
             from services.knowledge_base import KnowledgeBase
@@ -216,21 +224,67 @@ class KnowledgeContextStep(Step):
             )
             await kb.initialize()
             results = await kb.search(topic, top_k=3)
-            facts = [entry.content for entry, _score in (results or [])]
-            knowledge_context = "\n".join(facts)
-            context["knowledge_context"] = knowledge_context
+            facts = []
+            evidence = []
+            for entry, score in (results or []):
+                text = str(getattr(entry, "content", "") or "").strip()
+                if not text:
+                    continue
+                metadata = getattr(entry, "metadata", None)
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                source_id = str(
+                    metadata.get("source_id")
+                    or getattr(entry, "id", "")
+                    or ""
+                ).strip()
+                if not source_id:
+                    continue
+                facts.append(text)
+                evidence.append({
+                    "source_id": source_id,
+                    "text": text,
+                    "metadata": metadata,
+                    "score": score if isinstance(score, (int, float)) else None,
+                })
+
+            if not evidence:
+                raise StepFailure(
+                    message=(
+                        f"No traceable knowledge evidence was retrieved for topic '{topic}'. "
+                        "Content generation and publishing are blocked."
+                    ),
+                    code="knowledge_evidence_missing",
+                    detail={
+                        "brand_id": getattr(self._brand, "id", None),
+                        "topic": topic,
+                        "result_count": len(results or []),
+                    },
+                )
+
+            context["knowledge_context"] = "\n".join(facts)
+            context["knowledge_evidence"] = evidence
             logger.info(
-                "PostWorkflow: KB retrieved %d entries for topic='%s' brand='%s'",
-                len(facts), topic[:60], self._brand.name,
+                "PostWorkflow: KB retrieved %d traceable entries for topic='%s' brand='%s'",
+                len(evidence), topic[:60], self._brand.name,
             )
-            return facts
+            return evidence
+        except StepFailure:
+            raise
         except Exception as exc:
             logger.warning(
                 "PostWorkflow: KB lookup failed for brand='%s': %s",
                 self._brand.name, exc,
             )
-            context["knowledge_context"] = ""
-            return []
+            raise StepFailure(
+                message="Knowledge retrieval failed; refusing ungrounded content generation",
+                code="knowledge_retrieval_failed",
+                detail={
+                    "brand_id": getattr(self._brand, "id", None),
+                    "topic": topic,
+                    "exception_type": type(exc).__name__,
+                },
+            ) from exc
 
     def run(self, context: dict[str, Any]) -> Any:
         raise RuntimeError(
@@ -245,8 +299,9 @@ class GenerateContentStep(Step):
     - Async-native. ContentEngine.generate_post is async.
     - Rejects malformed/truncated captions before they reach
       ValidateContentStep and PublishStep (_caption_is_well_formed).
-    - PromptBuilder.build_post_prompt() is always used when a builder is
-      present, regardless of whether the brand has KB entries.
+    - PromptBuilder is mandatory. Missing or failed grounded prompt assembly
+      blocks generation; the ContentEngine's generic internal prompt is not
+      used as a fallback in this canonical scheduled workflow.
     - Topic axis rotation: reads the brand's last published axis, passes it
       to the builder, and captures the chosen axis into
       context["topic_axis"] for PublishStep to persist.
@@ -308,48 +363,60 @@ class GenerateContentStep(Step):
         # never be persisted against a post that used no axis.
         context["topic_axis"] = None
 
-        base_prompt: str | None = None
-        if self._prompt_builder:
-            try:
-                resolved_platform = (
-                    context.get("platform")
-                    or getattr(self._brand, "platform", None)
-                )
-                last_used_axis = await self._fetch_last_used_axis()
-                await self._warm_theme_cache()
+        if self._prompt_builder is None:
+            raise AIValidationError(
+                message="PromptBuilder is unavailable; refusing ungrounded generation",
+                context={"brand": self._brand.name, "topic": topic},
+            )
 
-                base_prompt = self._prompt_builder.build_post_prompt(
-                    brand=self._brand,
-                    ai_profile=self._ai_profile,
-                    topic=topic,
-                    knowledge_context=knowledge_context or None,
-                    platform=resolved_platform,
-                    last_used_axis=last_used_axis,
-                )
-                # Capture IMMEDIATELY — build_post_prompt is synchronous and
-                # the builder instance is shared, so nothing may be awaited
-                # between the build and this read.
-                context["topic_axis"] = getattr(
-                    self._prompt_builder, "last_used_axis", None
-                )
-                logger.info(
-                    "PostWorkflow: prompt assembled via PromptBuilder "
-                    "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
-                    "for brand='%s'",
-                    len(knowledge_context or ""),
-                    resolved_platform or "facebook",
-                    context["topic_axis"] or "none",
-                    last_used_axis or "none",
-                    self._brand.name,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "PostWorkflow: prompt assembly failed (%s) — "
-                    "falling back to ContentEngine's internal prompt",
-                    exc,
-                )
-                base_prompt = None
-                context["topic_axis"] = None
+        try:
+            resolved_platform = (
+                context.get("platform")
+                or getattr(self._brand, "platform", None)
+            )
+            last_used_axis = await self._fetch_last_used_axis()
+            await self._warm_theme_cache()
+
+            base_prompt = self._prompt_builder.build_post_prompt(
+                brand=self._brand,
+                ai_profile=self._ai_profile,
+                topic=topic,
+                knowledge_context=knowledge_context or None,
+                platform=resolved_platform,
+                last_used_axis=last_used_axis,
+            )
+            if not isinstance(base_prompt, str) or not base_prompt.strip():
+                raise ValueError("PromptBuilder returned an empty prompt")
+
+            # Capture IMMEDIATELY — build_post_prompt is synchronous and
+            # the builder instance is shared, so nothing may be awaited
+            # between the build and this read.
+            context["topic_axis"] = getattr(
+                self._prompt_builder, "last_used_axis", None
+            )
+            logger.info(
+                "PostWorkflow: prompt assembled via PromptBuilder "
+                "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
+                "for brand='%s'",
+                len(knowledge_context or ""),
+                resolved_platform or "facebook",
+                context["topic_axis"] or "none",
+                last_used_axis or "none",
+                self._brand.name,
+            )
+        except Exception as exc:
+            logger.error(
+                "PostWorkflow: prompt assembly failed; generation blocked: %s",
+                exc,
+            )
+            raise AIValidationError(
+                message="Prompt assembly failed; refusing internal ungrounded prompt fallback",
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "exception_type": type(exc).__name__,
+                },
+            ) from exc
 
         result = await self._engine.generate_post(
             brand=self._brand,
@@ -369,6 +436,41 @@ class GenerateContentStep(Step):
             if supplied_caption is not None
             else str(result.get("caption", ""))
         )
+        from services.content_evidence import (
+            validate_caption_evidence,
+            validate_editorial_specificity,
+        )
+
+        editorial_ok, editorial_reason = validate_editorial_specificity(
+            caption_to_check
+        )
+        if not editorial_ok:
+            raise AIValidationError(
+                message=f"Editorial quality gate rejected content: {editorial_reason}",
+                context={"brand": self._brand.name, "topic": topic},
+            )
+
+        evidence_ok, evidence_reason, supporting_source_ids = (
+            validate_caption_evidence(
+                caption_to_check,
+                context.get("knowledge_evidence"),
+            )
+        )
+        context["evidence_validation"] = {
+            "ok": evidence_ok,
+            "reason": evidence_reason,
+            "supporting_source_ids": supporting_source_ids,
+        }
+        if not evidence_ok:
+            raise AIValidationError(
+                message=f"Factual evidence gate rejected content: {evidence_reason}",
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "supporting_source_ids": supporting_source_ids,
+                },
+            )
+
         if not self._caption_is_well_formed(caption_to_check):
             logger.warning(
                 "PostWorkflow: rejecting malformed caption for brand='%s' "
@@ -502,15 +604,29 @@ class ValidateContentStep(Step):
 
         context["validation_result"] = validation_result
 
-        if validation_result.is_rejected:
-            errors = validation_result.error_messages
+        if not validation_result.is_approved:
+            errors = getattr(validation_result, "error_messages", None)
+            if errors is None:
+                errors = [
+                    violation.message
+                    for violation in getattr(validation_result, "violations", [])
+                    if getattr(getattr(violation, "severity", None), "value", None) == "error"
+                ]
             logger.error(
-                "PostWorkflow: validation REJECTED — %s",
+                "PostWorkflow: validation did not approve content (status=%s) — %s",
+                validation_result.status.value,
                 "; ".join(errors),
             )
             raise AIValidationError(
-                message=f"Content validation failed: {'; '.join(errors)}",
-                context={"errors": errors, "topic": topic},
+                message=(
+                    f"Content validation did not approve the post "
+                    f"(status={validation_result.status.value}): {'; '.join(errors)}"
+                ),
+                context={
+                    "errors": errors,
+                    "topic": topic,
+                    "validation_status": validation_result.status.value,
+                },
             )
 
         logger.info(
@@ -603,6 +719,22 @@ class PublishStep(Step):
         ).get("caption", "")
         image_bytes = context.get("image_bytes")
         media_artifact: MediaArtifact = context.get("media_artifact")
+
+        validation_result = context.get("validation_result")
+        if validation_result is None or not getattr(validation_result, "is_approved", False):
+            raise StepFailure(
+                message="Publish blocked because content validation did not explicitly approve the post",
+                code="publish_validation_not_approved",
+                detail={"brand_id": getattr(self._brand, "id", None)},
+            )
+
+        evidence_validation = context.get("evidence_validation")
+        if not isinstance(evidence_validation, dict) or evidence_validation.get("ok") is not True:
+            raise StepFailure(
+                message="Publish blocked because factual evidence validation is missing or failed",
+                code="publish_evidence_not_approved",
+                detail={"brand_id": getattr(self._brand, "id", None)},
+            )
 
         if not caption:
             raise StepFailure(
