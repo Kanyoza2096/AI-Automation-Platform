@@ -235,7 +235,7 @@ class QueryFrameTests(unittest.TestCase):
             "How does cache size correlate with response latency?"
         )
         self.assertIn(
-            {"connector": "correlates with", "type": "correlation_or_association"},
+            {"connector": "correlate with", "type": "correlation_or_association"},
             frame["relations"],
         )
         self.assertNotIn(
