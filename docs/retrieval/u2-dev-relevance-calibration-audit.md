@@ -121,3 +121,15 @@ KDO-RET-014 nDCG@5 increased from 0.2867 to 0.8960; its two gold records moved f
 This is **not** evidence that a production query rewriter should use this exact string. The paraphrase was manually authored after inspecting the target evidence, so it is a corpus-informed exploratory demonstration and vulnerable to overfitting. The full experiment and limitations are recorded in `docs/retrieval/calibration/kdo_u2_ret014_query_alignment_experiment_v1.json`.
 
 Next: test a general, corpus-independent query decomposition/terminology expansion approach across all 25 development queries, without using gold IDs or holdout data to generate expansions. Report ranking quality and query latency/token overhead together. No ranking candidate or rewrite is selected for production.
+
+
+## Runtime call-site boundary check
+
+A read-only source inspection of the staging branch found the same lexical `KnowledgeBase.search()` implementation used by:
+- `api/routers/knowledge.py`: user/API-provided `body.query`.
+- `workflows/post_workflow.py`: brand content workflow searches with the selected `topic`, top 3.
+- `services/pipeline/pipeline.py`: legacy content pipeline searches with `topic`, top 3.
+
+No shared query-rewrite, synonym-expansion, or semantic query-planning layer was found in these call paths. The runtime retriever tokenizes the supplied query and ranks content-only records with TF-IDF/cosine similarity. This confirms where a future query-understanding layer could be introduced, but does not prove that the RET-014 benchmark failure caused the previously observed generic Facebook posts: those publishing paths pass a topic string, and the benchmark query is a separate diagnostic.
+
+No runtime call site was edited. Any future query understanding should be an explicit, bounded pre-retrieval component with traceable original and normalized queries, workspace/brand scope preserved, deterministic fallback to the original query, bounded expansion length, and evidence-based tests. It must not silently widen tenant scope or invent unsupported facts.
