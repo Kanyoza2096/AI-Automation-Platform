@@ -37,8 +37,27 @@ def record_content(record):
     return "\n\n".join(part for part in parts if part)
 
 
+STOP_WORDS = {
+    "the", "is", "at", "which", "on", "and", "a", "an",
+    "in", "to", "for", "of", "with", "by", "from", "as",
+    "this", "that", "it", "or", "are", "was", "be", "been",
+    "were", "has", "have", "had", "do", "does", "did",
+    "will", "would", "could", "should", "may", "might",
+    "can", "shall", "not", "no", "but", "if", "so", "we",
+    "you", "he", "she", "they", "them", "their", "our",
+    "its", "just", "also", "very", "too", "all", "some",
+    "any", "each", "every", "both", "few", "more", "most",
+    "other", "such", "only", "own", "same", "than",
+    "about", "after", "before", "between", "during",
+    "through", "above", "below", "up", "down", "out",
+    "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why",
+    "how", "what", "who", "whom",
+}
+
+
 def tokenize(text):
-    return re.findall(r"\w+", text.lower())
+    return [token for token in re.findall(r"\w+", text.lower()) if token not in STOP_WORDS]
 
 
 def build_index(records):
