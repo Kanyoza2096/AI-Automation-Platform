@@ -258,3 +258,10 @@ The reproducible offline runner and focused tests are in the PR. A machine-reada
 ### Latest runner CI verification
 
 The offline frame-aware retrieval runner, its clause-selection tests, dev-only evaluation guard, and missing-gold fail-closed checks were included in GitHub Actions run 42501769747. The knowledge-indexing regression job completed successfully: **60 passed in 0.50s**. This verifies the experimental code and tests at the tested head; it does not establish retrieval quality beyond the reported development-only ablation.
+
+
+### Secondary-intent false-positive and punctuation tests
+
+Added negative cases to ensure ordinary “and” inside a comparison or procedural request is not treated as a new question, plus a semicolon-introduced secondary question. CI caught that a word-boundary before a semicolon prevented the parser from matching it; the regex now treats “and” and semicolon as separate alternatives.
+
+GitHub Actions run 42501902904 completed successfully: **63 passed in 0.47s**. This includes the new negative and semicolon cases, the offline retrieval runner tests, and the existing knowledge retrieval regressions. No runtime integration or deployment occurred.
