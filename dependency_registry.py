@@ -1174,6 +1174,7 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
             container=c,
             category=category,
             content_validator=content_validator,
+            semantic_reviewer=semantic_reviewer,
         )
 
     def post_publish_workflow_factory(brand, ai_profile, category=None):
