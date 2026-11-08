@@ -17,7 +17,6 @@ on:
       - "tests/test_experimental_query_understanding.py"
       - "tests/test_experimental_query_frames.py"
       - "scripts/experimental_query_understanding.py"
-      - "tests/test_experimental_query_understanding.py"
       - ".github/workflows/knowledge-indexing-tests.yml"
   push:
     branches:
