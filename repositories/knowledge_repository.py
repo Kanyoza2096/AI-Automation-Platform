@@ -64,18 +64,34 @@ class KnowledgeRepository(Repository[KnowledgeEntry]):
                 f"Knowledge entry {record_id} could not be deleted"
             ) from e
 
-    def find_by_brand(self, brand_id: str) -> List[KnowledgeEntry]:
+    def find_by_brand(self, brand_id: str, workspace_id: str) -> List[KnowledgeEntry]:
+        """Load knowledge entries for one brand inside one workspace only."""
+        if not brand_id or not str(brand_id).strip():
+            raise ValueError("brand_id is required for knowledge retrieval")
+        if not workspace_id or not str(workspace_id).strip():
+            raise ValueError("workspace_id is required for scoped knowledge retrieval")
+
         if not self.supabase:
-            return [k for k in self._in_memory.values() if k.brand_id == brand_id]
+            return [
+                entry for entry in self._in_memory.values()
+                if entry.brand_id == brand_id and entry.workspace_id == workspace_id
+            ]
         try:
-            res = self.supabase.table('knowledge_entries').select('*').eq('brand_id', brand_id).execute()
+            res = (
+                self.supabase.table("knowledge_entries")
+                .select("*")
+                .eq("brand_id", brand_id)
+                .eq("workspace_id", workspace_id)
+                .execute()
+            )
             return [KnowledgeEntry(**row) for row in (res.data or [])]
         except Exception as e:
-            # An incomplete database read must not masquerade as a valid,
-            # possibly empty index. Surface the failure to the caller.
-            logger.error("Failed to find knowledge entries by brand %s: %s", brand_id, e)
+            logger.error(
+                "Failed to find knowledge entries for brand %s in workspace %s: %s",
+                brand_id, workspace_id, e,
+            )
             raise RuntimeError(
-                f"Knowledge entries for brand {brand_id} could not be loaded"
+                f"Knowledge entries for brand {brand_id} in workspace {workspace_id} could not be loaded"
             ) from e
 
     def find_by_workspace(self, workspace_id: str) -> List[KnowledgeEntry]:
