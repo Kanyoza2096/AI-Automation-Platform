@@ -1246,7 +1246,7 @@ class PostPublishWorkflow(Workflow):
       1. Select Topic          — from brand KB or custom_topics
       2. Knowledge Context     — retrieve relevant KB facts
       3. Generate Content      — LLM caption + Cloudflare image
-      4. Validate Content      — ContentValidator
+      4. Validate Content      — policy validator + independent semantic reviewer
       5. Render Image          — verify MediaArtifact
       6. Publish               — governed canonical publish
       7. Record Analytics      — persist metrics
