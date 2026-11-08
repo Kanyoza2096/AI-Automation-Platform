@@ -94,7 +94,7 @@ class ContentSemanticReviewer:
 
         clean_evidence = []
         allowed_source_ids = set()
-        for item in evidence:
+        for item in evidence[:3]:
             if not isinstance(item, dict):
                 continue
             source_id = str(item.get("source_id") or "").strip()
@@ -107,7 +107,7 @@ class ContentSemanticReviewer:
             metadata = item.get("metadata")
             clean_evidence.append({
                 "source_id": source_id,
-                "text": source_text[:1800],
+                "text": source_text[:1200],
                 "verified": bool(
                     isinstance(metadata, dict) and metadata.get("verified") is True
                 ),
@@ -119,7 +119,7 @@ class ContentSemanticReviewer:
             "topic": str(topic or "")[:500],
             "platform": str(platform or "facebook")[:40],
             "brand": self._brand_context(brand),
-            "caption": caption[:7000],
+            "caption": caption[:5000],
             "evidence": clean_evidence,
         }
         prompt = (
