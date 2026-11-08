@@ -78,7 +78,10 @@ def _comparison_operands(query: str) -> list[str]:
     )
     if not match:
         return []
-    return [part.strip(" ,") for part in match.groups() if part.strip(" ,")]
+    left, right = match.groups()
+    # Do not absorb a subordinate condition into the second comparison operand.
+    right = re.split(r"\b(?:when|while|if|unless|without|because|after|before)\b", right, maxsplit=1, flags=re.I)[0]
+    return [part.strip(" ,") for part in (left, right) if part.strip(" ,")]
 
 
 def _relations(query: str) -> list[dict[str, str]]:
@@ -94,15 +97,22 @@ def extract_query_frame(query: str) -> dict:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    # Explicit comparison structure takes precedence over a generic opener.
-    if re.search(r"\b(?:difference between|trade-offs? between|versus|compared with|compared to)\b", query, re.I):
+    # Explicit comparison structure takes precedence over generic question words.
+    if re.search(
+        r"\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ from)\b",
+        query, re.I,
+    ):
         intent = "comparison"
     else:
-        intent = "information_retrieval"
-        for pattern, label in _INTENTS:
-            if re.search(pattern, query, re.I):
-                intent = label
-                break
+        question = re.search(r"\b(why|how|what|when|where|which)\b", query, re.I)
+        intent = {
+            "why": "causal_explanation",
+            "how": "procedure",
+            "what": "definition_or_identification",
+            "when": "conditions",
+            "where": "location_or_scope",
+            "which": "selection",
+        }.get(question.group(1).lower(), "information_retrieval") if question else "information_retrieval"
 
     complexity = [m.group(0) for m in _COMPLEXITY.finditer(query)]
     numeric = [m.group(0) for m in _NUMERIC.finditer(query)]
