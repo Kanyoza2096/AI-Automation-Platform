@@ -7,16 +7,46 @@ from __future__ import annotations
 
 import re
 
-_INTENTS = (
-    (r"^\s*why\b", "causal_explanation"),
-    (r"^\s*how\b", "procedure"),
-    (r"^\s*what\b", "definition_or_identification"),
-    (r"^\s*when\b", "conditions"),
-    (r"^\s*where\b", "location_or_scope"),
-    (r"^\s*which\b", "selection"),
-    (r"^\s*(?:is|are|can|could|does|do|should|would)\b", "verification_or_guidance"),
-    (r"\b(?:difference|versus|compared with|compared to)\b", "comparison"),
-)
+def _intent(query: str) -> str:
+    """Classify the primary information need using conservative lexical cues."""
+    if re.search(
+        r"\\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ from)\\b",
+        query, re.I,
+    ):
+        return "comparison"
+
+    question = re.search(r"\\b(why|how|what|when|where|which)\\b", query, re.I)
+    if not question:
+        return "information_retrieval"
+
+    word = question.group(1).lower()
+    tail = query[question.end():]
+    if word == "why":
+        return "causal_explanation"
+    if word == "how":
+        if re.search(
+            r"\\b(?:help|reduce|increase|worsen|protect|enable|allow|cause|lead)\\b",
+            tail, re.I,
+        ):
+            return "causal_explanation"
+        return "procedure"
+    if word == "what":
+        if re.match(r"\\s+should\\b", tail, re.I):
+            return "decision_guidance"
+        if re.search(
+            r"\\b(?:method|structure|tool|approach|strategy)\\b.{0,60}\\b(?:fit|suit|support|use|choose)\\w*\\b",
+            tail, re.I,
+        ):
+            return "selection"
+        if re.search(r"\\b(?:contain|cover|include|need|require)\\w*\\b", tail, re.I):
+            return "requirements_identification"
+        return "definition_or_identification"
+    return {
+        "when": "conditions",
+        "where": "location_or_scope",
+        "which": "selection",
+    }.get(word, "information_retrieval")
+
 
 _RELATIONS = (
     ("even though", "contrast"),
@@ -107,22 +137,7 @@ def extract_query_frame(query: str) -> dict:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("query must be a non-empty string")
 
-    # Explicit comparison structure takes precedence over generic question words.
-    if re.search(
-        r"\b(?:difference between|trade-offs? between|versus|compared with|compared to|differ from)\b",
-        query, re.I,
-    ):
-        intent = "comparison"
-    else:
-        question = re.search(r"\b(why|how|what|when|where|which)\b", query, re.I)
-        intent = {
-            "why": "causal_explanation",
-            "how": "procedure",
-            "what": "definition_or_identification",
-            "when": "conditions",
-            "where": "location_or_scope",
-            "which": "selection",
-        }.get(question.group(1).lower(), "information_retrieval") if question else "information_retrieval"
+    intent = _intent(query)
 
     complexity = [m.group(0) for m in _COMPLEXITY.finditer(query)]
     numeric = [m.group(0) for m in _NUMERIC.finditer(query)]
