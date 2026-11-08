@@ -244,10 +244,6 @@ def test_validate_content_step_blocks_when_semantic_review_needs_review():
                 "request_id": "review-123",
             }
 
-    step = ValidateContentStep(
-        validator=SimpleNamespace(validate=lambda **kwargs: _approved_policy_validator()),
-        semantic_reviewer=SemanticReviewer(),
-    )
     context = {
         "caption": "A concise engineering post with a factual claim.",
         "topic": "Kruskal's algorithm",
