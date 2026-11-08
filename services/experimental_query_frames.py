@@ -36,6 +36,8 @@ def _intent(query: str) -> str:
         return "procedure"
     if word == "what":
         if re.match(r"\\s+should\\b", tail, re.I):
+            if re.search(r"\\b(?:contain|cover|include|need|require)\\w*\\b", tail, re.I):
+                return "requirements_identification"
             return "decision_guidance"
         if re.search(
             r"\\b(?:method|structure|tool|approach|strategy)\\b",
