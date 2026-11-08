@@ -65,6 +65,7 @@ _RELATIONS = (
     ("since", "temporal_or_causal"),
     ("therefore", "inference_or_result"),
     ("associated with", "correlation_or_association"),
+    ("correlate with", "correlation_or_association"),
     ("correlates with", "correlation_or_association"),
     ("correlated with", "correlation_or_association"),
     ("linked to", "correlation_or_association"),
