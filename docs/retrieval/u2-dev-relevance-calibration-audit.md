@@ -42,6 +42,18 @@ Interpretation:
 - This is one baseline comparison, not a parameter search. No candidate is selected.
 - No holdout result was calculated or consulted for this experiment.
 
+### Additional candidate: Porter stemming (research-only)
+
+A second local candidate applied the NLTK Porter stemmer to both query and content tokens before using the existing TF-IDF/cosine scoring formula. This was an offline experiment only; NLTK is not assumed to be an approved production dependency, and no runtime tokenizer was changed.
+
+| Development metric | Current TF-IDF | BM25 candidate | Porter-stemmed TF-IDF candidate |
+|---|---:|---:|---:|
+| True Recall@5 | 0.9400 | 0.9000 | 0.9400 |
+| Gold hit rate@5 | 0.9600 | 0.9200 | 0.9600 |
+| MRR | 0.8280 | 0.8400 | 0.8680 |
+
+The stemmed candidate improves development MRR while preserving the baseline recall and gold-hit rate. However, it still does not retrieve either KDO-RET-014 gold record in the top five. It also changes rankings in other queries, so this is a candidate for a carefully controlled follow-up, not a selected implementation. No dependency, code, or production behavior was changed.
+
 ## Per-query observations
 
 | Query | Current TF-IDF top results | BM25 top results | Initial interpretation |
