@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.experimental_query_understanding import understand_query
+from scripts.experimental_query_understanding import (\n    decompose_query, reciprocal_rank_fusion, understand_query,\n)
 
 
 class TestExperimentalQueryUnderstanding(unittest.TestCase):
