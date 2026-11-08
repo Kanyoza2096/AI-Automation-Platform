@@ -14,7 +14,7 @@ import logging
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Optional, Callable
+from typing import Any, Optional, Callable, AsyncIterator
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -32,7 +32,7 @@ from core.security.deps import require_workspace_operator, require_workspace_adm
 #
 # ⚠ api.support must NOT import from api.dependencies. This is the canonical
 # ContextVar home specifically to avoid a duplicated-var regression.
-from api.support import auth_workspace_id_var  # noqa: E402,F401
+from api.support import auth_workspace_id_var, auth_identity_var  # noqa: E402,F401
 
 logger = logging.getLogger("kanyoza.api.dependencies")
 
@@ -115,7 +115,7 @@ async def require_auth(
     request: Request,
     container=Depends(get_container),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-) -> bool:
+) -> AsyncIterator[bool]:
     """Canonical authentication door for v1 and legacy route modules.
 
     v2.1 — SUPABASE CLIENT RESOLUTION FIX:
@@ -174,10 +174,20 @@ async def require_auth(
             key_store=request.app.state.key_store,
         )
         if identity.valid:
-            auth_method_var.set(identity.method)
-            auth_workspace_id_var.set(identity.workspace_id)
-            auth_user_email_var.set(identity.user_email)
-            return True
+            auth_method_token = auth_method_var.set(identity.method)
+            workspace_token = auth_workspace_id_var.set(identity.workspace_id)
+            email_token = auth_user_email_var.set(identity.user_email)
+            identity_token = auth_identity_var.set(identity)
+            try:
+                # FastAPI yield-dependency cleanup resets identity even when
+                # endpoint execution raises, preventing cross-request leakage.
+                yield True
+            finally:
+                auth_identity_var.reset(identity_token)
+                auth_user_email_var.reset(email_token)
+                auth_workspace_id_var.reset(workspace_token)
+                auth_method_var.reset(auth_method_token)
+            return
     except Exception as exc:
         logger.debug("Canonical authentication failed: %s", exc)
 
