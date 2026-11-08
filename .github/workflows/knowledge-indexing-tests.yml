@@ -17,6 +17,8 @@ on:
       - "tests/test_experimental_query_understanding.py"
       - "tests/test_experimental_query_frames.py"
       - "scripts/experimental_query_understanding.py"
+      - "scripts/eval_frame_aware_retrieval.py"
+      - "tests/test_experimental_frame_aware_retrieval.py"
       - ".github/workflows/knowledge-indexing-tests.yml"
   push:
     branches:
@@ -37,4 +39,4 @@ jobs:
       - name: Install focused test dependencies
         run: python -m pip install "pytest>=8,<9" "pytest-asyncio>=0.23" "pydantic>=2.5,<3"
       - name: Run knowledge repository and retrieval evaluation tests
-        run: python -m pytest -q tests/test_knowledge_repository_fail_closed.py tests/test_eval_retrieval.py tests/test_knowledge_base_retrieval.py tests/test_experimental_query_understanding.py tests/test_experimental_query_frames.py
+        run: python -m pytest -q tests/test_knowledge_repository_fail_closed.py tests/test_eval_retrieval.py tests/test_knowledge_base_retrieval.py tests/test_experimental_query_understanding.py tests/test_experimental_query_frames.py tests/test_experimental_frame_aware_retrieval.py
