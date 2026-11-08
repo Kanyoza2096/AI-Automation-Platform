@@ -24,6 +24,10 @@ def _intent(query: str) -> str:
     if word == "why":
         return "causal_explanation"
     if word == "how":
+        if re.match(r"\\s+should\\b", tail, re.I):
+            if re.search(r"\\b(?:build|design|architect|develop|create)\\w*\\b", tail, re.I):
+                return "design_guidance"
+            return "decision_guidance"
         if re.search(
             r"\\b(?:help|reduce|increase|worsen|protect|enable|allow|cause|lead)\\b",
             tail, re.I,
