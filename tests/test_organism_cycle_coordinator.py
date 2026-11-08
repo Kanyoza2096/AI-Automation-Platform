@@ -313,10 +313,11 @@ async def test_coordinator_never_invokes_cognitive_decision_plane_for_goal_propo
 
 
 @pytest.mark.asyncio
-async def test_coordinator_recovers_pending_suggestions_without_activating_them():
+async def test_coordinator_recovers_pending_suggestions_without_activating_them(monkeypatch):
     from types import SimpleNamespace
     from organism.goals import GoalPriority, GoalProposal
     from datetime import datetime, timedelta, timezone
+    import organism.goal_persistence as goal_persistence
 
     registry = OrganismRegistry()
     organism = await registry.ensure_started("workspace-a")
@@ -335,13 +336,18 @@ async def test_coordinator_recovers_pending_suggestions_without_activating_them(
         expires_at=now + timedelta(minutes=30),
     )
 
+    service_client = object()
+
     class ProposalStore:
+        def __init__(self, client):
+            assert client is service_client
+
         async def list_pending(self, workspace_id):
             assert workspace_id == "workspace-a"
             return (pending,)
 
-    runtime.goal_proposal_store = ProposalStore()
-    runtime.persistence_store = SimpleNamespace(client=object(), persist=_noop_snapshot_persist)
+    monkeypatch.setattr(goal_persistence, "GoalProposalStore", ProposalStore)
+    runtime.persistence_store = SimpleNamespace(client=service_client, persist=_noop_snapshot_persist)
 
     result = await cycle_started_organisms(registry)
 
