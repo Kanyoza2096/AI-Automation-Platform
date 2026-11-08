@@ -83,7 +83,10 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
         source=f"unified_event:{event_name}",
         value=safe_value,
         confidence=0.8,
-        source_trust=0.8,
+        # The event envelope carries a source label, not authenticated publisher
+        # identity. Keep observations useful for perception, but ineligible for
+        # goal derivation until a verified producer-principal contract exists.
+        source_trust=0.0,
         **({"observed_at": observed_at} if observed_at is not None else {}),
         observation_id=f"event:{event_id}" if event_id else f"obs_{uuid.uuid4().hex[:16]}",
         metadata={
