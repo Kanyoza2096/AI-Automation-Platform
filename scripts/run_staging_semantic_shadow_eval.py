@@ -66,6 +66,20 @@ CASES = [
 ]
 
 
+def _load_staging_brand(brand_repository: BrandRepository) -> Brand:
+    """Resolve the evaluation brand only inside its canonical workspace."""
+    staging_brands = brand_repository.find_by_workspace(STAGING_WORKSPACE_ID)
+    brand = next(
+        (candidate for candidate in staging_brands if candidate.id == STAGING_BRAND_ID),
+        None,
+    )
+    if not isinstance(brand, Brand):
+        raise RuntimeError("The approved staging evaluation brand could not be loaded")
+    if brand.workspace_id != STAGING_WORKSPACE_ID:
+        raise RuntimeError("Loaded brand does not belong to the canonical staging workspace")
+    return brand
+
+
 def _assert_operator_boundary() -> None:
     effective_environment = (
         os.getenv("APP_ENV")
@@ -96,16 +110,7 @@ async def _run() -> int:
         if client is None:
             raise RuntimeError("Staging Supabase service client could not be created")
         brand_repository = BrandRepository(client)
-        # Scope the lookup by the canonical tenant before selecting the brand ID.
-        staging_brands = brand_repository.find_by_workspace(STAGING_WORKSPACE_ID)
-        brand = next(
-            (candidate for candidate in staging_brands if candidate.id == STAGING_BRAND_ID),
-            None,
-        )
-        if not isinstance(brand, Brand):
-            raise RuntimeError("The approved staging evaluation brand could not be loaded")
-        if brand.workspace_id != STAGING_WORKSPACE_ID:
-            raise RuntimeError("Loaded brand does not belong to the canonical staging workspace")
+        brand = _load_staging_brand(brand_repository)
 
         knowledge_repository = KnowledgeRepository(client)
         results = await evaluate_batch(
