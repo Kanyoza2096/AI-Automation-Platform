@@ -19,6 +19,7 @@ def _brand(workspace_id="workspace-test"):
 def _data(**overrides):
     data = {
         "decision": "approve",
+        "claim_coverage": 1.0,
         "claims": [{
             "claim": "Kruskal's algorithm uses disjoint sets to detect cycles.",
             "support_status": "supported",
@@ -195,3 +196,13 @@ def test_semantic_reviewer_requires_traceable_evidence():
 
     assert result["approved"] is False
     assert gateway.calls == []
+
+
+
+def test_semantic_reviewer_requires_high_claim_coverage():
+    gateway = FakeGateway(data=_data(claim_coverage=0.72))
+    result = _review(gateway)
+
+    assert result["approved"] is False
+    assert result["status"] == "needs_review"
+    assert "did not assess enough" in result["reason"]
