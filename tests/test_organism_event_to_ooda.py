@@ -9,6 +9,7 @@ from organism.event_bridge import OrganismEventBridge
 class _RecordingStore:
     def __init__(self):
         self.persisted = []
+        self.client = object()
 
     async def persist(self, runtime):
         self.persisted.append({
@@ -43,6 +44,19 @@ async def test_workspace_event_flows_through_perception_into_ooda_state_without_
     workspace_b = registry.get_or_create("workspace-b")
     store = _RecordingStore()
     workspace_a.runtime.persistence_store = store
+
+    class _ProposalStore:
+        async def persist(self, proposal):
+            assert proposal.workspace_id == "workspace-a"
+            assert proposal.authority == "suggest"
+            assert proposal.status == "proposed"
+            return 1
+
+        async def list_pending(self, workspace_id):
+            assert workspace_id == "workspace-a"
+            return ()
+
+    workspace_a.runtime.goal_proposal_store = _ProposalStore()
     bridge = OrganismEventBridge(registry)
     bus = _Bus()
     await bridge.start(bus)
