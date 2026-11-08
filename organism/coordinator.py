@@ -77,37 +77,26 @@ async def cycle_started_organisms(
 
 
 async def _persist_fresh_goal_proposals(runtime: Any, workspace_id: str) -> int:
-    """Persist proposals from fresh trusted health observations, once per event."""
+    """Persist fresh trusted health proposals; retain failed writes for retry."""
     from organism.goals import derive_goal_proposal
-    from organism.perception import ObservationKind
 
     if runtime.workspace_id != workspace_id:
         raise RuntimeError("goal proposal workspace identity mismatch")
-
-    persistence = getattr(runtime, "persistence_store", None)
-    if persistence is None or getattr(persistence, "client", None) is None:
-        # No credentials or alternate database discovery here. If a valid
-        # trigger exists, fail visibly instead of pretending it was persisted.
-        candidates = _fresh_health_observations(runtime, workspace_id)
-        if any(derive_goal_proposal(item) is not None for item in candidates):
-            raise RuntimeError("goal proposal store unavailable: runtime persistence client is not bound")
-        return 0
-
-    store = getattr(runtime, "goal_proposal_store", None)
-    if store is None:
-        from organism.goal_persistence import GoalProposalStore
-        store = GoalProposalStore(persistence.client)
-        runtime.goal_proposal_store = store
 
     processed = getattr(runtime, "_goal_proposal_observation_ids", None)
     if processed is None:
         processed = set()
         runtime._goal_proposal_observation_ids = processed
+    pending = getattr(runtime, "_pending_goal_proposals", None)
+    if pending is None:
+        pending = {}
+        runtime._pending_goal_proposals = pending
 
-    persisted = 0
+    # Derive only from recent events. A pending proposal survives a transient
+    # storage outage, but its own expiry bounds how long it can be retried.
     for observation in _fresh_health_observations(runtime, workspace_id):
         observation_id = observation.observation_id
-        if observation_id in processed:
+        if observation_id in processed or observation_id in pending:
             continue
         proposal = derive_goal_proposal(observation)
         if proposal is None:
@@ -115,12 +104,38 @@ async def _persist_fresh_goal_proposals(runtime: Any, workspace_id: str) -> int:
             continue
         if proposal.workspace_id != workspace_id:
             raise RuntimeError("derived goal proposal workspace mismatch")
+        pending[observation_id] = proposal
+
+    now = datetime.now(timezone.utc)
+    for observation_id, proposal in tuple(pending.items()):
+        if proposal.workspace_id != workspace_id:
+            raise RuntimeError("pending goal proposal workspace mismatch")
+        if proposal.expires_at <= now:
+            pending.pop(observation_id, None)
+            processed.add(observation_id)
+
+    if not pending:
+        return 0
+
+    persistence = getattr(runtime, "persistence_store", None)
+    if persistence is None or getattr(persistence, "client", None) is None:
+        raise RuntimeError("goal proposal store unavailable: runtime persistence client is not bound")
+
+    store = getattr(runtime, "goal_proposal_store", None)
+    if store is None:
+        from organism.goal_persistence import GoalProposalStore
+        store = GoalProposalStore(persistence.client)
+        runtime.goal_proposal_store = store
+
+    persisted = 0
+    for observation_id, proposal in tuple(pending.items()):
         # Mark processed only after the store acknowledges persistence. A
-        # transient failure can be retried; deterministic IDs make retries safe.
+        # transient failure retains the proposal for retry; deterministic IDs
+        # make a retry safe even if the DB committed before the response failed.
         persisted += await store.persist(proposal)
+        pending.pop(observation_id, None)
         processed.add(observation_id)
     return persisted
-
 
 def _fresh_health_observations(runtime: Any, workspace_id: str):
     from organism.perception import ObservationKind
