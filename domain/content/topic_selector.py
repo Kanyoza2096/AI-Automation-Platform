@@ -69,7 +69,14 @@ def _build_categories_from_knowledge_base(
         return None
 
     try:
-        entries = knowledge_repo.find_by_brand(brand.id)
+        workspace_id = getattr(brand, "workspace_id", None)
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            logger.warning(
+                "TopicSelector: refusing unscoped KB topic lookup for brand '%s'",
+                getattr(brand, "name", "unknown"),
+            )
+            return None
+        entries = knowledge_repo.find_by_brand(brand.id, workspace_id)
         if not entries:
             logger.info(
                 "TopicSelector: No KB entries for brand '%s' (id=%s)",
