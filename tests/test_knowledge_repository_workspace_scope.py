@@ -33,3 +33,35 @@ def test_find_by_brand_requires_workspace_scope():
         assert "workspace_id is required" in str(exc)
     else:
         raise AssertionError("unscoped knowledge lookup should be rejected")
+
+
+def test_supabase_query_filters_by_both_brand_and_workspace():
+    class RecordingQuery:
+        def __init__(self):
+            self.filters = []
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+
+        def execute(self):
+            return type("Result", (), {"data": []})()
+
+    class RecordingSupabase:
+        def __init__(self):
+            self.query = RecordingQuery()
+
+        def table(self, _name):
+            return self.query
+
+    supabase = RecordingSupabase()
+    repo = KnowledgeRepository(supabase_client=supabase)
+
+    assert repo.find_by_brand("brand-shared-id", "workspace-a") == []
+    assert supabase.query.filters == [
+        ("brand_id", "brand-shared-id"),
+        ("workspace_id", "workspace-a"),
+    ]
