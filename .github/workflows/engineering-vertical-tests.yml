@@ -17,6 +17,8 @@ on:
       - "core/shared_event_bus.py"
       - "core/organism.py"
       - "organism/lifecycle.py"
+      - "organism/goals.py"
+      - "tests/test_organism_goal_proposals.py"
       - "organism/event_bridge.py"
       - "organism/persistence.py"
       - "migrations/155_u2_organism_runtime_snapshots.sql"
@@ -245,6 +247,7 @@ jobs:
             tests/security/test_u1_shared_event_delivery_migration.py \
             tests/security/test_u1_unified_event_bus_backpressure.py \
             tests/test_organism_lifecycle.py \
+            tests/test_organism_goal_proposals.py \
             tests/test_organism_event_bridge.py \
             tests/test_organism_cycle_coordinator.py \
             tests/test_organism_runtime_persistence.py \
