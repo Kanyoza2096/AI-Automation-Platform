@@ -54,7 +54,7 @@ def test_knowledge_step_preserves_traceable_evidence_for_semantic_review(monkeyp
 
     result = asyncio.run(step.run_async(context))
 
-    assert result == context["knowledge_evidence"]
+    assert result == [entry.content]
     assert context["knowledge_evidence"][0]["source_id"] == "kb-canary-1"
     assert context["knowledge_evidence"][0]["text"] == entry.content
     assert context["knowledge_evidence"][0]["metadata"]["verified"] is True
