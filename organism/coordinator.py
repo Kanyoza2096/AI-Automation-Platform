@@ -1,15 +1,20 @@
 """Bounded coordinator that turns workspace perception into organism state.
 
-The autonomous OODA loop may invoke this after draining its event queue. It
-only synthesizes per-workspace state; it does not propose or execute actions.
+The coordinator may derive narrowly-scoped, evidence-backed goal suggestions
+from fresh trusted health events. It never activates goals or executes actions.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger("kanyoza.organism.coordinator")
+
+# Old events restored from the ledger are context, not fresh triggers for a new
+# goal proposal. Only recently observed health events can create suggestions.
+GOAL_EVENT_MAX_AGE = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -29,8 +34,8 @@ async def cycle_started_organisms(
 
     The coordinator never creates or starts workspaces. A failure in one
     workspace is isolated and cannot prevent other tenants from being cycled.
-    No goal or proposed action is supplied, so this path cannot request
-    authorization or cause an external side effect.
+    Goal proposals remain suggest-only and require the runtime's already-bound
+    server-side persistence client; this function does not discover credentials.
     """
     if max_workspaces < 1:
         raise ValueError("max_workspaces must be positive")
@@ -54,6 +59,7 @@ async def cycle_started_organisms(
         attempted += 1
         try:
             await cycle_async(runtime)
+            await _persist_fresh_goal_proposals(runtime, workspace_id)
             store = getattr(runtime, "persistence_store", None)
             if store is not None:
                 await store.persist(runtime)
@@ -67,4 +73,62 @@ async def cycle_started_organisms(
         completed=len(completed_ids),
         failed=failed,
         workspace_ids=tuple(completed_ids),
+    )
+
+
+async def _persist_fresh_goal_proposals(runtime: Any, workspace_id: str) -> int:
+    """Persist proposals from fresh trusted health observations, once per event."""
+    from organism.goals import derive_goal_proposal
+    from organism.perception import ObservationKind
+
+    if runtime.workspace_id != workspace_id:
+        raise RuntimeError("goal proposal workspace identity mismatch")
+
+    persistence = getattr(runtime, "persistence_store", None)
+    if persistence is None or getattr(persistence, "client", None) is None:
+        # No credentials or alternate database discovery here. If a valid
+        # trigger exists, fail visibly instead of pretending it was persisted.
+        candidates = _fresh_health_observations(runtime, workspace_id)
+        if any(derive_goal_proposal(item) is not None for item in candidates):
+            raise RuntimeError("goal proposal store unavailable: runtime persistence client is not bound")
+        return 0
+
+    store = getattr(runtime, "goal_proposal_store", None)
+    if store is None:
+        from organism.goal_persistence import GoalProposalStore
+        store = GoalProposalStore(persistence.client)
+        runtime.goal_proposal_store = store
+
+    processed = getattr(runtime, "_goal_proposal_observation_ids", None)
+    if processed is None:
+        processed = set()
+        runtime._goal_proposal_observation_ids = processed
+
+    persisted = 0
+    for observation in _fresh_health_observations(runtime, workspace_id):
+        observation_id = observation.observation_id
+        if observation_id in processed:
+            continue
+        proposal = derive_goal_proposal(observation)
+        if proposal is None:
+            processed.add(observation_id)
+            continue
+        if proposal.workspace_id != workspace_id:
+            raise RuntimeError("derived goal proposal workspace mismatch")
+        # Mark processed only after the store acknowledges persistence. A
+        # transient failure can be retried; deterministic IDs make retries safe.
+        persisted += await store.persist(proposal)
+        processed.add(observation_id)
+    return persisted
+
+
+def _fresh_health_observations(runtime: Any, workspace_id: str):
+    from organism.perception import ObservationKind
+
+    now = datetime.now(timezone.utc)
+    return tuple(
+        item for item in runtime.perception.recent(workspace_id, kind=ObservationKind.HEALTH)
+        if item.workspace_id == workspace_id
+        and item.observed_at <= now + timedelta(seconds=30)
+        and now - item.observed_at <= GOAL_EVENT_MAX_AGE
     )
