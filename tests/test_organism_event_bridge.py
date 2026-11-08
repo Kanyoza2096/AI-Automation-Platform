@@ -55,6 +55,10 @@ async def test_bridge_ingests_only_allowlisted_fields_into_matching_workspace():
         "cpu_percent": 22.5,
     }
     assert observation.metadata["event_id"] == "evt-1"
+    assert observation.confidence == 0.8
+    # Source labels are not authenticated publisher identity; this event may
+    # inform perception but must not qualify for goal proposal derivation.
+    assert observation.source_trust == 0.0
     assert "api_key" not in observation.value
     assert "error" not in observation.value
 
