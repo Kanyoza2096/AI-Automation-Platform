@@ -362,48 +362,60 @@ class GenerateContentStep(Step):
         # never be persisted against a post that used no axis.
         context["topic_axis"] = None
 
-        base_prompt: str | None = None
-        if self._prompt_builder:
-            try:
-                resolved_platform = (
-                    context.get("platform")
-                    or getattr(self._brand, "platform", None)
-                )
-                last_used_axis = await self._fetch_last_used_axis()
-                await self._warm_theme_cache()
+        if self._prompt_builder is None:
+            raise AIValidationError(
+                message="PromptBuilder is unavailable; refusing ungrounded generation",
+                context={"brand": self._brand.name, "topic": topic},
+            )
 
-                base_prompt = self._prompt_builder.build_post_prompt(
-                    brand=self._brand,
-                    ai_profile=self._ai_profile,
-                    topic=topic,
-                    knowledge_context=knowledge_context or None,
-                    platform=resolved_platform,
-                    last_used_axis=last_used_axis,
-                )
-                # Capture IMMEDIATELY — build_post_prompt is synchronous and
-                # the builder instance is shared, so nothing may be awaited
-                # between the build and this read.
-                context["topic_axis"] = getattr(
-                    self._prompt_builder, "last_used_axis", None
-                )
-                logger.info(
-                    "PostWorkflow: prompt assembled via PromptBuilder "
-                    "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
-                    "for brand='%s'",
-                    len(knowledge_context or ""),
-                    resolved_platform or "facebook",
-                    context["topic_axis"] or "none",
-                    last_used_axis or "none",
-                    self._brand.name,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "PostWorkflow: prompt assembly failed (%s) — "
-                    "falling back to ContentEngine's internal prompt",
-                    exc,
-                )
-                base_prompt = None
-                context["topic_axis"] = None
+        try:
+            resolved_platform = (
+                context.get("platform")
+                or getattr(self._brand, "platform", None)
+            )
+            last_used_axis = await self._fetch_last_used_axis()
+            await self._warm_theme_cache()
+
+            base_prompt = self._prompt_builder.build_post_prompt(
+                brand=self._brand,
+                ai_profile=self._ai_profile,
+                topic=topic,
+                knowledge_context=knowledge_context or None,
+                platform=resolved_platform,
+                last_used_axis=last_used_axis,
+            )
+            if not isinstance(base_prompt, str) or not base_prompt.strip():
+                raise ValueError("PromptBuilder returned an empty prompt")
+
+            # Capture IMMEDIATELY — build_post_prompt is synchronous and
+            # the builder instance is shared, so nothing may be awaited
+            # between the build and this read.
+            context["topic_axis"] = getattr(
+                self._prompt_builder, "last_used_axis", None
+            )
+            logger.info(
+                "PostWorkflow: prompt assembled via PromptBuilder "
+                "(kb_chars=%d, platform=%s, axis=%s, previous_axis=%s) "
+                "for brand='%s'",
+                len(knowledge_context or ""),
+                resolved_platform or "facebook",
+                context["topic_axis"] or "none",
+                last_used_axis or "none",
+                self._brand.name,
+            )
+        except Exception as exc:
+            logger.error(
+                "PostWorkflow: prompt assembly failed; generation blocked: %s",
+                exc,
+            )
+            raise AIValidationError(
+                message="Prompt assembly failed; refusing internal ungrounded prompt fallback",
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "exception_type": type(exc).__name__,
+                },
+            ) from exc
 
         result = await self._engine.generate_post(
             brand=self._brand,
