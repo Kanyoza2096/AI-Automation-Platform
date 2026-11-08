@@ -1,0 +1,77 @@
+{
+  "artifact_id": "kdo_u2_calibrated_dev_ndcg_snapshot_v1",
+  "version": "1.0",
+  "status": "research_only_not_a_release_gate",
+  "scope": {
+    "split": "dev",
+    "query_ids": ["KDO-RET-002", "KDO-RET-014", "KDO-RET-020", "KDO-RET-024", "KDO-RET-044"],
+    "queries_scored": 5,
+    "top_k": 5,
+    "holdout_accessed": false,
+    "runtime_changed": false
+  },
+  "inputs": {
+    "corpus": "modern_software_engineering_knowledge_expanded_v3.json",
+    "corpus_version": "6.0",
+    "evaluation": "kdo_retrieval_evaluation_v1.json",
+    "evaluation_version": "1.0",
+    "calibration_overlay": "docs/retrieval/calibration/kdo_retrieval_dev_calibration_v1.json"
+  },
+  "metric_method": {
+    "name": "nDCG@5",
+    "gain": "2^relevance_grade - 1",
+    "discount": "log2(rank + 1)",
+    "ideal_ranking": "Grades sorted descending over the explicitly judged pool for each query (gold IDs, original hard-negative IDs, and approved overlay judgments).",
+    "unjudged_results": "Treated as grade 0 for this judged-pool calculation; interpret as a limited diagnostic, not a complete relevance assessment."
+  },
+  "candidate_definitions": {
+    "tfidf": "Content-only current TF-IDF/inverted-index scoring replica with configured stopword filtering and deterministic record_id tie-break.",
+    "bm25": "Content-only BM25 with k1=1.5 and b=0.75; same stopword tokenizer and deterministic record_id tie-break.",
+    "porter_tfidf": "Content-only TF-IDF scoring replica after applying NLTK Porter stemming to both query and document tokens; research-only, not a production dependency."
+  },
+  "results": {
+    "tfidf": {
+      "mean_ndcg_at_5": 0.7193,
+      "per_query": {
+        "KDO-RET-002": {"ndcg_at_5": 0.6419, "ranked_ids": ["knowledge.ai-agent-workflows.v1", "knowledge.ai.evaluating-agents.v1", "knowledge.ai.agent-orchestration.v1", "knowledge.ai-tool-schema-design.v1", "knowledge.ai.prompt-injection-boundaries.v1"]},
+        "KDO-RET-014": {"ndcg_at_5": 0.2867, "ranked_ids": ["knowledge.ai-rag-evaluation.v1", "knowledge.ai.llm-judge-calibration.v1", "knowledge.ai.evaluating-agents.v1", "knowledge.ai.eval-dataset-design.v1", "knowledge.ai-model-routing-cost.v1"]},
+        "KDO-RET-020": {"ndcg_at_5": 0.834, "ranked_ids": ["knowledge.dsa.range-query-structures.v1", "knowledge.dsa.segment-tree-lazy.v1", "knowledge.hld.database-partitioning-sharding.v1", "knowledge.dsa.randomized-algorithms.v1", "knowledge.hld.btree-lsm-storage.v1"]},
+        "KDO-RET-024": {"ndcg_at_5": 0.834, "ranked_ids": ["knowledge.dsa.hash-tables.v1", "knowledge.dsa.hashing-collisions.v1", "knowledge.hld.latency-throughput.v1", "knowledge.hld.consistent-hashing.v1", "knowledge.dsa.sorting-selection.v1"]},
+        "KDO-RET-044": {"ndcg_at_5": 1.0, "ranked_ids": ["knowledge.hld-resilience-deadlines-load-shedding.v1", "knowledge.hld.resilience.v1", "knowledge.hld.idempotency-delivery.v1", "knowledge.hld.slo-user-journey.v1", "knowledge.hld-incident-postmortem.v1"]}
+      }
+    },
+    "bm25": {
+      "mean_ndcg_at_5": 0.7796,
+      "per_query": {
+        "KDO-RET-002": {"ndcg_at_5": 0.9324, "ranked_ids": ["knowledge.ai.evaluating-agents.v1", "knowledge.ai-agent-workflows.v1", "knowledge.ai.agent-orchestration.v1", "knowledge.ai-tool-schema-design.v1", "knowledge.ai.prompt-injection-boundaries.v1"]},
+        "KDO-RET-014": {"ndcg_at_5": 0.1318, "ranked_ids": ["knowledge.ai.evaluating-agents.v1", "knowledge.ai-rag-evaluation.v1", "knowledge.ai.rag-retrieval-evaluation.v1", "knowledge.ai.eval-dataset-design.v1", "knowledge.ai-model-routing-cost.v1"]},
+        "KDO-RET-020": {"ndcg_at_5": 0.834, "ranked_ids": ["knowledge.dsa.range-query-structures.v1", "knowledge.dsa.segment-tree-lazy.v1", "knowledge.dsa.trees-heaps.v1", "knowledge.hld.btree-lsm-storage.v1", "knowledge.hld.sql-databases.v1"]},
+        "KDO-RET-024": {"ndcg_at_5": 1.0, "ranked_ids": ["knowledge.dsa.hashing-collisions.v1", "knowledge.dsa.hash-tables.v1", "knowledge.hld.consistent-hashing.v1", "knowledge.hld.latency-throughput.v1", "knowledge.dsa.sorting-selection.v1"]},
+        "KDO-RET-044": {"ndcg_at_5": 1.0, "ranked_ids": ["knowledge.hld-resilience-deadlines-load-shedding.v1", "knowledge.hld.resilience.v1", "knowledge.hld-incident-postmortem.v1", "knowledge.hld.slo-user-journey.v1", "knowledge.hld.idempotency-delivery.v1"]}
+      }
+    },
+    "porter_tfidf": {
+      "mean_ndcg_at_5": 0.7507,
+      "per_query": {
+        "KDO-RET-002": {"ndcg_at_5": 0.6419, "ranked_ids": ["knowledge.ai-agent-workflows.v1", "knowledge.ai.evaluating-agents.v1", "knowledge.ai.agent-orchestration.v1", "knowledge.ai-tool-schema-design.v1", "knowledge.ai.prompt-injection-boundaries.v1"]},
+        "KDO-RET-014": {"ndcg_at_5": 0.2777, "ranked_ids": ["knowledge.ai-rag-evaluation.v1", "knowledge.ai.llm-judge-calibration.v1", "knowledge.ai.evaluating-agents.v1", "knowledge.ai.rag-retrieval-evaluation.v1", "knowledge.ai.eval-dataset-design.v1"]},
+        "KDO-RET-020": {"ndcg_at_5": 0.834, "ranked_ids": ["knowledge.dsa.range-query-structures.v1", "knowledge.dsa.segment-tree-lazy.v1", "knowledge.hld.sql-databases.v1", "knowledge.hld.btree-lsm-storage.v1", "knowledge.hld.database-partitioning-sharding.v1"]},
+        "KDO-RET-024": {"ndcg_at_5": 1.0, "ranked_ids": ["knowledge.dsa.hashing-collisions.v1", "knowledge.dsa.hash-tables.v1", "knowledge.hld.consistent-hashing.v1", "knowledge.hld.latency-throughput.v1", "knowledge.hld.database-partitioning-sharding.v1"]},
+        "KDO-RET-044": {"ndcg_at_5": 1.0, "ranked_ids": ["knowledge.hld-resilience-deadlines-load-shedding.v1", "knowledge.hld.resilience.v1", "knowledge.ai.model-api-contracts.v1", "knowledge.hld.idempotency-delivery.v1", "knowledge.hld.idempotent-command-design.v1"]}
+      }
+    }
+  },
+  "interpretation": [
+    "BM25 has the highest mean nDCG@5 on these five calibrated queries, but this tiny subset is not representative of the full 25-query development split.",
+    "BM25's poor KDO-RET-014 score (0.1318) exposes a serious query-specific weakness; it also previously lost full-development Recall@5 and gold-hit rate versus baseline.",
+    "Porter-stemmed TF-IDF is between the other two on this five-query judged subset and is not selected.",
+    "No ranking candidate is selected or promoted. Continue with development-only investigation, especially KDO-RET-014."
+  ],
+  "limitations": [
+    "Only five calibrated development queries were scored.",
+    "This is a judged-pool diagnostic; unjudged retrieved records are assigned grade 0.",
+    "It is not a full development benchmark result and does not replace true Recall@5, gold hit rate, or MRR.",
+    "No holdout query, label, or ranking result was read, calculated, or used.",
+    "No production code, dependency, database, deployment, or publishing path was changed."
+  ]
+}
