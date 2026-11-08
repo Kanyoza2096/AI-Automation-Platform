@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 from repositories.knowledge_repository import KnowledgeRepository
 from services.knowledge_base import KnowledgeBase
@@ -17,6 +18,7 @@ from services.content_semantic_reviewer import ContentSemanticReviewer
 STAGING_WORKSPACE_ID = "kdo-engineering-staging"
 MAX_CAPTIONS_PER_RUN = 5
 MAX_EVIDENCE_PER_CAPTION = 3
+STAGING_SUPABASE_HOST = "kkzshurcmcptleyqjgzo.supabase.co"
 
 
 class ShadowEvaluationRefused(RuntimeError):
@@ -58,8 +60,13 @@ async def resolve_staging_evidence(
     workspace_id, brand_id = _assert_staging_boundary(brand)
     if not isinstance(query, str) or not query.strip():
         raise ShadowEvaluationRefused("an evidence retrieval query is required")
-    if not isinstance(repository, KnowledgeRepository):
-        raise ShadowEvaluationRefused("a KnowledgeRepository backed by staging is required")
+    if not isinstance(repository, KnowledgeRepository) or repository.supabase is None:
+        raise ShadowEvaluationRefused("a database-backed KnowledgeRepository is required")
+    database_url = getattr(repository.supabase, "supabase_url", None)
+    if not isinstance(database_url, str):
+        raise ShadowEvaluationRefused("the knowledge repository database identity is unavailable")
+    if urlparse(database_url).hostname != STAGING_SUPABASE_HOST:
+        raise ShadowEvaluationRefused("semantic shadow evaluation is bound to the staging database only")
     if not 1 <= top_k <= MAX_EVIDENCE_PER_CAPTION:
         raise ShadowEvaluationRefused("evidence retrieval is limited to 1–3 records")
 
