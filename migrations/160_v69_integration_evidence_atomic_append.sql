@@ -2,6 +2,37 @@
 -- The database serializes each workspace/connection hash-chain append and
 -- rejects stale previous_hash values. Only service_role may invoke the writer.
 
+-- Give each workspace/connection evidence stream a monotonic append order.
+ALTER TABLE public.integration_evidence
+    ADD COLUMN IF NOT EXISTS sequence_no BIGINT;
+
+WITH missing AS (
+    SELECT ctid, workspace_id, connection_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY workspace_id, connection_id
+               ORDER BY created_at ASC, evidence_id ASC
+           ) AS row_no
+      FROM public.integration_evidence
+     WHERE sequence_no IS NULL
+),
+heads AS (
+    SELECT workspace_id, connection_id, COALESCE(MAX(sequence_no), 0) AS max_sequence
+      FROM public.integration_evidence
+     GROUP BY workspace_id, connection_id
+)
+UPDATE public.integration_evidence AS evidence
+   SET sequence_no = heads.max_sequence + missing.row_no
+  FROM missing
+  JOIN heads
+    ON heads.workspace_id = missing.workspace_id
+   AND heads.connection_id = missing.connection_id
+ WHERE evidence.ctid = missing.ctid;
+
+ALTER TABLE public.integration_evidence
+    ALTER COLUMN sequence_no SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_evidence_connection_sequence
+    ON public.integration_evidence(workspace_id, connection_id, sequence_no);
+
 CREATE OR REPLACE FUNCTION public.append_integration_evidence(
     p_evidence_id TEXT,
     p_workspace_id TEXT,
@@ -28,6 +59,7 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     latest_hash TEXT;
+    latest_sequence BIGINT;
 BEGIN
     IF COALESCE(p_evidence_id, '') = ''
        OR COALESCE(p_workspace_id, '') = ''
@@ -54,15 +86,16 @@ BEGIN
         hashtextextended(p_workspace_id || ':' || p_connection_id, 0)
     );
 
-    SELECT rtrim(ie.evidence_hash::text)
-      INTO latest_hash
+    SELECT rtrim(ie.evidence_hash::text), ie.sequence_no
+      INTO latest_hash, latest_sequence
       FROM public.integration_evidence AS ie
      WHERE ie.workspace_id = p_workspace_id
        AND ie.connection_id = p_connection_id
-     ORDER BY ie.created_at DESC, ie.evidence_id DESC
+     ORDER BY ie.sequence_no DESC
      LIMIT 1;
 
     latest_hash := COALESCE(latest_hash, '');
+    latest_sequence := COALESCE(latest_sequence, 0);
     IF latest_hash <> COALESCE(p_expected_previous_hash, '') THEN
         RAISE EXCEPTION 'evidence_chain_conflict'
             USING ERRCODE = '40001';
@@ -72,7 +105,7 @@ BEGIN
         evidence_id, workspace_id, connection_id, connector_key,
         event_type, occurred_at, outcome, reason_codes, action,
         correlation_id, actor, provider, connector_version,
-        payload_fingerprint, metadata, previous_hash, evidence_hash
+        payload_fingerprint, metadata, previous_hash, evidence_hash, sequence_no
     ) VALUES (
         p_evidence_id, p_workspace_id, p_connection_id, p_connector_key,
         p_event_type, p_occurred_at, p_outcome,
@@ -80,7 +113,7 @@ BEGIN
         p_correlation_id, COALESCE(p_actor, 'system'), COALESCE(p_provider, ''),
         COALESCE(p_connector_version, ''), p_payload_fingerprint,
         COALESCE(p_metadata, '{}'::jsonb), COALESCE(p_expected_previous_hash, ''),
-        p_evidence_hash
+        p_evidence_hash, latest_sequence + 1
     );
 
     RETURN QUERY SELECT p_evidence_id;
