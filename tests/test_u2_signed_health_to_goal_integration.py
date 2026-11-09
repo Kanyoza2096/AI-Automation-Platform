@@ -252,7 +252,7 @@ async def test_verified_durable_health_replay_flows_to_suggest_only_goal():
     )
     from core.shared_event_bus import SharedEventBus
 
-    signing_seed = b"kdo-durable-replay-test-key-32!"[:32]
+    signing_seed = b"kdo-durable-replay-test-key-32!!"[:32]
     private_key = Ed25519PrivateKey.from_private_bytes(signing_seed)
     public_key = private_key.public_key().public_bytes(
         serialization.Encoding.Raw,
