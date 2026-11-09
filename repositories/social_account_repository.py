@@ -118,6 +118,19 @@ class SocialAccountRepository(Repository[SocialAccount]):
         data['app_secret'] = self._decrypt(data.get('app_secret', ''))
         return SocialAccount(**data)
 
+    def hydrate_row(self, data: dict) -> SocialAccount:
+        """Hydrate one trusted backend row and decrypt credentials in-process.
+
+        Callers must first scope the row query to its authenticated workspace,
+        brand and platform. This method never logs or serializes credentials.
+        """
+        if not isinstance(data, dict):
+            raise DatabaseQueryError(
+                message="Social account row must be an object",
+                context={"operation": "hydrate_social_account"},
+            )
+        return self._decrypt_entity(data)
+
     # ═══════════════════════════════════════════════════════════════════
     # CRUD Operations
     # ═══════════════════════════════════════════════════════════════════
