@@ -188,3 +188,39 @@ def test_active_key_must_belong_to_the_exact_tenant_facebook_producer():
     assert result.reason == "key_configuration_invalid"
     assert client.calls == []
     assert bus._producer_registry is None
+
+
+
+def test_runtime_factory_uses_the_same_canonical_bus_and_minted_capability():
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(
+        bus, environ=valid_environment()
+    )
+
+    producer = result.runtime.create_health_producer(
+        resolver=object(),
+        connector_factory=object(),
+    )
+
+    assert producer._event_bus is bus
+    assert producer._producer_registry is result.runtime.registry
+    assert producer._producer_capability is result.runtime.capability
+
+
+def test_startup_rejects_a_different_supabase_client_from_the_bus():
+    bus_client = FakeSupabase(ready=True)
+    other_client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=bus_client)
+
+    result = install_tenant_facebook_provenance(
+        bus,
+        supabase_client=other_client,
+        environ=valid_environment(),
+    )
+
+    assert result.enabled is False
+    assert result.reason == "canonical_event_database_mismatch"
+    assert bus._producer_registry is None
+    assert bus_client.calls == []
+    assert other_client.calls == []
