@@ -8,10 +8,16 @@ confirmed by a read-only column probe.
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from core.event_provenance import ProducerCapability, ProducerRegistry
+from core.event_provenance import (
+    ProducerCapability,
+    ProducerRegistry,
+    VerifiedEventProvenance,
+)
 from core.event_provenance_key_provider import (
     DurableProvenanceKeyProvider,
     ProvenanceKeyConfigError,
@@ -106,6 +112,105 @@ def _probe_health_evidence_schema(client: Any) -> bool:
 
 _HEALTH_EVIDENCE_READY_ENV = "KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"
 
+_FACEBOOK_HEALTH_FIELDS = frozenset({
+    "service",
+    "status",
+    "health_state",
+    "connection_id",
+    "social_account_id",
+    "connector_key",
+    "provider",
+    "connector_version",
+    "observation_id",
+    "evidence_id",
+    "evidence_hash",
+    "observed_at",
+})
+_NERVE_ADDED_FIELDS = frozenset({"_nerve", "workspace_id", "correlation_id", "brand_id"})
+
+
+def _validate_facebook_health_signing_request(
+    provenance: Any,
+    *,
+    event_id: Any,
+    event_name: Any,
+    payload: Any,
+    brand_id: Any,
+) -> None:
+    """Enforce the complete non-secret evidence contract before signing."""
+    if event_name != "connector.health.observed":
+        raise ValueError("facebook_health_event_name_not_allowed")
+    if (
+        not isinstance(provenance, VerifiedEventProvenance)
+        or provenance.producer.producer_id != PRODUCER_ID
+        or provenance.producer.producer_class != PRODUCER_CLASS
+        or not provenance.workspace_id
+        or not isinstance(brand_id, str)
+        or not brand_id.strip()
+        or provenance.brand_id != brand_id
+    ):
+        raise ValueError("facebook_health_provenance_scope_invalid")
+    if not isinstance(event_id, str) or not event_id.strip() or len(event_id) > 160:
+        raise ValueError("facebook_health_event_id_invalid")
+    if not isinstance(payload, Mapping):
+        raise ValueError("facebook_health_payload_invalid")
+
+    keys = set(payload)
+    if not _FACEBOOK_HEALTH_FIELDS.issubset(keys):
+        raise ValueError("facebook_health_payload_incomplete")
+    if not keys.issubset(_FACEBOOK_HEALTH_FIELDS | _NERVE_ADDED_FIELDS):
+        raise ValueError("facebook_health_payload_contains_unapproved_fields")
+
+    nerve = payload.get("_nerve")
+    if (
+        not isinstance(nerve, Mapping)
+        or nerve.get("event_id") != event_id
+        or nerve.get("event_name") != event_name
+        or nerve.get("workspace_id") != provenance.workspace_id
+        or nerve.get("brand_id") != brand_id
+        or payload.get("workspace_id") != provenance.workspace_id
+        or payload.get("brand_id") != brand_id
+    ):
+        raise ValueError("facebook_health_nerve_scope_mismatch")
+
+    status = payload.get("status")
+    if status not in {"healthy", "degraded", "unavailable", "unknown"}:
+        raise ValueError("facebook_health_state_invalid")
+    if payload.get("health_state") != status:
+        raise ValueError("facebook_health_state_mismatch")
+    connection_id = payload.get("connection_id")
+    if not isinstance(connection_id, str) or not connection_id.strip() or len(connection_id) > 160:
+        raise ValueError("facebook_health_connection_id_invalid")
+    if payload.get("service") != f"facebook:{connection_id}":
+        raise ValueError("facebook_health_service_binding_mismatch")
+    for field_name in ("social_account_id", "observation_id", "evidence_id"):
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip() or len(value) > 160:
+            raise ValueError(f"facebook_health_{field_name}_invalid")
+    if payload.get("connector_key") != "facebook":
+        raise ValueError("facebook_health_connector_invalid")
+    if payload.get("provider") not in {"facebook", "meta"}:
+        raise ValueError("facebook_health_provider_invalid")
+    version = payload.get("connector_version")
+    if not isinstance(version, str) or not version.strip() or len(version) > 80:
+        raise ValueError("facebook_health_connector_version_invalid")
+    evidence_hash = payload.get("evidence_hash")
+    if (
+        not isinstance(evidence_hash, str)
+        or len(evidence_hash) != 64
+        or re.fullmatch(r"[0-9a-f]{64}", evidence_hash) is None
+    ):
+        raise ValueError("facebook_health_evidence_hash_invalid")
+    observed_at = payload.get("observed_at")
+    if not isinstance(observed_at, str):
+        raise ValueError("facebook_health_observed_at_invalid")
+    try:
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("facebook_health_observed_at_invalid") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("facebook_health_observed_at_timezone_required")
+
 
 def install_tenant_facebook_provenance(
     event_bus: Any,
@@ -195,10 +300,9 @@ def install_tenant_facebook_provenance(
         )
 
         def sign_facebook_health_event(provenance: Any, **event: Any) -> dict[str, Any]:
-            # A component capability is not a blanket licence to sign every
-            # event type. This key is scoped to the one tenant-health event.
-            if event.get("event_name") != "connector.health.observed":
-                raise ValueError("facebook_health_event_name_not_allowed")
+            # The signing key is scoped to one producer and one complete,
+            # evidence-backed event schema. Arbitrary payloads cannot borrow it.
+            _validate_facebook_health_signing_request(provenance, **event)
             return key_provider.sign(provenance, **event)
     except Exception:
         return ProvenanceInstallResult(False, "producer_registry_initialization_failed")
