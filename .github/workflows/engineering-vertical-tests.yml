@@ -353,6 +353,23 @@ jobs:
                   psycopg.errors.ForeignKeyViolation,
                   "connector_certification_resource_binding_fk",
               )
+              # Once a connection is bound, the underlying brand/Page resource
+              # cannot be moved or deleted out from under that binding.
+              expect_db_error(
+                  "UPDATE public.social_accounts SET brand_id = 'brand-resource-c' WHERE id = 'page-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_social_account_binding_fk",
+              )
+              expect_db_error(
+                  "UPDATE public.brands SET workspace_id = 'ws-resource-b' WHERE id = 'brand-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_brand_workspace_fk",
+              )
+              expect_db_error(
+                  "DELETE FROM public.social_accounts WHERE id = 'page-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_social_account_binding_fk",
+              )
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
