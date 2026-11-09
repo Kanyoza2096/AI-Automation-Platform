@@ -218,3 +218,43 @@ def test_owner_mapping_must_match_key_set():
 
     with pytest.raises(ProvenanceKeyConfigError, match="public_key_owner_sets_must_match"):
         DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_verifier_rejects_key_owner_substitution():
+    env, _ = env_for()
+    producer = DurableProvenanceKeyProvider.from_environment(env)
+    envelope = sign(producer)
+    consumer_env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": env["KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"],
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": json.dumps({KEY_ID_NEW: "different-producer"}),
+    }
+    consumer = DurableProvenanceKeyProvider.from_environment(consumer_env)
+
+    with pytest.raises(DurableProvenanceError, match="signing key is not authorized for this producer"):
+        verify(consumer, envelope)
+
+
+def test_revocation_must_reference_a_known_kdo_key_id():
+    env, _ = env_for()
+    env["KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON"] = json.dumps(["KDO-UNKNOWN-KEY"])
+
+    with pytest.raises(ProvenanceKeyConfigError, match="revoked_key_id_not_in_public_keyring"):
+        DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_key_owner_values_must_be_strings():
+    env, _ = env_for()
+    env["KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"] = json.dumps({KEY_ID_NEW: None})
+
+    with pytest.raises(ProvenanceKeyConfigError, match="key_owner_must_be_string"):
+        DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_empty_public_keyring_is_rejected():
+    env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}",
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": "{}",
+    }
+
+    with pytest.raises(ProvenanceKeyConfigError, match="at_least_one_public_key_required"):
+        DurableProvenanceKeyProvider.from_environment(env)
