@@ -1234,6 +1234,7 @@ async def _boot_supabase(container: ServiceContainer) -> None:
 
 async def _boot_shared_event_bus(container: ServiceContainer) -> None:
     from core.shared_event_bus import init_shared_event_bus, SharedEventBus
+    from core.event_provenance_runtime import build_durable_event_provenance_verifier
     from config.settings import settings
 
     try:
@@ -1246,8 +1247,21 @@ async def _boot_shared_event_bus(container: ServiceContainer) -> None:
         os.getenv("SERVICE_MODE", "")
         or getattr(settings, "service_mode", "full")
     ).strip().lower()
+    provenance_verifier = None
+    try:
+        # Consumers receive public verification keys only. A missing or
+        # malformed verifier configuration leaves legacy events untrusted;
+        # it never prevents ordinary worker startup.
+        provenance_verifier = build_durable_event_provenance_verifier()
+    except Exception as exc:
+        logger.warning(
+            "SharedEventBus durable provenance verification disabled: %s",
+            _sanitize_error_message(exc),
+        )
     bus = init_shared_event_bus(
-        supabase_client=supabase_client, source_service=source_service
+        supabase_client=supabase_client,
+        source_service=source_service,
+        provenance_verifier=provenance_verifier,
     )
     container.register_instance(SharedEventBus, bus)
     await health_registry.register(bus)
