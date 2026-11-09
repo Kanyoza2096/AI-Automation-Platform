@@ -87,7 +87,8 @@ class TenantFacebookHealthObservationService:
     ) -> TenantHealthPublication:
         """Resolve trusted context, then perform one read-only provider probe."""
         try:
-            context = self._context_resolver.resolve_for_identity(
+            context = await asyncio.to_thread(
+                self._context_resolver.resolve_for_identity,
                 identity,
                 brand_id=brand_id,
                 connection_id=connection_id,
@@ -134,7 +135,8 @@ class TenantFacebookHealthObservationService:
                 str(window),
             )
             try:
-                execution = self._ledger.begin(
+                execution = await asyncio.to_thread(
+                    self._ledger.begin,
                     workspace_id=context.workspace_id,
                     action="connector_health_observe",
                     idempotency_key=idempotency_key,
@@ -144,7 +146,11 @@ class TenantFacebookHealthObservationService:
                         "observation_window": window,
                     },
                 )
-                claimed = self._ledger.claim(execution, lease_seconds=300)
+                claimed = await asyncio.to_thread(
+                    self._ledger.claim,
+                    execution,
+                    lease_seconds=300,
+                )
             except Exception as exc:
                 raise TenantFacebookHealthServiceError(
                     "health_observation_ledger_unavailable"
@@ -181,7 +187,8 @@ class TenantFacebookHealthObservationService:
                         "observation_id": getattr(receipt, "observation_id", None),
                     }
                 try:
-                    self._ledger.complete(
+                    await asyncio.to_thread(
+                        self._ledger.complete,
                         claimed,
                         status="uncertain",
                         error="health_observation_unconfirmed",
@@ -192,7 +199,8 @@ class TenantFacebookHealthObservationService:
                 raise
 
             try:
-                self._ledger.complete(
+                await asyncio.to_thread(
+                    self._ledger.complete,
                     claimed,
                     status="succeeded",
                     evidence={
