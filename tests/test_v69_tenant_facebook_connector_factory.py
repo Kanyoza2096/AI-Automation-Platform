@@ -85,10 +85,12 @@ def make_connection_and_registry():
         "workspace-a", "facebook", ConnectionState.AUTHENTICATED,
         granted_capabilities=("lookup",), autonomy_mode=AutonomyMode.OBSERVE,
         connection_id="connection-a",
+        brand_id="brand-a", social_account_id="account-a",
     )
     registry = ConnectorRegistryRecord(
         "workspace-a", "connection-a", "facebook", "1.0.0",
         RegistryState.ACTIVE,
+        brand_id="brand-a", social_account_id="account-a",
     )
     return connection, registry
 
@@ -124,6 +126,8 @@ def test_factory_composes_account_bound_connector_and_health_uses_only_page_toke
     assert store.calls[0]["workspace_id"] == "workspace-a"
     assert store.calls[0]["connection_id"] == "connection-a"
     assert store.calls[0]["connector_key"] == "facebook"
+    assert store.calls[0]["metadata"]["brand_id"] == "brand-a"
+    assert store.calls[0]["metadata"]["social_account_id"] == "account-a"
 
 
 def test_factory_rejects_account_from_another_workspace():
@@ -252,4 +256,40 @@ def test_factory_rejects_non_facebook_provider_contract():
         make_factory().build_gateway(
             binding=binding, connection=connection,
             contract=bad_contract, registry=registry,
+        )
+
+
+def test_factory_rejects_connection_bound_to_different_brand_or_social_account():
+    binding = make_binding()
+    connection, registry = make_connection_and_registry()
+    bad_connection = replace(connection, social_account_id="account-other")
+
+    with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
+        make_factory().build_gateway(
+            binding=binding, connection=bad_connection,
+            contract=make_contract(), registry=registry,
+        )
+
+
+def test_factory_rejects_registry_bound_to_different_brand_or_social_account():
+    binding = make_binding()
+    connection, registry = make_connection_and_registry()
+    bad_registry = replace(registry, brand_id="brand-other")
+
+    with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
+        make_factory().build_gateway(
+            binding=binding, connection=connection,
+            contract=make_contract(), registry=bad_registry,
+        )
+
+
+def test_factory_rejects_unbound_workspace_level_connection_for_page_account():
+    binding = make_binding()
+    connection, registry = make_connection_and_registry()
+    unbound_connection = replace(connection, brand_id=None, social_account_id=None)
+
+    with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
+        make_factory().build_gateway(
+            binding=binding, connection=unbound_connection,
+            contract=make_contract(), registry=registry,
         )
