@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from core.event_provenance import ActorPrincipal, ProducerPrincipal, VerifiedEventProvenance
 from core.unified_bus import UnifiedEventBus
 from core.durable_event_provenance import sign_durable_provenance
+from core.event_provenance_key_provider import ProvenanceKeyConfigError
 from core.event_provenance_runtime import (
     build_durable_event_provenance_verifier,
     install_tenant_facebook_provenance,
@@ -523,7 +524,7 @@ def test_consumer_verifier_is_disabled_without_public_key_configuration():
 
 
 def test_consumer_verifier_fails_closed_for_malformed_public_key_configuration():
-    with pytest.raises(Exception):
+    with pytest.raises(ProvenanceKeyConfigError):
         build_durable_event_provenance_verifier({
             "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}",
             "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": "{}",
