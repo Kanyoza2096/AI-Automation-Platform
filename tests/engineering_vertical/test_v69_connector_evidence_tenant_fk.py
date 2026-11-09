@@ -161,6 +161,19 @@ def test_integration_evidence_rpc_is_atomic_and_service_role_only():
             row = connection.execute(append_sql, second_params).fetchone()
             assert row[0] == f"{evidence_id}-2"
 
+
+        rows = connection.execute(
+            """
+            SELECT evidence_id, sequence_no, rtrim(previous_hash::text)
+            FROM public.integration_evidence
+            WHERE workspace_id = %s AND connection_id = %s
+            ORDER BY sequence_no
+            """,
+            (workspace_id, connection_id),
+        ).fetchall()
+        assert [row[1] for row in rows] == [1, 2]
+        assert rows[1][2] == "a" * 64
+
         # A stale expected head must fail with a serialization conflict.
         stale_params = (
             f"{evidence_id}-stale", workspace_id, connection_id, Jsonb([]),
