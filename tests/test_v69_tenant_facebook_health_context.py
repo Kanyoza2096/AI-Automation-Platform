@@ -108,6 +108,8 @@ def registry_row(**overrides):
         "connector_key": "facebook",
         "connector_version": "1.0.0",
         "registry_state": "active",
+        "brand_id": "brand-a",
+        "social_account_id": "page-a",
         "certification_version": "v69.6",
         "certification_status": "pass",
         "certification_fingerprint": "a" * 64,
