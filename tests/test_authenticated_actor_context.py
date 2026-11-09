@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.dependencies import require_auth
-from api.support import auth_identity_var, auth_method_var, auth_user_email_var, auth_workspace_id_var
+from api.dependencies import require_auth, auth_method_var, auth_user_email_var
+from api.support import auth_identity_var, auth_workspace_id_var
 
 
 class FakeIdentity:
