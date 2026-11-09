@@ -1196,11 +1196,13 @@ async def lifespan(app: FastAPI):
         try:
             from core.unified_bus import UnifiedEventBus
             from core.event_provenance_runtime import install_tenant_facebook_provenance
+            from services.supabase import get_service_client_from_settings
 
             provenance_bus = container.try_resolve(UnifiedEventBus)
+            service_role_client = get_service_client_from_settings()
             provenance_result = install_tenant_facebook_provenance(
                 provenance_bus,
-                supabase_client=getattr(provenance_bus, "supabase", None),
+                supabase_client=service_role_client,
             )
             if provenance_result.enabled:
                 # Keep the capability-bearing runtime attached to the canonical

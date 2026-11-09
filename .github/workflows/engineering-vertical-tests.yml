@@ -17,6 +17,8 @@ on:
       - "services/v69_tenant_facebook_connector_factory.py"
       - "services/v69_tenant_facebook_health_producer.py"
       - "tests/test_v69_tenant_facebook_health_producer.py"
+      - "services/v69_tenant_facebook_health_context.py"
+      - "tests/test_v69_tenant_facebook_health_context.py"
       - "services/business_integration_platform.py"
       - "services/v69_connector_activation_registry.py"
       - "tests/test_facebook_connector_tenant_health.py"
@@ -78,6 +80,7 @@ on:
       - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
       - "migrations/160_v69_integration_evidence_atomic_append.sql"
       - "migrations/161_u2_atomic_connector_health_observation.sql"
+      - "migrations/162_u2_tenant_connector_resource_binding.sql"
       - "services/v69_connector_runtime_gateway.py"
       - "tests/test_v69_10_connector_runtime_gateway.py"
       - "repositories/social_account_repository.py"
@@ -241,6 +244,19 @@ jobs:
                       user_id TEXT NOT NULL
                   )
               """)
+              connection.execute("""
+                  CREATE TABLE IF NOT EXISTS public.brands (
+                      id TEXT PRIMARY KEY,
+                      workspace_id TEXT NOT NULL
+                  )
+              """)
+              connection.execute("""
+                  CREATE TABLE IF NOT EXISTS public.social_accounts (
+                      id TEXT PRIMARY KEY,
+                      workspace_id TEXT NOT NULL,
+                      brand_id TEXT NOT NULL
+                  )
+              """)
 
               # Exercise V69 connector-evidence and atomic-append schemas on this disposable
               # PostgreSQL instance. The composite FKs must bind each evidence
@@ -254,6 +270,7 @@ jobs:
                   "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
                   "migrations/160_v69_integration_evidence_atomic_append.sql",
                   "migrations/161_u2_atomic_connector_health_observation.sql",
+                  "migrations/162_u2_tenant_connector_resource_binding.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -261,6 +278,99 @@ jobs:
                       if not line.lstrip().startswith("--")
                   )
                   connection.execute(migration_sql, prepare=False)
+
+              # Verify workspace/brand/Page-account binding and registry-to-connection
+              # consistency using only the disposable PostgreSQL instance.
+              connection.execute("INSERT INTO public.workspaces (id) VALUES ('ws-resource-a'), ('ws-resource-b') ON CONFLICT DO NOTHING")
+              connection.execute("INSERT INTO public.brands (id, workspace_id) VALUES ('brand-resource-a', 'ws-resource-a'), ('brand-resource-b', 'ws-resource-b'), ('brand-resource-c', 'ws-resource-a') ON CONFLICT DO NOTHING")
+              connection.execute("INSERT INTO public.social_accounts (id, workspace_id, brand_id) VALUES ('page-resource-a', 'ws-resource-a', 'brand-resource-a'), ('page-resource-b', 'ws-resource-b', 'brand-resource-b'), ('page-resource-c', 'ws-resource-a', 'brand-resource-c') ON CONFLICT DO NOTHING")
+              connection.execute("""
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-resource-a', 'ws-resource-a', 'facebook', 'brand-resource-a', 'page-resource-a')
+              """)
+              connection.execute("""
+                  INSERT INTO public.connector_certification_registry
+                      (workspace_id, connection_id, connector_key, connector_version,
+                       registry_state, brand_id, social_account_id)
+                  VALUES ('ws-resource-a', 'connection-resource-a', 'facebook', '1.0.0',
+                          'active', 'brand-resource-a', 'page-resource-a')
+              """)
+              # Legacy rows may remain unbound; partial or mismatched resource
+              # bindings must be rejected by database constraints/triggers.
+              connection.execute("""
+                  INSERT INTO public.integration_connections (id, workspace_id, connector_key)
+                  VALUES ('connection-legacy-unbound', 'ws-resource-a', 'facebook')
+              """)
+
+              def expect_db_error(statement, error_type, expected_message):
+                  try:
+                      with connection.transaction():
+                          connection.execute(statement)
+                  except error_type as exc:
+                      if expected_message not in str(exc):
+                          raise
+                  else:
+                      raise RuntimeError(f"expected database rejection: {expected_message}")
+
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-wrong-workspace', 'ws-resource-a', 'facebook',
+                          'brand-resource-b', 'page-resource-b')
+                  """,
+                  psycopg.errors.RaiseException,
+                  "integration_connection_brand_workspace_mismatch",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-wrong-brand', 'ws-resource-a', 'facebook',
+                          'brand-resource-a', 'page-resource-c')
+                  """,
+                  psycopg.errors.RaiseException,
+                  "integration_connection_social_account_binding_mismatch",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id)
+                  VALUES ('connection-partial-binding', 'ws-resource-a', 'facebook',
+                          'brand-resource-a')
+                  """,
+                  psycopg.errors.RaiseException,
+                  "integration_connection_resource_binding_pair_required",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.connector_certification_registry
+                      (workspace_id, connection_id, connector_key, connector_version,
+                       registry_state, brand_id, social_account_id)
+                  VALUES ('ws-resource-a', 'connection-resource-a', 'facebook-alt', '1.0.0',
+                          'active', 'brand-resource-c', 'page-resource-c')
+                  """,
+                  psycopg.errors.ForeignKeyViolation,
+                  "connector_certification_resource_binding_fk",
+              )
+              # Once a connection is bound, the underlying brand/Page resource
+              # cannot be moved or deleted out from under that binding.
+              expect_db_error(
+                  "UPDATE public.social_accounts SET brand_id = 'brand-resource-c' WHERE id = 'page-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_social_account_binding_fk",
+              )
+              expect_db_error(
+                  "UPDATE public.brands SET workspace_id = 'ws-resource-b' WHERE id = 'brand-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_brand_workspace_fk",
+              )
+              expect_db_error(
+                  "DELETE FROM public.social_accounts WHERE id = 'page-resource-a'",
+                  psycopg.errors.ForeignKeyViolation,
+                  "integration_connections_social_account_binding_fk",
+              )
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
@@ -366,6 +476,7 @@ jobs:
             tests/test_v69_10_connector_runtime_gateway.py \
             tests/test_v69_tenant_social_account_resolver.py \
             tests/test_v69_tenant_facebook_health_producer.py \
+            tests/test_v69_tenant_facebook_health_context.py \
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py

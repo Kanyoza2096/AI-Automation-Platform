@@ -49,6 +49,7 @@ class FakeSupabase:
         if health_ready:
             self.ready_tables.update({
                 "integration_connections",
+                "connector_certification_registry",
                 "integration_evidence",
                 "connector_health_observations",
             })
@@ -84,7 +85,7 @@ def test_startup_installs_capability_on_existing_bus_only_after_read_only_schema
     bus = UnifiedEventBus(supabase_client=client)
 
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
 
     assert result.enabled is True
@@ -99,12 +100,26 @@ def test_startup_installs_capability_on_existing_bus_only_after_read_only_schema
     assert client.calls == [("events", "provenance_envelope", 0)]
 
 
+def test_startup_refuses_implicit_or_anon_database_client():
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+
+    result = install_tenant_facebook_provenance(
+        bus, environ=valid_environment()
+    )
+
+    assert result.enabled is False
+    assert result.reason == "service_role_client_required"
+    assert client.calls == []
+    assert bus._producer_registry is None
+
+
 def test_startup_does_not_enable_signing_when_migration_column_is_missing():
     client = FakeSupabase(ready=False)
     bus = UnifiedEventBus(supabase_client=client)
 
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
 
     assert result.enabled is False
@@ -119,7 +134,7 @@ def test_unconfigured_environment_does_not_probe_database_or_mutate_bus():
     client = FakeSupabase(ready=True)
     bus = UnifiedEventBus(supabase_client=client)
 
-    result = install_tenant_facebook_provenance(bus, environ={})
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ={})
 
     assert result.enabled is False
     assert result.reason == "key_configuration_absent"
@@ -134,6 +149,7 @@ def test_partial_or_invalid_key_configuration_fails_closed():
 
     result = install_tenant_facebook_provenance(
         bus,
+        supabase_client=client,
         environ={"KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}"},
     )
 
@@ -150,7 +166,7 @@ def test_startup_does_not_replace_or_reconfigure_an_already_owned_bus():
     bus._producer_registry = original_registry
 
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
 
     assert result.enabled is False
@@ -165,7 +181,7 @@ def test_startup_does_not_mutate_a_bus_after_dispatch_has_started():
     bus._running = True
 
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
 
     assert result.enabled is False
@@ -179,8 +195,8 @@ def test_startup_installation_is_idempotent_and_reuses_same_runtime():
     bus = UnifiedEventBus(supabase_client=client)
     env = valid_environment()
 
-    first = install_tenant_facebook_provenance(bus, environ=env)
-    second = install_tenant_facebook_provenance(bus, environ={})
+    first = install_tenant_facebook_provenance(bus, supabase_client=client, environ=env)
+    second = install_tenant_facebook_provenance(bus, supabase_client=client, environ={})
 
     assert first.enabled and second.enabled
     assert second.reason == "already_installed"
@@ -196,7 +212,7 @@ def test_active_key_must_belong_to_the_exact_tenant_facebook_producer():
         KEY_ID: "kdo-another-producer"
     })
 
-    result = install_tenant_facebook_provenance(bus, environ=env)
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ=env)
 
     assert result.enabled is False
     assert result.reason == "key_configuration_invalid"
@@ -211,7 +227,7 @@ def test_runtime_factory_uses_the_same_canonical_bus_and_minted_capability():
     env = valid_environment()
     env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
     result = install_tenant_facebook_provenance(
-        bus, environ=env
+        bus, supabase_client=client, environ=env
     )
 
     producer = result.runtime.create_health_producer(
@@ -247,7 +263,7 @@ def test_facebook_producer_capability_cannot_sign_unrelated_event_types():
     client = FakeSupabase(ready=True)
     bus = UnifiedEventBus(supabase_client=client)
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
     proof = result.runtime.registry.verify(
         result.runtime.capability,
@@ -270,7 +286,7 @@ def test_health_producer_remains_disabled_without_operator_migration_attestation
     client = FakeSupabase(ready=True, health_ready=True)
     bus = UnifiedEventBus(supabase_client=client)
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, supabase_client=client, environ=valid_environment()
     )
 
     assert result.enabled is True
@@ -292,7 +308,7 @@ def test_health_producer_requires_attestation_and_all_health_evidence_columns():
     env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
 
     result = install_tenant_facebook_provenance(
-        bus, environ=env
+        bus, supabase_client=client, environ=env
     )
 
     assert result.enabled is True
@@ -300,7 +316,8 @@ def test_health_producer_requires_attestation_and_all_health_evidence_columns():
     assert bus._tenant_health_evidence_ready is True
     assert client.calls == [
         ("events", "provenance_envelope", 0),
-        ("integration_connections", "id,workspace_id", 0),
+        ("integration_connections", "id,workspace_id,brand_id,social_account_id", 0),
+        ("connector_certification_registry", "workspace_id,connection_id,connector_key,connector_version,registry_state,brand_id,social_account_id", 0),
         ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash", 0),
         ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref", 0),
     ]
@@ -312,7 +329,7 @@ def test_health_evidence_attestation_is_not_enough_when_required_columns_are_mis
     env = valid_environment()
     env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
 
-    result = install_tenant_facebook_provenance(bus, environ=env)
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ=env)
 
     assert result.enabled is True
     assert result.runtime.health_evidence_ready is False
