@@ -151,3 +151,17 @@ The first producer implementation is not just “wire V69 into the event bus”.
 The durable evidence row can be the source record for a signed event, but it is not itself authenticated producer provenance. The signing capability must be held by the runtime that performed the provider check, and the consumer must verify the envelope independently.
 
 This is a repository-source audit only. No Supabase query, migration, provider API call, credential access, event publication or deployment was performed.
+
+
+## Runtime connector gateway audit (2026-11-09)
+
+A further source audit found `services/v69_connector_runtime_gateway.py`, which is a useful tenant-bound execution facade: its constructor checks workspace, connection, registry, connector and governed-adapter alignment. Its `health()` method delegates to the governed connector. However:
+
+- Repository search found the `RuntimeConnectorGateway` constructor in its tests, but no production composition-root instantiation.
+- The Facebook reference certification path uses an offline fake service and explicitly does not call Meta.
+- `FacebookPlugin.health(account)` can make a provider GET when passed a specific account, but the plugin's generic `health_check()` path calls `health()` without an account; the global reliability collector calls `plugin.health()` without a tenant account. That generic path is not a tenant-bound health producer.
+- The tenant-specific account lookup is brand-scoped through `SocialAccountRepository.find_by_brand_and_platform`, but no current call path was found that combines that authenticated account lookup, a real provider health probe, a verified workspace-to-brand relationship, durable observation persistence and a signed event publication.
+
+Therefore neither the V69 gateway nor the generic plugin health collector is currently sufficient to receive a producer signing capability. The future composition root must bind the authenticated workspace, brand, social account, connector contract and governed adapter together, then call a read-only provider health probe and persist its evidence before publishing a signed event. It must not reuse the global plugin health result or offline reference certification.
+
+This was static repository inspection only. No plugin was started, no social account or token was read, and no Meta request or other provider call was made.
