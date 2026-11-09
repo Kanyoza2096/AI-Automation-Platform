@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.event_provenance import ProducerPrincipal, VerifiedEventProvenance
+from core.durable_event_provenance import DurableProvenanceError
 from core.event_provenance_key_provider import (
     DurableProvenanceKeyProvider,
     ProvenanceKeyConfigError,
@@ -131,7 +132,7 @@ def test_signer_rejects_a_different_producer_identity():
     env, _ = env_for()
     provider = DurableProvenanceKeyProvider.from_environment(env)
 
-    with pytest.raises(Exception, match="signing_key_not_owned_by_verified_producer"):
+    with pytest.raises(DurableProvenanceError, match="signing_key_not_owned_by_verified_producer"):
         sign(provider, provenance=proof(producer_id="other-producer"))
 
 
@@ -140,7 +141,7 @@ def test_signer_rejects_brand_scope_substitution():
     provider = DurableProvenanceKeyProvider.from_environment(env)
     wrong_brand = {**EVENT, "brand_id": "brand-b"}
 
-    with pytest.raises(Exception, match="signing_brand_scope_mismatch"):
+    with pytest.raises(DurableProvenanceError, match="signing_brand_scope_mismatch"):
         sign(provider, event=wrong_brand)
 
 
@@ -154,7 +155,7 @@ def test_incomplete_signing_configuration_fails_closed():
 
 def test_wrong_private_public_pair_is_rejected():
     env, _ = env_for()
-    other_private, _, _ = keypair(b"other-health-signing-seed-32bytes")
+    other_private, _, _ = keypair(b"other-health-signing-seed-32byte")
     env["KDO_EVENT_PROVENANCE_SIGNING_PRIVATE_KEY_B64"] = other_private
 
     with pytest.raises(ProvenanceKeyConfigError, match="active_private_public_key_mismatch"):
@@ -183,11 +184,17 @@ def test_rotation_keeps_old_public_key_while_new_key_becomes_active():
 
 def test_revoked_key_is_not_accepted_for_verification():
     env, _ = env_for()
-    env["KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON"] = json.dumps([KEY_ID_NEW])
-    provider = DurableProvenanceKeyProvider.from_environment(env)
+    producer = DurableProvenanceKeyProvider.from_environment(env)
+    envelope = sign(producer)
+    consumer_env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": env["KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"],
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": env["KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"],
+        "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON": json.dumps([KEY_ID_NEW]),
+    }
+    consumer = DurableProvenanceKeyProvider.from_environment(consumer_env)
 
-    with pytest.raises(Exception, match="unknown or retired signing key"):
-        verify(provider, sign(DurableProvenanceKeyProvider.from_environment(env_for()[0])))
+    with pytest.raises(DurableProvenanceError, match="unknown or retired signing key"):
+        verify(consumer, envelope)
 
 
 def test_active_signing_key_cannot_be_revoked():
