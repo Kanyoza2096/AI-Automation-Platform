@@ -160,11 +160,18 @@ def install_tenant_facebook_provenance(
             active_key_id=key_provider.active_key_id,
             event_bus=event_bus,
         )
+
+        def sign_facebook_health_event(provenance: Any, **event: Any) -> dict[str, Any]:
+            # A component capability is not a blanket licence to sign every
+            # event type. This key is scoped to the one tenant-health event.
+            if event.get("event_name") != "connector.health.observed":
+                raise ValueError("facebook_health_event_name_not_allowed")
+            return key_provider.sign(provenance, **event)
     except Exception:
         return ProvenanceInstallResult(False, "producer_registry_initialization_failed")
 
     event_bus._producer_registry = registry
-    event_bus._provenance_signer = key_provider.sign
+    event_bus._provenance_signer = sign_facebook_health_event
     event_bus._provenance_storage_enabled = True
     event_bus._tenant_facebook_provenance_runtime = runtime
 
