@@ -80,6 +80,7 @@ def test_requested_backend_contract_is_present_in_authoritative_or_existing_rout
         ("GET", "/api/v1/decisions/{decision_id}/dissent"),
         ("GET", "/api/v1/organism/body"), ("GET", "/api/v1/organism/mind"),
         ("GET", "/api/v1/organism/vitals"), ("GET", "/api/v1/slo/platform"),
+        ("POST", "/api/v1/tenant-health/facebook/connections/{connection_id}/observe"),
         ("GET", "/api/v1/monitoring/stats"), ("GET", "/api/v1/metabolism/status"),
         ("GET", "/api/v1/metabolism/plans"), ("GET", "/api/v1/timeline/correlation/{correlation_id}"),
         ("GET", "/api/v1/timeline/decision/{decision_id}"),
@@ -115,6 +116,7 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
         "routes.sensor_routes", "routes.production_runtime_routes", "routes.autonomous_workforce_bridge_routes", "routes.runtime_wiring_routes",
         "routes.legacy_runtime_fencing_routes", "routes.workforce_execution_routes", "routes.business_onboarding_routes", "routes.command_center_routes", "routes.sector_pack_routes",
         "api.website_integrations", "routes.connector_fabric_routes", "routes.failure_recovery_routes",
+        "routes.tenant_health_observation_routes",
     ):
         if m in source:
             mounts.add(m)
@@ -147,4 +149,4 @@ def test_route_wiring_audit_script_has_no_parse_errors():
     report = json.loads(proc.stdout)
     assert report["parse_errors"] == []
     assert report["orphan_router_modules"] == []
-    assert report["route_count"] == 407
+    assert report["route_count"] == 408
