@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from utils.ids import correlation_id_ctx, get_process_instance_id
+from core.event_provenance import ProducerCapability, ProducerRegistry, VerifiedEventProvenance, current_actor_principal
 
 logger = logging.getLogger("kanyoza.unified_bus")
 
@@ -152,8 +153,12 @@ class UnifiedEventBus:
         self,
         supabase_client: Any = None,
         config: EventBusConfig | None = None,
+        producer_registry: ProducerRegistry | None = None,
     ):
         self.config = config or EventBusConfig()
+        # Only a trusted composition root may inject this registry. Legacy
+        # source labels remain descriptive and never produce provenance.
+        self._producer_registry = producer_registry
         self.supabase = supabase_client
 
         # Subscribers
@@ -393,6 +398,7 @@ class UnifiedEventBus:
         *,
         strict_nerve: bool = False,
         schema_version: str = "1.0",
+        producer_capability: ProducerCapability | None = None,
     ) -> Optional[str]:
         """
         Publish an event onto the nervous system.
@@ -459,6 +465,22 @@ class UnifiedEventBus:
             logger.warning("Nerve normalize fallback for %s: %s", event_name, exc)
             payload = payload or {}
 
+        verified_provenance = None
+        if producer_capability is not None:
+            if self._producer_registry is None:
+                logger.error("Publisher capability supplied but no trusted registry is configured")
+                return None
+            try:
+                verified_provenance = self._producer_registry.verify(
+                    producer_capability,
+                    workspace_id=workspace_id,
+                    actor=current_actor_principal(),
+                    brand_id=brand_id,
+                )
+            except Exception as exc:
+                logger.warning("Event publisher provenance rejected for %s: %s", event_name, exc)
+                return None
+
         if not self._validate_payload(payload):
             return None
 
@@ -520,9 +542,12 @@ class UnifiedEventBus:
                 )
                 return None
 
+        # Provenance is carried out-of-band to in-process handlers only.
+        # It is deliberately NOT serialized into the event payload or current
+        # durable row; database replay therefore remains untrusted.
         dispatch_item = (
             event_name, payload, source, event_id, workspace_id, brand_id,
-            decision_id, correlation_id, parent_event_id,
+            decision_id, correlation_id, parent_event_id, verified_provenance,
         )
         try:
             if self._throttle_policy == ThrottlePolicy.DROP:
@@ -552,8 +577,8 @@ class UnifiedEventBus:
     async def _dispatch_loop(self) -> None:
         while self._running:
             try:
-                event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id = await self._dispatch_queue.get()
-                await self._dispatch_event(event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id)
+                event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id, provenance = await self._dispatch_queue.get()
+                await self._dispatch_event(event_name, payload, source, event_id, workspace_id, brand_id, decision_id, correlation_id, parent_event_id, provenance)
                 self._dispatch_queue.task_done()
             except asyncio.CancelledError:
                 break
@@ -571,6 +596,7 @@ class UnifiedEventBus:
         decision_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         parent_event_id: Optional[str] = None,
+        provenance: VerifiedEventProvenance | None = None,
     ) -> None:
         async with self._lock:
             handlers = list(self._subscribers.get(event_name, []))
@@ -590,6 +616,7 @@ class UnifiedEventBus:
                 decision_id,
                 correlation_id,
                 parent_event_id,
+                provenance,
             )
             for handler in handlers + wildcards
         ])
@@ -606,6 +633,7 @@ class UnifiedEventBus:
         decision_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         parent_event_id: Optional[str] = None,
+        provenance: VerifiedEventProvenance | None = None,
     ) -> None:
         """Invoke handler with full event context and scoped correlation ID."""
         correlation_token = correlation_id_ctx.set(correlation_id or event_id)
@@ -620,6 +648,8 @@ class UnifiedEventBus:
                 "decision_id": decision_id,
                 "correlation_id": correlation_id,
                 "parent_event_id": parent_event_id,
+                # Live process-local proof only; absent on legacy and replayed events.
+                "provenance": provenance,
             }
 
             try:

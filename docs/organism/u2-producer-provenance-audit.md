@@ -124,3 +124,44 @@ Until durable replay verification exists, even an event verified only in memory 
 ### Scope and safety
 
 This follow-up is repository inspection and design clarification only. No migration was applied, no runtime publisher was enabled, no event was emitted, and no staging or production database/service was touched. Migration 157 remains unapplied; PRs #83–#85 remain drafts.
+
+
+## Live Unified Event Bus transport prototype (2026-11-09)
+
+A draft implementation is now available on PR #86 (not merged or deployed):
+
+- `UnifiedEventBus` accepts an optional `ProducerRegistry` injected at construction by a future trusted composition root.
+- `publish(..., producer_capability=...)` verifies the opaque capability against the event's normalized workspace and the current validated actor context.
+- Verified provenance is attached to the in-process dispatch tuple and exposed to handlers as a separate `provenance` field. It is never copied into the payload.
+- Legacy source labels produce `provenance=None`. A forged string/object, or a capability supplied when the bus has no registry, is rejected.
+- If an actor is present, its workspace must exactly match the event workspace; a missing actor workspace is not accepted as a match.
+
+This prototype deliberately does **not** upgrade trust for durable or cross-process events:
+
+- The event persistence row does not contain a verifiable provenance proof.
+- Database replay and dead-letter replay do not regain provenance.
+- `SharedEventBus` remains unverified; source_service/source_instance remain diagnostic labels.
+- The organism event bridge remains `source_trust=0.0`.
+- No real health publisher has yet been issued a capability.
+
+The prototype is an in-process composition boundary, not a sandbox against malicious code already executing inside the process. Before any positive trust is granted, the next stages must establish a trusted composition-root registry, signed/versioned durable provenance with key lifecycle and replay verification, a verified cross-process transport contract, and a real workspace-scoped producer with independent tests. Until then, all existing event sources remain untrusted for goal derivation.
+
+
+## Signed durable envelope prototype (2026-11-09)
+
+A versioned signed-envelope contract has been added on PR #86 in `core/durable_event_provenance.py`. It is a prototype and is not wired into either event transport or persistence yet.
+
+The Ed25519 envelope binds:
+- envelope version and algorithm;
+- key ID;
+- event ID and event type;
+- workspace and brand;
+- canonical payload SHA-256 digest;
+- producer ID/class and optional authenticated actor;
+- issued-at and expiry timestamps.
+
+Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The signer receives a private key; verifiers receive public keys only. A separate key-ID-to-producer ownership policy is injected, so a valid key cannot assert a different producer ID. Key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
+
+Security design caveat: Ed25519 removes the shared-secret verification problem, but private-key custody and producer isolation remain critical. Each producer must receive only its own signing capability/private key; consumers should receive public verification keys only. Define key ownership, rotation, revocation, version migration, clock tolerance, compromise response and audit procedures.
+
+No event table migration or durable persistence integration is included. Do not trust a signed-envelope-shaped dictionary until it passes verification against a trusted keyring and exact event binding. The event bridge remains `source_trust=0.0`.

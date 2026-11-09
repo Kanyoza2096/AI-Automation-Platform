@@ -42,6 +42,9 @@ on:
       - "tests/test_authenticated_actor_context.py"
       - "docs/organism/u2-producer-provenance-audit.md"
       - "tests/test_event_provenance.py"
+      - "core/durable_event_provenance.py"
+      - "tests/test_durable_event_provenance.py"
+      - "tests/test_unified_bus_provenance_transport.py"
       - "utils/ids.py"
       - "tests/security/**"
       - "dependency_registry.py"
@@ -268,4 +271,5 @@ jobs:
             tests/tenancy/test_request_context.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_authenticated_actor_context.py \
-            tests/test_event_provenance.py
+            tests/test_durable_event_provenance.py \
+            tests/test_unified_bus_provenance_transport.py
