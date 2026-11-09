@@ -151,7 +151,7 @@ The prototype is an in-process composition boundary, not a sandbox against malic
 
 A versioned signed-envelope contract has been added on PR #86 in `core/durable_event_provenance.py`. It is a prototype and is not wired into either event transport or persistence yet.
 
-The HMAC-SHA256 envelope binds:
+The Ed25519 envelope binds:
 - envelope version and algorithm;
 - key ID;
 - event ID and event type;
@@ -160,8 +160,8 @@ The HMAC-SHA256 envelope binds:
 - producer ID/class and optional authenticated actor;
 - issued-at and expiry timestamps.
 
-Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The keyring and a separate key-ID-to-producer ownership policy are injected; a valid key cannot assert a different producer ID. Key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
+Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The signer receives a private key; verifiers receive public keys only. A separate key-ID-to-producer ownership policy is injected, so a valid key cannot assert a different producer ID. Key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
 
-Security design caveat: HMAC is a shared-secret MAC, not a non-repudiation signature. Any verifier holding the shared key can also mint signatures. Before cross-service production use, choose a protected key-distribution model or an asymmetric signing design where producers hold private signing keys and consumers receive only public verification keys. Define key ownership, rotation, revocation, version migration, clock tolerance and audit procedures.
+Security design caveat: Ed25519 removes the shared-secret verification problem, but private-key custody and producer isolation remain critical. Each producer must receive only its own signing capability/private key; consumers should receive public verification keys only. Define key ownership, rotation, revocation, version migration, clock tolerance, compromise response and audit procedures.
 
 No event table migration or durable persistence integration is included. Do not trust a signed-envelope-shaped dictionary until it passes verification against a trusted keyring and exact event binding. The event bridge remains `source_trust=0.0`.
