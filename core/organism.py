@@ -186,7 +186,8 @@ class Organism:
                 else:
                     try:
                         from organism.goal_persistence import bootstrap_goal_proposal_store
-                        bootstrap = bootstrap_goal_proposal_store(
+                        bootstrap = await asyncio.to_thread(
+                            bootstrap_goal_proposal_store,
                             goal_service_client,
                             self.workspace_id,
                         )
