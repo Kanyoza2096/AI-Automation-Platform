@@ -134,6 +134,7 @@ def derive_goal_proposal(
     if observation.source not in {
         "unified_event:service_heartbeat",
         "unified_event:engine_alert",
+        "unified_event:connector.health.observed",
     }:
         return None
     if observation.confidence < 0.75 or observation.source_trust < 0.75:
@@ -149,6 +150,28 @@ def derive_goal_proposal(
     event_id = str(metadata.get("event_id") or "").strip()
     if not event_id or len(event_id) > 160:
         return None
+    evidence_id = None
+    if observation.source == "unified_event:connector.health.observed":
+        # Connector health is eligible only when the bridge attached the exact
+        # verified producer identity and the durable evidence-chain reference.
+        if (
+            metadata.get("producer_id") != "kdo-tenant-health-facebook"
+            or metadata.get("producer_class") != "tenant_connector_health"
+            or metadata.get("provenance_verification") not in {
+                "composition_root_capability", "ed25519_v1"
+            }
+            or not metadata.get("brand_id")
+            or not metadata.get("connection_id")
+        ):
+            return None
+        evidence_id = str(metadata.get("evidence_id") or "").strip()
+        evidence_hash = str(metadata.get("evidence_hash") or "").strip()
+        if (
+            not evidence_id or len(evidence_id) > 160
+            or len(evidence_hash) != 64
+            or any(char not in "0123456789abcdef" for char in evidence_hash)
+        ):
+            return None
     raw_service = (
         observation.value.get("service")
         or observation.value.get("service_name")
@@ -166,7 +189,10 @@ def derive_goal_proposal(
     if ttl <= timedelta(0):
         raise ValueError("ttl must be positive")
 
-    proposal_key = f"{observation.workspace_id}:{event_id}:service-health-recovery"
+    # Evidence ID, rather than a retry-generated event ID, makes connector
+    # health proposals idempotent across event publication retries.
+    trigger_id = evidence_id or event_id
+    proposal_key = f"{observation.workspace_id}:{trigger_id}:service-health-recovery"
     proposal_id = "gprop_" + hashlib.sha256(proposal_key.encode("utf-8")).hexdigest()[:20]
     priority = GoalPriority.CRITICAL if status in {"down", "critical"} else GoalPriority.HIGH
     risk_level = "high" if status in {"down", "critical"} else "medium"
