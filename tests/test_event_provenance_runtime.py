@@ -268,6 +268,12 @@ def test_facebook_producer_capability_cannot_sign_unrelated_event_types():
     proof = result.runtime.registry.verify(
         result.runtime.capability,
         workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
         brand_id="brand-a",
     )
 
@@ -382,6 +388,12 @@ def test_facebook_health_signer_accepts_only_complete_safe_evidence_payload():
     proof = result.runtime.registry.verify(
         result.runtime.capability,
         workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
         brand_id="brand-a",
     )
 
@@ -417,6 +429,12 @@ def test_facebook_health_signer_rejects_incomplete_or_secret_bearing_payloads(
     proof = result.runtime.registry.verify(
         result.runtime.capability,
         workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
         brand_id="brand-a",
     )
     event = valid_facebook_health_signing_request(proof)
@@ -435,6 +453,12 @@ def test_facebook_health_signer_rejects_cross_brand_or_workspace_nerve_envelopes
     proof = result.runtime.registry.verify(
         result.runtime.capability,
         workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
         brand_id="brand-a",
     )
     event = valid_facebook_health_signing_request(proof)
