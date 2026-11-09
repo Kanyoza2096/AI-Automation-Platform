@@ -54,7 +54,7 @@ BEGIN
         hashtextextended(p_workspace_id || ':' || p_connection_id, 0)
     );
 
-    SELECT ie.evidence_hash
+    SELECT rtrim(ie.evidence_hash::text)
       INTO latest_hash
       FROM public.integration_evidence AS ie
      WHERE ie.workspace_id = p_workspace_id
