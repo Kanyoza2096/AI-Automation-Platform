@@ -230,7 +230,9 @@ jobs:
                   else:
                       for statement in migration_sql.split(";"):
                           if statement.strip():
-                              connection.execute(statement)              provenance_column = connection.execute(
+                              connection.execute(statement)
+
+              provenance_column = connection.execute(
                   """
                   SELECT 1 FROM information_schema.columns
                   WHERE table_schema = 'public' AND table_name = 'events'
