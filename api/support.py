@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger("kanyoza.api.support")
 
 auth_workspace_id_var: ContextVar[Optional[str]] = ContextVar("auth_workspace_id", default=None)
+# Set only from a validated SpeciesAuth identity; never from request metadata.
+auth_identity_var: ContextVar[Any] = ContextVar("auth_identity", default=None)
 MAX_PAGE_SIZE = 100
 
 
