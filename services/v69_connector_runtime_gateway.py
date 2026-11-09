@@ -154,6 +154,63 @@ class RuntimeConnectorGateway:
     def health(self) -> Any:
         return self.governed.health()
 
+    def observe_health(self, evidence_store: Any, *, observed_at=None) -> Any:
+        """Probe this tenant-bound connector and atomically persist its observation.
+
+        This is a read-only provider check plus an audit write. It does not
+        authorize connector mutations, publish an event, or grant authority.
+        A durable store must be supplied explicitly; there is no memory or
+        database-client fallback.
+        """
+        recorder = getattr(evidence_store, "record_health_observation", None)
+        if not callable(recorder):
+            raise ValueError("durable_health_observation_store_required")
+
+        result = self.governed.health()
+        if isinstance(result, Mapping):
+            ok = result.get("ok")
+            platform = result.get("platform")
+            latency_value = result.get("latency_ms")
+            status_value = result.get("status_code", result.get("provider_status_code"))
+        else:
+            ok = getattr(result, "ok", None)
+            platform = getattr(result, "platform", None)
+            latency_value = getattr(result, "latency_ms", None)
+            status_value = getattr(result, "status_code", getattr(result, "provider_status_code", None))
+
+        if not isinstance(ok, bool):
+            raise ValueError("provider_health_result_invalid")
+        if platform and str(platform) not in {self.contract.provider, self.contract.connector_key}:
+            raise ValueError(RuntimeBlock.PROVIDER_MISMATCH.value)
+
+        try:
+            latency_ms = None if latency_value is None else max(0, int(round(float(latency_value))))
+            provider_status_code = None if status_value is None else int(status_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("provider_health_metrics_invalid") from exc
+
+        health_state = "healthy" if ok else "unknown"
+        reason_codes = () if ok else ("provider_check_not_healthy",)
+        metadata = {
+            "provider_check": "success" if ok else "not_healthy",
+            "latency_ms": latency_ms,
+        }
+        return recorder(
+            workspace_id=self.workspace_id,
+            connection_id=self.connection.connection_id,
+            connector_key=self.contract.connector_key,
+            health_state=health_state,
+            observed_at=observed_at,
+            drift=(),
+            provider_status_code=provider_status_code,
+            latency_ms=latency_ms,
+            reason_codes=reason_codes,
+            actor="system",
+            provider=self.contract.provider,
+            connector_version=self.contract.version,
+            metadata=metadata,
+        )
+
     def validate(self) -> Any:
         return self.governed.validate()
 
