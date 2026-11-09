@@ -222,6 +222,7 @@ jobs:
                   "migrations/069_v69_13_integration_evidence.sql",
                   "migrations/100_vnext_connector_health_evidence.sql",
                   "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
+                  "migrations/160_v69_integration_evidence_atomic_append.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
