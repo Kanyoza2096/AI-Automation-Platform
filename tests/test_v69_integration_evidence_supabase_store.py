@@ -216,7 +216,11 @@ def test_supabase_sink_atomically_records_health_observation_and_evidence():
         provider_status_code=200,
         provider="facebook",
         connector_version="1.0.0",
-        metadata={"page_access_token": "never-store-this"},
+        metadata={
+            "page_access_token": "never-store-this",
+            "brand_id": "brand-a",
+            "social_account_id": "account-a",
+        },
         evidence_id="health-evidence-1",
     )
 
@@ -225,6 +229,10 @@ def test_supabase_sink_atomically_records_health_observation_and_evidence():
     assert result.workspace_id == "workspace-a"
     assert result.connection_id == "connection-a"
     assert result.health_state == "healthy"
+    assert result.brand_id == "brand-a"
+    assert result.social_account_id == "account-a"
+    assert client.rpc_calls[0]["p_metadata"]["brand_id"] == "brand-a"
+    assert client.rpc_calls[0]["p_metadata"]["social_account_id"] == "account-a"
     assert client.rpc_calls[0]["p_health_state"] == "healthy"
     assert client.rpc_calls[0]["p_observed_at"] == NOW.isoformat()
     assert client.rpc_calls[0]["p_metadata"]["page_access_token"] == "<redacted>"
