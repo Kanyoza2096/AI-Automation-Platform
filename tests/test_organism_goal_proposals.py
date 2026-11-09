@@ -109,6 +109,7 @@ def connector_health_observation(*, event_id="event-a", evidence_id="evidence-a"
         "provenance_verification": "ed25519_v1",
         "brand_id": "brand-a",
         "connection_id": "connection-a",
+        "social_account_id": "account-a",
         "evidence_id": evidence_id,
         "evidence_hash": "b" * 64,
     }
