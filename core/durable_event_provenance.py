@@ -217,7 +217,7 @@ def verify_durable_provenance(
         actor=actor,
         workspace_id=str(workspace_id),
         brand_id=brand_id,
-        verification="hmac_sha256_v1",
+        verification="ed25519_v1",
     )
 
 
