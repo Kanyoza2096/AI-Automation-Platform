@@ -66,6 +66,10 @@ on:
       - "migrations/069_v69_13_integration_evidence.sql"
       - "migrations/100_vnext_connector_health_evidence.sql"
       - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
+      - "migrations/160_v69_integration_evidence_atomic_append.sql"
+      - "services/v69_integration_evidence.py"
+      - "tests/test_v69_integration_evidence_supabase_store.py"
+      - "tests/test_v69_13_integration_evidence.py"
       - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
   workflow_dispatch:
 
@@ -127,6 +131,8 @@ jobs:
                   ).fetchone()
                   if not exists:
                       connection.execute(f"CREATE ROLE {role} NOLOGIN")
+              # Match Supabase's service_role behavior in this disposable DB.
+              connection.execute("ALTER ROLE service_role BYPASSRLS")
               migration = Path(
                   "migrations/140_kdo_engineering_shared_build_queue.sql"
               ).read_text(encoding="utf-8")
@@ -221,6 +227,7 @@ jobs:
                   "migrations/069_v69_13_integration_evidence.sql",
                   "migrations/100_vnext_connector_health_evidence.sql",
                   "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
+                  "migrations/160_v69_integration_evidence_atomic_append.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -327,4 +334,6 @@ jobs:
             tests/test_durable_event_provenance_transport.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py \
             tests/test_facebook_connector_tenant_health.py \
-            tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py
+            tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py \
+            tests/test_v69_integration_evidence_supabase_store.py \
+            tests/test_v69_13_integration_evidence.py
