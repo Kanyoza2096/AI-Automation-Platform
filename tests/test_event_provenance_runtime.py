@@ -149,6 +149,7 @@ def test_partial_or_invalid_key_configuration_fails_closed():
 
     result = install_tenant_facebook_provenance(
         bus,
+        supabase_client=client,
         environ={"KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}"},
     )
 
