@@ -94,9 +94,10 @@ def _probe_provenance_column(client: Any) -> bool:
 
 
 def _probe_health_evidence_schema(client: Any) -> bool:
-    """Check the tables/columns required by migrations 159–161, without writes."""
+    """Check the tables/columns required by migrations 159–162, without writes."""
     required = (
-        ("integration_connections", "id,workspace_id"),
+        ("integration_connections", "id,workspace_id,brand_id,social_account_id"),
+        ("connector_certification_registry", "workspace_id,connection_id,connector_key,connector_version,registry_state,brand_id,social_account_id"),
         ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash"),
         ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref"),
     )
@@ -158,16 +159,21 @@ def install_tenant_facebook_provenance(
     bus_client = getattr(event_bus, "supabase", None)
     if bus_client is None:
         return ProvenanceInstallResult(False, "event_database_unavailable")
-    if supabase_client is not None and supabase_client is not bus_client:
+    # The producer's account/evidence reads and durable event writes require
+    # the explicitly configured service-role client. An anon/RLS client is
+    # never an acceptable fallback for this privileged backend pipeline.
+    if supabase_client is None:
+        return ProvenanceInstallResult(False, "service_role_client_required")
+    if supabase_client is not bus_client:
         return ProvenanceInstallResult(False, "canonical_event_database_mismatch")
-    client = bus_client
+    client = supabase_client
 
     probe = schema_probe or _probe_provenance_column
     if not probe(client):
         return ProvenanceInstallResult(False, "provenance_schema_not_ready")
 
     # The event envelope column alone is not enough to run the tenant health
-    # producer. Migrations 159–161 establish its account-bound evidence and
+    # producer. Migrations 159–162 establish its account-bound evidence and
     # atomic health-write path. Require both an explicit operator attestation
     # and read-only table/column probes before exposing that producer factory.
     health_evidence_ready = (
