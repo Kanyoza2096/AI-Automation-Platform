@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any, Iterable, Mapping, Protocol
+from uuid import uuid4
 
 
 class EvidenceError(ValueError):
@@ -122,6 +123,18 @@ class MemoryEvidenceStore:
         return self._last_hash.get((workspace_id, connection_id), "")
 
 
+@dataclass(frozen=True)
+class DurableHealthObservation:
+    evidence_id: str
+    observation_id: str
+    workspace_id: str
+    connection_id: str
+    connector_key: str
+    observed_at: datetime
+    health_state: str
+    evidence_hash: str
+
+
 class SupabaseIntegrationEvidenceStore:
     """Durable append-only sink using the atomic append_integration_evidence RPC.
 
@@ -211,6 +224,119 @@ class SupabaseIntegrationEvidenceStore:
 
         raise EvidenceChainConflict("evidence_chain_conflict")
 
+    def record_health_observation(
+        self,
+        *,
+        workspace_id: str,
+        connection_id: str,
+        connector_key: str,
+        health_state: str,
+        observed_at: datetime | None = None,
+        drift: Iterable[str] = (),
+        provider_status_code: int | None = None,
+        latency_ms: int | None = None,
+        reason_codes: Iterable[str] = (),
+        actor: str = "system",
+        provider: str = "",
+        connector_version: str = "",
+        metadata: Mapping[str, Any] | None = None,
+        evidence_id: str | None = None,
+    ) -> DurableHealthObservation:
+        """Atomically append a health evidence row and its read-model observation."""
+        allowed_states = {"healthy", "degraded", "unavailable", "unknown"}
+        if health_state not in allowed_states:
+            raise EvidenceError("connector_health_state_invalid")
+        if latency_ms is not None and latency_ms < 0:
+            raise EvidenceError("connector_health_latency_invalid")
+        observed_at = observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            raise EvidenceError("observed_at_must_be_timezone_aware")
+        evidence_id = evidence_id or str(uuid4())
+        if not evidence_id.strip():
+            raise EvidenceError("evidence_id_required")
+
+        drift_values = tuple(dict.fromkeys(str(item) for item in drift))
+        reason_values = tuple(dict.fromkeys(str(item) for item in reason_codes))
+        payload = {
+            "health_state": health_state,
+            "drift": list(drift_values),
+            "provider_status_code": provider_status_code,
+            "latency_ms": latency_ms,
+        }
+        current = IntegrationEvidence(
+            evidence_id=evidence_id,
+            workspace_id=workspace_id,
+            connection_id=connection_id,
+            connector_key=connector_key,
+            event_type="connector.health.observed",
+            occurred_at=observed_at,
+            outcome=health_state,
+            reason_codes=reason_values,
+            actor=actor,
+            provider=provider,
+            connector_version=connector_version,
+            payload_fingerprint=payload_fingerprint(payload),
+            metadata=_safe(metadata or {}),
+            previous_hash=self.last_hash(workspace_id, connection_id),
+        )
+
+        for _attempt in range(self._max_retries):
+            expected_previous = self.last_hash(current.workspace_id, current.connection_id)
+            if current.previous_hash != expected_previous:
+                current = replace(current, previous_hash=expected_previous, evidence_hash="")
+            if current.evidence_hash != compute_evidence_hash(current):
+                raise EvidenceError("evidence_hash_mismatch")
+
+            params = {
+                "p_evidence_id": current.evidence_id,
+                "p_workspace_id": current.workspace_id,
+                "p_connection_id": current.connection_id,
+                "p_connector_key": current.connector_key,
+                "p_observed_at": current.occurred_at.astimezone(timezone.utc).isoformat(),
+                "p_health_state": health_state,
+                "p_drift": list(drift_values),
+                "p_provider_status_code": provider_status_code,
+                "p_latency_ms": latency_ms,
+                "p_reason_codes": list(current.reason_codes),
+                "p_actor": current.actor,
+                "p_provider": current.provider,
+                "p_connector_version": current.connector_version,
+                "p_payload_fingerprint": current.payload_fingerprint,
+                "p_metadata": _safe(current.metadata),
+                "p_expected_previous_hash": current.previous_hash,
+                "p_evidence_hash": current.evidence_hash,
+            }
+            try:
+                response = self._client.rpc("record_connector_health_observation", params).execute()
+            except Exception as exc:
+                message = str(exc).lower()
+                if "evidence_chain_conflict" in message or "40001" in message:
+                    continue
+                if "duplicate key" in message or "unique constraint" in message:
+                    raise EvidenceError("duplicate_evidence_id") from exc
+                raise EvidenceError("health_observation_persist_failed") from exc
+
+            data = getattr(response, "data", None)
+            row = data[0] if isinstance(data, list) and data else data
+            if not isinstance(row, Mapping):
+                raise EvidenceError("health_observation_persist_unconfirmed")
+            returned_evidence_id = str(row.get("evidence_id") or "")
+            observation_id = str(row.get("observation_id") or "")
+            if returned_evidence_id != current.evidence_id or not observation_id:
+                raise EvidenceError("health_observation_persist_unconfirmed")
+            return DurableHealthObservation(
+                evidence_id=current.evidence_id,
+                observation_id=observation_id,
+                workspace_id=current.workspace_id,
+                connection_id=current.connection_id,
+                connector_key=current.connector_key,
+                observed_at=current.occurred_at,
+                health_state=health_state,
+                evidence_hash=current.evidence_hash,
+            )
+
+        raise EvidenceChainConflict("evidence_chain_conflict")
+
 
 def compute_evidence_hash(evidence: IntegrationEvidence) -> str:
     material = {
@@ -282,6 +408,6 @@ def emit(
 
 __all__ = [
     "EvidenceError", "EvidenceChainConflict", "IntegrationEvidence", "EvidenceSink",
-    "MemoryEvidenceStore", "SupabaseIntegrationEvidenceStore",
+    "MemoryEvidenceStore", "SupabaseIntegrationEvidenceStore", "DurableHealthObservation",
     "payload_fingerprint", "compute_evidence_hash", "emit",
 ]
