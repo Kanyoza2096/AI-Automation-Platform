@@ -49,6 +49,29 @@ class TenantSocialAccountResolver:
         self._client = supabase_client
         self._account_hydrator = SocialAccountRepository(supabase_client=supabase_client)
 
+    def resolve_for_identity(
+        self,
+        identity: Any,
+        *,
+        brand_id: str,
+        platform: str,
+    ) -> TenantSocialAccountBinding:
+        """Resolve from an already-authenticated, workspace-scoped identity.
+
+        Species/master identities without a tenant workspace are not accepted
+        here; callers must choose an explicit workspace-scoped service context.
+        """
+        if not identity or not getattr(identity, "valid", False):
+            raise TenantAccountResolutionError("authenticated_identity_required")
+        workspace_id = getattr(identity, "workspace_id", None)
+        if not workspace_id:
+            raise TenantAccountResolutionError("authenticated_workspace_required")
+        return self.resolve(
+            workspace_id=workspace_id,
+            brand_id=brand_id,
+            platform=platform,
+        )
+
     def resolve(
         self,
         *,
@@ -56,6 +79,7 @@ class TenantSocialAccountResolver:
         brand_id: str,
         platform: str,
     ) -> TenantSocialAccountBinding:
+        """Resolve using a workspace ID from auth context or trusted tenant job context."""
         workspace_id = str(workspace_id or "").strip()
         brand_id = str(brand_id or "").strip()
         platform = str(getattr(platform, "value", platform) or "").strip().lower()
