@@ -13,12 +13,14 @@ from datetime import datetime
 from typing import Any
 import uuid
 
+from core.event_provenance import VerifiedEventProvenance
 from organism.perception import Observation, ObservationKind
 
 
 EVENT_KINDS = {
     "service_heartbeat": ObservationKind.HEALTH,
     "engine_alert": ObservationKind.HEALTH,
+    "connector.health.observed": ObservationKind.HEALTH,
     "backup_completed": ObservationKind.HEALTH,
     "task_failed": ObservationKind.EXECUTION,
     "content_failed": ObservationKind.EXECUTION,
@@ -29,7 +31,9 @@ SAFE_FIELDS = {
         "service", "service_name", "status", "health", "severity",
         "component", "cpu_percent", "memory_percent",
         "operational_load", "latency_ms", "uptime_seconds",
-        "duration_seconds", "backup_type",
+        "duration_seconds", "backup_type", "health_state", "connection_id",
+        "connector_key", "observation_id", "evidence_id", "evidence_hash",
+        "provider", "connector_version", "observed_at",
     }),
     ObservationKind.EXECUTION: frozenset({
         "task_id", "execution_id", "task_type", "action", "status",
@@ -37,6 +41,53 @@ SAFE_FIELDS = {
         "content_type", "post_id",
     }),
 }
+
+
+def _verified_facebook_health_producer(
+    event: Mapping[str, Any],
+    payload: Mapping[str, Any],
+    workspace_id: str,
+) -> VerifiedEventProvenance | None:
+    """Accept only the exact signed tenant-Facebook producer contract."""
+    proof = event.get("provenance")
+    if not isinstance(proof, VerifiedEventProvenance):
+        return None
+    if (
+        proof.producer.producer_id != "kdo-tenant-health-facebook"
+        or proof.producer.producer_class != "tenant_connector_health"
+        or proof.verification not in {"composition_root_capability", "ed25519_v1"}
+        or proof.workspace_id != workspace_id
+    ):
+        return None
+    brand_id = str(event.get("brand_id") or "").strip()
+    if not brand_id or proof.brand_id != brand_id:
+        return None
+    if (
+        payload.get("connector_key") != "facebook"
+        or payload.get("provider") not in {"facebook", "meta"}
+        or payload.get("status") != payload.get("health_state")
+        or payload.get("health_state") not in {"healthy", "degraded", "unavailable", "unknown"}
+    ):
+        return None
+    for field in ("connection_id", "observation_id", "evidence_id"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > 160:
+            return None
+    evidence_hash = payload.get("evidence_hash")
+    if not isinstance(evidence_hash, str) or len(evidence_hash) != 64:
+        return None
+    if any(char not in "0123456789abcdef" for char in evidence_hash):
+        return None
+    observed_at = payload.get("observed_at")
+    if not isinstance(observed_at, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return proof
 
 
 def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
@@ -66,7 +117,7 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
     }
     if not safe_value:
         return None
-    observed_at = event.get("observed_at")
+    observed_at = event.get("observed_at") or payload.get("observed_at")
     if isinstance(observed_at, str):
         try:
             observed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
@@ -77,22 +128,32 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
     ):
         observed_at = None
     event_id = str(event.get("event_id") or "").strip()
+    verified_producer = None
+    if event_name == "connector.health.observed":
+        verified_producer = _verified_facebook_health_producer(event, payload, workspace_id)
+    trusted = verified_producer is not None
     return Observation(
         workspace_id=workspace_id,
         kind=kind,
         source=f"unified_event:{event_name}",
         value=safe_value,
-        confidence=0.8,
-        # The event envelope carries a source label, not authenticated publisher
-        # identity. Keep observations useful for perception, but ineligible for
-        # goal derivation until a verified producer-principal contract exists.
-        source_trust=0.0,
+        confidence=0.9 if trusted else 0.8,
+        # Only the exact signed producer and its evidence lineage can raise
+        # trust. Source/source_service labels remain descriptive metadata.
+        source_trust=0.9 if trusted else 0.0,
         **({"observed_at": observed_at} if observed_at is not None else {}),
         observation_id=f"event:{event_id}" if event_id else f"obs_{uuid.uuid4().hex[:16]}",
         metadata={
             "event_id": event_id or None,
-            "source": str(event.get("source") or "unknown")[:80],
+            "source": str(event.get("source") or event.get("source_service") or "unknown")[:80],
             "correlation_id": str(event.get("correlation_id") or "")[:128] or None,
+            "brand_id": str(event.get("brand_id") or "")[:160] or None,
+            "producer_id": verified_producer.producer.producer_id if trusted else None,
+            "producer_class": verified_producer.producer.producer_class if trusted else None,
+            "provenance_verification": verified_producer.verification if trusted else None,
+            "evidence_id": str(payload.get("evidence_id") or "")[:160] or None,
+            "evidence_hash": str(payload.get("evidence_hash") or "")[:64] or None,
+            "connection_id": str(payload.get("connection_id") or "")[:160] or None,
         },
     )
 
