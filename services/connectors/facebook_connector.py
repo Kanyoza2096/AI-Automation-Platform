@@ -266,19 +266,52 @@ class FacebookConnector:
     # ── Health ────────────────────────────────────────────────────────
 
     def health(self) -> ConnectorHealth:
+        """Probe the Page account bound to this connector, never global settings."""
         t0 = time.monotonic()
+        validator = getattr(self._svc, "validate_account_token", None)
+        if not callable(validator):
+            return ConnectorHealth(
+                ok=False,
+                platform=self.platform,
+                latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                error="tenant_bound_health_validation_unavailable",
+            )
+        if not self._page_id or not self._page_token:
+            return ConnectorHealth(
+                ok=False,
+                platform=self.platform,
+                latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                error="account_credentials_unavailable",
+            )
         try:
-            result = self._svc.validate_token()
-            ok = result.get("ok", False) if isinstance(result, dict) else bool(result)
-            ms = (time.monotonic() - t0) * 1000
-            return ConnectorHealth(ok=ok, platform=self.platform, latency_ms=round(ms, 1))
+            result = validator(self._page_id, self._page_token)
+            ok = (
+                isinstance(result, dict)
+                and result.get("ok") is True
+                and str(result.get("page_id") or "") == str(self._page_id)
+            )
+            error = None if ok else (
+                str(result.get("error") or "provider_page_identity_mismatch")
+                if isinstance(result, dict)
+                else "invalid_provider_health_response"
+            )
+            return ConnectorHealth(
+                ok=ok,
+                platform=self.platform,
+                latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                error=error,
+            )
         except Exception as exc:
-            ms = (time.monotonic() - t0) * 1000
-            return ConnectorHealth(ok=False, platform=self.platform, latency_ms=round(ms, 1), error=str(exc))
+            return ConnectorHealth(
+                ok=False,
+                platform=self.platform,
+                latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                error=type(exc).__name__,
+            )
 
     def validate(self) -> bool:
-        result = self._svc.validate_token()
-        return result.get("ok", False) if isinstance(result, dict) else bool(result)
+        """Return validity for this connector's bound Page account only."""
+        return bool(self.health().ok)
 
     # ── Comments & Messages ───────────────────────────────────────────
 
