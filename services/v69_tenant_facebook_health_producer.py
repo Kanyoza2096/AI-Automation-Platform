@@ -120,14 +120,22 @@ class TenantFacebookHealthProducer:
                 brand_id=brand_id,
                 platform="facebook",
             )
-            # Verify this exact in-process capability against the trusted
-            # registry and authenticated actor before probing the provider.
+        except Exception as exc:
+            raise TenantHealthPublisherError("tenant_account_resolution_failed") from exc
+
+        # Verify this exact in-process capability against the trusted registry
+        # and authenticated actor before probing the provider.
+        try:
             self._producer_registry.verify(
                 self._producer_capability,
                 workspace_id=binding.workspace_id,
                 actor=current_actor_principal(),
                 brand_id=binding.brand_id,
             )
+        except Exception as exc:
+            raise TenantHealthPublisherError("producer_capability_scope_invalid") from exc
+
+        try:
             gateway = self._connector_factory.build_gateway(
                 binding=binding,
                 connection=connection,
