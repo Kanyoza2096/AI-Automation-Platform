@@ -160,7 +160,7 @@ The HMAC-SHA256 envelope binds:
 - producer ID/class and optional authenticated actor;
 - issued-at and expiry timestamps.
 
-Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The keyring is injected; key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
+Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The keyring and a separate key-ID-to-producer ownership policy are injected; a valid key cannot assert a different producer ID. Key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
 
 Security design caveat: HMAC is a shared-secret MAC, not a non-repudiation signature. Any verifier holding the shared key can also mint signatures. Before cross-service production use, choose a protected key-distribution model or an asymmetric signing design where producers hold private signing keys and consumers receive only public verification keys. Define key ownership, rotation, revocation, version migration, clock tolerance and audit procedures.
 
