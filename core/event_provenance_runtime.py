@@ -29,7 +29,7 @@ class TenantFacebookProvenanceRuntime:
 
     registry: ProducerRegistry = field(repr=False)
     capability: ProducerCapability = field(repr=False)
-    key_provider: DurableProvenanceKeyProvider = field(repr=False)
+    active_key_id: str
     event_bus: UnifiedEventBus = field(repr=False)
     status: str = "enabled"
 
@@ -50,7 +50,7 @@ class TenantFacebookProvenanceRuntime:
             "TenantFacebookProvenanceRuntime("
             f"status={self.status!r}, "
             f"producer_id={PRODUCER_ID!r}, "
-            f"key_id={self.key_provider.active_key_id!r})"
+            f"key_id={self.active_key_id!r})"
         )
 
 
@@ -157,7 +157,7 @@ def install_tenant_facebook_provenance(
         runtime = TenantFacebookProvenanceRuntime(
             registry=registry,
             capability=capability,
-            key_provider=key_provider,
+            active_key_id=key_provider.active_key_id,
             event_bus=event_bus,
         )
     except Exception:
