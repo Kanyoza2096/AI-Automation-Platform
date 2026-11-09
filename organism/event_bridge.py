@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any
 import uuid
 
@@ -177,8 +177,8 @@ def observation_from_event(
             "source": str(event.get("source") or event.get("source_service") or "unknown")[:80],
             "correlation_id": str(event.get("correlation_id") or "")[:128] or None,
             "brand_id": str(event.get("brand_id") or "")[:160] or None,
-            "producer_id": verified_producer.producer.producer_id if trusted else None,
-            "producer_class": verified_producer.producer.producer_class if trusted else None,
+            "producer_id": verified_producer.producer.producer_id if verified_producer is not None else None,
+            "producer_class": verified_producer.producer.producer_class if verified_producer is not None else None,
             "provenance_verification": verified_producer.verification if verified_producer is not None else None,
             "freshness_status": freshness_status,
             "evidence_id": str(payload.get("evidence_id") or "")[:160] or None,
@@ -199,6 +199,7 @@ class OrganismEventBridge:
     def __init__(self, registry) -> None:
         self.registry = registry
         self._unsubscribe = None
+        self._shared_unsubscribers: list[Any] = []
         self._seen_ids: set[str] = set()
         self._seen_order: deque[str] = deque()
 
