@@ -8,7 +8,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.unified_bus import UnifiedEventBus
 from core.event_provenance_runtime import install_tenant_facebook_provenance
-from services.v69_tenant_facebook_health_producer import PRODUCER_CLASS, PRODUCER_ID
+from services.v69_tenant_facebook_health_producer import (
+    PRODUCER_CLASS,
+    PRODUCER_ID,
+    TenantHealthPublisherError,
+)
 
 
 KEY_ID = "KDO-TENANT-HEALTH-BOOT-01"
@@ -202,10 +206,12 @@ def test_active_key_must_belong_to_the_exact_tenant_facebook_producer():
 
 
 def test_runtime_factory_uses_the_same_canonical_bus_and_minted_capability():
-    client = FakeSupabase(ready=True)
+    client = FakeSupabase(ready=True, health_ready=True)
     bus = UnifiedEventBus(supabase_client=client)
+    env = valid_environment()
+    env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
     result = install_tenant_facebook_provenance(
-        bus, environ=valid_environment()
+        bus, environ=env
     )
 
     producer = result.runtime.create_health_producer(
@@ -270,7 +276,7 @@ def test_health_producer_remains_disabled_without_operator_migration_attestation
     assert result.enabled is True
     assert result.runtime.health_evidence_ready is False
     assert bus._tenant_health_evidence_ready is False
-    with pytest.raises(Exception, match="health_evidence_schema_not_enabled"):
+    with pytest.raises(TenantHealthPublisherError, match="health_evidence_schema_not_enabled"):
         result.runtime.create_health_producer(
             resolver=object(),
             connector_factory=object(),
@@ -311,4 +317,4 @@ def test_health_evidence_attestation_is_not_enough_when_required_columns_are_mis
     assert result.enabled is True
     assert result.runtime.health_evidence_ready is False
     assert bus._tenant_health_evidence_ready is False
-    assert len(client.calls) == 4
+    assert len(client.calls) == 2
