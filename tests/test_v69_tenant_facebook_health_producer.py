@@ -130,7 +130,7 @@ def make_connection_and_registry():
     return connection, registry
 
 
-def make_producer(*, event_bus=None, producer_id=PRODUCER_ID):
+def make_producer(*, event_bus=None, producer_id=PRODUCER_ID, foreign_capability=False):
     binding = make_binding()
     resolver = FakeResolver(binding)
     service = FakeFacebookService()
@@ -139,9 +139,12 @@ def make_producer(*, event_bus=None, producer_id=PRODUCER_ID):
         ledger=ExecutionLedger(allow_in_memory=True),
     )
     producer_registry = ProducerRegistry({PRODUCER_ID: PRODUCER_CLASS})
-    capability = producer_registry.issue(producer_id) if producer_id == PRODUCER_ID else ProducerRegistry(
-        {producer_id: "other"}
-    ).issue(producer_id)
+    if foreign_capability:
+        capability = ProducerRegistry({PRODUCER_ID: PRODUCER_CLASS}).issue(PRODUCER_ID)
+    elif producer_id == PRODUCER_ID:
+        capability = producer_registry.issue(producer_id)
+    else:
+        capability = ProducerRegistry({producer_id: "other"}).issue(producer_id)
     bus = event_bus or FakeEventBus(producer_registry)
     producer = TenantFacebookHealthProducer(
         resolver=resolver,
@@ -275,3 +278,21 @@ def test_producer_rejects_capability_for_another_component():
             producer_registry=registry,
             producer_capability=capability,
         )
+
+
+@pytest.mark.asyncio
+async def test_foreign_registry_capability_is_rejected_before_provider_probe():
+    producer, _, service, bus, identity, connection, registry = make_producer(
+        foreign_capability=True
+    )
+    store = FakeEvidenceStore()
+
+    with pytest.raises(TenantHealthPublisherError, match="producer_capability_scope_invalid"):
+        await producer.observe(
+            identity, brand_id="brand-a", connection=connection,
+            contract=make_contract(), registry=registry, evidence_store=store,
+        )
+
+    assert service.calls == []
+    assert store.calls == []
+    assert bus.calls == []
