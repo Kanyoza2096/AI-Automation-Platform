@@ -151,3 +151,18 @@ The first producer implementation is not just “wire V69 into the event bus”.
 The durable evidence row can be the source record for a signed event, but it is not itself authenticated producer provenance. The signing capability must be held by the runtime that performed the provider check, and the consumer must verify the envelope independently.
 
 This is a repository-source audit only. No Supabase query, migration, provider API call, credential access, event publication or deployment was performed.
+
+
+## Schema audit: evidence rows must reference the canonical tenant connection (2026-11-09)
+
+The migration audit found a concrete blocker in the V69 evidence schema:
+
+- Migration 066 defines `integration_connections` with primary key `id` and composite unique key `(workspace_id, id)`; it does not define a `connection_id` column.
+- Migration 069 originally declared its evidence foreign key against `integration_connections(workspace_id, connection_id)`, which does not match the canonical table definition. Its read policy also compared text `workspace_members.user_id` directly with `auth.uid()` without casting to text.
+- Migration 100 created `connector_health_observations` without a foreign key to the workspace-owned integration connection. Migration 068's certification registry had the same missing connection binding.
+
+The implementation branch corrects migration 069 to reference `integration_connections(workspace_id, id)` and casts `auth.uid()::text`. It adds migration 159 to repair the evidence FK for already-created schemas and add composite workspace/connection foreign keys to health observations and certification records. New writes are enforced immediately; the constraints are `NOT VALID` so existing historical rows are not silently rejected during migration. Historical validation remains a separate audit gate.
+
+A disposable PostgreSQL CI setup now applies migrations 066, 067, 068, 069, 100 and 159, then verifies valid same-workspace inserts succeed and cross-workspace evidence/health/certification inserts fail with foreign-key violations.
+
+No KDO Testing or production database was queried or changed. Migration 159 has not been applied to any live database.
