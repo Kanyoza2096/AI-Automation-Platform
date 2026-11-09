@@ -270,5 +270,5 @@ jobs:
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
             tests/test_authenticated_actor_context.py \
-            tests/test_event_provenance.py
+            tests/test_event_provenance.py \
             tests/test_unified_bus_provenance_transport.py
