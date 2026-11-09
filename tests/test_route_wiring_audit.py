@@ -117,6 +117,7 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
         "routes.legacy_runtime_fencing_routes", "routes.workforce_execution_routes", "routes.business_onboarding_routes", "routes.command_center_routes", "routes.sector_pack_routes",
         "api.website_integrations", "routes.connector_fabric_routes", "routes.failure_recovery_routes",
         "routes.tenant_health_observation_routes",
+        "routes.ai_control_plane_routes", "routes.kdo_engineering_console", "routes.species_routes",
     ):
         if m in source:
             mounts.add(m)
@@ -149,4 +150,4 @@ def test_route_wiring_audit_script_has_no_parse_errors():
     report = json.loads(proc.stdout)
     assert report["parse_errors"] == []
     assert report["orphan_router_modules"] == []
-    assert report["route_count"] == 408
+    assert report["route_count"] == 435
