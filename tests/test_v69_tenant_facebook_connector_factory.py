@@ -190,3 +190,15 @@ def test_factory_requires_service_and_ledger():
         TenantFacebookConnectorFactory(facebook_service=None, ledger=ExecutionLedger(allow_in_memory=True))
     with pytest.raises(TenantFacebookCompositionError, match="execution_ledger_required"):
         TenantFacebookConnectorFactory(facebook_service=FakeFacebookService(), ledger=None)
+
+
+def test_factory_rejects_mismatched_provider_contract():
+    binding = make_binding()
+    connection, registry = make_connection_and_registry()
+    bad_contract = replace(make_contract(), provider="linkedin")
+
+    with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
+        make_factory().build_gateway(
+            binding=binding, connection=connection,
+            contract=bad_contract, registry=registry,
+        )
