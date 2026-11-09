@@ -249,7 +249,8 @@ class SharedEventBus:
             return handler(event_context)
 
         context_handler.__kdo_event_context__ = True
-        return self.subscribe(event_name, context_handler, handler_id=handler_id)
+        stable_id = handler_id or f"context:{self._handler_identity(handler)}"
+        return self.subscribe(event_name, context_handler, handler_id=stable_id)
 
     def unsubscribe(
         self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
