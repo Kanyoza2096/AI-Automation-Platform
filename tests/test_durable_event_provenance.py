@@ -43,7 +43,7 @@ def sign(key_id="key-v1", key=PRIVATE_A, **overrides):
     )
 
 
-def verify(envelope, *, keyring=None, now=1_100, **overrides):
+def verify(envelope, *, keyring=None, now=1_100, enforce_freshness=True, **overrides):
     args = {**EVENT, **overrides}
     return verify_durable_provenance(
         envelope,
@@ -55,6 +55,7 @@ def verify(envelope, *, keyring=None, now=1_100, **overrides):
         payload=args["payload"],
         brand_id=args["brand_id"],
         now=now,
+        enforce_freshness=enforce_freshness,
     )
 
 
@@ -128,6 +129,14 @@ def test_expired_and_future_envelopes_are_rejected():
         verify(envelope, now=1_300)
     with pytest.raises(DurableProvenanceError, match="future"):
         verify(envelope, now=900)
+
+
+def test_historical_signature_authenticity_survives_normal_freshness_window():
+    envelope = sign()
+    result = verify(envelope, now=5_000, enforce_freshness=False)
+    assert result.producer.producer_id == "health-monitor"
+    assert result.workspace_id == "workspace-a"
+    # This proves who signed the old event, not that the observation is still current.
 
 
 def test_serialized_verified_flag_does_not_replace_signature():
