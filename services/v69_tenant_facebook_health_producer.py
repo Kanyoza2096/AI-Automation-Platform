@@ -6,6 +6,7 @@ producer capabilities, signing keys, database clients or event-bus instances.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -117,7 +118,8 @@ class TenantFacebookHealthProducer:
     ) -> TenantHealthPublication:
         """Resolve one authenticated tenant account and publish its signed observation."""
         try:
-            binding = self._resolver.resolve_for_identity(
+            binding = await asyncio.to_thread(
+                self._resolver.resolve_for_identity,
                 identity,
                 brand_id=brand_id,
                 platform="facebook",
@@ -148,7 +150,10 @@ class TenantFacebookHealthProducer:
             raise TenantHealthPublisherError("tenant_connector_composition_failed") from exc
 
         try:
-            receipt = gateway.observe_health(evidence_store)
+            receipt = await asyncio.to_thread(
+                gateway.observe_health,
+                evidence_store,
+            )
         except Exception as exc:
             raise TenantHealthPublisherError("health_observation_persistence_failed") from exc
 
