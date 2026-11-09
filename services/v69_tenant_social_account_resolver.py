@@ -58,7 +58,7 @@ class TenantSocialAccountResolver:
     ) -> TenantSocialAccountBinding:
         workspace_id = str(workspace_id or "").strip()
         brand_id = str(brand_id or "").strip()
-        platform = str(platform or "").strip().lower()
+        platform = str(getattr(platform, "value", platform) or "").strip().lower()
         if not workspace_id or not brand_id or not platform:
             raise TenantAccountResolutionError("workspace_brand_platform_required")
 
