@@ -129,6 +129,8 @@ jobs:
                   ).fetchone()
                   if not exists:
                       connection.execute(f"CREATE ROLE {role} NOLOGIN")
+              # Match Supabase's service_role behavior in this disposable DB.
+              connection.execute("ALTER ROLE service_role BYPASSRLS")
               migration = Path(
                   "migrations/140_kdo_engineering_shared_build_queue.sql"
               ).read_text(encoding="utf-8")
