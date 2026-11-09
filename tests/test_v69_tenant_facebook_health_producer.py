@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from api.support import auth_identity_var
 from core.event_provenance import ProducerRegistry
 from models.brand import Brand
 from models.social_account import Platform, SocialAccount
@@ -25,6 +26,22 @@ from services.v69_tenant_facebook_health_producer import (
     TenantHealthPublisherError,
 )
 from services.v69_tenant_social_account_resolver import TenantSocialAccountBinding
+
+
+@pytest.fixture(autouse=True)
+def authenticated_actor_context():
+    identity = SimpleNamespace(
+        valid=True,
+        method="api_key",
+        user_id="test-user",
+        is_species=False,
+        workspace_id="workspace-a",
+    )
+    token = auth_identity_var.set(identity)
+    try:
+        yield
+    finally:
+        auth_identity_var.reset(token)
 
 
 class FakeResolver:
@@ -322,3 +339,62 @@ def test_tenant_facebook_health_producer_rejects_unattested_health_evidence_sche
             producer_registry=producer_registry,
             producer_capability=capability,
         )
+
+
+
+@pytest.mark.asyncio
+async def test_missing_authenticated_actor_context_fails_before_provider_probe():
+    producer, _, service, bus, identity, connection, registry = make_producer()
+    store = FakeEvidenceStore()
+    token = auth_identity_var.set(None)
+    try:
+        with pytest.raises(
+            TenantHealthPublisherError,
+            match="authenticated_actor_provenance_required",
+        ):
+            await producer.observe(
+                identity,
+                brand_id="brand-a",
+                connection=connection,
+                contract=make_contract(),
+                registry=registry,
+                evidence_store=store,
+            )
+    finally:
+        auth_identity_var.reset(token)
+
+    assert service.calls == []
+    assert store.calls == []
+    assert bus.calls == []
+
+
+@pytest.mark.asyncio
+async def test_actor_workspace_mismatch_fails_before_provider_probe():
+    producer, _, service, bus, identity, connection, registry = make_producer()
+    store = FakeEvidenceStore()
+    token = auth_identity_var.set(SimpleNamespace(
+        valid=True,
+        method="api_key",
+        user_id="test-user",
+        is_species=False,
+        workspace_id="workspace-b",
+    ))
+    try:
+        with pytest.raises(
+            TenantHealthPublisherError,
+            match="authenticated_actor_provenance_required",
+        ):
+            await producer.observe(
+                identity,
+                brand_id="brand-a",
+                connection=connection,
+                contract=make_contract(),
+                registry=registry,
+                evidence_store=store,
+            )
+    finally:
+        auth_identity_var.reset(token)
+
+    assert service.calls == []
+    assert store.calls == []
+    assert bus.calls == []
