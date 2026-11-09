@@ -121,7 +121,7 @@ def test_connector_health_fails_closed_when_account_credentials_are_missing():
     assert service.calls == []
 
 
-def test_connector_health_never_falls_back_to_global_token_validation():
+def test_connector_health_never_falls_back_to_process_wide_token_validation():
     service = SimpleNamespace(validate_token=lambda: True)
     connector = FacebookConnector(service, social_account=account())
 
