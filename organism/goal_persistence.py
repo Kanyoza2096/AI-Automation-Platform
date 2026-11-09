@@ -62,7 +62,7 @@ def bootstrap_goal_proposal_store(
         return GoalProposalStoreBootstrapResult(None, "disabled_workspace_lookup_failed")
 
     return GoalProposalStoreBootstrapResult(
-        GoalProposalStore(service_role_client),
+        GoalProposalStore(service_role_client, workspace_id=workspace_id),
         "ready",
     )
 
@@ -70,12 +70,17 @@ def bootstrap_goal_proposal_store(
 class GoalProposalStore:
     """Persist proposals without granting update or execution authority."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, workspace_id: str | None = None) -> None:
         if client is None:
             raise ValueError("service-role database client is required")
+        if workspace_id is not None and (not isinstance(workspace_id, str) or not workspace_id.strip()):
+            raise ValueError("workspace_id must be a non-empty string when bound")
         self.client = client
+        self.workspace_id = workspace_id
 
     async def persist(self, proposal: GoalProposal) -> int:
+        if self.workspace_id is not None and proposal.workspace_id != self.workspace_id:
+            raise GoalProposalStoreError("proposal_workspace_mismatch")
         if proposal.authority != "suggest" or proposal.status != "proposed":
             raise ValueError("only proposed suggest-authority goals may be persisted")
         try:
@@ -116,6 +121,8 @@ class GoalProposalStore:
     ) -> tuple[GoalProposal, ...]:
         if not isinstance(workspace_id, str) or not workspace_id.strip():
             raise ValueError("workspace_id is required")
+        if self.workspace_id is not None and workspace_id != self.workspace_id:
+            raise GoalProposalStoreError("proposal_workspace_mismatch")
         if not 1 <= int(limit) <= 100:
             raise ValueError("limit must be between 1 and 100")
         current = now or datetime.now(timezone.utc)
