@@ -124,6 +124,8 @@ class IntegrationConnection:
     def __post_init__(self) -> None:
         if not self.workspace_id.strip() or not self.connector_key.strip():
             raise ValueError("workspace_id and connector_key are required")
+        if bool(self.brand_id) != bool(self.social_account_id):
+            raise ValueError("brand_id and social_account_id must be set together")
         if len(set(self.granted_capabilities)) != len(self.granted_capabilities):
             raise ValueError("granted_capabilities must be unique")
         if self.authority != "none" or self.execution_effect != "none":
