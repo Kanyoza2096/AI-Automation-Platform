@@ -80,7 +80,7 @@ def resolver(client=None):
 def test_resolver_scopes_brand_and_account_queries_to_workspace():
     client = FakeClient()
     binding = resolver(client).resolve(
-        workspace_id="workspace-a", brand_id="brand-a", platform="facebook"
+        workspace_id="workspace-a", brand_id="brand-a", platform=Platform.FACEBOOK
     )
 
     assert binding.workspace_id == "workspace-a"
