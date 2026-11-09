@@ -19,6 +19,9 @@ on:
       - "organism/lifecycle.py"
       - "organism/goals.py"
       - "tests/test_organism_goal_proposals.py"
+      - "organism/goal_persistence.py"
+      - "migrations/157_u2_organism_goal_proposals.sql"
+      - "tests/test_organism_goal_persistence.py"
       - "organism/event_bridge.py"
       - "organism/persistence.py"
       - "migrations/155_u2_organism_runtime_snapshots.sql"
@@ -196,6 +199,7 @@ jobs:
                   "migrations/075_u1_shared_event_delivery_metrics.sql",
                   "migrations/155_u2_organism_runtime_snapshots.sql",
                   "migrations/156_u2_organism_runtime_snapshot_minimum_grants.sql",
+                  "migrations/157_u2_organism_goal_proposals.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -208,6 +212,7 @@ jobs:
                       "074_u1_shared_event_delivery_retry_dead_letter.sql",
                       "075_u1_shared_event_delivery_metrics.sql",
                       "155_u2_organism_runtime_snapshots.sql",
+                      "157_u2_organism_goal_proposals.sql",
                   )):
                       connection.execute(migration_sql, prepare=False)
                   else:
@@ -248,6 +253,7 @@ jobs:
             tests/security/test_u1_unified_event_bus_backpressure.py \
             tests/test_organism_lifecycle.py \
             tests/test_organism_goal_proposals.py \
+            tests/test_organism_goal_persistence.py \
             tests/test_organism_event_bridge.py \
             tests/test_organism_cycle_coordinator.py \
             tests/test_organism_runtime_persistence.py \
