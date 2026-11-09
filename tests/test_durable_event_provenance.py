@@ -64,7 +64,7 @@ def test_signed_envelope_round_trips_to_verified_provenance():
     assert result.producer.producer_id == "health-monitor"
     assert result.actor.subject_id == "user-1"
     assert result.workspace_id == "workspace-a"
-    assert result.verification == "hmac_sha256_v1"
+    assert result.verification == "ed25519_v1"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -165,7 +165,7 @@ def test_actor_workspace_mismatch_rejected_even_with_valid_signature():
     envelope = sign()
     # Re-signing a mismatched actor is not exposed through normal event flow;
     # even a correctly signed envelope must preserve the actor/event binding.
-    from core.durable_event_provenance import _signed_fields, _canonical_json
+    from core.durable_event_provenance import _canonical_json
     fields = {k: v for k, v in envelope.items() if k != "signature"}
     fields["actor"]["workspace_id"] = "workspace-b"
     signature = Ed25519PrivateKey.from_private_bytes(PRIVATE_A).sign(_canonical_json(fields)).hex()
