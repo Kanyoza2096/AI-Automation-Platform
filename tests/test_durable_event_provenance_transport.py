@@ -9,6 +9,12 @@ from __future__ import annotations
 import asyncio
 import threading
 
+import pytest
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from core.durable_event_provenance import sign_durable_provenance, verify_durable_provenance
 from core.event_provenance import ProducerPrincipal, ProducerRegistry, VerifiedEventProvenance
 from core.shared_event_bus import SharedEventBus
 from core.unified_bus import EventBusConfig, UnifiedEventBus
@@ -171,6 +177,10 @@ def test_shared_bus_context_handler_receives_only_independently_verified_proof(m
     assert received[0]["provenance"] is verified
     assert received[0]["payload"] == event["payload"]
     assert "provenance" not in received[0]["payload"]
+    with pytest.raises(TypeError):
+        received[0]["workspace_id"] = "workspace-attacker"
+    with pytest.raises(TypeError):
+        received[0]["payload"]["status"] = "healthy"
 
 
 def test_shared_bus_invalid_signature_reaches_context_handler_as_untrusted(monkeypatch):
@@ -253,3 +263,106 @@ def test_unified_bus_legacy_persistence_omits_new_column_until_signed():
         await bus.stop()
 
     asyncio.run(run())
+
+
+
+def test_shared_bus_round_trips_real_ed25519_proof_for_historical_event(monkeypatch):
+    private_seed = b"historical-producer-key-32-bytes!"[:32]
+    private_key = Ed25519PrivateKey.from_private_bytes(private_seed)
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    registry = ProducerRegistry({"health-producer": "tenant_health"})
+
+    def signer(proof, *, event_id, event_name, payload, brand_id):
+        return sign_durable_provenance(
+            proof,
+            event_id=event_id,
+            event_name=event_name,
+            payload=payload,
+            key_id="health-producer-v1",
+            signing_key=private_seed,
+            issued_at=1_000,
+            ttl_seconds=60,
+        )
+
+    db = _SharedDB()
+    publisher = SharedEventBus(
+        db,
+        source_service="health-worker",
+        producer_registry=registry,
+        provenance_signer=signer,
+        provenance_storage_enabled=True,
+    )
+    assert publisher.publish(
+        "health.observed",
+        {"service": "api", "status": "degraded"},
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        producer_capability=registry.issue("health-producer"),
+    )
+
+    def verifier(envelope, **event):
+        return verify_durable_provenance(
+            envelope,
+            keyring={"health-producer-v1": public_key},
+            key_owners={"health-producer-v1": "health-producer"},
+            now=5_000,
+            enforce_freshness=False,
+            **event,
+        )
+
+    consumer = SharedEventBus(
+        source_service="health-consumer",
+        provenance_verifier=verifier,
+    )
+    received = []
+    consumer.subscribe_with_context(
+        "health.observed",
+        received.append,
+        handler_id="tests:ed25519-roundtrip",
+    )
+    monkeypatch.setattr(
+        consumer, "_ensure_handler_delivery",
+        lambda *_args: {"id": "handler-receipt", "processed": False},
+    )
+    monkeypatch.setattr(
+        consumer, "_claim_handler_delivery",
+        lambda _receipt: ("handler-receipt", "handler-claim"),
+    )
+
+    class _Heartbeat:
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(
+        consumer, "_start_handler_lease_heartbeat",
+        lambda *_args: (threading.Event(), _Heartbeat()),
+    )
+    monkeypatch.setattr(
+        consumer, "_mark_handler_delivery_processed",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        consumer, "_mark_delivery_processed",
+        lambda *_args, **_kwargs: True,
+    )
+
+    event = dict(db.record)
+    event["source_instance"] = "another-process"
+    consumer._dispatch_event(
+        event,
+        delivery_id="delivery-1",
+        claim_token="group-claim",
+    )
+
+    assert len(received) == 1
+    proof = received[0]["provenance"]
+    assert proof is not None
+    assert proof.producer.producer_id == "health-producer"
+    assert proof.workspace_id == "workspace-a"
+    assert proof.brand_id == "brand-a"
+    assert proof.verification == "ed25519_v1"
+    # The envelope has expired as a freshness token, but remains authentic.
+    assert event["provenance_envelope"]["expires_at"] < 5_000
