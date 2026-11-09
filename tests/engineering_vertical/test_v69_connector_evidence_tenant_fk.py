@@ -198,3 +198,9 @@ def test_integration_evidence_rpc_is_atomic_and_service_role_only():
                     """,
                     (f"{evidence_id}-direct", workspace_id, connection_id, "c" * 64),
                 )
+
+        # Authenticated clients cannot invoke the privileged append function.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE authenticated")
+                connection.execute(append_sql, first_params)
