@@ -37,16 +37,16 @@ on:
       - "tests/test_autonomy_phase_reporting.py"
       - "tests/test_organism_lifecycle.py"
       - "core/unified_bus.py"
+      - "core/durable_event_provenance.py"
+      - "tests/test_durable_event_provenance.py"
+      - "tests/test_durable_event_provenance_transport.py"
+      - "tests/test_unified_bus_provenance_transport.py"
       - "core/event_provenance.py"
       - "api/dependencies.py"
       - "api/support.py"
       - "tests/test_authenticated_actor_context.py"
       - "docs/organism/u2-producer-provenance-audit.md"
       - "tests/test_event_provenance.py"
-      - "core/durable_event_provenance.py"
-      - "tests/test_durable_event_provenance.py"
-      - "tests/test_durable_event_provenance_transport.py"
-      - "tests/test_unified_bus_provenance_transport.py"
       - "utils/ids.py"
       - "tests/security/**"
       - "dependency_registry.py"
@@ -54,6 +54,9 @@ on:
       - "core/species_scale.py"
       - "tests/test_species_scale_workspace_hydration.py"
       - "tests/test_architecture_contracts.py"
+      - "services/vnext_connector_fabric_evidence_read_model.py"
+      - "routes/connector_fabric_routes.py"
+      - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
   workflow_dispatch:
 
 permissions:
@@ -241,7 +244,6 @@ jobs:
               ).fetchone()
               if not provenance_column:
                   raise RuntimeError("durable event provenance column was not applied")
-
           PY
       - name: Run focused engineering vertical tests
         run: |
@@ -284,7 +286,10 @@ jobs:
             tests/test_autonomy_phase_reporting.py \
             tests/tenancy/test_request_context.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
+            tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
             tests/test_authenticated_actor_context.py \
-            tests/test_durable_event_provenance.py \
+            tests/test_event_provenance.py \
             tests/test_unified_bus_provenance_transport.py \
-            tests/test_durable_event_provenance_transport.py
+            tests/test_durable_event_provenance.py \
+            tests/test_durable_event_provenance_transport.py \
+            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py

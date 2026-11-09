@@ -33,11 +33,16 @@ async def connector_fabric_read_model(request: Request):
 @router.get("/{connector_key}/evidence", dependencies=[Depends(_auth_dep())])
 async def connector_fabric_evidence(connector_key: str, request: Request):
     """Durable health/certification evidence; never execution authority."""
-    from services.vnext_connector_fabric_evidence_read_model import build_connector_fabric_evidence
+    from services.vnext_connector_fabric_evidence_read_model import (
+        EvidenceReadError,
+        build_connector_fabric_evidence,
+    )
     try:
         return build_connector_fabric_evidence(_workspace_id(request), connector_key)
     except KeyError as exc:
         raise HTTPException(404, detail="Connector not found") from exc
+    except EvidenceReadError as exc:
+        raise HTTPException(503, detail="Connector evidence is temporarily unavailable") from exc
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
 
