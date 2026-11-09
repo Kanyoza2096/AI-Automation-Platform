@@ -60,6 +60,13 @@ on:
       - "services/facebook.py"
       - "services/connectors/facebook_connector.py"
       - "tests/test_facebook_connector_tenant_health.py"
+      - "migrations/066_v69_business_integration_onboarding.sql"
+      - "migrations/067_v69_3_5_integration_foundation.sql"
+      - "migrations/068_v69_8_connector_activation_registry.sql"
+      - "migrations/069_v69_13_integration_evidence.sql"
+      - "migrations/100_vnext_connector_health_evidence.sql"
+      - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
+      - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
   workflow_dispatch:
 
 permissions:
@@ -194,11 +201,34 @@ jobs:
                   RETURNS uuid LANGUAGE sql STABLE AS 'SELECT NULL::uuid'
               """)
               connection.execute("""
-                  CREATE TABLE public.workspace_members (
+                  CREATE TABLE IF NOT EXISTS public.workspaces (
+                      id TEXT PRIMARY KEY
+                  )
+              """)
+              connection.execute("""
+                  CREATE TABLE IF NOT EXISTS public.workspace_members (
                       workspace_id TEXT NOT NULL,
                       user_id TEXT NOT NULL
                   )
               """)
+
+              # Exercise tenant-scoped connector evidence migrations only on
+              # this disposable CI PostgreSQL instance.
+              for migration_path in (
+                  "migrations/066_v69_business_integration_onboarding.sql",
+                  "migrations/067_v69_3_5_integration_foundation.sql",
+                  "migrations/068_v69_8_connector_activation_registry.sql",
+                  "migrations/069_v69_13_integration_evidence.sql",
+                  "migrations/100_vnext_connector_health_evidence.sql",
+                  "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
+              ):
+                  migration_sql = Path(migration_path).read_text(encoding="utf-8")
+                  migration_sql = "\n".join(
+                      line for line in migration_sql.splitlines()
+                      if not line.lstrip().startswith("--")
+                  )
+                  connection.execute(migration_sql, prepare=False)
+
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
@@ -296,4 +326,5 @@ jobs:
             tests/test_durable_event_provenance.py \
             tests/test_durable_event_provenance_transport.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py \
-            tests/test_facebook_connector_tenant_health.py
+            tests/test_facebook_connector_tenant_health.py \
+            tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py
