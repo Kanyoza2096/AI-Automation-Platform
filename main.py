@@ -1191,7 +1191,8 @@ async def lifespan(app: FastAPI):
         # U2 producer provenance is installed on the existing canonical bus
         # only when producer keys are configured and migration 158's column
         # passes a read-only schema probe. No second bus is constructed here.
-        app.state.tenant_facebook_provenance_runtime = None
+        app.state.tenant_facebook_provenance_enabled = False
+        app.state.tenant_facebook_provenance_key_id = None
         try:
             from core.unified_bus import UnifiedEventBus
             from core.event_provenance_runtime import install_tenant_facebook_provenance
@@ -1202,7 +1203,10 @@ async def lifespan(app: FastAPI):
                 supabase_client=getattr(provenance_bus, "supabase", None),
             )
             if provenance_result.enabled:
-                app.state.tenant_facebook_provenance_runtime = provenance_result.runtime
+                # Keep the capability-bearing runtime attached to the canonical
+                # bus; expose only non-sensitive status to request handlers.
+                app.state.tenant_facebook_provenance_enabled = True
+                app.state.tenant_facebook_provenance_key_id = provenance_result.runtime.active_key_id
                 logger.info(
                     "U2 tenant Facebook event provenance installed (key_id=%s)",
                     provenance_result.runtime.active_key_id,
