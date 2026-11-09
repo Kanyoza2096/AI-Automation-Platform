@@ -295,44 +295,64 @@ jobs:
                   VALUES ('ws-resource-a', 'connection-resource-a', 'facebook', '1.0.0',
                           'active', 'brand-resource-a', 'page-resource-a')
               """)
+              # Legacy rows may remain unbound; partial or mismatched resource
+              # bindings must be rejected by database constraints/triggers.
               connection.execute("""
-                  DO $
-                  BEGIN
-                      BEGIN
-                          INSERT INTO public.integration_connections
-                              (id, workspace_id, connector_key, brand_id, social_account_id)
-                          VALUES ('connection-wrong-workspace', 'ws-resource-a', 'facebook',
-                                  'brand-resource-b', 'page-resource-b');
-                          RAISE EXCEPTION 'expected brand workspace mismatch was not rejected';
-                      EXCEPTION WHEN OTHERS THEN
-                          IF SQLERRM <> 'integration_connection_brand_workspace_mismatch' THEN
-                              RAISE;
-                          END IF;
-                      END;
-                      BEGIN
-                          INSERT INTO public.integration_connections
-                              (id, workspace_id, connector_key, brand_id, social_account_id)
-                          VALUES ('connection-wrong-brand', 'ws-resource-a', 'facebook',
-                                  'brand-resource-a', 'page-resource-c');
-                          RAISE EXCEPTION 'expected social account brand mismatch was not rejected';
-                      EXCEPTION WHEN OTHERS THEN
-                          IF SQLERRM <> 'integration_connection_social_account_binding_mismatch' THEN
-                              RAISE;
-                          END IF;
-                      END;
-                      BEGIN
-                          INSERT INTO public.connector_certification_registry
-                              (workspace_id, connection_id, connector_key, connector_version,
-                               registry_state, brand_id, social_account_id)
-                          VALUES ('ws-resource-a', 'connection-resource-a', 'facebook-alt', '1.0.0',
-                                  'active', 'brand-resource-c', 'page-resource-c');
-                          RAISE EXCEPTION 'expected registry connection binding mismatch was not rejected';
-                      EXCEPTION WHEN foreign_key_violation THEN
-                          NULL;
-                      END;
-                  END
-                  $;
+                  INSERT INTO public.integration_connections (id, workspace_id, connector_key)
+                  VALUES ('connection-legacy-unbound', 'ws-resource-a', 'facebook')
               """)
+
+              def expect_db_error(statement, error_type, expected_message):
+                  try:
+                      with connection.transaction():
+                          connection.execute(statement)
+                  except error_type as exc:
+                      if expected_message not in str(exc):
+                          raise
+                  else:
+                      raise RuntimeError(f"expected database rejection: {expected_message}")
+
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-wrong-workspace', 'ws-resource-a', 'facebook',
+                          'brand-resource-b', 'page-resource-b')
+                  """,
+                  psycopg.errors.RaiseException,
+                  "integration_connection_brand_workspace_mismatch",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-wrong-brand', 'ws-resource-a', 'facebook',
+                          'brand-resource-a', 'page-resource-c')
+                  """,
+                  psycopg.errors.RaiseException,
+                  "integration_connection_social_account_binding_mismatch",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id)
+                  VALUES ('connection-partial-binding', 'ws-resource-a', 'facebook',
+                          'brand-resource-a')
+                  """,
+                  psycopg.errors.CheckViolation,
+                  "integration_connections_resource_binding_pair_check",
+              )
+              expect_db_error(
+                  """
+                  INSERT INTO public.connector_certification_registry
+                      (workspace_id, connection_id, connector_key, connector_version,
+                       registry_state, brand_id, social_account_id)
+                  VALUES ('ws-resource-a', 'connection-resource-a', 'facebook-alt', '1.0.0',
+                          'active', 'brand-resource-c', 'page-resource-c')
+                  """,
+                  psycopg.errors.ForeignKeyViolation,
+                  "connector_certification_resource_binding_fk",
+              )
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
