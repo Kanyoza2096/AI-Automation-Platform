@@ -57,6 +57,9 @@ on:
       - "services/vnext_connector_fabric_evidence_read_model.py"
       - "routes/connector_fabric_routes.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
+      - "services/facebook.py"
+      - "services/connectors/facebook_connector.py"
+      - "tests/test_facebook_connector_tenant_health.py"
   workflow_dispatch:
 
 permissions:
@@ -292,4 +295,6 @@ jobs:
             tests/test_unified_bus_provenance_transport.py \
             tests/test_durable_event_provenance.py \
             tests/test_durable_event_provenance_transport.py \
-            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
+            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py \
+            # Offline fake-session coverage only; no provider network requests.
+            tests/test_facebook_connector_tenant_health.py
