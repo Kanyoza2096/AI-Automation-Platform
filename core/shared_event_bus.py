@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+from types import MappingProxyType
 from typing import Any, Callable, Dict, List, Optional
 
 from utils.ids import get_process_instance_id
@@ -33,6 +34,17 @@ from core.event_provenance import (
 )
 
 logger = logging.getLogger("kanyoza.shared_event_bus")
+
+
+def _freeze_event_context(value: Any) -> Any:
+    """Recursively freeze event context containers shared across handlers."""
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze_event_context(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_event_context(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_event_context(item) for item in value)
+    return value
 
 
 class SharedEventBus:
@@ -239,7 +251,7 @@ class SharedEventBus:
     def subscribe_with_context(
         self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
     ) -> Callable[[], None]:
-        """Subscribe to the immutable event context, including verified proof.
+        """Subscribe to a read-only event context, including verified proof.
 
         The context's provenance is None unless this worker independently
         verifies the dedicated durable envelope. Legacy payload handlers are
@@ -534,7 +546,7 @@ class SharedEventBus:
                 provenance = None
                 logger.warning("SharedEventBus provenance verification failed for %s: %s", event_id, exc)
 
-        event_context = {
+        event_context = _freeze_event_context({
             "event_id": str(event_id),
             "event_name": event_name,
             "workspace_id": event.get("workspace_id"),
@@ -543,7 +555,7 @@ class SharedEventBus:
             "source_instance": event.get("source_instance"),
             "payload": payload,
             "provenance": provenance,
-        }
+        })
 
         with self._lock:
             handlers = list(self._handlers.get(event_name, []))
