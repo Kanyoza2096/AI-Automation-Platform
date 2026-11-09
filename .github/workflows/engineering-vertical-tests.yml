@@ -36,6 +36,8 @@ on:
       - "tests/test_autonomy_phase_reporting.py"
       - "tests/test_organism_lifecycle.py"
       - "core/unified_bus.py"
+      - "core/durable_event_provenance.py"
+      - "tests/test_durable_event_provenance.py"
       - "tests/test_unified_bus_provenance_transport.py"
       - "core/event_provenance.py"
       - "api/dependencies.py"
@@ -272,3 +274,4 @@ jobs:
             tests/test_authenticated_actor_context.py \
             tests/test_event_provenance.py \
             tests/test_unified_bus_provenance_transport.py
+            tests/test_durable_event_provenance.py
