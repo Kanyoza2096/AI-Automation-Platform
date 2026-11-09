@@ -12,6 +12,61 @@ class GoalProposalStoreError(RuntimeError):
     """A proposal could not be safely persisted or recovered."""
 
 
+@dataclass(frozen=True)
+class GoalProposalStoreBootstrapResult:
+    store: "GoalProposalStore | None"
+    status: str
+
+
+def bootstrap_goal_proposal_store(
+    service_role_client: Any,
+    workspace_id: str,
+) -> GoalProposalStoreBootstrapResult:
+    """Create the workspace-scoped store only after read-only schema checks.
+
+    This function never creates or alters schema and never falls back to an
+    anon/browser client. It is intended for authenticated organism startup.
+    """
+    if service_role_client is None:
+        return GoalProposalStoreBootstrapResult(None, "disabled_no_service_role_client")
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        return GoalProposalStoreBootstrapResult(None, "disabled_workspace_identity_missing")
+
+    try:
+        schema = (
+            service_role_client.table("organism_goal_proposals")
+            .select("proposal_id,workspace_id,authority,status,expires_at")
+            .limit(0)
+            .execute()
+        )
+        if getattr(schema, "data", None) is None:
+            return GoalProposalStoreBootstrapResult(None, "disabled_schema_not_ready")
+    except Exception:
+        return GoalProposalStoreBootstrapResult(None, "disabled_schema_not_ready")
+
+    try:
+        workspace = (
+            service_role_client.table("workspaces")
+            .select("id,status")
+            .eq("id", workspace_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(workspace, "data", None)
+        if not rows:
+            return GoalProposalStoreBootstrapResult(None, "disabled_workspace_unavailable")
+        row = rows[0]
+        if row.get("id") != workspace_id or row.get("status") != "active":
+            return GoalProposalStoreBootstrapResult(None, "disabled_workspace_inactive")
+    except Exception:
+        return GoalProposalStoreBootstrapResult(None, "disabled_workspace_lookup_failed")
+
+    return GoalProposalStoreBootstrapResult(
+        GoalProposalStore(service_role_client),
+        "ready",
+    )
+
+
 class GoalProposalStore:
     """Persist proposals without granting update or execution authority."""
 
@@ -133,3 +188,11 @@ def _parse_timestamp(value: Any) -> datetime:
 
 
 __all__ = ["GoalProposalStore", "GoalProposalStoreError"]
+
+
+__all__ = [
+    "GoalProposalStoreError",
+    "GoalProposalStore",
+    "GoalProposalStoreBootstrapResult",
+    "bootstrap_goal_proposal_store",
+]
