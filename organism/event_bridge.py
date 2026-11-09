@@ -57,6 +57,8 @@ def _verified_facebook_health_producer(
         or proof.producer.producer_class != "tenant_connector_health"
         or proof.verification not in {"composition_root_capability", "ed25519_v1"}
         or proof.workspace_id != workspace_id
+        or proof.actor is None
+        or proof.actor.workspace_id != workspace_id
     ):
         return None
     brand_id = str(event.get("brand_id") or "").strip()
