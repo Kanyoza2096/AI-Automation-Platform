@@ -77,6 +77,7 @@ on:
       - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
       - "migrations/160_v69_integration_evidence_atomic_append.sql"
       - "migrations/161_u2_atomic_connector_health_observation.sql"
+      - "migrations/162_u2_tenant_connector_resource_binding.sql"
       - "services/v69_connector_runtime_gateway.py"
       - "tests/test_v69_10_connector_runtime_gateway.py"
       - "repositories/social_account_repository.py"
@@ -240,6 +241,19 @@ jobs:
                       user_id TEXT NOT NULL
                   )
               """)
+              connection.execute("""
+                  CREATE TABLE IF NOT EXISTS public.brands (
+                      id TEXT PRIMARY KEY,
+                      workspace_id TEXT NOT NULL
+                  )
+              """)
+              connection.execute("""
+                  CREATE TABLE IF NOT EXISTS public.social_accounts (
+                      id TEXT PRIMARY KEY,
+                      workspace_id TEXT NOT NULL,
+                      brand_id TEXT NOT NULL
+                  )
+              """)
 
               # Exercise V69 connector-evidence and atomic-append schemas on this disposable
               # PostgreSQL instance. The composite FKs must bind each evidence
@@ -253,6 +267,7 @@ jobs:
                   "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
                   "migrations/160_v69_integration_evidence_atomic_append.sql",
                   "migrations/161_u2_atomic_connector_health_observation.sql",
+                  "migrations/162_u2_tenant_connector_resource_binding.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -260,6 +275,62 @@ jobs:
                       if not line.lstrip().startswith("--")
                   )
                   connection.execute(migration_sql, prepare=False)
+
+              # Verify workspace/brand/Page-account binding and registry-to-connection
+              # consistency using only the disposable PostgreSQL instance.
+              connection.execute("INSERT INTO public.workspaces (id) VALUES ('ws-resource-a'), ('ws-resource-b') ON CONFLICT DO NOTHING")
+              connection.execute("INSERT INTO public.brands (id, workspace_id) VALUES ('brand-resource-a', 'ws-resource-a'), ('brand-resource-b', 'ws-resource-b'), ('brand-resource-c', 'ws-resource-a') ON CONFLICT DO NOTHING")
+              connection.execute("INSERT INTO public.social_accounts (id, workspace_id, brand_id) VALUES ('page-resource-a', 'ws-resource-a', 'brand-resource-a'), ('page-resource-b', 'ws-resource-b', 'brand-resource-b'), ('page-resource-c', 'ws-resource-a', 'brand-resource-c') ON CONFLICT DO NOTHING")
+              connection.execute("""
+                  INSERT INTO public.integration_connections
+                      (id, workspace_id, connector_key, brand_id, social_account_id)
+                  VALUES ('connection-resource-a', 'ws-resource-a', 'facebook', 'brand-resource-a', 'page-resource-a')
+              """)
+              connection.execute("""
+                  INSERT INTO public.connector_certification_registry
+                      (workspace_id, connection_id, connector_key, connector_version,
+                       registry_state, brand_id, social_account_id)
+                  VALUES ('ws-resource-a', 'connection-resource-a', 'facebook', '1.0.0',
+                          'active', 'brand-resource-a', 'page-resource-a')
+              """)
+              connection.execute("""
+                  DO $
+                  BEGIN
+                      BEGIN
+                          INSERT INTO public.integration_connections
+                              (id, workspace_id, connector_key, brand_id, social_account_id)
+                          VALUES ('connection-wrong-workspace', 'ws-resource-a', 'facebook',
+                                  'brand-resource-b', 'page-resource-b');
+                          RAISE EXCEPTION 'expected brand workspace mismatch was not rejected';
+                      EXCEPTION WHEN OTHERS THEN
+                          IF SQLERRM <> 'integration_connection_brand_workspace_mismatch' THEN
+                              RAISE;
+                          END IF;
+                      END;
+                      BEGIN
+                          INSERT INTO public.integration_connections
+                              (id, workspace_id, connector_key, brand_id, social_account_id)
+                          VALUES ('connection-wrong-brand', 'ws-resource-a', 'facebook',
+                                  'brand-resource-a', 'page-resource-c');
+                          RAISE EXCEPTION 'expected social account brand mismatch was not rejected';
+                      EXCEPTION WHEN OTHERS THEN
+                          IF SQLERRM <> 'integration_connection_social_account_binding_mismatch' THEN
+                              RAISE;
+                          END IF;
+                      END;
+                      BEGIN
+                          INSERT INTO public.connector_certification_registry
+                              (workspace_id, connection_id, connector_key, connector_version,
+                               registry_state, brand_id, social_account_id)
+                          VALUES ('ws-resource-a', 'connection-resource-a', 'facebook-alt', '1.0.0',
+                                  'active', 'brand-resource-c', 'page-resource-c');
+                          RAISE EXCEPTION 'expected registry connection binding mismatch was not rejected';
+                      EXCEPTION WHEN foreign_key_violation THEN
+                          NULL;
+                      END;
+                  END
+                  $;
+              """)
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
