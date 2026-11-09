@@ -162,6 +162,8 @@ class SupabaseIntegrationEvidenceStore:
                 current = replace(current, previous_hash=expected_previous, evidence_hash="")
             if len(current.payload_fingerprint) != 64:
                 raise EvidenceError("payload_fingerprint_required")
+            if current.evidence_hash != compute_evidence_hash(current):
+                raise EvidenceError("evidence_hash_mismatch")
 
             params = {
                 "p_evidence_id": current.evidence_id,
