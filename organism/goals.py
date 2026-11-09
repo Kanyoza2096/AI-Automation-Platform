@@ -162,6 +162,7 @@ def derive_goal_proposal(
             }
             or not metadata.get("brand_id")
             or not metadata.get("connection_id")
+            or not metadata.get("social_account_id")
         ):
             return None
         evidence_id = str(metadata.get("evidence_id") or "").strip()
