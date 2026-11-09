@@ -137,3 +137,14 @@ def test_connector_validate_uses_bound_account_health():
 
     assert connector.validate() is True
     assert service.calls == [("page-tenant-a", "tenant-page-secret")]
+
+
+def test_service_provider_rejection_does_not_echo_account_token():
+    service = FacebookService.__new__(FacebookService)
+    session = FakeSession(FakeResponse(401, {"error": {"code": 190}}))
+    service._session = session
+
+    result = service.validate_account_token("page-tenant-a", "tenant-page-secret")
+
+    assert result == {"ok": False, "error": {"status_code": 401}}
+    assert "tenant-page-secret" not in repr(result)
