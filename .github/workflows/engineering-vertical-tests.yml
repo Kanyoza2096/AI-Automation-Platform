@@ -17,6 +17,7 @@ on:
       - "services/v69_tenant_facebook_connector_factory.py"
       - "tests/test_facebook_connector_tenant_health.py"
       - "tests/test_v69_tenant_facebook_connector_factory.py"
+      # Facebook composition must preserve the resolved Page account identity.
       - "core/api_tokens.py"
       - "core/nerve.py"
       - "core/shared_event_bus.py"
