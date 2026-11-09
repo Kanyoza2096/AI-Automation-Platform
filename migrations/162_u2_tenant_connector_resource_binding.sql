@@ -30,6 +30,34 @@ ALTER TABLE public.connector_certification_registry
 CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_connections_resource_binding
     ON public.integration_connections(workspace_id, id, brand_id, social_account_id);
 
+-- Enforce the resource identity against the canonical tenant tables as well.
+-- NOT VALID preserves historical rows while checking all new writes/updates.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brands_workspace_id_id
+    ON public.brands(workspace_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_social_accounts_workspace_brand_id_id
+    ON public.social_accounts(workspace_id, brand_id, id);
+
+ALTER TABLE public.integration_connections
+    DROP CONSTRAINT IF EXISTS integration_connections_brand_workspace_fk;
+ALTER TABLE public.integration_connections
+    ADD CONSTRAINT integration_connections_brand_workspace_fk
+    FOREIGN KEY (workspace_id, brand_id)
+    REFERENCES public.brands(workspace_id, id)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT
+    NOT VALID;
+
+ALTER TABLE public.integration_connections
+    DROP CONSTRAINT IF EXISTS integration_connections_social_account_binding_fk;
+ALTER TABLE public.integration_connections
+    ADD CONSTRAINT integration_connections_social_account_binding_fk
+    FOREIGN KEY (workspace_id, brand_id, social_account_id)
+    REFERENCES public.social_accounts(workspace_id, brand_id, id)
+    ON DELETE RESTRICT
+    ON UPDATE RESTRICT
+    NOT VALID;
+
 ALTER TABLE public.connector_certification_registry
     DROP CONSTRAINT IF EXISTS connector_certification_resource_binding_fk;
 ALTER TABLE public.connector_certification_registry
