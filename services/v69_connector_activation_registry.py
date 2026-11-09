@@ -83,6 +83,8 @@ class ConnectorRegistryRecord:
     def __post_init__(self) -> None:
         if not self.workspace_id.strip() or not self.connection_id.strip() or not self.connector_key.strip():
             raise ValueError("workspace_id, connection_id and connector_key are required")
+        if bool(self.brand_id) != bool(self.social_account_id):
+            raise ValueError("brand_id and social_account_id must be set together")
         if self.authority != "none" or self.execution_effect != "none":
             raise ValueError("registry records cannot grant authority or execution")
 
