@@ -1,4 +1,6 @@
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.durable_event_provenance import (
     DurableProvenanceError,
@@ -8,8 +10,10 @@ from core.durable_event_provenance import (
 from core.event_provenance import ActorPrincipal, ProducerPrincipal, VerifiedEventProvenance
 
 
-KEY_A = b"a" * 32
-KEY_B = b"b" * 32
+PRIVATE_A = b"a" * 32
+PRIVATE_B = b"b" * 32
+KEY_A = Ed25519PrivateKey.from_private_bytes(PRIVATE_A).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+KEY_B = Ed25519PrivateKey.from_private_bytes(PRIVATE_B).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 EVENT = {
     "event_id": "evt-123",
     "event_name": "engine_alert",
@@ -25,7 +29,7 @@ PROOF = VerifiedEventProvenance(
 )
 
 
-def sign(key_id="key-v1", key=KEY_A, **overrides):
+def sign(key_id="key-v1", key=PRIVATE_A, **overrides):
     args = {**EVENT, **overrides}
     return sign_durable_provenance(
         PROOF,
@@ -111,8 +115,8 @@ def test_key_cannot_assert_another_producers_identity():
 
 
 def test_key_rotation_accepts_retained_old_key_and_new_key():
-    old_envelope = sign("key-v1", KEY_A)
-    new_envelope = sign("key-v2", KEY_B)
+    old_envelope = sign("key-v1", PRIVATE_A)
+    new_envelope = sign("key-v2", PRIVATE_B)
     keyring = {"key-v1": KEY_A, "key-v2": KEY_B}
     assert verify(old_envelope, keyring=keyring).producer.producer_id == "health-monitor"
     assert verify(new_envelope, keyring=keyring).producer.producer_id == "health-monitor"
@@ -162,14 +166,9 @@ def test_actor_workspace_mismatch_rejected_even_with_valid_signature():
     # Re-signing a mismatched actor is not exposed through normal event flow;
     # even a correctly signed envelope must preserve the actor/event binding.
     from core.durable_event_provenance import _signed_fields, _canonical_json
-    import hashlib
-    import hmac
-
     fields = {k: v for k, v in envelope.items() if k != "signature"}
     fields["actor"]["workspace_id"] = "workspace-b"
-    envelope = {
-        **fields,
-        "signature": hmac.new(KEY_A, _canonical_json(fields), hashlib.sha256).hexdigest(),
-    }
+    signature = Ed25519PrivateKey.from_private_bytes(PRIVATE_A).sign(_canonical_json(fields)).hex()
+    envelope = {**fields, "signature": signature}
     with pytest.raises(DurableProvenanceError, match="actor workspace"):
         verify(envelope)
