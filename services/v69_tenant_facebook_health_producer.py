@@ -163,6 +163,7 @@ class TenantFacebookHealthProducer:
             "status": receipt.health_state,
             "health_state": receipt.health_state,
             "connection_id": receipt.connection_id,
+            "social_account_id": receipt.social_account_id,
             "connector_key": receipt.connector_key,
             "provider": contract.provider,
             "connector_version": contract.version,
@@ -211,6 +212,8 @@ class TenantFacebookHealthProducer:
             raise TenantHealthPublisherError("durable_health_receipt_required")
         if (
             receipt.workspace_id != binding.workspace_id
+            or receipt.brand_id != binding.brand_id
+            or receipt.social_account_id != binding.account_id
             or receipt.connection_id != connection.connection_id
             or receipt.connector_key != "facebook"
         ):
