@@ -235,10 +235,10 @@ async def test_bootstrapped_goal_store_rejects_cross_workspace_proposals_and_rea
 
 @pytest.mark.asyncio
 async def test_authenticated_organism_start_injects_only_workspace_bound_goal_store(monkeypatch):
-    from services.supabase import supabase_service
+    import services.supabase as supabase_module
 
     client = Client()
-    monkeypatch.setattr(supabase_service, "service_client", client)
+    monkeypatch.setattr(supabase_module, "_service_client", client)
     organism = Organism(OrganismConfig(workspace_id="workspace-a"))
     runtime = organism.runtime
     runtime.recovery_status = "restored"
@@ -256,7 +256,7 @@ async def test_authenticated_organism_start_injects_only_workspace_bound_goal_st
 
 @pytest.mark.asyncio
 async def test_organism_starts_but_keeps_goal_store_disabled_when_migration_is_missing(monkeypatch):
-    from services.supabase import supabase_service
+    import services.supabase as supabase_module
 
     class MissingSchemaClient(Client):
         def table(self, name):
@@ -265,7 +265,7 @@ async def test_organism_starts_but_keeps_goal_store_disabled_when_migration_is_m
             return super().table(name)
 
     client = MissingSchemaClient()
-    monkeypatch.setattr(supabase_service, "service_client", client)
+    monkeypatch.setattr(supabase_module, "_service_client", client)
     organism = Organism(OrganismConfig(workspace_id="workspace-a"))
     runtime = organism.runtime
     runtime.recovery_status = "restored"
