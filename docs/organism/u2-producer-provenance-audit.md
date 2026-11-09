@@ -145,3 +145,23 @@ This prototype deliberately does **not** upgrade trust for durable or cross-proc
 - No real health publisher has yet been issued a capability.
 
 The prototype is an in-process composition boundary, not a sandbox against malicious code already executing inside the process. Before any positive trust is granted, the next stages must establish a trusted composition-root registry, signed/versioned durable provenance with key lifecycle and replay verification, a verified cross-process transport contract, and a real workspace-scoped producer with independent tests. Until then, all existing event sources remain untrusted for goal derivation.
+
+
+## Signed durable envelope prototype (2026-11-09)
+
+A versioned signed-envelope contract has been added on PR #86 in `core/durable_event_provenance.py`. It is a prototype and is not wired into either event transport or persistence yet.
+
+The HMAC-SHA256 envelope binds:
+- envelope version and algorithm;
+- key ID;
+- event ID and event type;
+- workspace and brand;
+- canonical payload SHA-256 digest;
+- producer ID/class and optional authenticated actor;
+- issued-at and expiry timestamps.
+
+Verification checks the signature in constant time, exact event/workspace/brand/payload binding, supported version/algorithm, actor workspace, key ID, timestamp skew, expiry and maximum age. The keyring is injected; key material is not serialized. During rotation, verifiers can temporarily retain the old and new key IDs; an old key should be retired only after its maximum envelope lifetime, unless emergency revocation is required.
+
+Security design caveat: HMAC is a shared-secret MAC, not a non-repudiation signature. Any verifier holding the shared key can also mint signatures. Before cross-service production use, choose a protected key-distribution model or an asymmetric signing design where producers hold private signing keys and consumers receive only public verification keys. Define key ownership, rotation, revocation, version migration, clock tolerance and audit procedures.
+
+No event table migration or durable persistence integration is included. Do not trust a signed-envelope-shaped dictionary until it passes verification against a trusted keyring and exact event binding. The event bridge remains `source_trust=0.0`.
