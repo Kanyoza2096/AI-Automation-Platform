@@ -8,7 +8,8 @@ stored alongside event rows.
 from __future__ import annotations
 
 import hashlib
-import hmac
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 import json
 import time
 from typing import Any, Mapping
@@ -21,7 +22,7 @@ from core.event_provenance import (
 )
 
 ENVELOPE_VERSION = 1
-SIGNATURE_ALGORITHM = "hmac-sha256"
+SIGNATURE_ALGORITHM = "ed25519"
 MAX_ENVELOPE_BYTES = 16_384
 
 
@@ -93,8 +94,8 @@ def sign_durable_provenance(
         raise DurableProvenanceError("actor and provenance workspace do not match")
     if not key_id or len(key_id) > 128:
         raise DurableProvenanceError("valid signing key id is required")
-    if not isinstance(signing_key, bytes) or len(signing_key) < 32:
-        raise DurableProvenanceError("signing key must contain at least 32 bytes")
+    if not isinstance(signing_key, bytes) or len(signing_key) != 32:
+        raise DurableProvenanceError("Ed25519 private seed must contain exactly 32 bytes")
     if not event_id or not event_name or not isinstance(payload, Mapping):
         raise DurableProvenanceError("event identity and object payload are required")
     if not isinstance(ttl_seconds, int) or ttl_seconds < 1 or ttl_seconds > 86_400:
@@ -121,7 +122,11 @@ def sign_durable_provenance(
         issued_at=now,
         expires_at=now + ttl_seconds,
     )
-    signature = hmac.new(signing_key, _canonical_json(fields), hashlib.sha256).hexdigest()
+    try:
+        private_key = Ed25519PrivateKey.from_private_bytes(signing_key)
+        signature = private_key.sign(_canonical_json(fields)).hex()
+    except Exception as exc:
+        raise DurableProvenanceError("Ed25519 signing failed") from exc
     return {**fields, "signature": signature}
 
 
@@ -139,28 +144,30 @@ def verify_durable_provenance(
     max_age_seconds: int = 86_400,
     clock_skew_seconds: int = 60,
 ) -> VerifiedEventProvenance:
-    """Verify signature, freshness, event binding, and key-id against trusted keys.
+    """Verify Ed25519 signature, freshness, event binding, and producer key ownership.
 
-    During key rotation, keyring may contain the active key and retained previous
-    keys. Remove an old key only after all envelopes signed by it have expired
-    (or after an explicit emergency revocation).
+    Verifiers receive public keys only. During rotation, keyring may contain the
+    active public key and retained previous public keys. Remove an old key only
+    after all envelopes signed by it have expired (or emergency revocation).
     """
     if not isinstance(envelope, Mapping) or len(_canonical_json(dict(envelope))) > MAX_ENVELOPE_BYTES:
         raise DurableProvenanceError("invalid or oversized provenance envelope")
     signature = envelope.get("signature")
     key_id = envelope.get("key_id")
-    if not isinstance(signature, str) or len(signature) != 64:
-        raise DurableProvenanceError("missing or malformed provenance signature")
+    if not isinstance(signature, str) or len(signature) != 128:
+        raise DurableProvenanceError("missing or malformed Ed25519 signature")
     if not isinstance(key_id, str) or key_id not in keyring:
         raise DurableProvenanceError("unknown or retired signing key")
     key = keyring[key_id]
-    if not isinstance(key, bytes) or len(key) < 32:
-        raise DurableProvenanceError("verification key is invalid")
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise DurableProvenanceError("Ed25519 public verification key is invalid")
 
     signed = {k: v for k, v in envelope.items() if k != "signature"}
-    expected = hmac.new(key, _canonical_json(signed), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, signature):
-        raise DurableProvenanceError("provenance signature verification failed")
+    try:
+        public_key = Ed25519PublicKey.from_public_bytes(key)
+        public_key.verify(bytes.fromhex(signature), _canonical_json(signed))
+    except (InvalidSignature, ValueError) as exc:
+        raise DurableProvenanceError("provenance signature verification failed") from exc
 
     if envelope.get("version") != ENVELOPE_VERSION or envelope.get("algorithm") != SIGNATURE_ALGORITHM:
         raise DurableProvenanceError("unsupported provenance envelope version or algorithm")
