@@ -60,6 +60,9 @@ on:
       - "migrations/069_v69_13_integration_evidence.sql"
       - "migrations/100_vnext_connector_health_evidence.sql"
       - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
+      - "migrations/160_v69_integration_evidence_atomic_append.sql"
+      - "services/v69_integration_evidence.py"
+      - "tests/test_v69_integration_evidence_supabase_store.py"
       - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
       - "services/vnext_connector_fabric_evidence_read_model.py"
       - "routes/connector_fabric_routes.py"
@@ -323,4 +326,5 @@ jobs:
             tests/test_durable_event_provenance.py \
             tests/test_durable_event_provenance_transport.py \
             tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py \
+            tests/test_v69_integration_evidence_supabase_store.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
