@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from core.event_provenance import ProducerCapability, ProducerRegistry
+from core.event_provenance import (
+    ProducerCapability,
+    ProducerRegistry,
+    current_actor_principal,
+)
 from services.v69_integration_evidence import DurableHealthObservation
 from services.v69_tenant_social_account_resolver import (
     TenantSocialAccountBinding,
@@ -115,6 +119,14 @@ class TenantFacebookHealthProducer:
                 identity,
                 brand_id=brand_id,
                 platform="facebook",
+            )
+            # Verify this exact in-process capability against the trusted
+            # registry and authenticated actor before probing the provider.
+            self._producer_registry.verify(
+                self._producer_capability,
+                workspace_id=binding.workspace_id,
+                actor=current_actor_principal(),
+                brand_id=binding.brand_id,
             )
             gateway = self._connector_factory.build_gateway(
                 binding=binding,
