@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from organism.goals import GoalPriority, GoalProposal
+from core.organism import Organism, OrganismConfig
 from organism.goal_persistence import (
     GoalProposalStore,
     GoalProposalStoreError,
@@ -229,3 +230,51 @@ async def test_bootstrapped_goal_store_rejects_cross_workspace_proposals_and_rea
         await result.store.list_pending("workspace-b", now=NOW)
 
     assert client.proposals == {}
+
+
+
+@pytest.mark.asyncio
+async def test_authenticated_organism_start_injects_only_workspace_bound_goal_store(monkeypatch):
+    from services.supabase import supabase_service
+
+    client = Client()
+    monkeypatch.setattr(supabase_service, "service_client", client)
+    organism = Organism(OrganismConfig(workspace_id="workspace-a"))
+    runtime = organism.runtime
+    runtime.recovery_status = "restored"
+    organism._council = object()
+    organism._memory = object()
+
+    await organism.start()
+
+    assert organism._running is True
+    assert runtime.goal_proposal_store is not None
+    assert runtime.goal_proposal_store.workspace_id == "workspace-a"
+    assert runtime.goal_proposal_store_status == "ready"
+    await organism.stop()
+
+
+@pytest.mark.asyncio
+async def test_organism_starts_but_keeps_goal_store_disabled_when_migration_is_missing(monkeypatch):
+    from services.supabase import supabase_service
+
+    class MissingSchemaClient(Client):
+        def table(self, name):
+            if name == "organism_goal_proposals":
+                raise RuntimeError("relation does not exist")
+            return super().table(name)
+
+    client = MissingSchemaClient()
+    monkeypatch.setattr(supabase_service, "service_client", client)
+    organism = Organism(OrganismConfig(workspace_id="workspace-a"))
+    runtime = organism.runtime
+    runtime.recovery_status = "restored"
+    organism._council = object()
+    organism._memory = object()
+
+    await organism.start()
+
+    assert organism._running is True
+    assert runtime.goal_proposal_store is None
+    assert runtime.goal_proposal_store_status == "disabled_schema_not_ready"
+    await organism.stop()
