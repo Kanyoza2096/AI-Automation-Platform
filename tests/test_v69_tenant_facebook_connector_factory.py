@@ -20,13 +20,16 @@ from services.v69_tenant_social_account_resolver import TenantSocialAccountBindi
 
 
 class FakeFacebookService:
-    def __init__(self):
+    def __init__(self, *, healthy=True):
         self.account_checks = []
         self.global_checks = 0
+        self.healthy = healthy
 
     def validate_account_token(self, page_id, page_token):
         self.account_checks.append((page_id, page_token))
-        return {"ok": True, "page_id": page_id, "page_name": "Bound Page"}
+        if self.healthy:
+            return {"ok": True, "page_id": page_id, "page_name": "Bound Page"}
+        return {"ok": False, "error": "provider_unavailable"}
 
     def validate_token(self):
         self.global_checks += 1
@@ -196,6 +199,54 @@ def test_factory_rejects_mismatched_provider_contract():
     binding = make_binding()
     connection, registry = make_connection_and_registry()
     bad_contract = replace(make_contract(), provider="linkedin")
+
+    with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
+        make_factory().build_gateway(
+            binding=binding, connection=connection,
+            contract=bad_contract, registry=registry,
+        )
+
+
+def test_unhealthy_page_probe_is_persisted_as_unknown_not_down_or_actionable():
+    service = FakeFacebookService(healthy=False)
+    gateway = make_factory(service).build_gateway(
+        binding=make_binding(),
+        connection=make_connection_and_registry()[0],
+        contract=make_contract(),
+        registry=make_connection_and_registry()[1],
+    )
+    store = FakeHealthStore()
+
+    result = gateway.observe_health(store)
+
+    assert result["health_state"] == "unknown"
+    assert result["reason_codes"] == ("provider_check_not_healthy",)
+    assert service.account_checks == [("page-a", "tenant-page-token")]
+    assert store.calls[0]["health_state"] == "unknown"
+    assert store.calls[0]["actor"] == "system"
+    assert store.calls[0]["reason_codes"] == ("provider_check_not_healthy",)
+
+
+def test_missing_durable_store_fails_before_any_provider_request():
+    service = FakeFacebookService()
+    gateway = make_factory(service).build_gateway(
+        binding=make_binding(),
+        connection=make_connection_and_registry()[0],
+        contract=make_contract(),
+        registry=make_connection_and_registry()[1],
+    )
+
+    with pytest.raises(ValueError, match="durable_health_observation_store_required"):
+        gateway.observe_health(None)
+
+    assert service.account_checks == []
+    assert service.global_checks == 0
+
+
+def test_factory_rejects_non_facebook_provider_contract():
+    binding = make_binding()
+    connection, registry = make_connection_and_registry()
+    bad_contract = replace(make_contract(), provider="instagram")
 
     with pytest.raises(TenantFacebookCompositionError, match="tenant_connection_registry_mismatch"):
         make_factory().build_gateway(
