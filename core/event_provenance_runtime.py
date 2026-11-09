@@ -17,10 +17,10 @@ from core.event_provenance_key_provider import (
     ProvenanceKeyConfigError,
 )
 from core.unified_bus import UnifiedEventBus
-from services.v69_tenant_facebook_health_producer import (
-    PRODUCER_CLASS,
-    PRODUCER_ID,
-)
+# Stable identity constants are repeated here to keep boot-time composition
+# independent from the provider/connector import graph.
+PRODUCER_ID = "kdo-tenant-health-facebook"
+PRODUCER_CLASS = "tenant_connector_health"
 
 
 @dataclass(frozen=True)
