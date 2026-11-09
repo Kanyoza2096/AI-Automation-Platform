@@ -94,9 +94,10 @@ def _probe_provenance_column(client: Any) -> bool:
 
 
 def _probe_health_evidence_schema(client: Any) -> bool:
-    """Check the tables/columns required by migrations 159–161, without writes."""
+    """Check the tables/columns required by migrations 159–162, without writes."""
     required = (
-        ("integration_connections", "id,workspace_id"),
+        ("integration_connections", "id,workspace_id,brand_id,social_account_id"),
+        ("connector_certification_registry", "workspace_id,connection_id,connector_key,connector_version,registry_state,brand_id,social_account_id"),
         ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash"),
         ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref"),
     )
@@ -167,7 +168,7 @@ def install_tenant_facebook_provenance(
         return ProvenanceInstallResult(False, "provenance_schema_not_ready")
 
     # The event envelope column alone is not enough to run the tenant health
-    # producer. Migrations 159–161 establish its account-bound evidence and
+    # producer. Migrations 159–162 establish its account-bound evidence and
     # atomic health-write path. Require both an explicit operator attestation
     # and read-only table/column probes before exposing that producer factory.
     health_evidence_ready = (
