@@ -878,6 +878,7 @@ def _mount_routes(app: FastAPI) -> None:
         ("Command Center Read Model", "routes.command_center_routes", "router"),
         ("Failure Recovery", "routes.failure_recovery_routes", "router"),
         ("Connector Fabric", "routes.connector_fabric_routes", "router"),
+        ("Tenant Health Observation", "routes.tenant_health_observation_routes", "router"),
         ("Sector Pack Portfolio", "routes.sector_pack_routes", "router"),
         ("Business Onboarding", "routes.business_onboarding_routes", "router"),
         ("Website Integrations", "api.website_integrations", "router"),
@@ -1192,6 +1193,7 @@ async def lifespan(app: FastAPI):
         # only when producer keys are configured and migration 158's column
         # passes a read-only schema probe. No second bus is constructed here.
         app.state.tenant_facebook_provenance_runtime = None
+        app.state.tenant_facebook_health_service = None
         try:
             from core.unified_bus import UnifiedEventBus
             from core.event_provenance_runtime import install_tenant_facebook_provenance
@@ -1214,6 +1216,24 @@ async def lifespan(app: FastAPI):
                     "ready" if provenance_result.runtime.health_evidence_ready
                     else "disabled pending health evidence migration attestation",
                 )
+                if provenance_result.runtime.health_evidence_ready:
+                    try:
+                        from services.v69_tenant_facebook_health_service import (
+                            build_tenant_facebook_health_observation_service,
+                        )
+                        app.state.tenant_facebook_health_service = (
+                            build_tenant_facebook_health_observation_service(
+                                runtime=provenance_result.runtime,
+                                service_role_client=service_role_client,
+                            )
+                        )
+                        logger.info("U2 tenant Facebook health observation service composed (observe-only).")
+                    except Exception:
+                        # A partial composition must not make the endpoint usable.
+                        app.state.tenant_facebook_health_service = None
+                        logger.warning(
+                            "U2 tenant Facebook health observation service remains disabled"
+                        )
             else:
                 logger.info(
                     "U2 tenant Facebook event provenance remains disabled (%s)",
