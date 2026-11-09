@@ -16,8 +16,9 @@ SEED = b"facebook-health-producer-seed!!!"
 
 
 class Query:
-    def __init__(self, client):
+    def __init__(self, client, table):
         self.client = client
+        self.table_name = table
         self.columns = None
         self.row_limit = None
 
@@ -30,20 +31,27 @@ class Query:
         return self
 
     def execute(self):
-        self.client.calls.append((self.columns, self.row_limit))
-        if not self.client.ready:
-            raise RuntimeError("column does not exist")
+        self.client.calls.append((self.table_name, self.columns, self.row_limit))
+        if self.table_name not in self.client.ready_tables:
+            raise RuntimeError("table or column does not exist")
         return SimpleNamespace(data=[])
 
 
 class FakeSupabase:
-    def __init__(self, ready=True):
-        self.ready = ready
+    def __init__(self, ready=True, health_ready=False):
+        self.ready_tables = set()
+        if ready:
+            self.ready_tables.add("events")
+        if health_ready:
+            self.ready_tables.update({
+                "integration_connections",
+                "integration_evidence",
+                "connector_health_observations",
+            })
         self.calls = []
 
     def table(self, name):
-        assert name == "events"
-        return Query(self)
+        return Query(self, name)
 
 
 def valid_environment():
@@ -84,7 +92,7 @@ def test_startup_installs_capability_on_existing_bus_only_after_read_only_schema
     assert not hasattr(result.runtime, "key_provider")
     assert bus._provenance_storage_enabled is True
     assert result.runtime.capability.principal.producer_id == PRODUCER_ID
-    assert client.calls == [("provenance_envelope", 0)]
+    assert client.calls == [("events", "provenance_envelope", 0)]
 
 
 def test_startup_does_not_enable_signing_when_migration_column_is_missing():
@@ -100,7 +108,7 @@ def test_startup_does_not_enable_signing_when_migration_column_is_missing():
     assert bus._producer_registry is None
     assert bus._provenance_signer is None
     assert bus._provenance_storage_enabled is False
-    assert client.calls == [("provenance_envelope", 0)]
+    assert client.calls == [("events", "provenance_envelope", 0)]
 
 
 def test_unconfigured_environment_does_not_probe_database_or_mutate_bus():
@@ -249,3 +257,58 @@ def test_facebook_producer_capability_cannot_sign_unrelated_event_types():
             payload={"service": "api", "status": "degraded"},
             brand_id="brand-a",
         )
+
+
+
+def test_health_producer_remains_disabled_without_operator_migration_attestation():
+    client = FakeSupabase(ready=True, health_ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(
+        bus, environ=valid_environment()
+    )
+
+    assert result.enabled is True
+    assert result.runtime.health_evidence_ready is False
+    assert bus._tenant_health_evidence_ready is False
+    with pytest.raises(Exception, match="health_evidence_schema_not_enabled"):
+        result.runtime.create_health_producer(
+            resolver=object(),
+            connector_factory=object(),
+        )
+    # Without the explicit attestation, only the provenance column is probed.
+    assert client.calls == [("events", "provenance_envelope", 0)]
+
+
+def test_health_producer_requires_attestation_and_all_health_evidence_columns():
+    client = FakeSupabase(ready=True, health_ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    env = valid_environment()
+    env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
+
+    result = install_tenant_facebook_provenance(
+        bus, environ=env
+    )
+
+    assert result.enabled is True
+    assert result.runtime.health_evidence_ready is True
+    assert bus._tenant_health_evidence_ready is True
+    assert client.calls == [
+        ("events", "provenance_envelope", 0),
+        ("integration_connections", "id,workspace_id", 0),
+        ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash", 0),
+        ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref", 0),
+    ]
+
+
+def test_health_evidence_attestation_is_not_enough_when_required_columns_are_missing():
+    client = FakeSupabase(ready=True, health_ready=False)
+    bus = UnifiedEventBus(supabase_client=client)
+    env = valid_environment()
+    env["KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"] = "true"
+
+    result = install_tenant_facebook_provenance(bus, environ=env)
+
+    assert result.enabled is True
+    assert result.runtime.health_evidence_ready is False
+    assert bus._tenant_health_evidence_ready is False
+    assert len(client.calls) == 4
