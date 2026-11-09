@@ -1205,7 +1205,7 @@ async def lifespan(app: FastAPI):
                 app.state.tenant_facebook_provenance_runtime = provenance_result.runtime
                 logger.info(
                     "U2 tenant Facebook event provenance installed (key_id=%s)",
-                    provenance_result.runtime.key_provider.active_key_id,
+                    provenance_result.runtime.active_key_id,
                 )
             else:
                 logger.info(
