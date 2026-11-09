@@ -14,4 +14,4 @@ ALTER TABLE public.events
     );
 
 COMMENT ON COLUMN public.events.provenance_envelope IS
-    'Optional producer-signed provenance envelope. Consumers must independently verify it; never trust serialized verification flags.';
+    'Optional producer-signed provenance envelope. Consumers must independently verify it and never trust serialized verification flags.';
