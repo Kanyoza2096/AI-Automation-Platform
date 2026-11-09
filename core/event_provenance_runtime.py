@@ -145,6 +145,8 @@ def _validate_facebook_health_signing_request(
         or provenance.producer.producer_id != PRODUCER_ID
         or provenance.producer.producer_class != PRODUCER_CLASS
         or not provenance.workspace_id
+        or provenance.actor is None
+        or provenance.actor.workspace_id != provenance.workspace_id
         or not isinstance(brand_id, str)
         or not brand_id.strip()
         or provenance.brand_id != brand_id
