@@ -81,6 +81,7 @@ class FakeEventBus:
     def __init__(self, registry, *, publish_result="event-001", enabled=True):
         self._producer_registry = registry
         self._provenance_storage_enabled = enabled
+        self._tenant_health_evidence_ready = True
         self._provenance_signer = lambda *_args, **_kwargs: {"signature": "test-only"}
         self.supabase = object()
         self.publish_result = publish_result
@@ -300,3 +301,24 @@ async def test_foreign_registry_capability_is_rejected_before_provider_probe():
     assert service.calls == []
     assert store.calls == []
     assert bus.calls == []
+
+
+
+def test_tenant_facebook_health_producer_rejects_unattested_health_evidence_schema():
+    binding = make_binding()
+    producer_registry = ProducerRegistry({PRODUCER_ID: PRODUCER_CLASS})
+    capability = producer_registry.issue(PRODUCER_ID)
+    bus = FakeEventBus(producer_registry)
+    bus._tenant_health_evidence_ready = False
+
+    with pytest.raises(TenantHealthPublisherError, match="health_evidence_schema_not_enabled"):
+        TenantFacebookHealthProducer(
+            resolver=FakeResolver(binding),
+            connector_factory=TenantFacebookConnectorFactory(
+                facebook_service=FakeFacebookService(),
+                ledger=ExecutionLedger(allow_in_memory=True),
+            ),
+            event_bus=bus,
+            producer_registry=producer_registry,
+            producer_capability=capability,
+        )
