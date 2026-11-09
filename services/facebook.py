@@ -598,6 +598,39 @@ class FacebookService:
     # HEALTH & VALIDATION
     # ═══════════════════════════════════════════════════════════════
 
+    def validate_account_token(self, page_id: str, page_token: str) -> dict:
+        """Validate one explicitly supplied Page identity and token.
+
+        Unlike validate_token(), this method never falls back to process-wide
+        settings. It is intended for tenant-bound connector instances whose
+        account credentials were resolved by an authenticated workspace path.
+        """
+        expected_page_id = str(page_id or "").strip()
+        token = str(page_token or "").strip()
+        if not expected_page_id or not token:
+            return {"ok": False, "error": "Missing account page_id or page_token"}
+        try:
+            response = self._session.get(
+                f"{GRAPH_BASE}/{expected_page_id}",
+                params={"fields": "id,name", "access_token": token},
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if response.status_code != 200:
+                return {"ok": False, "error": {"status_code": response.status_code}}
+            data = response.json()
+            actual_page_id = str(data.get("id") or "").strip()
+            if actual_page_id != expected_page_id:
+                return {"ok": False, "error": "provider_page_identity_mismatch"}
+            return {
+                "ok": True,
+                "page_id": actual_page_id,
+                "page_name": data.get("name"),
+            }
+        except Exception as exc:
+            # Do not include credential material or request parameters.
+            logger.warning("Facebook account health validation failed: %s", type(exc).__name__)
+            return {"ok": False, "error": "provider_check_failed"}
+
     def validate_token(self) -> dict:
         if not self.page_token:
             return {"ok": False, "error": "No page token configured"}
