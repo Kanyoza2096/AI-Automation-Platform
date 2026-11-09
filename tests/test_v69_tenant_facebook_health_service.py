@@ -72,6 +72,7 @@ def build_dependencies(client):
     bus._provenance_signer = lambda *_args, **_kwargs: {}
     registry = ProducerRegistry({PRODUCER_ID: PRODUCER_CLASS})
     capability = registry.issue(PRODUCER_ID)
+    bus._producer_registry = registry
     account_resolver = TenantSocialAccountResolver(client)
     ledger = ExecutionLedger(db=client, allow_in_memory=False)
     factory = TenantFacebookConnectorFactory(
