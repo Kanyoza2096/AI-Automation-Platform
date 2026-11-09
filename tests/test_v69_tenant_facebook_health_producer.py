@@ -72,6 +72,8 @@ class FakeEvidenceStore:
             observed_at=datetime.now(timezone.utc),
             health_state=self.health_state,
             evidence_hash="c" * 64,
+            brand_id=kwargs.get("metadata", {}).get("brand_id"),
+            social_account_id=kwargs.get("metadata", {}).get("social_account_id"),
         )
 
 
