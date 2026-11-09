@@ -45,8 +45,9 @@ class FakeQuery:
 
 
 class FakeRPC:
-    def __init__(self, client, params):
+    def __init__(self, client, name, params):
         self.client = client
+        self.name = name
         self.params = params
 
     def execute(self):
@@ -67,7 +68,10 @@ class FakeRPC:
         self.client.heads[key] = self.params["p_evidence_hash"]
         if self.client.unconfirmed:
             return SimpleNamespace(data=[])
-        return SimpleNamespace(data=[{"evidence_id": self.params["p_evidence_id"]}])
+        receipt = {"evidence_id": self.params["p_evidence_id"]}
+        if self.name == "record_connector_health_observation":
+            receipt["observation_id"] = "observation-1"
+        return SimpleNamespace(data=[receipt])
 
 
 class FakeClient:
@@ -82,8 +86,8 @@ class FakeClient:
     def table(self, _table):
         return FakeQuery(self, "", "")
 
-    def rpc(self, _name, params):
-        return FakeRPC(self, params)
+    def rpc(self, name, params):
+        return FakeRPC(self, name, params)
 
 
 def make_store(client=None):
@@ -196,3 +200,79 @@ def test_supabase_sink_rejects_forged_evidence_hash_before_rpc():
     with pytest.raises(EvidenceError, match="evidence_hash_mismatch"):
         store.append(forged)
     assert client.rpc_calls == []
+
+
+def test_supabase_sink_atomically_records_health_observation_and_evidence():
+    client = FakeClient()
+    store = make_store(client)
+
+    result = store.record_health_observation(
+        workspace_id="workspace-a",
+        connection_id="connection-a",
+        connector_key="facebook",
+        health_state="healthy",
+        observed_at=NOW,
+        latency_ms=15,
+        provider_status_code=200,
+        provider="facebook",
+        connector_version="1.0.0",
+        metadata={"page_access_token": "never-store-this"},
+        evidence_id="health-evidence-1",
+    )
+
+    assert result.evidence_id == "health-evidence-1"
+    assert result.observation_id == "observation-1"
+    assert result.workspace_id == "workspace-a"
+    assert result.connection_id == "connection-a"
+    assert result.health_state == "healthy"
+    assert client.rpc_calls[0]["p_health_state"] == "healthy"
+    assert client.rpc_calls[0]["p_observed_at"] == NOW.isoformat()
+    assert client.rpc_calls[0]["p_metadata"]["page_access_token"] == "<redacted>"
+    assert "p_event_type" not in client.rpc_calls[0]
+
+
+def test_supabase_health_observation_retries_concurrent_evidence_head():
+    client = FakeClient()
+    client.conflict_next = True
+    store = make_store(client)
+
+    result = store.record_health_observation(
+        workspace_id="workspace-a",
+        connection_id="connection-a",
+        connector_key="facebook",
+        health_state="unknown",
+        observed_at=NOW,
+        reason_codes=("provider_check_not_healthy",),
+        evidence_id="health-race",
+    )
+
+    assert result.evidence_id == "health-race"
+    assert len(client.rpc_calls) == 2
+    assert client.rpc_calls[1]["p_expected_previous_hash"] == "b" * 64
+
+
+def test_supabase_health_observation_rejects_invalid_state_and_latency():
+    store = make_store()
+
+    with pytest.raises(EvidenceError, match="connector_health_state_invalid"):
+        store.record_health_observation(
+            workspace_id="workspace-a", connection_id="connection-a",
+            connector_key="facebook", health_state="stuck",
+        )
+    with pytest.raises(EvidenceError, match="connector_health_latency_invalid"):
+        store.record_health_observation(
+            workspace_id="workspace-a", connection_id="connection-a",
+            connector_key="facebook", health_state="healthy", latency_ms=-1,
+        )
+
+
+def test_supabase_health_observation_requires_rpc_receipt():
+    client = FakeClient()
+    client.unconfirmed = True
+    store = make_store(client)
+
+    with pytest.raises(EvidenceError, match="health_observation_persist_unconfirmed"):
+        store.record_health_observation(
+            workspace_id="workspace-a", connection_id="connection-a",
+            connector_key="facebook", health_state="healthy", observed_at=NOW,
+        )
