@@ -68,6 +68,10 @@ class TenantFacebookConnectorFactory:
             or registry.connector_key != Platform.FACEBOOK.value
             or contract.connector_key != Platform.FACEBOOK.value
             or contract.provider not in {Platform.FACEBOOK.value, "meta"}
+            or connection.brand_id != binding.brand_id
+            or registry.brand_id != binding.brand_id
+            or connection.social_account_id != binding.account_id
+            or registry.social_account_id != binding.account_id
         ):
             raise TenantFacebookCompositionError("tenant_connection_registry_mismatch")
 
@@ -89,6 +93,8 @@ class TenantFacebookConnectorFactory:
             contract=contract,
             registry=registry,
             governed=governed,
+            brand_id=binding.brand_id,
+            social_account_id=binding.account_id,
         )
 
 
