@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any
 
 from organism.goals import GoalPriority, GoalProposal
@@ -192,9 +193,6 @@ def _parse_timestamp(value: Any) -> datetime:
     if parsed.tzinfo is None:
         raise GoalProposalStoreError("proposal_timestamp_missing_timezone")
     return parsed.astimezone(timezone.utc)
-
-
-__all__ = ["GoalProposalStore", "GoalProposalStoreError"]
 
 
 __all__ = [
