@@ -165,6 +165,10 @@ class RuntimeConnectorGateway:
         recorder = getattr(evidence_store, "record_health_observation", None)
         if not callable(recorder):
             raise ValueError("durable_health_observation_store_required")
+        if self.connection.connection_id != self.registry.connection_id:
+            raise ValueError(RuntimeBlock.TENANT_MISMATCH.value)
+        if self.governed.platform not in {self.contract.provider, self.contract.connector_key}:
+            raise ValueError(RuntimeBlock.PROVIDER_MISMATCH.value)
 
         result = self.governed.health()
         if isinstance(result, Mapping):
