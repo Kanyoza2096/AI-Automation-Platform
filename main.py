@@ -1211,6 +1211,11 @@ async def lifespan(app: FastAPI):
                     "U2 tenant Facebook event provenance installed (key_id=%s)",
                     provenance_result.runtime.active_key_id,
                 )
+                logger.info(
+                    "U2 tenant Facebook health producer readiness: %s",
+                    "ready" if provenance_result.runtime.health_evidence_ready
+                    else "disabled pending health evidence migration attestation",
+                )
             else:
                 logger.info(
                     "U2 tenant Facebook event provenance remains disabled (%s)",
