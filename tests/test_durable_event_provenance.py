@@ -1,5 +1,3 @@
-import copy
-
 import pytest
 
 from core.durable_event_provenance import (
@@ -46,6 +44,7 @@ def verify(envelope, *, keyring=None, now=1_100, **overrides):
     return verify_durable_provenance(
         envelope,
         keyring=keyring or {"key-v1": KEY_A},
+        key_owners={"key-v1": "health-monitor", "key-v2": "health-monitor"},
         event_id=args["event_id"],
         event_name=args["event_name"],
         workspace_id=args["workspace_id"],
@@ -94,6 +93,21 @@ def test_unknown_or_retired_key_is_rejected():
     envelope = sign()
     with pytest.raises(DurableProvenanceError, match="unknown or retired"):
         verify(envelope, keyring={"key-v2": KEY_B})
+
+def test_key_cannot_assert_another_producers_identity():
+    envelope = sign()
+    with pytest.raises(DurableProvenanceError, match="not authorized"):
+        verify_durable_provenance(
+            envelope,
+            keyring={"key-v1": KEY_A},
+            key_owners={"key-v1": "different-producer"},
+            event_id=EVENT["event_id"],
+            event_name=EVENT["event_name"],
+            workspace_id=EVENT["workspace_id"],
+            payload=EVENT["payload"],
+            brand_id=EVENT["brand_id"],
+            now=1_100,
+        )
 
 
 def test_key_rotation_accepts_retained_old_key_and_new_key():
