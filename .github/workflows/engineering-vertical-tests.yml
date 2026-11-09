@@ -339,8 +339,8 @@ jobs:
                   VALUES ('connection-partial-binding', 'ws-resource-a', 'facebook',
                           'brand-resource-a')
                   """,
-                  psycopg.errors.CheckViolation,
-                  "integration_connections_resource_binding_pair_check",
+                  psycopg.errors.RaiseException,
+                  "integration_connection_resource_binding_pair_required",
               )
               expect_db_error(
                   """
