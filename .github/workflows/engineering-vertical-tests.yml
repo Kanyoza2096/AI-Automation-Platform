@@ -15,6 +15,8 @@ on:
       - "services/connectors/facebook_connector.py"
       - "services/facebook.py"
       - "services/v69_tenant_facebook_connector_factory.py"
+      - "services/v69_tenant_facebook_health_producer.py"
+      - "tests/test_v69_tenant_facebook_health_producer.py"
       - "services/business_integration_platform.py"
       - "services/v69_connector_activation_registry.py"
       - "tests/test_facebook_connector_tenant_health.py"
@@ -354,6 +356,7 @@ jobs:
             tests/test_v69_13_integration_evidence.py \
             tests/test_v69_10_connector_runtime_gateway.py \
             tests/test_v69_tenant_social_account_resolver.py \
+            tests/test_v69_tenant_facebook_health_producer.py \
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
