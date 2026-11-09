@@ -74,6 +74,9 @@ class ConnectorRegistryRecord:
     generation: int = 1
     reason: str = ""
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Optional resource binding; required by account-specific connector composition.
+    brand_id: str | None = None
+    social_account_id: str | None = None
     authority: str = field(default="none", init=False)
     execution_effect: str = field(default="none", init=False)
 
