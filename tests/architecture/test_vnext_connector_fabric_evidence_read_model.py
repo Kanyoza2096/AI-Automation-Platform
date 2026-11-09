@@ -1,6 +1,10 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+
+import routes.connector_fabric_routes as connector_routes
 
 import services.vnext_connector_fabric_evidence_read_model as evidence_model
 from services.vnext_connector_fabric_evidence_read_model import (
@@ -114,3 +118,12 @@ def test_all_connector_records_remain_catalogued(monkeypatch):
         "facebook", "twitter", "linkedin", "instagram", "telegram", "whatsapp", "website",
     ):
         assert build_connector_fabric_evidence("w", key)["connector"]["connectorKey"] == key
+
+
+def test_evidence_route_returns_503_when_durable_read_fails(monkeypatch):
+    install_client(monkeypatch, None)
+    monkeypatch.setattr(connector_routes, "_workspace_id", lambda _request: "workspace-a")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(connector_routes.connector_fabric_evidence("github", object()))
+    assert exc.value.status_code == 503
+    assert exc.value.detail == "Connector evidence is temporarily unavailable"
