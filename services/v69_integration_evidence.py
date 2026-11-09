@@ -1,13 +1,13 @@
 """V69.13 — tenant-scoped integration observability and audit evidence.
 
-Evidence is descriptive, not authoritative.  It records what the control plane
+Evidence is descriptive, not authoritative. It records what the control plane
 observed/decided, never grants authority, stores secrets, or executes providers.
-The production persistence contract is append-only and tenant-scoped; the
-in-memory store is deterministic for unit tests and offline certification.
+The Supabase sink persists append-only evidence through an atomic database RPC;
+the in-memory store remains deterministic for tests and offline certification.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,6 +16,10 @@ from typing import Any, Iterable, Mapping, Protocol
 
 class EvidenceError(ValueError):
     pass
+
+
+class EvidenceChainConflict(EvidenceError):
+    """The durable evidence head changed while an append was being prepared."""
 
 
 _SECRET_KEYS = {
@@ -112,6 +116,95 @@ class MemoryEvidenceStore:
         return self._last_hash.get((workspace_id, connection_id), "")
 
 
+class SupabaseIntegrationEvidenceStore:
+    """Durable append-only sink using the atomic append_integration_evidence RPC.
+
+    The client must be an explicitly injected trusted server-side Supabase
+    service-role client. This class never creates a client or falls back to
+    memory. The SQL RPC serializes appends per workspace/connection and checks
+    the expected previous hash before inserting.
+    """
+
+    def __init__(self, client: Any, *, max_retries: int = 3) -> None:
+        if client is None:
+            raise EvidenceError("evidence_database_client_required")
+        if not isinstance(max_retries, int) or not 1 <= max_retries <= 10:
+            raise EvidenceError("max_retries must be between 1 and 10")
+        self._client = client
+        self._max_retries = max_retries
+
+    def last_hash(self, workspace_id: str, connection_id: str) -> str:
+        if not workspace_id or not connection_id:
+            raise EvidenceError("workspace_and_connection_required")
+        try:
+            response = (
+                self._client.table("integration_evidence")
+                .select("evidence_hash")
+                .eq("workspace_id", workspace_id)
+                .eq("connection_id", connection_id)
+                .order("created_at", desc=True)
+                .order("evidence_id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            if not rows:
+                return ""
+            return str(rows[0].get("evidence_hash") or "").strip()
+        except Exception as exc:
+            raise EvidenceError("evidence_head_read_failed") from exc
+
+    def append(self, evidence: IntegrationEvidence) -> IntegrationEvidence:
+        current = evidence
+        for _attempt in range(self._max_retries):
+            expected_previous = self.last_hash(current.workspace_id, current.connection_id)
+            if current.previous_hash != expected_previous:
+                current = replace(current, previous_hash=expected_previous, evidence_hash="")
+            if len(current.payload_fingerprint) != 64:
+                raise EvidenceError("payload_fingerprint_required")
+
+            params = {
+                "p_evidence_id": current.evidence_id,
+                "p_workspace_id": current.workspace_id,
+                "p_connection_id": current.connection_id,
+                "p_connector_key": current.connector_key,
+                "p_event_type": current.event_type,
+                "p_occurred_at": current.occurred_at.astimezone(timezone.utc).isoformat(),
+                "p_outcome": current.outcome,
+                "p_reason_codes": list(current.reason_codes),
+                "p_action": current.action,
+                "p_correlation_id": current.correlation_id,
+                "p_actor": current.actor,
+                "p_provider": current.provider,
+                "p_connector_version": current.connector_version,
+                "p_payload_fingerprint": current.payload_fingerprint,
+                "p_metadata": _safe(current.metadata),
+                "p_expected_previous_hash": current.previous_hash,
+                "p_evidence_hash": current.evidence_hash,
+            }
+            try:
+                response = self._client.rpc("append_integration_evidence", params).execute()
+            except Exception as exc:
+                message = str(exc).lower()
+                if "evidence_chain_conflict" in message or "40001" in message:
+                    continue
+                if "duplicate key" in message or "unique constraint" in message:
+                    raise EvidenceError("duplicate_evidence_id") from exc
+                raise EvidenceError("evidence_persist_failed") from exc
+
+            data = getattr(response, "data", None)
+            confirmed = (
+                data == [{"evidence_id": current.evidence_id}]
+                or data == {"evidence_id": current.evidence_id}
+                or data == current.evidence_id
+            )
+            if not confirmed:
+                raise EvidenceError("evidence_persist_unconfirmed")
+            return current
+
+        raise EvidenceChainConflict("evidence_chain_conflict")
+
+
 def compute_evidence_hash(evidence: IntegrationEvidence) -> str:
     material = {
         "evidence_id": evidence.evidence_id,
@@ -157,7 +250,8 @@ def emit(
     if not evidence_id.strip():
         raise EvidenceError("evidence_id_required")
     occurred_at = occurred_at or datetime.now(timezone.utc)
-    previous = sink.last_hash(workspace_id, connection_id) if isinstance(sink, MemoryEvidenceStore) else ""
+    head_reader = getattr(sink, "last_hash", None)
+    previous = head_reader(workspace_id, connection_id) if callable(head_reader) else ""
     evidence = IntegrationEvidence(
         evidence_id=evidence_id,
         workspace_id=workspace_id,
@@ -180,6 +274,7 @@ def emit(
 
 
 __all__ = [
-    "EvidenceError", "IntegrationEvidence", "EvidenceSink", "MemoryEvidenceStore",
+    "EvidenceError", "EvidenceChainConflict", "IntegrationEvidence", "EvidenceSink",
+    "MemoryEvidenceStore", "SupabaseIntegrationEvidenceStore",
     "payload_fingerprint", "compute_evidence_hash", "emit",
 ]
