@@ -207,8 +207,12 @@ class TenantFacebookHealthContextResolver:
                 char not in "0123456789abcdef" for char in fingerprint
             ):
                 raise TenantFacebookHealthContextError("certification_fingerprint_invalid")
+            certification_version = str(registry_row.get("certification_version") or "")
+            evidence_ref = str(registry_row.get("evidence_ref") or "")
+            if not certification_version or not evidence_ref:
+                raise TenantFacebookHealthContextError("certification_evidence_reference_missing")
             evidence = CertificationEvidence(
-                certification_version=str(registry_row.get("certification_version") or ""),
+                certification_version=certification_version,
                 connector_key="facebook",
                 connector_version=str(registry_row["connector_version"]),
                 fingerprint=fingerprint,
@@ -216,7 +220,7 @@ class TenantFacebookHealthContextResolver:
                 live_provider_verified=registry_row.get("live_provider_verified") is True,
                 certified_at=certified_at,
                 expires_at=expires_at,
-                evidence_ref=str(registry_row.get("evidence_ref") or ""),
+                evidence_ref=evidence_ref,
             )
             registry = ConnectorRegistryRecord(
                 workspace_id=workspace_id,
