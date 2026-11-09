@@ -226,3 +226,26 @@ def test_startup_rejects_a_different_supabase_client_from_the_bus():
     assert bus._producer_registry is None
     assert bus_client.calls == []
     assert other_client.calls == []
+
+
+
+def test_facebook_producer_capability_cannot_sign_unrelated_event_types():
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(
+        bus, environ=valid_environment()
+    )
+    proof = result.runtime.registry.verify(
+        result.runtime.capability,
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+    )
+
+    with pytest.raises(ValueError, match="facebook_health_event_name_not_allowed"):
+        bus._provenance_signer(
+            proof,
+            event_id="event-1",
+            event_name="engine_alert",
+            payload={"service": "api", "status": "degraded"},
+            brand_id="brand-a",
+        )
