@@ -66,6 +66,8 @@ class RuntimeConnectorGateway:
     registry: ConnectorRegistryRecord
     governed: GovernedConnector
     evidence_sink: EvidenceSink | None = None
+    brand_id: str | None = None
+    social_account_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.workspace_id.strip():
@@ -73,6 +75,15 @@ class RuntimeConnectorGateway:
         if self.connection.workspace_id != self.workspace_id:
             raise ValueError(RuntimeBlock.TENANT_MISMATCH.value)
         if self.registry.workspace_id != self.workspace_id:
+            raise ValueError(RuntimeBlock.TENANT_MISMATCH.value)
+        if bool(self.brand_id) != bool(self.social_account_id):
+            raise ValueError("brand and social account identity must be supplied together")
+        if self.brand_id and (
+            self.connection.brand_id != self.brand_id
+            or self.registry.brand_id != self.brand_id
+            or self.connection.social_account_id != self.social_account_id
+            or self.registry.social_account_id != self.social_account_id
+        ):
             raise ValueError(RuntimeBlock.TENANT_MISMATCH.value)
         if self.connection.connector_key != self.contract.connector_key or self.registry.connector_key != self.contract.connector_key:
             raise ValueError(RuntimeBlock.CONNECTOR_MISMATCH.value)
@@ -198,6 +209,8 @@ class RuntimeConnectorGateway:
         metadata = {
             "provider_check": "success" if ok else "not_healthy",
             "latency_ms": latency_ms,
+            "brand_id": self.brand_id,
+            "social_account_id": self.social_account_id,
         }
         return recorder(
             workspace_id=self.workspace_id,
