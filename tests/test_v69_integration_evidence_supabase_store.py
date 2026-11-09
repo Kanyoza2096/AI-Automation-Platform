@@ -5,8 +5,10 @@ import pytest
 
 from services.v69_integration_evidence import (
     EvidenceError,
+    IntegrationEvidence,
     SupabaseIntegrationEvidenceStore,
     emit,
+    payload_fingerprint,
 )
 
 
@@ -168,3 +170,23 @@ def test_supabase_sink_requires_database_append_receipt():
 def test_supabase_sink_requires_explicit_database_client():
     with pytest.raises(EvidenceError, match="evidence_database_client_required"):
         SupabaseIntegrationEvidenceStore(None)
+
+
+def test_supabase_sink_rejects_forged_evidence_hash_before_rpc():
+    client = FakeClient()
+    store = make_store(client)
+    forged = IntegrationEvidence(
+        evidence_id="forged-evidence",
+        workspace_id="workspace-a",
+        connection_id="connection-a",
+        connector_key="facebook",
+        event_type="health.checked",
+        occurred_at=NOW,
+        outcome="healthy",
+        payload_fingerprint=payload_fingerprint({}),
+        evidence_hash="f" * 64,
+    )
+
+    with pytest.raises(EvidenceError, match="evidence_hash_mismatch"):
+        store.append(forged)
+    assert client.rpc_calls == []
