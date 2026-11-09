@@ -54,12 +54,6 @@ on:
       - "core/species_scale.py"
       - "tests/test_species_scale_workspace_hydration.py"
       - "tests/test_architecture_contracts.py"
-      - "services/vnext_connector_fabric_evidence_read_model.py"
-      - "routes/connector_fabric_routes.py"
-      - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
-      - "services/facebook.py"
-      - "services/connectors/facebook_connector.py"
-      - "tests/test_facebook_connector_tenant_health.py"
       - "migrations/066_v69_business_integration_onboarding.sql"
       - "migrations/067_v69_3_5_integration_foundation.sql"
       - "migrations/068_v69_8_connector_activation_registry.sql"
@@ -67,10 +61,18 @@ on:
       - "migrations/100_vnext_connector_health_evidence.sql"
       - "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql"
       - "migrations/160_v69_integration_evidence_atomic_append.sql"
+      - "migrations/161_u2_atomic_connector_health_observation.sql"
+      - "services/v69_connector_runtime_gateway.py"
+      - "tests/test_v69_10_connector_runtime_gateway.py"
+      # Tenant-scoped read-only health observation and atomic persistence path.
       - "services/v69_integration_evidence.py"
       - "tests/test_v69_integration_evidence_supabase_store.py"
       - "tests/test_v69_13_integration_evidence.py"
+      # Durable evidence store and its atomic database append path.
       - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
+      - "services/vnext_connector_fabric_evidence_read_model.py"
+      - "routes/connector_fabric_routes.py"
+      - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
   workflow_dispatch:
 
 permissions:
@@ -218,8 +220,9 @@ jobs:
                   )
               """)
 
-              # Exercise tenant-scoped connector evidence migrations only on
-              # this disposable CI PostgreSQL instance.
+              # Exercise V69 connector-evidence and atomic-append schemas on this disposable
+              # PostgreSQL instance. The composite FKs must bind each evidence
+              # row to a connection owned by the same workspace.
               for migration_path in (
                   "migrations/066_v69_business_integration_onboarding.sql",
                   "migrations/067_v69_3_5_integration_foundation.sql",
@@ -228,6 +231,7 @@ jobs:
                   "migrations/100_vnext_connector_health_evidence.sql",
                   "migrations/159_v69_connector_evidence_tenant_fk_hardening.sql",
                   "migrations/160_v69_integration_evidence_atomic_append.sql",
+                  "migrations/161_u2_atomic_connector_health_observation.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -235,7 +239,6 @@ jobs:
                       if not line.lstrip().startswith("--")
                   )
                   connection.execute(migration_sql, prepare=False)
-
               connection.execute("""
                   CREATE TABLE public.events (
                       id TEXT PRIMARY KEY,
@@ -332,8 +335,8 @@ jobs:
             tests/test_unified_bus_provenance_transport.py \
             tests/test_durable_event_provenance.py \
             tests/test_durable_event_provenance_transport.py \
-            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py \
-            tests/test_facebook_connector_tenant_health.py \
             tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py \
             tests/test_v69_integration_evidence_supabase_store.py \
-            tests/test_v69_13_integration_evidence.py
+            tests/test_v69_13_integration_evidence.py \
+            tests/test_v69_10_connector_runtime_gateway.py \
+            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py

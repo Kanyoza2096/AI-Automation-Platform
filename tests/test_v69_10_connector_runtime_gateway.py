@@ -10,7 +10,7 @@ from services.v69_connector_activation_registry import RegistryState, register_c
 from services.v69_connector_runtime_gateway import ConnectorRuntimeBlocked, RuntimeBlock, RuntimeConnectorGateway
 from services.v69_reference_connector_certification import certify_facebook_reference
 
-NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 def contract():
@@ -29,12 +29,16 @@ def contract():
 
 class FakeConnector:
     platform = "facebook"
-    def __init__(self): self.calls = []
+    def __init__(self):
+        self.calls = []
+        self.health_calls = 0
     def publish(self, content, **kwargs): self.calls.append(("publish", content)); return {"ok": True, "post_id": "p1"}
     def edit(self, post_id, content): self.calls.append(("edit", post_id, content)); return {"ok": True, "post_id": post_id}
     def delete(self, post_id): self.calls.append(("delete", post_id)); return {"ok": True, "post_id": post_id}
     def lookup_post(self, post_id): return None
-    def health(self): return {"ok": True}
+    def health(self):
+        self.health_calls += 1
+        return {"ok": True, "platform": "facebook", "latency_ms": 12, "status_code": 200}
     def validate(self): return True
     def fetch_comments(self, post_id, limit=50): return []
     def fetch_messages(self, limit=50): return []
@@ -120,3 +124,105 @@ def test_version_drift_blocks_before_provider_call():
         asyncio.run(gateway.publish("hello"))
     assert RuntimeBlock.VERSION_DRIFT.value in exc.value.authorization.reasons
     assert not fake.calls
+
+
+class FakeHealthObservationStore:
+    def __init__(self):
+        self.calls = []
+
+    def record_health_observation(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"persisted": True, **kwargs}
+
+
+def test_tenant_gateway_records_health_with_its_bound_workspace_and_connection():
+    c, r, fake, gateway = setup()
+    store = FakeHealthObservationStore()
+
+    result = gateway.observe_health(store, observed_at=NOW)
+
+    assert result["persisted"] is True
+    assert store.calls[0]["workspace_id"] == "tenant-a"
+    assert store.calls[0]["connection_id"] == "c1"
+    assert store.calls[0]["connector_key"] == "facebook"
+    assert store.calls[0]["health_state"] == "healthy"
+    assert store.calls[0]["provider_status_code"] == 200
+    assert store.calls[0]["latency_ms"] == 12
+    assert store.calls[0]["observed_at"] == NOW
+    assert fake.health_calls == 1
+    assert fake.calls == []
+
+
+def test_tenant_gateway_records_unhealthy_probe_as_unknown_without_raw_error():
+    class UnhealthyConnector(FakeConnector):
+        def health(self):
+            self.health_calls += 1
+            return {
+                "ok": False,
+                "platform": "facebook",
+                "latency_ms": 7,
+                "error": "token_invalid_do_not_persist",
+            }
+
+    c, r, fake, _ = setup()
+    connector = UnhealthyConnector()
+    gateway = RuntimeConnectorGateway(
+        "tenant-a", c, contract(), r,
+        GovernedConnector(connector, workspace_id="tenant-a", ledger=ExecutionLedger(allow_in_memory=True)),
+    )
+    store = FakeHealthObservationStore()
+
+    gateway.observe_health(store, observed_at=NOW)
+
+    call = store.calls[0]
+    assert call["health_state"] == "unknown"
+    assert call["reason_codes"] == ("provider_check_not_healthy",)
+    assert "token_invalid_do_not_persist" not in repr(call)
+    assert connector.health_calls == 1
+    assert connector.calls == []
+
+
+def test_tenant_gateway_requires_explicit_durable_observation_store():
+    c, r, fake, gateway = setup()
+
+    with pytest.raises(ValueError, match="durable_health_observation_store_required"):
+        gateway.observe_health(None, observed_at=NOW)
+
+    assert fake.health_calls == 0
+
+
+def test_tenant_gateway_rejects_registry_connection_mismatch_before_probe():
+    from dataclasses import replace
+
+    c, r, fake, _ = setup()
+    mismatched_registry = replace(r, connection_id="another-connection")
+    gateway = RuntimeConnectorGateway(
+        "tenant-a", c, contract(), mismatched_registry,
+        GovernedConnector(fake, workspace_id="tenant-a", ledger=ExecutionLedger(allow_in_memory=True)),
+    )
+
+    with pytest.raises(ValueError, match=RuntimeBlock.TENANT_MISMATCH.value):
+        gateway.observe_health(FakeHealthObservationStore(), observed_at=NOW)
+
+    assert fake.health_calls == 0
+
+
+def test_tenant_gateway_rejects_invalid_health_result_without_persisting():
+    class InvalidHealthConnector(FakeConnector):
+        def health(self):
+            self.health_calls += 1
+            return {"error": "missing_ok"}
+
+    c, r, fake, _ = setup()
+    connector = InvalidHealthConnector()
+    gateway = RuntimeConnectorGateway(
+        "tenant-a", c, contract(), r,
+        GovernedConnector(connector, workspace_id="tenant-a", ledger=ExecutionLedger(allow_in_memory=True)),
+    )
+    store = FakeHealthObservationStore()
+
+    with pytest.raises(ValueError, match="provider_health_result_invalid"):
+        gateway.observe_health(store, observed_at=NOW)
+
+    assert store.calls == []
+    assert connector.health_calls == 1
