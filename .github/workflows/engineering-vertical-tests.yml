@@ -64,6 +64,7 @@ on:
       - "services/v69_integration_evidence.py"
       - "tests/test_v69_integration_evidence_supabase_store.py"
       - "tests/test_v69_13_integration_evidence.py"
+      # Durable evidence store and its atomic database append path.
       - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
       - "services/vnext_connector_fabric_evidence_read_model.py"
       - "routes/connector_fabric_routes.py"
