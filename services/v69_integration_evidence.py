@@ -133,6 +133,9 @@ class DurableHealthObservation:
     observed_at: datetime
     health_state: str
     evidence_hash: str
+    # These resource bindings are also included in the hash-chained metadata.
+    brand_id: str | None = None
+    social_account_id: str | None = None
 
 
 class SupabaseIntegrationEvidenceStore:
@@ -333,6 +336,8 @@ class SupabaseIntegrationEvidenceStore:
                 observed_at=current.occurred_at,
                 health_state=health_state,
                 evidence_hash=current.evidence_hash,
+                brand_id=current.metadata.get("brand_id"),
+                social_account_id=current.metadata.get("social_account_id"),
             )
 
         raise EvidenceChainConflict("evidence_chain_conflict")
