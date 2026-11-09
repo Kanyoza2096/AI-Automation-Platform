@@ -1141,19 +1141,6 @@ async def _boot_event_bus(container: ServiceContainer) -> None:
         from organism.event_bridge import OrganismEventBridge
         organism_event_bridge = OrganismEventBridge(organism_registry)
         await organism_event_bridge.start(bus)
-        # Cross-process replay is delivered through SharedEventBus context
-        # handlers. Its verifier was installed at worker startup from public
-        # keys only; unsigned or invalid events remain untrusted.
-        try:
-            from core.shared_event_bus import SharedEventBus
-            shared_bus = container.try_resolve(SharedEventBus)
-            if shared_bus is not None:
-                await organism_event_bridge.start_shared(shared_bus)
-        except Exception as shared_exc:
-            logger.warning(
-                "Organism durable event bridge unavailable: %s",
-                _sanitize_error_message(shared_exc),
-            )
         container.register_instance(OrganismEventBridge, organism_event_bridge)
         await shutdown_registry.register(
             "OrganismEventBridge",
@@ -1277,6 +1264,18 @@ async def _boot_shared_event_bus(container: ServiceContainer) -> None:
         provenance_verifier=provenance_verifier,
     )
     container.register_instance(SharedEventBus, bus)
+    # EventBus boots before SharedEventBus in the infrastructure phase. Attach
+    # the organism context handler here, after the durable transport exists.
+    try:
+        from organism.event_bridge import OrganismEventBridge
+        organism_event_bridge = container.try_resolve(OrganismEventBridge)
+        if organism_event_bridge is not None:
+            await organism_event_bridge.start_shared(bus)
+    except Exception as exc:
+        logger.warning(
+            "Organism durable event bridge unavailable: %s",
+            _sanitize_error_message(exc),
+        )
     await health_registry.register(bus)
     await shutdown_registry.register(
         "SharedEventBus", bus.stop, timeout_seconds=5.0
