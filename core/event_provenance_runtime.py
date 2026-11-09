@@ -159,9 +159,14 @@ def install_tenant_facebook_provenance(
     bus_client = getattr(event_bus, "supabase", None)
     if bus_client is None:
         return ProvenanceInstallResult(False, "event_database_unavailable")
-    if supabase_client is not None and supabase_client is not bus_client:
+    # The producer's account/evidence reads and durable event writes require
+    # the explicitly configured service-role client. An anon/RLS client is
+    # never an acceptable fallback for this privileged backend pipeline.
+    if supabase_client is None:
+        return ProvenanceInstallResult(False, "service_role_client_required")
+    if supabase_client is not bus_client:
         return ProvenanceInstallResult(False, "canonical_event_database_mismatch")
-    client = bus_client
+    client = supabase_client
 
     probe = schema_probe or _probe_provenance_column
     if not probe(client):
