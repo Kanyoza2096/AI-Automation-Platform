@@ -231,3 +231,143 @@ async def test_republished_health_evidence_deduplicates_goal_by_evidence_id():
         auth_identity_var.reset(token)
         await bridge.stop()
         await bus.stop()
+
+
+
+@pytest.mark.asyncio
+async def test_verified_durable_health_replay_flows_to_suggest_only_goal():
+    import asyncio
+    import threading
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from core.durable_event_provenance import (
+        sign_durable_provenance,
+        verify_durable_provenance,
+    )
+    from core.event_provenance import (
+        ActorPrincipal,
+        ProducerPrincipal,
+        VerifiedEventProvenance,
+    )
+    from core.shared_event_bus import SharedEventBus
+
+    signing_seed = b"kdo-durable-replay-test-key-32!"[:32]
+    private_key = Ed25519PrivateKey.from_private_bytes(signing_seed)
+    public_key = private_key.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    event_id = "durable-health-replay-001"
+    payload = health_payload(evidence_id="durable-evidence-001")
+    proof = VerifiedEventProvenance(
+        producer=ProducerPrincipal(PRODUCER_ID, PRODUCER_CLASS),
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        verification="composition_root_capability",
+    )
+    envelope = sign_durable_provenance(
+        proof,
+        event_id=event_id,
+        event_name="connector.health.observed",
+        payload=payload,
+        key_id="health-producer-key-v1",
+        signing_key=signing_seed,
+        issued_at=int(datetime.now(timezone.utc).timestamp()),
+        ttl_seconds=3600,
+    )
+
+    def verifier(signed_envelope, **event):
+        return verify_durable_provenance(
+            signed_envelope,
+            keyring={"health-producer-key-v1": public_key},
+            key_owners={"health-producer-key-v1": PRODUCER_ID},
+            enforce_freshness=False,
+            **event,
+        )
+
+    consumer = SharedEventBus(
+        source_service="organism-replay-consumer",
+        provenance_verifier=verifier,
+    )
+    organisms = OrganismRegistry()
+    organism = organisms.get_or_create("workspace-a")
+    organism._running = True
+    runtime = organism.runtime
+    store = IdempotentProposalStore()
+    runtime.goal_proposal_store = store
+
+    class NoDecisionPlane:
+        async def evaluate(self, **_kwargs):
+            raise AssertionError("durable replay must remain suggest-only")
+
+    runtime.cognitive = NoDecisionPlane()
+    bridge = OrganismEventBridge(organisms)
+    await bridge.start_shared(consumer)
+
+    class Heartbeat:
+        def join(self, timeout=None):
+            return None
+
+    consumer._ensure_handler_delivery = lambda *_args: {
+        "id": "handler-receipt-001",
+        "processed": False,
+    }
+    consumer._claim_handler_delivery = lambda _receipt: (
+        "handler-receipt-001",
+        "handler-claim-001",
+    )
+    consumer._start_handler_lease_heartbeat = lambda *_args: (
+        threading.Event(),
+        Heartbeat(),
+    )
+    consumer._mark_handler_delivery_processed = lambda *_args, **_kwargs: True
+    consumer._mark_delivery_processed = lambda *_args, **_kwargs: True
+
+    event = {
+        "id": event_id,
+        "event_type": "connector.health.observed",
+        "workspace_id": "workspace-a",
+        "brand_id": "brand-a",
+        "source_service": "untrusted-legacy-label",
+        "source_instance": "remote-health-worker",
+        "payload": payload,
+        "provenance_envelope": envelope,
+    }
+    try:
+        # SharedEventBus runs async context handlers in its dispatch thread.
+        await asyncio.to_thread(
+            consumer._dispatch_event,
+            event,
+            delivery_id="group-delivery-001",
+            claim_token="group-claim-001",
+        )
+
+        observations = runtime.perception.recent(
+            "workspace-a", kind=ObservationKind.HEALTH
+        )
+        assert len(observations) == 1
+        assert observations[0].source_trust == 0.9
+        assert observations[0].metadata["provenance_verification"] == "ed25519_v1"
+        assert observations[0].metadata["evidence_id"] == "durable-evidence-001"
+
+        result = await cycle_started_organisms(organisms)
+
+        assert result.attempted == result.completed == 1
+        assert result.failed == 0
+        assert len(store.items) == 1
+        proposal = next(iter(store.items.values()))
+        assert proposal.workspace_id == "workspace-a"
+        assert proposal.source_event_ids == (event_id,)
+        assert proposal.authority == "suggest"
+        assert proposal.status == "proposed"
+        assert runtime.pending_goal_proposals == (proposal,)
+    finally:
+        await bridge.stop()
+        consumer.stop()
