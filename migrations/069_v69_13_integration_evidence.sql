@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS integration_evidence (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT integration_evidence_workspace_connection_fk
         FOREIGN KEY (workspace_id, connection_id)
-        REFERENCES integration_connections(workspace_id, connection_id)
+        REFERENCES integration_connections(workspace_id, id)
         ON DELETE RESTRICT
 );
 
@@ -38,7 +38,7 @@ ALTER TABLE integration_evidence ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS integration_evidence_member_select ON integration_evidence;
 CREATE POLICY integration_evidence_member_select
     ON integration_evidence FOR SELECT
-    USING (workspace_id IN (SELECT workspace_id FROM workspace_members WHERE user_id = auth.uid()));
+    USING (workspace_id IN (SELECT workspace_id FROM workspace_members WHERE user_id = auth.uid()::text));
 
 -- Writes should occur through a trusted server-side evidence adapter.
 DROP POLICY IF EXISTS integration_evidence_no_client_write ON integration_evidence;
