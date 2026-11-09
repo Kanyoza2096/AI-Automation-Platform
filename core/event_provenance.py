@@ -143,7 +143,7 @@ class ProducerRegistry:
         workspace = str(workspace_id or "").strip()
         if not workspace:
             raise ProvenanceError("workspace binding is required")
-        if actor is not None and actor.workspace_id and actor.workspace_id != workspace:
+        if actor is not None and actor.workspace_id != workspace:
             raise ProvenanceError("actor and event workspace do not match")
         return VerifiedEventProvenance(
             producer=registered,
