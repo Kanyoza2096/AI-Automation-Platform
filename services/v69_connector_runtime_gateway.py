@@ -66,6 +66,9 @@ class RuntimeConnectorGateway:
     registry: ConnectorRegistryRecord
     governed: GovernedConnector
     evidence_sink: EvidenceSink | None = None
+    brand_id: str | None = None
+    social_account_id: str | None = None
+
 
     def __post_init__(self) -> None:
         if not self.workspace_id.strip():
