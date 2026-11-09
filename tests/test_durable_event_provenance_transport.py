@@ -366,3 +366,19 @@ def test_shared_bus_round_trips_real_ed25519_proof_for_historical_event(monkeypa
     assert proof.verification == "ed25519_v1"
     # The envelope has expired as a freshness token, but remains authentic.
     assert event["provenance_envelope"]["expires_at"] < 5_000
+
+
+
+def test_shared_event_bus_initializer_passes_consumer_verifier(monkeypatch):
+    from core import shared_event_bus as module
+
+    monkeypatch.setattr(module.SharedEventBus, "start", lambda self: None)
+    verifier = lambda envelope, **event: None
+    bus = module.init_shared_event_bus(
+        supabase_client=None,
+        source_service="worker-test",
+        provenance_verifier=verifier,
+    )
+    assert bus._provenance_verifier is verifier
+    assert bus._provenance_signer is None
+    assert bus._producer_registry is None
