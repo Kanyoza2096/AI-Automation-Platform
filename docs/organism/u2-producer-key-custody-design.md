@@ -132,3 +132,22 @@ A read-only code search and inspection identified the V69 connector lifecycle as
 Therefore V69 is a **candidate contract**, not evidence of an operational tenant-health producer. Before using it, the implementation must identify the authenticated connector runtime that performs the actual health check, verify that it owns the workspace-bound connection/registry, and attach a traceable provider response/evidence reference. Only then can the trusted composition root issue a producer capability to that runtime. Do not sign synthetic/reference observations or user-supplied health claims as if they were verified provider telemetry.
 
 This audit did not instantiate the orchestrator, call any provider, publish an event, or touch a database or service.
+
+
+## Additional audit: durable connector-health evidence is read-only today (2026-11-09)
+
+The repository already contains a durable evidence table and a read model, but that is not yet a producer path:
+
+- `migrations/100_vnext_connector_health_evidence.sql` defines `connector_health_observations`, scoped by `workspace_id`, `connection_id`, and `connector_key`, with observed time, state, drift, provider status code, latency and evidence reference. Its stated purpose is evidence/eligibility input only, never execution authority.
+- `services/vnext_connector_fabric_evidence_read_model.py` reads the latest row for a workspace and connector. It exposes `authority=none`, `readOnly=true`, and `executionEffect=none`.
+- A repository-wide search for the table name, health-observation persistence functions and likely writer entry points found the read model and migration, but no application writer for `connector_health_observations`. The existing V69 health-control contract is in-memory and its lifecycle module explicitly says it does not authenticate, store secrets, or execute provider side effects.
+- `services/v69_reference_connector_certification.py` explicitly performs offline structural certification and states it does not contact Meta. It must not be treated as live provider health evidence.
+- The read model's `_latest()` helper catches query errors and returns `None`; therefore an absent row currently cannot distinguish “no observation exists” from “the evidence query failed”. A future producer/consumer path must preserve that distinction rather than treating a read failure as a healthy or empty result.
+
+### Consequence
+
+The first producer implementation is not just “wire V69 into the event bus”. It needs a real, authenticated connector-runtime health check, a tenant-bound evidence writer, and an explicit event publisher. The writer must verify the connection/registry binding, require a provider-derived result and traceable evidence reference, and fail visibly on persistence errors. It must not accept a caller-provided status as proof that the provider was checked.
+
+The durable evidence row can be the source record for a signed event, but it is not itself authenticated producer provenance. The signing capability must be held by the runtime that performed the provider check, and the consumer must verify the envelope independently.
+
+This is a repository-source audit only. No Supabase query, migration, provider API call, credential access, event publication or deployment was performed.
