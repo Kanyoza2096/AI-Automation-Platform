@@ -204,3 +204,97 @@ def test_integration_evidence_rpc_is_atomic_and_service_role_only():
             with connection.transaction():
                 connection.execute("SET LOCAL ROLE authenticated")
                 connection.execute(append_sql, first_params)
+
+
+@pytest.mark.skipif(not DSN, reason="disposable PostgreSQL migration test runs in CI")
+def test_health_observation_rpc_atomically_links_health_and_evidence():
+    from psycopg.types.json import Jsonb
+
+    suffix = uuid.uuid4().hex
+    workspace_id = f"it-health-rpc-{suffix}"
+    connection_id = f"it-health-connection-{suffix}"
+    evidence_id = f"it-health-evidence-{suffix}"
+
+    sql = """
+        SELECT evidence_id, observation_id
+        FROM public.record_connector_health_observation(
+            p_evidence_id => %s,
+            p_workspace_id => %s,
+            p_connection_id => %s,
+            p_connector_key => 'facebook',
+            p_observed_at => NOW(),
+            p_health_state => 'healthy',
+            p_drift => %s,
+            p_provider_status_code => 200,
+            p_latency_ms => 12,
+            p_reason_codes => %s,
+            p_actor => 'system',
+            p_provider => 'facebook',
+            p_connector_version => '1.0.0',
+            p_payload_fingerprint => %s,
+            p_metadata => %s,
+            p_expected_previous_hash => '',
+            p_evidence_hash => %s
+        )
+    """
+
+    with psycopg.connect(DSN) as connection:
+        connection.execute(
+            "INSERT INTO public.workspaces (id) VALUES (%s)",
+            (workspace_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO public.integration_connections
+                (id, workspace_id, connector_key)
+            VALUES (%s, %s, 'facebook')
+            """,
+            (connection_id, workspace_id),
+        )
+
+        params = (
+            evidence_id, workspace_id, connection_id, Jsonb([]), Jsonb([]),
+            "f" * 64, Jsonb({"health_state": "healthy"}), "a" * 64,
+        )
+        with connection.transaction():
+            connection.execute("SET LOCAL ROLE service_role")
+            receipt = connection.execute(sql, params).fetchone()
+            assert receipt[0] == evidence_id
+            assert receipt[1]
+
+        health = connection.execute(
+            """
+            SELECT workspace_id, connection_id, connector_key,
+                   health_state, evidence_ref, latency_ms
+            FROM public.connector_health_observations
+            WHERE id = %s
+            """,
+            (receipt[1],),
+        ).fetchone()
+        assert health == (
+            workspace_id, connection_id, "facebook", "healthy", evidence_id, 12
+        )
+
+        evidence = connection.execute(
+            """
+            SELECT sequence_no, rtrim(evidence_hash::text)
+            FROM public.integration_evidence
+            WHERE evidence_id = %s
+            """,
+            (evidence_id,),
+        ).fetchone()
+        assert evidence == (1, "a" * 64)
+
+        # Health observations are read-only to service_role outside the RPC.
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with connection.transaction():
+                connection.execute("SET LOCAL ROLE service_role")
+                connection.execute(
+                    """
+                    INSERT INTO public.connector_health_observations
+                        (workspace_id, connection_id, connector_key, observed_at,
+                         health_state, evidence_ref)
+                    VALUES (%s, %s, 'facebook', NOW(), 'healthy', 'direct-write')
+                    """,
+                    (workspace_id, connection_id),
+                )
