@@ -192,6 +192,7 @@ async def test_producer_persists_evidence_before_publishing_signed_tenant_event(
     payload = args[1]
     assert payload["evidence_id"] == "evidence-001"
     assert payload["evidence_hash"] == "c" * 64
+    assert payload["social_account_id"] == "account-a"
     assert "private-page-token" not in repr(payload)
 
 
