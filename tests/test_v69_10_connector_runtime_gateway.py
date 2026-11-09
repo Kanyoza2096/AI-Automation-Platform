@@ -10,7 +10,7 @@ from services.v69_connector_activation_registry import RegistryState, register_c
 from services.v69_connector_runtime_gateway import ConnectorRuntimeBlocked, RuntimeBlock, RuntimeConnectorGateway
 from services.v69_reference_connector_certification import certify_facebook_reference
 
-NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 def contract():
