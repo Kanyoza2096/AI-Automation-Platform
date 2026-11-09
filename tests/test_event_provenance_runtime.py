@@ -49,6 +49,7 @@ class FakeSupabase:
         if health_ready:
             self.ready_tables.update({
                 "integration_connections",
+                "connector_certification_registry",
                 "integration_evidence",
                 "connector_health_observations",
             })
@@ -300,7 +301,8 @@ def test_health_producer_requires_attestation_and_all_health_evidence_columns():
     assert bus._tenant_health_evidence_ready is True
     assert client.calls == [
         ("events", "provenance_envelope", 0),
-        ("integration_connections", "id,workspace_id", 0),
+        ("integration_connections", "id,workspace_id,brand_id,social_account_id", 0),
+        ("connector_certification_registry", "workspace_id,connection_id,connector_key,connector_version,registry_state,brand_id,social_account_id", 0),
         ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash", 0),
         ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref", 0),
     ]
