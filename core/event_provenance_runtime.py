@@ -16,6 +16,7 @@ from core.event_provenance_key_provider import (
     DurableProvenanceKeyProvider,
     ProvenanceKeyConfigError,
 )
+from core.unified_bus import UnifiedEventBus
 from services.v69_tenant_facebook_health_producer import (
     PRODUCER_CLASS,
     PRODUCER_ID,
@@ -29,7 +30,20 @@ class TenantFacebookProvenanceRuntime:
     registry: ProducerRegistry = field(repr=False)
     capability: ProducerCapability = field(repr=False)
     key_provider: DurableProvenanceKeyProvider = field(repr=False)
+    event_bus: UnifiedEventBus = field(repr=False)
     status: str = "enabled"
+
+    def create_health_producer(self, *, resolver: Any, connector_factory: Any):
+        """Bind request-time tenant resolution to this exact boot capability."""
+        from services.v69_tenant_facebook_health_producer import TenantFacebookHealthProducer
+
+        return TenantFacebookHealthProducer(
+            resolver=resolver,
+            connector_factory=connector_factory,
+            event_bus=self.event_bus,
+            producer_registry=self.registry,
+            producer_capability=self.capability,
+        )
 
     def __repr__(self) -> str:
         return (
@@ -94,8 +108,8 @@ def install_tenant_facebook_provenance(
     if isinstance(existing, TenantFacebookProvenanceRuntime):
         return ProvenanceInstallResult(True, "already_installed", existing)
 
-    if event_bus is None:
-        return ProvenanceInstallResult(False, "canonical_event_bus_unavailable")
+    if not isinstance(event_bus, UnifiedEventBus):
+        return ProvenanceInstallResult(False, "canonical_unified_event_bus_required")
     if getattr(event_bus, "_running", False):
         return ProvenanceInstallResult(False, "event_bus_already_started")
     if (
@@ -124,9 +138,12 @@ def install_tenant_facebook_provenance(
     if owners.get(key_provider.active_key_id) != PRODUCER_ID:
         return ProvenanceInstallResult(False, "active_key_not_owned_by_facebook_producer")
 
-    client = supabase_client or getattr(event_bus, "supabase", None)
-    if client is None:
+    bus_client = getattr(event_bus, "supabase", None)
+    if bus_client is None:
         return ProvenanceInstallResult(False, "event_database_unavailable")
+    if supabase_client is not None and supabase_client is not bus_client:
+        return ProvenanceInstallResult(False, "canonical_event_database_mismatch")
+    client = bus_client
 
     probe = schema_probe or _probe_provenance_column
     if not probe(client):
@@ -141,6 +158,7 @@ def install_tenant_facebook_provenance(
             registry=registry,
             capability=capability,
             key_provider=key_provider,
+            event_bus=event_bus,
         )
     except Exception:
         return ProvenanceInstallResult(False, "producer_registry_initialization_failed")
