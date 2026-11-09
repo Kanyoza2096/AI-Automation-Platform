@@ -74,12 +74,17 @@ class ConnectorRegistryRecord:
     generation: int = 1
     reason: str = ""
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Optional resource binding; required by account-specific connector composition.
+    brand_id: str | None = None
+    social_account_id: str | None = None
     authority: str = field(default="none", init=False)
     execution_effect: str = field(default="none", init=False)
 
     def __post_init__(self) -> None:
         if not self.workspace_id.strip() or not self.connection_id.strip() or not self.connector_key.strip():
             raise ValueError("workspace_id, connection_id and connector_key are required")
+        if bool(self.brand_id) != bool(self.social_account_id):
+            raise ValueError("brand_id and social_account_id must be set together")
         if self.authority != "none" or self.execution_effect != "none":
             raise ValueError("registry records cannot grant authority or execution")
 
