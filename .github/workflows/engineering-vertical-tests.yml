@@ -213,7 +213,7 @@ jobs:
                   )
               """)
 
-              # Exercise the V69 connector-evidence schema on this disposable
+              # Exercise V69 connector-evidence and atomic-append schemas on this disposable
               # PostgreSQL instance. The composite FKs must bind each evidence
               # row to a connection owned by the same workspace.
               for migration_path in (
