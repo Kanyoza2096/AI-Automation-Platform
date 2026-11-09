@@ -373,6 +373,7 @@ def test_shared_event_bus_initializer_passes_consumer_verifier(monkeypatch):
     from core import shared_event_bus as module
 
     monkeypatch.setattr(module.SharedEventBus, "start", lambda self: None)
+    monkeypatch.setattr(module, "_shared_bus", None)
     verifier = lambda envelope, **event: None
     bus = module.init_shared_event_bus(
         supabase_client=None,
