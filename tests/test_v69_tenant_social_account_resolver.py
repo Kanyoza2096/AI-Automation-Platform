@@ -191,7 +191,10 @@ def test_resolver_requires_all_identity_dimensions():
 
 
 def test_resolver_uses_workspace_from_authenticated_identity():
-    identity = SimpleNamespace(valid=True, workspace_id="workspace-a")
+    identity = SimpleNamespace(
+        valid=True, workspace_id="workspace-a",
+        has_permission=lambda permission: permission == "write",
+    )
 
     binding = resolver().resolve_for_identity(
         identity, brand_id="brand-a", platform=Platform.FACEBOOK
@@ -203,10 +206,22 @@ def test_resolver_uses_workspace_from_authenticated_identity():
 @pytest.mark.parametrize("identity,expected", [
     (None, "authenticated_identity_required"),
     (SimpleNamespace(valid=False, workspace_id="workspace-a"), "authenticated_identity_required"),
-    (SimpleNamespace(valid=True, workspace_id=None), "authenticated_workspace_required"),
+    (SimpleNamespace(valid=True, workspace_id=None, has_permission=lambda _permission: True), "authenticated_workspace_required"),
 ])
 def test_resolver_rejects_invalid_or_unscoped_auth_identity(identity, expected):
     with pytest.raises(TenantAccountResolutionError, match=expected):
+        resolver().resolve_for_identity(
+            identity, brand_id="brand-a", platform=Platform.FACEBOOK
+        )
+
+
+def test_resolver_rejects_authenticated_identity_without_write_permission():
+    identity = SimpleNamespace(
+        valid=True, workspace_id="workspace-a",
+        has_permission=lambda _permission: False,
+    )
+
+    with pytest.raises(TenantAccountResolutionError, match="social_account_access_permission_required"):
         resolver().resolve_for_identity(
             identity, brand_id="brand-a", platform=Platform.FACEBOOK
         )
