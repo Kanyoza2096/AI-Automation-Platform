@@ -15,6 +15,8 @@ on:
       - "services/connectors/facebook_connector.py"
       - "services/facebook.py"
       - "services/v69_tenant_facebook_connector_factory.py"
+      - "services/business_integration_platform.py"
+      - "services/v69_connector_activation_registry.py"
       - "tests/test_facebook_connector_tenant_health.py"
       - "tests/test_v69_tenant_facebook_connector_factory.py"
       # Facebook composition must preserve the resolved Page account identity.
