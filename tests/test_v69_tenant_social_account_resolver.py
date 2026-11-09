@@ -188,3 +188,25 @@ def test_resolver_requires_explicit_database_client():
 def test_resolver_requires_all_identity_dimensions():
     with pytest.raises(TenantAccountResolutionError, match="workspace_brand_platform_required"):
         resolver().resolve(workspace_id="", brand_id="brand-a", platform="facebook")
+
+
+def test_resolver_uses_workspace_from_authenticated_identity():
+    identity = SimpleNamespace(valid=True, workspace_id="workspace-a")
+
+    binding = resolver().resolve_for_identity(
+        identity, brand_id="brand-a", platform=Platform.FACEBOOK
+    )
+
+    assert binding.workspace_id == identity.workspace_id
+
+
+@pytest.mark.parametrize("identity,expected", [
+    (None, "authenticated_identity_required"),
+    (SimpleNamespace(valid=False, workspace_id="workspace-a"), "authenticated_identity_required"),
+    (SimpleNamespace(valid=True, workspace_id=None), "authenticated_workspace_required"),
+])
+def test_resolver_rejects_invalid_or_unscoped_auth_identity(identity, expected):
+    with pytest.raises(TenantAccountResolutionError, match=expected):
+        resolver().resolve_for_identity(
+            identity, brand_id="brand-a", platform=Platform.FACEBOOK
+        )
