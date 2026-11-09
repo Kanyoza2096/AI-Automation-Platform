@@ -6,6 +6,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from core.event_provenance import ActorPrincipal
 from core.unified_bus import UnifiedEventBus
 from core.event_provenance_runtime import install_tenant_facebook_provenance
 from services.v69_tenant_facebook_health_producer import (
