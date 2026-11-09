@@ -119,3 +119,16 @@ This design does not:
 ## Acceptance gate
 
 This design is complete only when a separately reviewed implementation demonstrates isolated per-producer key custody, explicit public-key ownership and revocation policy, successful overlap rotation, cross-process verification, and a real workspace-scoped producer. Until then, the organism event bridge remains at `source_trust=0.0`, and all goal proposals remain blocked from event sources without authenticated provenance.
+
+
+## Repository audit: tenant-scoped connector health candidate (2026-11-09)
+
+A read-only code search and inspection identified the V69 connector lifecycle as a possible future source, but not yet a live event producer:
+
+- `services/v69_connector_health_control.py` defines `HealthObservation` with workspace ID, connection ID, connector key, observation timestamp, health state, drift and evidence reference. `assess_health()` verifies that the observation's workspace, connection and connector match both the connection and registry record, and fails closed on tenant mismatch.
+- `services/v69_integration_lifecycle.py` composes that assessment through `IntegrationLifecycleOrchestrator.health_control()`. It can emit an evidence record through an injected evidence sink and derive a downgraded connection/registry state.
+- Repository-wide searches found no production composition-root instantiation of `IntegrationLifecycleOrchestrator`; the visible construction/use sites are definitions, tests and reference certification paths. The health observation factory also accepts supplied state/evidence values; it is not itself proof that a real provider check occurred.
+
+Therefore V69 is a **candidate contract**, not evidence of an operational tenant-health producer. Before using it, the implementation must identify the authenticated connector runtime that performs the actual health check, verify that it owns the workspace-bound connection/registry, and attach a traceable provider response/evidence reference. Only then can the trusted composition root issue a producer capability to that runtime. Do not sign synthetic/reference observations or user-supplied health claims as if they were verified provider telemetry.
+
+This audit did not instantiate the orchestrator, call any provider, publish an event, or touch a database or service.
