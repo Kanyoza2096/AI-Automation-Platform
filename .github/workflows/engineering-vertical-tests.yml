@@ -65,6 +65,7 @@ on:
       - "services/v69_connector_runtime_gateway.py"
       - "tests/test_v69_10_connector_runtime_gateway.py"
       - "repositories/social_account_repository.py"
+      - "models/social_account.py"
       - "services/v69_tenant_social_account_resolver.py"
       - "tests/test_v69_tenant_social_account_resolver.py"
       # Tenant-scoped read-only health observation and atomic persistence path.
