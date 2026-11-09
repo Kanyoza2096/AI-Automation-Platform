@@ -1,6 +1,7 @@
 """Authenticated, observe-only Facebook health observation service."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -89,7 +90,8 @@ class TenantFacebookHealthObservationService:
         connection_id: str,
     ) -> TenantFacebookHealthObservationResult:
         """Resolve, observe, persist and publish one signed health observation."""
-        context: TenantFacebookHealthContext = self._context_resolver.resolve_for_identity(
+        context: TenantFacebookHealthContext = await asyncio.to_thread(
+            self._context_resolver.resolve_for_identity,
             identity,
             brand_id=brand_id,
             connection_id=connection_id,
