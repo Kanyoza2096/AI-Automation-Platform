@@ -35,9 +35,9 @@ def test_connector_evidence_rows_must_reference_connection_in_same_workspace():
             """
             INSERT INTO public.integration_evidence
                 (evidence_id, workspace_id, connection_id, connector_key,
-                 event_type, occurred_at, outcome, evidence_hash)
+                 event_type, occurred_at, outcome, evidence_hash, sequence_no)
             VALUES (%s, %s, %s, 'facebook', 'health.checked', NOW(),
-                    'healthy', %s)
+                    'healthy', %s, 1)
             """,
             (f"evidence-{suffix}", workspace_a, connection_id, "a" * 64),
         )
@@ -65,9 +65,9 @@ def test_connector_evidence_rows_must_reference_connection_in_same_workspace():
                 """
                 INSERT INTO public.integration_evidence
                     (evidence_id, workspace_id, connection_id, connector_key,
-                     event_type, occurred_at, outcome, evidence_hash)
+                     event_type, occurred_at, outcome, evidence_hash, sequence_no)
                 VALUES (%s, %s, %s, 'facebook', 'health.checked', NOW(),
-                        'healthy', %s)
+                        'healthy', %s, 1)
                 """,
                 (f"bad-evidence-{suffix}", workspace_b, connection_id, "b" * 64),
             ),
