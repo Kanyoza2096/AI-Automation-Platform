@@ -18,11 +18,13 @@ class FakeQuery:
         self.rows_by_table = rows_by_table
         self.table_name = table
         self.fail_table = fail_table
+        self.filters = []
 
     def select(self, *_args, **_kwargs):
         return self
 
-    def eq(self, *_args, **_kwargs):
+    def eq(self, field, value):
+        self.filters.append((field, value))
         return self
 
     def order(self, *_args, **_kwargs):
@@ -41,9 +43,12 @@ class FakeClient:
     def __init__(self, rows_by_table=None, fail_table=None):
         self.rows_by_table = rows_by_table or {}
         self.fail_table = fail_table
+        self.queries = []
 
     def table(self, name):
-        return FakeQuery(self.rows_by_table, name, self.fail_table)
+        query = FakeQuery(self.rows_by_table, name, self.fail_table)
+        self.queries.append(query)
+        return query
 
 
 def install_client(monkeypatch, client):
@@ -60,12 +65,17 @@ def test_evidence_read_model_is_read_only_and_has_no_authority(monkeypatch):
 
 
 def test_successful_empty_queries_are_explicitly_no_record(monkeypatch):
-    install_client(monkeypatch, FakeClient())
+    client = FakeClient()
+    install_client(monkeypatch, client)
     model = build_connector_fabric_evidence("workspace-a", "github")
     assert model["health"]["state"] == "NOT_EXPOSED"
     assert model["health"]["evidenceStatus"] == "no_record"
     assert model["certification"]["state"] == "NOT_EXPOSED"
     assert model["certification"]["evidenceStatus"] == "no_record"
+    assert len(client.queries) == 2
+    for query in client.queries:
+        assert ("workspace_id", "workspace-a") in query.filters
+        assert ("connector_key", "github") in query.filters
 
 
 def test_health_and_certification_rows_are_exposed_as_evidence_only(monkeypatch):
