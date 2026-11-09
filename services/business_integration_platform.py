@@ -113,6 +113,9 @@ class IntegrationConnection:
     granted_capabilities: tuple[str, ...] = ()
     autonomy_mode: AutonomyMode = AutonomyMode.OBSERVE
     connection_id: str = field(default_factory=lambda: f"int_{uuid.uuid4().hex[:16]}")
+    # Optional resource binding for connectors that address a specific brand account.
+    brand_id: str | None = None
+    social_account_id: str | None = None
 
     # Secrets/credentials are deliberately absent from this contract.
     authority: str = field(default="none", init=False)
@@ -121,6 +124,8 @@ class IntegrationConnection:
     def __post_init__(self) -> None:
         if not self.workspace_id.strip() or not self.connector_key.strip():
             raise ValueError("workspace_id and connector_key are required")
+        if bool(self.brand_id) != bool(self.social_account_id):
+            raise ValueError("brand_id and social_account_id must be set together")
         if len(set(self.granted_capabilities)) != len(self.granted_capabilities):
             raise ValueError("granted_capabilities must be unique")
         if self.authority != "none" or self.execution_effect != "none":
