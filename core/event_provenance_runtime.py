@@ -371,4 +371,5 @@ __all__ = [
     "TenantFacebookProvenanceRuntime",
     "ProvenanceInstallResult",
     "install_tenant_facebook_provenance",
+    "build_durable_event_provenance_verifier",
 ]
