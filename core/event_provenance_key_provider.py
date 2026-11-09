@@ -161,7 +161,7 @@ class DurableProvenanceKeyProvider:
             for key_id, value in public_config.items()
         }
         key_owners = {
-            str(key_id): str(owner)
+            str(key_id): owner
             for key_id, owner in owner_config.items()
         }
 
