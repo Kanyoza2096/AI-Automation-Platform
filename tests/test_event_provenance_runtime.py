@@ -79,7 +79,9 @@ def test_startup_installs_capability_on_existing_bus_only_after_read_only_schema
     assert result.reason == "installed"
     assert result.runtime is not None
     assert bus._producer_registry is result.runtime.registry
-    assert bus._provenance_signer == result.runtime.key_provider.sign
+    assert callable(bus._provenance_signer)
+    assert result.runtime.active_key_id == KEY_ID
+    assert not hasattr(result.runtime, "key_provider")
     assert bus._provenance_storage_enabled is True
     assert result.runtime.capability.principal.producer_id == PRODUCER_ID
     assert client.calls == [("provenance_envelope", 0)]
