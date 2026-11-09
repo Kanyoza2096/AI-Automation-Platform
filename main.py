@@ -1187,6 +1187,39 @@ async def lifespan(app: FastAPI):
 
         container: ServiceContainer = build_container()
         app.state.container = container
+
+        # U2 producer provenance is installed on the existing canonical bus
+        # only when producer keys are configured and migration 158's column
+        # passes a read-only schema probe. No second bus is constructed here.
+        app.state.tenant_facebook_provenance_runtime = None
+        try:
+            from core.unified_bus import UnifiedEventBus
+            from core.event_provenance_runtime import install_tenant_facebook_provenance
+
+            provenance_bus = container.try_resolve(UnifiedEventBus)
+            provenance_result = install_tenant_facebook_provenance(
+                provenance_bus,
+                supabase_client=getattr(provenance_bus, "supabase", None),
+            )
+            if provenance_result.enabled:
+                app.state.tenant_facebook_provenance_runtime = provenance_result.runtime
+                logger.info(
+                    "U2 tenant Facebook event provenance installed (key_id=%s)",
+                    provenance_result.runtime.key_provider.active_key_id,
+                )
+            else:
+                logger.info(
+                    "U2 tenant Facebook event provenance remains disabled (%s)",
+                    provenance_result.reason,
+                )
+        except Exception:
+            # Provenance is opt-in and must never prevent ordinary boot. The
+            # producer itself remains unavailable unless the complete gate
+            # succeeds; do not log configuration values or exception payloads.
+            logger.warning(
+                "U2 tenant Facebook event provenance composition failed closed"
+            )
+
         redis_client = _resolve_redis(container)
     except Exception as exc:
         _record_boot_warning("container_build", exc)
