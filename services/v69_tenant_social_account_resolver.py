@@ -63,6 +63,9 @@ class TenantSocialAccountResolver:
         """
         if not identity or not getattr(identity, "valid", False):
             raise TenantAccountResolutionError("authenticated_identity_required")
+        permission_check = getattr(identity, "has_permission", None)
+        if not callable(permission_check) or not permission_check("write"):
+            raise TenantAccountResolutionError("social_account_access_permission_required")
         workspace_id = getattr(identity, "workspace_id", None)
         if not workspace_id:
             raise TenantAccountResolutionError("authenticated_workspace_required")
