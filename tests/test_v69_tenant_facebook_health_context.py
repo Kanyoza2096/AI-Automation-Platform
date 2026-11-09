@@ -38,6 +38,7 @@ class FakeAccountResolver:
                 brand_id=self.brand_id,
                 platform="facebook",
                 platform_account_id="page-external-a",
+                access_token="private-page-token",
             ),
         )
 
@@ -152,6 +153,7 @@ def test_resolves_connection_registry_and_page_from_same_authenticated_workspace
     assert context.registry.brand_id == "brand-a"
     assert context.registry.social_account_id == "page-a"
     assert context.registry.activation_eligible is True
+    assert "private-page-token" not in repr(context)
     assert account_resolver.calls == [(identity(), "brand-a", "facebook")]
     assert client.reads == 2
 
