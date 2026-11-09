@@ -9,12 +9,16 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any
 import uuid
 
 from core.event_provenance import VerifiedEventProvenance
 from organism.perception import Observation, ObservationKind
+
+
+MAX_TRUSTED_HEALTH_OBSERVATION_AGE_SECONDS = 3600
+MAX_FUTURE_OBSERVATION_SKEW_SECONDS = 60
 
 
 EVENT_KINDS = {
@@ -92,7 +96,9 @@ def _verified_facebook_health_producer(
     return proof
 
 
-def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
+def observation_from_event(
+    event: Mapping[str, Any], *, now: datetime | None = None
+) -> Observation | None:
     """Convert one ledger/live event to a bounded, tenant-checked observation."""
     if not isinstance(event, Mapping):
         return None
@@ -131,15 +137,36 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
         observed_at = None
     event_id = str(event.get("event_id") or "").strip()
     verified_producer = None
+    freshness_status = None
     if event_name == "connector.health.observed":
         verified_producer = _verified_facebook_health_producer(event, payload, workspace_id)
-    trusted = verified_producer is not None
+        if verified_producer is not None:
+            parsed_observed_at = datetime.fromisoformat(
+                str(payload["observed_at"]).replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            reference_time = now or datetime.now(timezone.utc)
+            if reference_time.tzinfo is None:
+                return None
+            age_seconds = (
+                reference_time.astimezone(timezone.utc) - parsed_observed_at
+            ).total_seconds()
+            freshness_status = (
+                "fresh"
+                if -MAX_FUTURE_OBSERVATION_SKEW_SECONDS
+                <= age_seconds
+                <= MAX_TRUSTED_HEALTH_OBSERVATION_AGE_SECONDS
+                else "stale"
+            )
+    # Authenticity survives normal key rotation and historical replay. Freshness
+    # is a separate policy: old authentic health evidence remains observable but
+    # cannot raise source trust or qualify as a current goal signal.
+    trusted = verified_producer is not None and freshness_status == "fresh"
     return Observation(
         workspace_id=workspace_id,
         kind=kind,
         source=f"unified_event:{event_name}",
         value=safe_value,
-        confidence=0.9 if trusted else 0.8,
+        confidence=0.9 if verified_producer is not None else 0.8,
         # Only the exact signed producer and its evidence lineage can raise
         # trust. Source/source_service labels remain descriptive metadata.
         source_trust=0.9 if trusted else 0.0,
@@ -152,7 +179,8 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
             "brand_id": str(event.get("brand_id") or "")[:160] or None,
             "producer_id": verified_producer.producer.producer_id if trusted else None,
             "producer_class": verified_producer.producer.producer_class if trusted else None,
-            "provenance_verification": verified_producer.verification if trusted else None,
+            "provenance_verification": verified_producer.verification if verified_producer is not None else None,
+            "freshness_status": freshness_status,
             "evidence_id": str(payload.get("evidence_id") or "")[:160] or None,
             "evidence_hash": str(payload.get("evidence_hash") or "")[:64] or None,
             "connection_id": str(payload.get("connection_id") or "")[:160] or None,
@@ -180,11 +208,34 @@ class OrganismEventBridge:
             return
         self._unsubscribe = await bus.subscribe_all(self.handle)
 
+    async def start_shared(self, bus) -> None:
+        """Subscribe through the durable context-aware worker transport.
+
+        SharedEventBus verifies each persisted envelope before invoking this
+        handler. Legacy and invalidly signed events arrive with provenance=None.
+        """
+        if self._shared_unsubscribers:
+            return
+        subscribe = getattr(bus, "subscribe_with_context", None)
+        if not callable(subscribe):
+            return
+        for event_name in self.EVENT_KINDS:
+            unsubscribe = subscribe(
+                event_name,
+                self.handle,
+                handler_id=f"organism-event-bridge:{event_name}",
+            )
+            if callable(unsubscribe):
+                self._shared_unsubscribers.append(unsubscribe)
+
     async def stop(self) -> None:
         unsubscribe = self._unsubscribe
         self._unsubscribe = None
         if unsubscribe is not None:
             unsubscribe()
+        shared_unsubscribers, self._shared_unsubscribers = self._shared_unsubscribers, []
+        for remove in shared_unsubscribers:
+            remove()
 
     async def handle(self, event: Mapping[str, Any]) -> None:
         if not isinstance(event, Mapping):
