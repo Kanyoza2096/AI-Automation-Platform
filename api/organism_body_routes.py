@@ -174,6 +174,50 @@ def _bus_health(bus) -> Dict[str, Any]:
         return {"status": "error", "error": str(exc)[:200]}
 
 
+def _organism_goal_suggestions(workspace_id: str) -> Dict[str, Any]:
+    """Expose only cached, workspace-bound suggest-only goals from organism mind."""
+    try:
+        from core.organism import organism_registry
+
+        organism = organism_registry.get(workspace_id)
+        if organism is None:
+            return {"store_status": "organism_not_registered", "items": []}
+        runtime = getattr(organism, "runtime", None)
+        if runtime is None or runtime.workspace_id != workspace_id:
+            return {"store_status": "runtime_unavailable", "items": []}
+
+        items = []
+        for proposal in getattr(runtime, "pending_goal_proposals", ()):
+            if (
+                proposal.workspace_id != workspace_id
+                or proposal.authority != "suggest"
+                or proposal.status != "proposed"
+            ):
+                continue
+            priority = getattr(proposal.priority, "value", proposal.priority)
+            items.append({
+                "proposal_id": proposal.proposal_id,
+                "workspace_id": proposal.workspace_id,
+                "title": proposal.title,
+                "success_condition": proposal.success_condition,
+                "source_event_ids": list(proposal.source_event_ids),
+                "priority": str(priority),
+                "risk_level": proposal.risk_level,
+                "expected_outcome": proposal.expected_outcome,
+                "created_at": proposal.created_at.isoformat(),
+                "expires_at": proposal.expires_at.isoformat(),
+                "authority": "suggest",
+                "status": "proposed",
+            })
+        return {
+            "store_status": str(getattr(runtime, "goal_proposal_store_status", "unknown")),
+            "items": items,
+        }
+    except Exception:
+        logger.warning("Organism goal suggestion read model unavailable workspace=%s", workspace_id)
+        return {"store_status": "unavailable", "items": []}
+
+
 def _organism_vitals(workspace_id: str) -> Dict[str, Any]:
     try:
         from core.organism import organism_registry
@@ -260,6 +304,7 @@ async def organism_mind(
     decisions = [e for e in events if e["event_name"] in ("council.decided", "intelligent_decision")]
     proposals = [e for e in events if e["event_name"] in ("director.proposal", "director.briefing", "action.proposed")]
     conditions = [e for e in events if e["event_name"] in ("condition.changed", "brand_health_updated", "engagement_data")]
+    goal_suggestions = _organism_goal_suggestions(ws)
     return {
         "section": "mind",
         "workspace_id": ws,
@@ -268,7 +313,10 @@ async def organism_mind(
             "decisions": len(decisions),
             "proposals": len(proposals),
             "conditions": len(conditions),
+            "goal_suggestions": len(goal_suggestions["items"]),
         },
+        "goal_suggestion_store_status": goal_suggestions["store_status"],
+        "goal_suggestions": goal_suggestions["items"],
         "recent_decisions": decisions[:20],
         "recent_proposals": proposals[:20],
         "recent_conditions": conditions[:20],
