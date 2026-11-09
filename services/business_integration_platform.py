@@ -113,6 +113,9 @@ class IntegrationConnection:
     granted_capabilities: tuple[str, ...] = ()
     autonomy_mode: AutonomyMode = AutonomyMode.OBSERVE
     connection_id: str = field(default_factory=lambda: f"int_{uuid.uuid4().hex[:16]}")
+    # Optional resource binding for connectors that address a specific brand account.
+    brand_id: str | None = None
+    social_account_id: str | None = None
 
     # Secrets/credentials are deliberately absent from this contract.
     authority: str = field(default="none", init=False)
