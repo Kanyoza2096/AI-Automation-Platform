@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import threading
 
+import pytest
+
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -175,6 +177,10 @@ def test_shared_bus_context_handler_receives_only_independently_verified_proof(m
     assert received[0]["provenance"] is verified
     assert received[0]["payload"] == event["payload"]
     assert "provenance" not in received[0]["payload"]
+    with pytest.raises(TypeError):
+        received[0]["workspace_id"] = "workspace-attacker"
+    with pytest.raises(TypeError):
+        received[0]["payload"]["status"] = "healthy"
 
 
 def test_shared_bus_invalid_signature_reaches_context_handler_as_untrusted(monkeypatch):
