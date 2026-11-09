@@ -130,7 +130,13 @@ class TenantFacebookHealthProducer:
         except Exception as exc:
             raise TenantHealthPublisherError("health_observation_persistence_failed") from exc
 
-        self._validate_receipt(receipt, binding=binding, connection=connection)
+        try:
+            self._validate_receipt(receipt, binding=binding, connection=connection)
+        except TenantHealthPublisherError as exc:
+            raise TenantHealthPublisherError(
+                exc.code,
+                receipt=receipt if isinstance(receipt, DurableHealthObservation) else None,
+            ) from exc
 
         payload = {
             "service": f"facebook:{receipt.connection_id}",
