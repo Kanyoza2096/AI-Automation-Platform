@@ -96,6 +96,8 @@ class TenantFacebookHealthProducer:
             raise TenantHealthPublisherError("durable_provenance_signer_required")
         if getattr(event_bus, "supabase", None) is None:
             raise TenantHealthPublisherError("durable_event_database_required")
+        if not getattr(event_bus, "_tenant_health_evidence_ready", False):
+            raise TenantHealthPublisherError("health_evidence_schema_not_enabled")
 
         self._resolver = resolver
         self._connector_factory = connector_factory
