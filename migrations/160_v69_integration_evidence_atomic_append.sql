@@ -24,7 +24,7 @@ CREATE OR REPLACE FUNCTION public.append_integration_evidence(
 RETURNS TABLE(evidence_id TEXT)
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_temp
+SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     latest_hash TEXT;
@@ -89,9 +89,9 @@ $$;
 
 -- Prevent direct table mutation. The SECURITY DEFINER function is owned by
 -- the migration owner and is the only supported write path.
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.integration_evidence
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.integration_evidence
     FROM PUBLIC, anon, authenticated, service_role;
-GRANT SELECT ON TABLE public.integration_evidence TO service_role;
+GRANT SELECT ON TABLE public.integration_evidence TO authenticated, service_role;
 
 REVOKE ALL ON FUNCTION public.append_integration_evidence(
     TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TEXT, JSONB, TEXT,
