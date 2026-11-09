@@ -143,12 +143,15 @@ def verify_durable_provenance(
     now: int | None = None,
     max_age_seconds: int = 86_400,
     clock_skew_seconds: int = 60,
+    enforce_freshness: bool = True,
 ) -> VerifiedEventProvenance:
-    """Verify Ed25519 signature, freshness, event binding, and producer key ownership.
+    """Verify Ed25519 authenticity, event binding, and producer key ownership.
 
-    Verifiers receive public keys only. During rotation, keyring may contain the
-    active public key and retained previous public keys. Remove an old key only
-    after all envelopes signed by it have expired (or emergency revocation).
+    Freshness is a separate consumer policy. Set ``enforce_freshness=False``
+    when verifying historical durable-event authenticity after ordinary key
+    rotation; stale observations must still be filtered before they can trigger
+    current goals or actions. Verifiers receive public keys only and should
+    retain prior public keys until their retention/revocation policy permits removal.
     """
     if not isinstance(envelope, Mapping) or len(_canonical_json(dict(envelope))) > MAX_ENVELOPE_BYTES:
         raise DurableProvenanceError("invalid or oversized provenance envelope")
@@ -186,7 +189,7 @@ def verify_durable_provenance(
         raise DurableProvenanceError("invalid provenance validity interval")
     if issued_at > current + clock_skew_seconds:
         raise DurableProvenanceError("provenance issued in the future")
-    if current >= expires_at or current - issued_at > max_age_seconds:
+    if enforce_freshness and (current >= expires_at or current - issued_at > max_age_seconds):
         raise DurableProvenanceError("provenance has expired")
 
     producer = envelope.get("producer")
