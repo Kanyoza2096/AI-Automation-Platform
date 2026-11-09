@@ -12,6 +12,14 @@ on:
       - "scripts/run_kdo_engineering_worker.py"
       - ".github/workflows/engineering-vertical-tests.yml"
       - "core/species_auth.py"
+      - "services/connectors/facebook_connector.py"
+      - "services/facebook.py"
+      - "services/v69_tenant_facebook_connector_factory.py"
+      - "services/business_integration_platform.py"
+      - "services/v69_connector_activation_registry.py"
+      - "tests/test_facebook_connector_tenant_health.py"
+      - "tests/test_v69_tenant_facebook_connector_factory.py"
+      # Facebook composition must preserve the resolved Page account identity.
       - "core/api_tokens.py"
       - "core/nerve.py"
       - "core/shared_event_bus.py"
@@ -346,4 +354,6 @@ jobs:
             tests/test_v69_13_integration_evidence.py \
             tests/test_v69_10_connector_runtime_gateway.py \
             tests/test_v69_tenant_social_account_resolver.py \
+            tests/test_facebook_connector_tenant_health.py \
+            tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
