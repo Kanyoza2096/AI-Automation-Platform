@@ -12,7 +12,7 @@ from services.v69_tenant_facebook_health_producer import PRODUCER_CLASS, PRODUCE
 
 
 KEY_ID = "KDO-TENANT-HEALTH-BOOT-01"
-SEED = b"facebook-health-producer-seed!!"
+SEED = b"facebook-health-producer-seed!!!"
 
 
 class Query:
