@@ -85,8 +85,12 @@ def sign_durable_provenance(
     ttl_seconds: int = 3600,
 ) -> dict[str, Any]:
     """Sign provenance already verified in-process; returns JSON-safe data."""
-    if not isinstance(provenance, VerifiedEventProvenance):
-        raise DurableProvenanceError("live verified provenance is required")
+    if not isinstance(provenance, VerifiedEventProvenance) or provenance.verification != "composition_root_capability":
+        raise DurableProvenanceError("live composition-root verified provenance is required")
+    if not provenance.workspace_id or not provenance.producer.producer_id or not provenance.producer.producer_class:
+        raise DurableProvenanceError("verified producer and workspace identity are required")
+    if provenance.actor is not None and provenance.actor.workspace_id != provenance.workspace_id:
+        raise DurableProvenanceError("actor and provenance workspace do not match")
     if not key_id or len(key_id) > 128:
         raise DurableProvenanceError("valid signing key id is required")
     if not isinstance(signing_key, bytes) or len(signing_key) < 32:
@@ -125,6 +129,7 @@ def verify_durable_provenance(
     envelope: Mapping[str, Any],
     *,
     keyring: Mapping[str, bytes],
+    key_owners: Mapping[str, str],
     event_id: str,
     event_name: str,
     workspace_id: str,
@@ -183,6 +188,8 @@ def verify_durable_provenance(
     producer_id, producer_class = producer.get("producer_id"), producer.get("producer_class")
     if not isinstance(producer_id, str) or not producer_id or not isinstance(producer_class, str) or not producer_class:
         raise DurableProvenanceError("producer identity is malformed")
+    if key_owners.get(key_id) != producer_id:
+        raise DurableProvenanceError("signing key is not authorized for this producer")
 
     actor_data = envelope.get("actor")
     actor = None
