@@ -148,3 +148,17 @@ def test_service_provider_rejection_does_not_echo_account_token():
 
     assert result == {"ok": False, "error": {"status_code": 401}}
     assert "tenant-page-secret" not in repr(result)
+
+
+def test_service_transport_failure_does_not_echo_account_token():
+    class FailingSession:
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("transport failed")
+
+    service = FacebookService.__new__(FacebookService)
+    service._session = FailingSession()
+
+    result = service.validate_account_token("page-tenant-a", "tenant-page-secret")
+
+    assert result == {"ok": False, "error": "provider_check_failed"}
+    assert "tenant-page-secret" not in repr(result)
