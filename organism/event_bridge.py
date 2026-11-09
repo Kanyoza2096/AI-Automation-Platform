@@ -32,7 +32,7 @@ SAFE_FIELDS = {
         "component", "cpu_percent", "memory_percent",
         "operational_load", "latency_ms", "uptime_seconds",
         "duration_seconds", "backup_type", "health_state", "connection_id",
-        "connector_key", "observation_id", "evidence_id", "evidence_hash",
+        "connector_key", "social_account_id", "observation_id", "evidence_id", "evidence_hash",
         "provider", "connector_version", "observed_at",
     }),
     ObservationKind.EXECUTION: frozenset({
@@ -69,7 +69,7 @@ def _verified_facebook_health_producer(
         or payload.get("health_state") not in {"healthy", "degraded", "unavailable", "unknown"}
     ):
         return None
-    for field in ("connection_id", "observation_id", "evidence_id"):
+    for field in ("connection_id", "social_account_id", "observation_id", "evidence_id"):
         value = payload.get(field)
         if not isinstance(value, str) or not value.strip() or len(value) > 160:
             return None
@@ -154,6 +154,7 @@ def observation_from_event(event: Mapping[str, Any]) -> Observation | None:
             "evidence_id": str(payload.get("evidence_id") or "")[:160] or None,
             "evidence_hash": str(payload.get("evidence_hash") or "")[:64] or None,
             "connection_id": str(payload.get("connection_id") or "")[:160] or None,
+            "social_account_id": str(payload.get("social_account_id") or "")[:160] or None,
         },
     )
 
