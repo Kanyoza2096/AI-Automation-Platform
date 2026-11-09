@@ -98,6 +98,10 @@ on:
       - "tests/engineering_vertical/test_v69_connector_evidence_tenant_fk.py"
       - "services/vnext_connector_fabric_evidence_read_model.py"
       - "routes/connector_fabric_routes.py"
+      - "routes/tenant_health_observation_routes.py"
+      - "tests/test_tenant_health_observation_routes.py"
+      - "scripts/audit_route_wiring.py"
+      - "tests/test_route_wiring_audit.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
   workflow_dispatch:
 
@@ -479,6 +483,8 @@ jobs:
             tests/test_v69_tenant_facebook_health_producer.py \
             tests/test_v69_tenant_facebook_health_context.py \
             tests/test_v69_tenant_facebook_health_service.py \
+            tests/test_tenant_health_observation_routes.py \
+            tests/test_route_wiring_audit.py \
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
