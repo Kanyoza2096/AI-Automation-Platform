@@ -38,6 +38,7 @@ on:
       - "migrations/158_u2_durable_event_provenance.sql"
       - "tests/test_organism_goal_persistence.py"
       - "tests/test_u2_signed_health_to_goal_integration.py"
+      - "tests/test_u2_tenant_health_startup_architecture.py"
       - "organism/event_bridge.py"
       - "organism/persistence.py"
       - "migrations/155_u2_organism_runtime_snapshots.sql"
@@ -461,6 +462,7 @@ jobs:
             tests/test_organism_goal_proposals.py \
             tests/test_organism_goal_persistence.py \
             tests/test_u2_signed_health_to_goal_integration.py \
+            tests/test_u2_tenant_health_startup_architecture.py \
             tests/test_organism_event_bridge.py \
             tests/test_organism_cycle_coordinator.py \
             tests/test_organism_runtime_persistence.py \
