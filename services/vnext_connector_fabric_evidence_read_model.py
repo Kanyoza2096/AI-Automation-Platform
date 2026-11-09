@@ -57,6 +57,8 @@ def build_connector_fabric_evidence(workspace_id: str, connector_key: str) -> di
 
     record = get_connector_fabric_record(workspace_id, connector_key)
     client = _service_client()
+    if client is None:
+        raise EvidenceReadError("connector evidence client unavailable")
 
     certification = _latest(
         client, "connector_certification_registry", workspace_id, connector_key, order="updated_at"
