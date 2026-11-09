@@ -88,15 +88,26 @@ class DurableProvenanceKeyProvider:
         active_signing_key: _ActiveSigningKey | None = None,
         revoked_key_ids: tuple[str, ...] | list[str] | set[str] = (),
     ) -> None:
-        revoked = frozenset(str(item) for item in revoked_key_ids)
+        if any(not isinstance(item, str) for item in revoked_key_ids):
+            raise ProvenanceKeyConfigError("revoked_key_ids_must_be_strings")
+        revoked = frozenset(revoked_key_ids)
         normalized_keys: dict[str, bytes] = {}
         normalized_owners: dict[str, str] = {}
 
         if set(public_keys) != set(key_owners):
             raise ProvenanceKeyConfigError("public_key_owner_sets_must_match")
+        if not public_keys:
+            raise ProvenanceKeyConfigError("at_least_one_public_key_required")
+        if not revoked.issubset(set(public_keys)):
+            raise ProvenanceKeyConfigError("revoked_key_id_not_in_public_keyring")
+        if any(not _KEY_ID_PATTERN.fullmatch(key_id) for key_id in revoked):
+            raise ProvenanceKeyConfigError("revoked_key_id_must_use_kdo_prefix")
         for raw_key_id, raw_key in public_keys.items():
             key_id = str(raw_key_id)
-            owner = str(key_owners[raw_key_id] or "").strip()
+            raw_owner = key_owners[raw_key_id]
+            if not isinstance(raw_owner, str):
+                raise ProvenanceKeyConfigError("key_owner_must_be_string")
+            owner = raw_owner.strip()
             if not _KEY_ID_PATTERN.fullmatch(key_id):
                 raise ProvenanceKeyConfigError("key_id_must_use_kdo_prefix")
             if not owner:
@@ -113,7 +124,7 @@ class DurableProvenanceKeyProvider:
                 raise ProvenanceKeyConfigError("active_key_id_must_use_kdo_prefix")
             if active.key_id in revoked:
                 raise ProvenanceKeyConfigError("active_signing_key_is_revoked")
-            if len(active.private_seed) != 32:
+            if not isinstance(active.private_seed, bytes) or len(active.private_seed) != 32:
                 raise ProvenanceKeyConfigError("private_seed_must_be_32_bytes")
             if normalized_owners.get(active.key_id) != active.producer_id:
                 raise ProvenanceKeyConfigError("active_key_owner_mismatch")
