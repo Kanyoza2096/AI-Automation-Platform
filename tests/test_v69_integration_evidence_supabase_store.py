@@ -98,7 +98,11 @@ def test_supabase_sink_persists_evidence_with_tenant_scoped_hash_chain():
         store, evidence_id="evidence-1", workspace_id="workspace-a",
         connection_id="connection-a", connector_key="facebook",
         event_type="health.checked", outcome="healthy", occurred_at=NOW,
-        metadata={"access_token": "never-store-this", "latency_ms": 18},
+        metadata={
+            "access_token": "never-store-this",
+            "page_access_token": "page-secret-must-not-persist",
+            "latency_ms": 18,
+        },
     )
     second = emit(
         store, evidence_id="evidence-2", workspace_id="workspace-a",
@@ -109,6 +113,8 @@ def test_supabase_sink_persists_evidence_with_tenant_scoped_hash_chain():
     assert second.previous_hash == first.evidence_hash
     assert client.heads[("workspace-a", "connection-a")] == second.evidence_hash
     assert client.rpc_calls[0]["p_metadata"]["access_token"] == "<redacted>"
+    assert client.rpc_calls[0]["p_metadata"]["page_access_token"] == "<redacted>"
+    assert "page-secret-must-not-persist" not in repr(client.rpc_calls[0]["p_metadata"])
     assert len(client.rpc_calls) == 2
 
 
