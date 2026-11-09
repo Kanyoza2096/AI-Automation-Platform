@@ -5,7 +5,7 @@ replay, payload metadata, or legacy source labels.
 """
 import asyncio
 
-from core.event_provenance import ActorPrincipal, ProducerRegistry
+from core.event_provenance import ProducerRegistry
 from core.unified_bus import UnifiedEventBus
 
 
@@ -13,12 +13,6 @@ def test_verified_capability_is_carried_out_of_band_to_live_handlers():
     async def run():
         registry = ProducerRegistry({"health-monitor": "internal_health_producer"})
         capability = registry.issue("health-monitor")
-        actor = ActorPrincipal(
-            principal_type="human",
-            subject_id="user-1",
-            auth_method="supabase_jwt",
-            workspace_id="workspace-a",
-        )
         # Exercise the validated actor context contract without fabricating
         # an API request; production obtains this ContextVar from require_auth.
         from api.support import auth_identity_var
