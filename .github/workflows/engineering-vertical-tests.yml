@@ -21,6 +21,7 @@ on:
       - "tests/test_organism_goal_proposals.py"
       - "organism/goal_persistence.py"
       - "migrations/157_u2_organism_goal_proposals.sql"
+      - "migrations/158_u2_durable_event_provenance.sql"
       - "tests/test_organism_goal_persistence.py"
       - "organism/event_bridge.py"
       - "organism/persistence.py"
@@ -44,6 +45,7 @@ on:
       - "tests/test_event_provenance.py"
       - "core/durable_event_provenance.py"
       - "tests/test_durable_event_provenance.py"
+      - "tests/test_durable_event_provenance_transport.py"
       - "tests/test_unified_bus_provenance_transport.py"
       - "utils/ids.py"
       - "tests/security/**"
@@ -209,6 +211,7 @@ jobs:
                   "migrations/155_u2_organism_runtime_snapshots.sql",
                   "migrations/156_u2_organism_runtime_snapshot_minimum_grants.sql",
                   "migrations/157_u2_organism_goal_proposals.sql",
+                  "migrations/158_u2_durable_event_provenance.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -228,6 +231,17 @@ jobs:
                       for statement in migration_sql.split(";"):
                           if statement.strip():
                               connection.execute(statement)
+
+              provenance_column = connection.execute(
+                  """
+                  SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = 'events'
+                    AND column_name = 'provenance_envelope'
+                  """
+              ).fetchone()
+              if not provenance_column:
+                  raise RuntimeError("durable event provenance column was not applied")
+
           PY
       - name: Run focused engineering vertical tests
         run: |
@@ -272,4 +286,5 @@ jobs:
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_authenticated_actor_context.py \
             tests/test_durable_event_provenance.py \
-            tests/test_unified_bus_provenance_transport.py
+            tests/test_unified_bus_provenance_transport.py \
+            tests/test_durable_event_provenance_transport.py

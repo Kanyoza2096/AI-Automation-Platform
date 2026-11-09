@@ -114,6 +114,7 @@ class EventStoreEntry:
     decision_id: Optional[str] = None
     parent_event_id: Optional[str] = None
     schema_version: str = "1.0"
+    provenance_envelope: Optional[dict] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -154,11 +155,15 @@ class UnifiedEventBus:
         supabase_client: Any = None,
         config: EventBusConfig | None = None,
         producer_registry: ProducerRegistry | None = None,
+        provenance_signer: Callable[..., dict] | None = None,
+        provenance_storage_enabled: bool = False,
     ):
         self.config = config or EventBusConfig()
         # Only a trusted composition root may inject this registry. Legacy
         # source labels remain descriptive and never produce provenance.
         self._producer_registry = producer_registry
+        self._provenance_signer = provenance_signer
+        self._provenance_storage_enabled = bool(provenance_storage_enabled)
         self.supabase = supabase_client
 
         # Subscribers
@@ -481,6 +486,29 @@ class UnifiedEventBus:
                 logger.warning("Event publisher provenance rejected for %s: %s", event_name, exc)
                 return None
 
+        provenance_envelope = None
+        if verified_provenance is not None and self.supabase and self._provenance_storage_enabled:
+            if self._provenance_signer is None:
+                logger.error("Verified event provenance cannot be persisted without a configured signer")
+                return None
+            try:
+                provenance_envelope = self._provenance_signer(
+                    verified_provenance,
+                    event_id=event_id,
+                    event_name=event_name,
+                    payload=payload,
+                    brand_id=brand_id,
+                )
+                if not isinstance(provenance_envelope, dict):
+                    raise TypeError("provenance signer must return a JSON object")
+                json.dumps(provenance_envelope, allow_nan=False)
+            except Exception as exc:
+                logger.error("Could not sign durable provenance for %s: %s", event_name, exc)
+                return None
+        elif verified_provenance is not None and self.supabase:
+            logger.error("Verified event provenance rejected: durable provenance storage is not enabled")
+            return None
+
         if not self._validate_payload(payload):
             return None
 
@@ -513,6 +541,7 @@ class UnifiedEventBus:
             decision_id=decision_id,
             parent_event_id=parent_event_id,
             schema_version=schema_version,
+            provenance_envelope=provenance_envelope,
         )
         self._event_store.append(entry)
 
@@ -793,6 +822,7 @@ class UnifiedEventBus:
                     "source_instance": get_process_instance_id(),
                     "processed": False,
                     "schema_version": entry.schema_version,
+                    **({"provenance_envelope": entry.provenance_envelope} if entry.provenance_envelope is not None else {}),
                 }
                 for entry in batch
             ]

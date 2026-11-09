@@ -27,6 +27,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from utils.ids import get_process_instance_id
+from core.event_provenance import (
+    ProducerCapability, ProducerRegistry, VerifiedEventProvenance,
+    current_actor_principal,
+)
 
 logger = logging.getLogger("kanyoza.shared_event_bus")
 
@@ -39,8 +43,22 @@ class SharedEventBus:
     HANDLER_LEASE_SECONDS = 300
     HANDLER_LEASE_HEARTBEAT_SECONDS = 60
 
-    def __init__(self, supabase_client: Any = None, source_service: str = "unknown", poll_interval: int = POLL_INTERVAL_SECONDS):
+    def __init__(
+        self, supabase_client: Any = None, source_service: str = "unknown",
+        poll_interval: int = POLL_INTERVAL_SECONDS, *,
+        producer_registry: ProducerRegistry | None = None,
+        provenance_signer: Callable[..., dict] | None = None,
+        provenance_verifier: Callable[..., VerifiedEventProvenance] | None = None,
+        provenance_storage_enabled: bool = False,
+    ):
         self.supabase = supabase_client
+        # Explicitly injected by trusted worker composition. Legacy labels do
+        # not establish provenance; durable signing is opt-in until migration
+        # 158 is installed and producer keys are configured.
+        self._producer_registry = producer_registry
+        self._provenance_signer = provenance_signer
+        self._provenance_verifier = provenance_verifier
+        self._provenance_storage_enabled = bool(provenance_storage_enabled)
         self.source_service = source_service
         # Service mode identifies a role, not a process. A unique instance
         # identity prevents one worker from mistaking another worker in the
@@ -77,6 +95,7 @@ class SharedEventBus:
         brand_id: Optional[str] = None,
         parent_event_id: Optional[str] = None,
         schema_version: str = "1.0",
+        producer_capability: ProducerCapability | None = None,
     ) -> bool:
         """Publish using the same nerve contract and persistence shape as UnifiedEventBus."""
         if not self.supabase:
@@ -100,10 +119,41 @@ class SharedEventBus:
                 schema_version=schema_version,
                 strict=False,
             )
-            self.supabase.table("events").insert({
+            event_payload = envelope.to_payload()
+            provenance_envelope = None
+            if producer_capability is not None:
+                if (
+                    not self._provenance_storage_enabled
+                    or self._producer_registry is None
+                    or self._provenance_signer is None
+                ):
+                    logger.error("SharedEventBus provenance capability rejected: signing/storage is not configured")
+                    return False
+                try:
+                    verified = self._producer_registry.verify(
+                        producer_capability,
+                        workspace_id=envelope.workspace_id,
+                        actor=current_actor_principal(),
+                        brand_id=envelope.brand_id,
+                    )
+                    provenance_envelope = self._provenance_signer(
+                        verified,
+                        event_id=event_id,
+                        event_name=envelope.event_name,
+                        payload=event_payload,
+                        brand_id=envelope.brand_id,
+                    )
+                    if not isinstance(provenance_envelope, dict):
+                        raise TypeError("provenance signer must return a JSON object")
+                    json.dumps(provenance_envelope, allow_nan=False)
+                except Exception as exc:
+                    logger.warning("SharedEventBus provenance signing rejected: %s", exc)
+                    return False
+
+            record = {
                 "id": event_id,
                 "event_type": envelope.event_name,
-                "payload": envelope.to_payload(),
+                "payload": event_payload,
                 "workspace_id": envelope.workspace_id,
                 "correlation_id": envelope.correlation_id,
                 "decision_id": envelope.decision_id,
@@ -113,7 +163,12 @@ class SharedEventBus:
                 "source_instance": self.process_instance_id,
                 "processed": False,
                 "schema_version": envelope.schema_version,
-            }).execute()
+            }
+            # Omit the new column for legacy unsigned writes until explicitly
+            # enabled; this keeps older staging schemas backward compatible.
+            if provenance_envelope is not None:
+                record["provenance_envelope"] = provenance_envelope
+            self.supabase.table("events").insert(record).execute()
 
             self._events_published += 1
             return True
@@ -180,6 +235,22 @@ class SharedEventBus:
                     item for item in self._handlers.get(event_name, []) if item[0] != key
                 ]
         return unsubscribe
+
+    def subscribe_with_context(
+        self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
+    ) -> Callable[[], None]:
+        """Subscribe to the immutable event context, including verified proof.
+
+        The context's provenance is None unless this worker independently
+        verifies the dedicated durable envelope. Legacy payload handlers are
+        unchanged and never receive a trust-bearing payload field.
+        """
+        def context_handler(event_context: Dict[str, Any]):
+            return handler(event_context)
+
+        context_handler.__kdo_event_context__ = True
+        stable_id = handler_id or f"context:{self._handler_identity(handler)}"
+        return self.subscribe(event_name, context_handler, handler_id=stable_id)
 
     def unsubscribe(
         self, event_name: str, handler: Callable, *, handler_id: Optional[str] = None
@@ -441,6 +512,39 @@ class SharedEventBus:
         except (json.JSONDecodeError, TypeError):
             payload = {}
 
+        provenance = None
+        signed_envelope = event.get("provenance_envelope")
+        if signed_envelope is not None and self._provenance_verifier is not None:
+            try:
+                provenance = self._provenance_verifier(
+                    signed_envelope,
+                    event_id=str(event_id),
+                    event_name=event_name,
+                    workspace_id=str(event.get("workspace_id") or ""),
+                    brand_id=event.get("brand_id"),
+                    payload=payload,
+                )
+                if (
+                    not isinstance(provenance, VerifiedEventProvenance)
+                    or provenance.workspace_id != event.get("workspace_id")
+                    or provenance.brand_id != event.get("brand_id")
+                ):
+                    raise ValueError("verifier returned provenance for a different event scope")
+            except Exception as exc:
+                provenance = None
+                logger.warning("SharedEventBus provenance verification failed for %s: %s", event_id, exc)
+
+        event_context = {
+            "event_id": str(event_id),
+            "event_name": event_name,
+            "workspace_id": event.get("workspace_id"),
+            "brand_id": event.get("brand_id"),
+            "source_service": event.get("source_service"),
+            "source_instance": event.get("source_instance"),
+            "payload": payload,
+            "provenance": provenance,
+        }
+
         with self._lock:
             handlers = list(self._handlers.get(event_name, []))
         if not handlers:
@@ -463,7 +567,10 @@ class SharedEventBus:
                 receipt_id, receipt_token
             )
             try:
-                result = handler(payload)
+                if getattr(handler, "__kdo_event_context__", False):
+                    result = handler(event_context)
+                else:
+                    result = handler(payload)
                 if inspect.isawaitable(result):
                     asyncio.run(result)
                 if self._mark_handler_delivery_processed(
