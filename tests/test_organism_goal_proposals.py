@@ -160,6 +160,7 @@ def test_facebook_health_proposal_is_idempotent_across_event_publish_retries():
     {"provenance_verification": None},
     {"brand_id": None},
     {"connection_id": None},
+    {"social_account_id": None},
     {"evidence_id": ""},
     {"evidence_hash": "bad"},
 ])
