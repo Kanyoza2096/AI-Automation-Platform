@@ -215,7 +215,7 @@ def test_signed_facebook_health_observation_gets_trust_only_with_full_evidence_l
     _facebook_health_proof(workspace_id="workspace-b"),
     _facebook_health_proof(brand_id="brand-b"),
     _facebook_health_proof(verification="serialized_verified_flag"),
-    _facebook_health_proof().__class__(
+    VerifiedEventProvenance(
         producer=ProducerPrincipal("kdo-tenant-health-facebook", "tenant_connector_health"),
         actor=None,
         workspace_id="workspace-a",
