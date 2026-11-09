@@ -64,6 +64,12 @@ on:
       - "migrations/161_u2_atomic_connector_health_observation.sql"
       - "services/v69_connector_runtime_gateway.py"
       - "tests/test_v69_10_connector_runtime_gateway.py"
+      - "repositories/social_account_repository.py"
+      - "models/social_account.py"
+      - "models/brand.py"
+      - "core/species_auth.py"
+      - "services/v69_tenant_social_account_resolver.py"
+      - "tests/test_v69_tenant_social_account_resolver.py"
       # Tenant-scoped read-only health observation and atomic persistence path.
       - "services/v69_integration_evidence.py"
       - "tests/test_v69_integration_evidence_supabase_store.py"
@@ -339,4 +345,5 @@ jobs:
             tests/test_v69_integration_evidence_supabase_store.py \
             tests/test_v69_13_integration_evidence.py \
             tests/test_v69_10_connector_runtime_gateway.py \
+            tests/test_v69_tenant_social_account_resolver.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
