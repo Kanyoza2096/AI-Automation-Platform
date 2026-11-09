@@ -30,11 +30,15 @@ class TenantFacebookProvenanceRuntime:
     registry: ProducerRegistry = field(repr=False)
     capability: ProducerCapability = field(repr=False)
     active_key_id: str
+    health_evidence_ready: bool
     event_bus: UnifiedEventBus = field(repr=False)
     status: str = "enabled"
 
     def create_health_producer(self, *, resolver: Any, connector_factory: Any):
-        """Bind request-time tenant resolution to this exact boot capability."""
+        """Bind request-time dependencies only after health evidence readiness."""
+        if not self.health_evidence_ready:
+            from services.v69_tenant_facebook_health_producer import TenantHealthPublisherError
+            raise TenantHealthPublisherError("health_evidence_schema_not_enabled")
         from services.v69_tenant_facebook_health_producer import TenantFacebookHealthProducer
 
         return TenantFacebookHealthProducer(
@@ -50,7 +54,8 @@ class TenantFacebookProvenanceRuntime:
             "TenantFacebookProvenanceRuntime("
             f"status={self.status!r}, "
             f"producer_id={PRODUCER_ID!r}, "
-            f"key_id={self.active_key_id!r})"
+            f"key_id={self.active_key_id!r}, "
+            f"health_evidence_ready={self.health_evidence_ready})"
         )
 
 
@@ -75,18 +80,30 @@ _PUBLIC_ENV = (
 )
 
 
-def _probe_provenance_column(client: Any) -> bool:
-    """Read-only PostgREST schema probe; limit(0) retrieves no event rows."""
+def _probe_columns(client: Any, table: str, columns: str) -> bool:
+    """Read-only PostgREST schema probe; limit(0) retrieves no table rows."""
     try:
-        response = (
-            client.table("events")
-            .select("provenance_envelope")
-            .limit(0)
-            .execute()
-        )
+        response = client.table(table).select(columns).limit(0).execute()
         return getattr(response, "data", None) is not None
     except Exception:
         return False
+
+
+def _probe_provenance_column(client: Any) -> bool:
+    return _probe_columns(client, "events", "provenance_envelope")
+
+
+def _probe_health_evidence_schema(client: Any) -> bool:
+    """Check the tables/columns required by migrations 159–161, without writes."""
+    required = (
+        ("integration_connections", "id,workspace_id"),
+        ("integration_evidence", "evidence_id,workspace_id,connection_id,sequence_no,metadata,evidence_hash"),
+        ("connector_health_observations", "id,workspace_id,connection_id,connector_key,observed_at,health_state,evidence_ref"),
+    )
+    return all(_probe_columns(client, table, columns) for table, columns in required)
+
+
+_HEALTH_EVIDENCE_READY_ENV = "KDO_TENANT_FACEBOOK_HEALTH_EVIDENCE_READY"
 
 
 def install_tenant_facebook_provenance(
@@ -149,6 +166,15 @@ def install_tenant_facebook_provenance(
     if not probe(client):
         return ProvenanceInstallResult(False, "provenance_schema_not_ready")
 
+    # The event envelope column alone is not enough to run the tenant health
+    # producer. Migrations 159–161 establish its account-bound evidence and
+    # atomic health-write path. Require both an explicit operator attestation
+    # and read-only table/column probes before exposing that producer factory.
+    health_evidence_ready = (
+        str(source.get(_HEALTH_EVIDENCE_READY_ENV, "")).strip().lower() == "true"
+        and _probe_health_evidence_schema(client)
+    )
+
     # Build all state locally first. Mutate the canonical bus only after every
     # gate has passed, so partial configuration cannot leave it half-enabled.
     try:
@@ -158,6 +184,7 @@ def install_tenant_facebook_provenance(
             registry=registry,
             capability=capability,
             active_key_id=key_provider.active_key_id,
+            health_evidence_ready=health_evidence_ready,
             event_bus=event_bus,
         )
 
@@ -173,6 +200,7 @@ def install_tenant_facebook_provenance(
     event_bus._producer_registry = registry
     event_bus._provenance_signer = sign_facebook_health_event
     event_bus._provenance_storage_enabled = True
+    event_bus._tenant_health_evidence_ready = health_evidence_ready
     event_bus._tenant_facebook_provenance_runtime = runtime
 
     return ProvenanceInstallResult(True, "installed", runtime)
