@@ -158,7 +158,7 @@ class UnifiedEventBus:
         self.config = config or EventBusConfig()
         # Only a trusted composition root may inject this registry. Legacy
         # source labels remain descriptive and never produce provenance.
-        self.producer_registry = producer_registry
+        self._producer_registry = producer_registry
         self.supabase = supabase_client
 
         # Subscribers
@@ -467,11 +467,11 @@ class UnifiedEventBus:
 
         verified_provenance = None
         if producer_capability is not None:
-            if self.producer_registry is None:
+            if self._producer_registry is None:
                 logger.error("Publisher capability supplied but no trusted registry is configured")
                 return None
             try:
-                verified_provenance = self.producer_registry.verify(
+                verified_provenance = self._producer_registry.verify(
                     producer_capability,
                     workspace_id=workspace_id,
                     actor=current_actor_principal(),
