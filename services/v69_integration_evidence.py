@@ -26,6 +26,9 @@ _SECRET_KEYS = {
     "secret", "token", "access_token", "refresh_token", "api_key", "apikey",
     "authorization", "credential", "credentials", "password", "client_secret",
     "private_key", "signature", "raw_secret", "secret_ref_value",
+    "page_access_token", "page_token", "oauth_token", "bearer_token",
+    "token_value", "api_secret", "signing_key", "private_seed",
+    "ed25519_private_key",
 }
 
 
@@ -79,6 +82,9 @@ class IntegrationEvidence:
             raise EvidenceError("occurred_at must be timezone-aware")
         if self.authority_granted or self.execution_effect != "none":
             raise EvidenceError("evidence cannot grant authority or execute effects")
+        if not isinstance(self.metadata, Mapping):
+            raise EvidenceError("evidence metadata must be a mapping")
+        object.__setattr__(self, "metadata", _safe(self.metadata))
         if not self.evidence_hash:
             object.__setattr__(self, "evidence_hash", compute_evidence_hash(self))
 
