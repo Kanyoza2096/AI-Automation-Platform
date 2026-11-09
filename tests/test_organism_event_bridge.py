@@ -167,6 +167,7 @@ def _facebook_health_event(provenance=None, **payload_overrides):
         "status": "degraded",
         "health_state": "degraded",
         "connection_id": "connection-a",
+        "social_account_id": "account-a",
         "connector_key": "facebook",
         "provider": "facebook",
         "connector_version": "1.0.0",
