@@ -6,7 +6,7 @@ Callers never submit preconstructed connection or registry objects.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -35,7 +35,7 @@ class TenantFacebookHealthContextError(ValueError):
 @dataclass(frozen=True)
 class TenantFacebookHealthContext:
     workspace_id: str
-    binding: TenantSocialAccountBinding
+    binding: TenantSocialAccountBinding = field(repr=False)
     connection: IntegrationConnection
     contract: ConnectorContract
     registry: ConnectorRegistryRecord
@@ -140,7 +140,8 @@ class TenantFacebookHealthContextResolver:
         stored_brand_id = str(connection_row.get("brand_id") or "")
         stored_account_id = str(connection_row.get("social_account_id") or "")
         if (
-            stored_brand_id != binding.brand_id
+            str(connection_row.get("workspace_id") or "") != workspace_id
+            or stored_brand_id != binding.brand_id
             or stored_account_id != binding.account_id
             or str(connection_row.get("id") or "") != connection_id.strip()
             or str(connection_row.get("connector_key") or "") != "facebook"
@@ -184,7 +185,10 @@ class TenantFacebookHealthContextResolver:
         registry_brand_id = str(registry_row.get("brand_id") or "")
         registry_account_id = str(registry_row.get("social_account_id") or "")
         if (
-            registry_brand_id != binding.brand_id
+            str(registry_row.get("workspace_id") or "") != workspace_id
+            or str(registry_row.get("connection_id") or "") != connection.connection_id
+            or str(registry_row.get("connector_key") or "") != "facebook"
+            or registry_brand_id != binding.brand_id
             or registry_account_id != binding.account_id
             or str(registry_row.get("connector_version") or "") == ""
         ):
