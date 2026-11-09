@@ -105,10 +105,9 @@ def install_tenant_facebook_provenance(
     ):
         return ProvenanceInstallResult(False, "event_bus_provenance_already_owned")
 
-    if any(source.get(name) for name in (*_SIGNING_ENV, *_PUBLIC_ENV)) is False:
-        # An entirely unconfigured environment is a normal disabled state.
-        if not any(source.get(name) for name in (*_SIGNING_ENV, *_PUBLIC_ENV)):
-            return ProvenanceInstallResult(False, "key_configuration_absent")
+    # An entirely unconfigured environment is a normal disabled state.
+    if not any(source.get(name) for name in (*_SIGNING_ENV, *_PUBLIC_ENV)):
+        return ProvenanceInstallResult(False, "key_configuration_absent")
 
     if any(not source.get(name) for name in (*_SIGNING_ENV, *_PUBLIC_ENV)):
         return ProvenanceInstallResult(False, "key_configuration_incomplete")
