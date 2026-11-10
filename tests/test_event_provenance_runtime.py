@@ -6,9 +6,14 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from core.event_provenance import ActorPrincipal
+from core.event_provenance import ActorPrincipal, ProducerPrincipal, VerifiedEventProvenance
 from core.unified_bus import UnifiedEventBus
-from core.event_provenance_runtime import install_tenant_facebook_provenance
+from core.durable_event_provenance import sign_durable_provenance
+from core.event_provenance_key_provider import ProvenanceKeyConfigError
+from core.event_provenance_runtime import (
+    build_durable_event_provenance_verifier,
+    install_tenant_facebook_provenance,
+)
 from services.v69_tenant_facebook_health_producer import (
     PRODUCER_CLASS,
     PRODUCER_ID,
@@ -432,3 +437,59 @@ def test_facebook_health_signer_rejects_cross_brand_or_workspace_nerve_envelopes
     event["payload"]["_nerve"]["workspace_id"] = "workspace-b"
     with pytest.raises(ValueError, match="nerve_scope_mismatch"):
         bus._provenance_signer(proof, **event)
+
+
+def test_consumer_verifier_loads_public_keys_only_and_verifies_historical_events():
+    env = valid_environment()
+    # Deliberately include private signing configuration in the source mapping.
+    # The consumer factory must discard it before loading verifier material.
+    verifier = build_durable_event_provenance_verifier(env)
+    assert callable(verifier)
+
+    proof = VerifiedEventProvenance(
+        producer=ProducerPrincipal(PRODUCER_ID, PRODUCER_CLASS),
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        verification="composition_root_capability",
+    )
+    payload = {"service": "facebook:connection-a", "status": "degraded"}
+    envelope = sign_durable_provenance(
+        proof,
+        event_id="evt-historical",
+        event_name="connector.health.observed",
+        payload=payload,
+        key_id=KEY_ID,
+        signing_key=SEED,
+        issued_at=1_000,
+        ttl_seconds=60,
+    )
+
+    verified = verifier(
+        envelope,
+        event_id="evt-historical",
+        event_name="connector.health.observed",
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        payload=payload,
+    )
+    assert verified.verification == "ed25519_v1"
+    assert verified.producer.producer_id == PRODUCER_ID
+    assert verified.workspace_id == "workspace-a"
+
+
+def test_consumer_verifier_is_disabled_without_public_key_configuration():
+    assert build_durable_event_provenance_verifier({}) is None
+
+
+def test_consumer_verifier_fails_closed_for_malformed_public_key_configuration():
+    with pytest.raises(ProvenanceKeyConfigError):
+        build_durable_event_provenance_verifier({
+            "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}",
+            "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": "{}",
+        })
