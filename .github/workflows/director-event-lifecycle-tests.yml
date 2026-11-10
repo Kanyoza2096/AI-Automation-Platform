@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "services/director/core.py"
+      - "services/director/planning.py"
+      - "tests/test_director_strategic_planning.py"
       - "services/director/models.py"
       - "services/director/analysis.py"
       - "tests/test_director_strategic_context.py"
@@ -75,6 +77,7 @@ jobs:
             tests/test_condition_engine_council_approval_fence.py \
             tests/test_health_monitor_observability.py \
             tests/test_director_strategic_context.py \
+            tests/test_director_strategic_planning.py \
             tests/test_director_executive_report_truth.py \
             tests/test_director_decision_evidence.py \
             tests/test_director_learning_evidence.py \

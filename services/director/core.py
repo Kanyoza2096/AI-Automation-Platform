@@ -83,6 +83,7 @@ from .proposals import (
     LoadForecastDetector,
     ProposalGenerator,
 )
+from .planning import build_strategic_plan
 
 log = logging.getLogger("kanyoza.director")
 
@@ -436,7 +437,7 @@ class Director:
     MAX_CONCURRENT_EXECUTIONS = 5
     DETECTOR_INTERVAL_SECONDS = 6 * 3600
 
-    def __init__(self, supabase_client=None, interval: int = 60):
+    def __init__(self, supabase_client=None, interval: int = 60, strategic_planner=None):
         self.store = AsyncSupabaseStore(supabase_client) if supabase_client else InMemoryStore()
         log.info("Director storage: %s", "Supabase" if supabase_client else "In-Memory")
 
@@ -484,6 +485,8 @@ class Director:
         self._alert_callback: Optional[Callable] = None
 
         self.last_plan: Optional[datetime] = None
+        self.strategic_planner = strategic_planner
+        self.strategic_plans: Dict[str, dict] = {}
         self.last_observation: Optional[datetime] = None
         self._last_daily_briefing: Optional[str] = None
         self._consecutive_failures: int = 0
@@ -1028,6 +1031,37 @@ class Director:
             self._send_telegram("\n".join(parts))
         except Exception as exc:
             log.error("Diagnostic alert failed: %s", sanitize_error_message(exc))
+
+    def plan_objective(self, objective: dict, planner=None) -> dict:
+        """Create a validated advisory plan from a strategic objective.
+
+        This explicit method is never called by the periodic health/decision loop.
+        It does not create Director tasks, invoke capability handlers, or grant
+        authority. A configured planner adapter is required.
+        """
+        generator = planner or self.strategic_planner
+        if not callable(generator):
+            return {
+                "status": "unavailable",
+                "reason": "strategic_planner_not_configured",
+                "advisory_only": True,
+                "authority": "none",
+                "execution_started": False,
+            }
+        plan = build_strategic_plan(
+            objective=objective,
+            context=self.strategic_context(),
+            generator=generator,
+        )
+        self.strategic_plans[plan["plan_id"]] = plan
+        while len(self.strategic_plans) > 100:
+            self.strategic_plans.pop(next(iter(self.strategic_plans)))
+        return plan
+
+    def get_strategic_plan(self, plan_id: str) -> Optional[dict]:
+        """Return a process-local advisory plan snapshot, if still retained."""
+        plan = self.strategic_plans.get(str(plan_id))
+        return dict(plan) if plan is not None else None
 
     async def _build_plan_async(self) -> dict:
         tasks = self.decide()
