@@ -5,9 +5,9 @@ on:
     paths:
       - "services/director/core.py"
       - "services/director/planning.py"
+      - "lifecycle.py"
       - "services/director/stores.py"
       - "services/director/api.py"
-      - "lifecycle.py"
       - "migrations/163_u2_director_strategic_plans.sql"
       - "tests/test_director_strategic_plan_persistence.py"
       - "tests/test_director_strategic_planning.py"
