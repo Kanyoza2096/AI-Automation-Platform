@@ -180,7 +180,7 @@ def _facebook_health_event(provenance=None, **payload_overrides):
         "observation_id": "observation-a",
         "evidence_id": "evidence-a",
         "evidence_hash": "a" * 64,
-        "observed_at": "2026-11-09T07:00:00+00:00",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
     }
     payload.update(payload_overrides)
     return {
