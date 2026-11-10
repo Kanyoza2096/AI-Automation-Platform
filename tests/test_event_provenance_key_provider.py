@@ -258,3 +258,53 @@ def test_empty_public_keyring_is_rejected():
 
     with pytest.raises(ProvenanceKeyConfigError, match="at_least_one_public_key_required"):
         DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_explicit_key_lifecycle_states_accept_active_and_retained_keys():
+    old_seed = b"old-health-signing-seed-32-bytes"
+    env, _ = env_for(key_id=KEY_ID_NEW, old=(KEY_ID_OLD, old_seed))
+    env["KDO_EVENT_PROVENANCE_KEY_STATES_JSON"] = json.dumps({
+        KEY_ID_NEW: "active",
+        KEY_ID_OLD: "retained",
+    })
+
+    provider = DurableProvenanceKeyProvider.from_environment(env)
+
+    assert dict(provider.key_states) == {
+        KEY_ID_NEW: "active",
+        KEY_ID_OLD: "retained",
+    }
+    with pytest.raises(TypeError):
+        provider.key_states[KEY_ID_NEW] = "revoked"
+
+
+def test_explicit_revoked_state_must_match_revocation_list():
+    env, _ = env_for()
+    env["KDO_EVENT_PROVENANCE_KEY_STATES_JSON"] = json.dumps({KEY_ID_NEW: "revoked"})
+    with pytest.raises(ProvenanceKeyConfigError, match="revoked_key_states_must_match_revocation_list"):
+        DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_explicit_key_states_reject_unknown_lifecycle_state():
+    env, _ = env_for()
+    env["KDO_EVENT_PROVENANCE_KEY_STATES_JSON"] = json.dumps({KEY_ID_NEW: "disabled"})
+    with pytest.raises(ProvenanceKeyConfigError, match="key_state_must_be_active_retained_or_revoked"):
+        DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_explicit_key_states_require_active_signer_to_be_marked_active():
+    env, _ = env_for()
+    env["KDO_EVENT_PROVENANCE_KEY_STATES_JSON"] = json.dumps({KEY_ID_NEW: "retained"})
+    with pytest.raises(ProvenanceKeyConfigError, match="active_signing_key_state_must_be_active"):
+        DurableProvenanceKeyProvider.from_environment(env)
+
+
+def test_explicit_key_states_reject_multiple_active_keys():
+    old_seed = b"old-health-signing-seed-32-bytes"
+    env, _ = env_for(key_id=KEY_ID_NEW, old=(KEY_ID_OLD, old_seed))
+    env["KDO_EVENT_PROVENANCE_KEY_STATES_JSON"] = json.dumps({
+        KEY_ID_NEW: "active",
+        KEY_ID_OLD: "active",
+    })
+    with pytest.raises(ProvenanceKeyConfigError, match="only_one_active_signing_key_allowed"):
+        DurableProvenanceKeyProvider.from_environment(env)

@@ -39,6 +39,8 @@ _ENV_PRIVATE_SEED = "KDO_EVENT_PROVENANCE_SIGNING_PRIVATE_KEY_B64"
 _ENV_PUBLIC_KEYS = "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"
 _ENV_KEY_OWNERS = "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"
 _ENV_REVOKED_KEYS = "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON"
+_ENV_KEY_STATES = "KDO_EVENT_PROVENANCE_KEY_STATES_JSON"
+_VALID_KEY_STATES = frozenset({"active", "retained", "revoked"})
 
 
 def _decode_key(value: Any, *, label: str) -> bytes:
@@ -87,10 +89,13 @@ class DurableProvenanceKeyProvider:
         key_owners: Mapping[str, str],
         active_signing_key: _ActiveSigningKey | None = None,
         revoked_key_ids: tuple[str, ...] | list[str] | set[str] = (),
+        key_states: Mapping[str, str] | None = None,
     ) -> None:
         if any(not isinstance(item, str) for item in revoked_key_ids):
             raise ProvenanceKeyConfigError("revoked_key_ids_must_be_strings")
         revoked = frozenset(revoked_key_ids)
+        supplied_states = key_states is not None
+        states = dict(key_states or {})
         normalized_keys: dict[str, bytes] = {}
         normalized_owners: dict[str, str] = {}
 
@@ -100,6 +105,16 @@ class DurableProvenanceKeyProvider:
             raise ProvenanceKeyConfigError("at_least_one_public_key_required")
         if not revoked.issubset(set(public_keys)):
             raise ProvenanceKeyConfigError("revoked_key_id_not_in_public_keyring")
+        if supplied_states:
+            if set(states) != set(public_keys):
+                raise ProvenanceKeyConfigError("key_state_key_set_must_match_public_keyring")
+            if any(not isinstance(state, str) or state not in _VALID_KEY_STATES for state in states.values()):
+                raise ProvenanceKeyConfigError("key_state_must_be_active_retained_or_revoked")
+            state_revoked = {key_id for key_id, state in states.items() if state == "revoked"}
+            if state_revoked != set(revoked):
+                raise ProvenanceKeyConfigError("revoked_key_states_must_match_revocation_list")
+            if sum(state == "active" for state in states.values()) > 1:
+                raise ProvenanceKeyConfigError("only_one_active_signing_key_allowed")
         if any(not _KEY_ID_PATTERN.fullmatch(key_id) for key_id in revoked):
             raise ProvenanceKeyConfigError("revoked_key_id_must_use_kdo_prefix")
         for raw_key_id, raw_key in public_keys.items():
@@ -120,6 +135,8 @@ class DurableProvenanceKeyProvider:
 
         if active_signing_key is not None:
             active = active_signing_key
+            if supplied_states and states.get(active.key_id) != "active":
+                raise ProvenanceKeyConfigError("active_signing_key_state_must_be_active")
             if not _KEY_ID_PATTERN.fullmatch(active.key_id):
                 raise ProvenanceKeyConfigError("active_key_id_must_use_kdo_prefix")
             if active.key_id in revoked:
@@ -143,6 +160,10 @@ class DurableProvenanceKeyProvider:
         self._public_keys = MappingProxyType(normalized_keys)
         self._key_owners = MappingProxyType(normalized_owners)
         self._revoked_key_ids = revoked
+        # Legacy deployments without explicit lifecycle metadata remain
+        # compatible; do not guess whether consumer-only keys are active or
+        # retained. Expose lifecycle states only when operators configure them.
+        self._key_states = MappingProxyType(dict(states)) if supplied_states else MappingProxyType({})
 
     @classmethod
     def from_environment(
@@ -175,6 +196,9 @@ class DurableProvenanceKeyProvider:
         ):
             raise ProvenanceKeyConfigError("revoked_key_ids_must_be_string_array")
 
+        states_raw = source.get(_ENV_KEY_STATES)
+        states_config = _json_object(states_raw, label="key_states") if states_raw is not None else None
+
         signing_names = (
             _ENV_ACTIVE_KEY_ID,
             _ENV_SIGNING_PRODUCER_ID,
@@ -198,6 +222,7 @@ class DurableProvenanceKeyProvider:
             key_owners=key_owners,
             active_signing_key=active_key,
             revoked_key_ids=revoked_value,
+            key_states=states_config,
         )
 
     @property
@@ -246,6 +271,11 @@ class DurableProvenanceKeyProvider:
             enforce_freshness=True,
             **event,
         )
+
+    @property
+    def key_states(self) -> Mapping[str, str]:
+        """Read-only lifecycle state for every configured public key ID."""
+        return self._key_states
 
     def public_verification_config(self) -> tuple[dict[str, bytes], dict[str, str]]:
         """Return defensive copies containing public keys and owner labels only."""
