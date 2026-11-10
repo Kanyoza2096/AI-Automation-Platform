@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta, timezone
 
 from core.organism import OrganismRegistry
 from organism.event_bridge import OrganismEventBridge
@@ -179,7 +180,7 @@ def _facebook_health_event(provenance=None, **payload_overrides):
         "observation_id": "observation-a",
         "evidence_id": "evidence-a",
         "evidence_hash": "a" * 64,
-        "observed_at": "2026-11-09T07:00:00+00:00",
+        "observed_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
     }
     payload.update(payload_overrides)
     return {
@@ -248,3 +249,79 @@ def test_facebook_health_evidence_must_bind_account_and_observation_fields(overr
 
     assert observation is not None
     assert observation.source_trust == 0.0
+
+
+class _SharedContextBus:
+    def __init__(self):
+        self.handlers = {}
+
+    def subscribe_with_context(self, event_name, handler, *, handler_id=None):
+        self.handlers.setdefault(event_name, []).append((handler_id, handler))
+
+        def unsubscribe():
+            self.handlers[event_name] = [
+                item for item in self.handlers.get(event_name, [])
+                if item[0] != handler_id
+            ]
+        return unsubscribe
+
+    async def emit(self, event_name, context):
+        for _handler_id, handler in tuple(self.handlers.get(event_name, [])):
+            await handler(context)
+
+
+@pytest.mark.asyncio
+async def test_bridge_accepts_context_aware_durable_replay_and_unsubscribes():
+    registry = OrganismRegistry()
+    organism = registry.get_or_create("workspace-a")
+    bridge = OrganismEventBridge(registry)
+    bus = _SharedContextBus()
+    await bridge.start_shared(bus)
+
+    proof = _facebook_health_proof(verification="ed25519_v1")
+    event = _facebook_health_event(proof)
+    event.update({
+        "event_id": "durable-event-1",
+        "source_service": "worker-replay",
+    })
+    await bus.emit("connector.health.observed", event)
+
+    observations = organism.runtime.perception.recent("workspace-a")
+    assert len(observations) == 1
+    assert observations[0].source_trust == 0.9
+    assert observations[0].metadata["provenance_verification"] == "ed25519_v1"
+
+    await bridge.stop()
+    assert all(not handlers for handlers in bus.handlers.values())
+
+
+def test_authentic_but_stale_health_event_is_not_a_trusted_current_signal():
+    now = datetime.now(timezone.utc)
+    stale_at = (now - timedelta(hours=2)).isoformat()
+    event = _facebook_health_event(
+        _facebook_health_proof(verification="ed25519_v1"),
+        observed_at=stale_at,
+    )
+
+    observation = observation_from_event(event, now=now)
+
+    assert observation is not None
+    assert observation.confidence == 0.9
+    assert observation.source_trust == 0.0
+    assert observation.metadata["provenance_verification"] == "ed25519_v1"
+    assert observation.metadata["freshness_status"] == "stale"
+
+
+def test_future_health_observation_beyond_clock_skew_is_not_trusted():
+    now = datetime.now(timezone.utc)
+    future_at = (now + timedelta(minutes=5)).isoformat()
+    event = _facebook_health_event(
+        _facebook_health_proof(verification="ed25519_v1"),
+        observed_at=future_at,
+    )
+
+    observation = observation_from_event(event, now=now)
+
+    assert observation is not None
+    assert observation.source_trust == 0.0
+    assert observation.metadata["freshness_status"] == "stale"

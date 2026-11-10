@@ -775,9 +775,18 @@ def get_shared_event_bus() -> SharedEventBus:
     return _shared_bus
 
 
-def init_shared_event_bus(supabase_client: Any = None, source_service: str = "unknown") -> SharedEventBus:
+def init_shared_event_bus(
+    supabase_client: Any = None,
+    source_service: str = "unknown",
+    *,
+    provenance_verifier: Callable[..., VerifiedEventProvenance] | None = None,
+) -> SharedEventBus:
     global _shared_bus
-    _shared_bus = SharedEventBus(supabase_client=supabase_client, source_service=source_service)
+    _shared_bus = SharedEventBus(
+        supabase_client=supabase_client,
+        source_service=source_service,
+        provenance_verifier=provenance_verifier,
+    )
     _shared_bus.start()
     return _shared_bus
 

@@ -11,13 +11,14 @@ import os
 import re
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from core.event_provenance import (
     ProducerCapability,
     ProducerRegistry,
     VerifiedEventProvenance,
 )
+from core.durable_event_provenance import verify_durable_provenance
 from core.event_provenance_key_provider import (
     DurableProvenanceKeyProvider,
     ProvenanceKeyConfigError,
@@ -206,6 +207,50 @@ def _validate_facebook_health_signing_request(
 
 
 
+
+def build_durable_event_provenance_verifier(
+    environ: Mapping[str, str] | None = None,
+) -> Callable[..., VerifiedEventProvenance] | None:
+    """Build a consumer-only verifier from public keys and ownership policy.
+
+    Private signing configuration is deliberately excluded. Authenticity is
+    verified independently from freshness so durable replay can be audited;
+    consumers must still apply freshness before trusting current health state.
+    """
+    source = os.environ if environ is None else environ
+    public_names = (
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON",
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON",
+    )
+    if not any(source.get(name) for name in public_names):
+        return None
+    verification_environment = {
+        name: source[name]
+        for name in (*public_names, "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON")
+        if name in source
+    }
+    verification_environment.setdefault(
+        "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON", "[]"
+    )
+    provider = DurableProvenanceKeyProvider.from_environment(
+        verification_environment
+    )
+    keyring, key_owners = provider.public_verification_config()
+
+    def verify_historical_event(
+        envelope: Mapping[str, Any], **event: Any
+    ) -> VerifiedEventProvenance:
+        return verify_durable_provenance(
+            envelope,
+            keyring=keyring,
+            key_owners=key_owners,
+            enforce_freshness=False,
+            **event,
+        )
+
+    return verify_historical_event
+
+
 def install_tenant_facebook_provenance(
     event_bus: Any,
     *,
@@ -314,4 +359,5 @@ __all__ = [
     "TenantFacebookProvenanceRuntime",
     "ProvenanceInstallResult",
     "install_tenant_facebook_provenance",
+    "build_durable_event_provenance_verifier",
 ]
