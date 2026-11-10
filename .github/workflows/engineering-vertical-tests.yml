@@ -506,3 +506,5 @@ jobs:
 # Keep U2 goal bootstrap and signed-event integration tests in the focused CI gate.
 
 # Keep U2 provenance signer changes covered by the focused PR test workflow.
+
+# U2 durable provenance replay verifier coverage.
