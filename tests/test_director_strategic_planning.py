@@ -143,12 +143,15 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
         "capability": "review_content_quality",
         "description": "Review evidence",
         "params": {"api_key": "do-not-send-this-secret"},
+        "rationale": "secret-rationale-do-not-send",
+        "success_criteria": [{"expected": "secret-criterion-do-not-send"}],
     }]
     context["missions"]["recent_tasks"] = [{
         "task_id": "task-1",
         "capability": "review_content_quality",
         "status": "planned",
         "params": {"access_token": "also-do-not-send"},
+        "success_criteria": [{"expected": "task-criterion-secret"}],
     }]
 
     result = adapter(objective=objective(), context=context)
@@ -162,6 +165,9 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert kwargs["temperature"] == 0.1
     assert "do-not-send-this-secret" not in prompt
     assert "also-do-not-send" not in prompt
+    assert "secret-rationale-do-not-send" not in prompt
+    assert "secret-criterion-do-not-send" not in prompt
+    assert "task-criterion-secret" not in prompt
     assert '"params"' not in prompt
     assert "brand scheduler" in prompt.lower()
 
