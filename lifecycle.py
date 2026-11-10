@@ -1528,13 +1528,25 @@ async def _boot_meta_engine(container: ServiceContainer) -> None:
 async def _boot_director(container: ServiceContainer) -> None:
     from services.director import init_director, auto_discover_engines
     from services.supabase import get_service_client_from_settings
+    from ai.gateway import get_llm_gateway
+    from services.director.planning import make_llm_strategic_planner
 
     try:
         supabase_client = await _run_in_thread(get_service_client_from_settings)
     except Exception:
         supabase_client = None
 
-    director = await init_director(supabase_client=supabase_client, auto_start=False)
+    try:
+        strategic_planner = make_llm_strategic_planner(get_llm_gateway())
+    except Exception as exc:
+        logger.warning("Director strategic planner unavailable: %s", _sanitize_error_message(exc))
+        strategic_planner = None
+
+    director = await init_director(
+        supabase_client=supabase_client,
+        auto_start=False,
+        strategic_planner=strategic_planner,
+    )
 
     try:
         discovered = auto_discover_engines(director, container)
