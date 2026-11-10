@@ -152,3 +152,58 @@ def test_llm_gateway_cloudflare_structured_preserves_receipt(monkeypatch):
 def test_ai_chat_is_allowed_through_provider_gateway_policy():
     from ai.gateway import _caller_allowed
     assert _caller_allowed("ai_chat") is True
+
+
+
+def test_cloudflare_adapter_forwards_output_token_budget():
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["max_tokens"] == 321
+        return httpx.Response(200, json={"result": {"choices": [{"message": {"content": '{"ok":true}', "finish_reason": "stop"}}]}})
+    adapter = CloudflareAIAdapter(account_id="acct", token="token", client=client(handler))
+    receipt = adapter.analyze(user_prompt="Return JSON", correlation_id="budget-1", structured=True, max_output_tokens=321)
+    assert receipt.status == "succeeded"
+
+
+def test_gemini_adapter_forwards_output_token_budget_and_finish_reason():
+    from services.connectors.gemini_ai_adapter import GeminiAIAdapter
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["generationConfig"]["maxOutputTokens"] == 654
+        return httpx.Response(200, json={
+            "candidates": [{
+                "content": {"parts": [{"text": '{"summary":"ok"}'}]},
+                "finishReason": "MAX_TOKENS",
+            }]
+        })
+    adapter = GeminiAIAdapter(api_key="key", client=client(handler))
+    receipt = adapter.analyze(user_prompt="Return JSON", correlation_id="budget-2", structured=True, max_output_tokens=654)
+    assert receipt.status == "succeeded"
+    assert receipt.finish_reason == "length"
+
+
+def test_llm_gateway_forwards_requested_output_token_budget(monkeypatch):
+    from ai.gateway import LLMGateway
+    from services.ai_provider import AIReceipt
+    observed = {}
+
+    class FakeAdapter:
+        def analyze(self, **kwargs):
+            observed.update(kwargs)
+            return AIReceipt(
+                status="succeeded", provider="cloudflare_ai", model="m",
+                raw_output='{"ok":true}', structured_output={"ok": True}, usage=None,
+                correlation_id=kwargs["correlation_id"], request_fingerprint="f",
+            )
+        def close(self):
+            pass
+
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setenv("KDO_AI_CLOUDFLARE_ENABLED", "1")
+    monkeypatch.setattr("services.connectors.ai_registry.create_ai_provider_adapter", lambda *a, **k: FakeAdapter())
+    monkeypatch.setattr("services.ai_policy.select_ai_route", lambda task: (type("Route", (), {"provider":"cloudflare_ai","model":"model"})(),))
+    result = LLMGateway().complete("Return JSON", caller="director", capability="structured_json", max_tokens=777)
+    assert result.ok is True
+    assert observed["max_output_tokens"] == 777
