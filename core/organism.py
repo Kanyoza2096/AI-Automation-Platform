@@ -171,6 +171,38 @@ class Organism:
                     await store.restore(runtime)
                     runtime.persistence_store = store
 
+            # Suggest-only goal persistence is independently gated. It is
+            # attached only after a read-only migration probe and an active
+            # workspace check using the server's explicit service-role client.
+            if runtime.goal_proposal_store is None:
+                try:
+                    from services.supabase import supabase_service
+                    goal_service_client = supabase_service.service_client
+                except Exception:
+                    goal_service_client = None
+
+                if goal_service_client is None:
+                    runtime.goal_proposal_store_status = "disabled_no_service_role_client"
+                else:
+                    try:
+                        from organism.goal_persistence import bootstrap_goal_proposal_store
+                        bootstrap = await asyncio.to_thread(
+                            bootstrap_goal_proposal_store,
+                            goal_service_client,
+                            self.workspace_id,
+                        )
+                        runtime.goal_proposal_store = bootstrap.store
+                        runtime.goal_proposal_store_status = bootstrap.status
+                    except Exception:
+                        runtime.goal_proposal_store = None
+                        runtime.goal_proposal_store_status = "disabled_bootstrap_failed"
+
+                logger.info(
+                    "Organism goal proposal persistence status=%s workspace=%s",
+                    runtime.goal_proposal_store_status,
+                    self.workspace_id,
+                )
+
             # Materialize the workspace organs before publishing the birth
             # transition. Runtime construction remains lazy for dormant tenants.
             self.council

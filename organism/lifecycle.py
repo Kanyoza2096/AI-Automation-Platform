@@ -85,6 +85,14 @@ class OrganismRuntime:
         self.state: OrganismState | None = None
         self.persistence_store = None
         self.recovery_status = "not_attempted"
+        # Goal persistence is a separate, suggest-only capability. It is
+        # injected only by authenticated organism startup after a read-only
+        # migration/schema probe succeeds for this workspace.
+        self.goal_proposal_store = None
+        self.goal_proposal_store_status = "not_checked"
+        self.pending_goal_proposals = ()
+        self._goal_proposal_observation_ids: set[str] = set()
+        self._pending_goal_proposals: dict[str, Any] = {}
         self._cycle_number = 0
 
     def ingest(self, observation: Observation) -> Observation:

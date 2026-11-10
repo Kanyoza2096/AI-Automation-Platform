@@ -4,7 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from organism.goals import GoalPriority, GoalProposal
-from organism.goal_persistence import GoalProposalStore, GoalProposalStoreError
+from core.organism import Organism, OrganismConfig
+from organism.goal_persistence import (
+    GoalProposalStore,
+    GoalProposalStoreError,
+    bootstrap_goal_proposal_store,
+)
 
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=timezone.utc)
@@ -69,6 +74,7 @@ class Query:
 class Client:
     def __init__(self):
         self.proposals = {}
+        self.schema_ready = True
         self.workspaces = [
             {"id": "workspace-a", "status": "active"},
             {"id": "workspace-b", "status": "active"},
@@ -166,3 +172,109 @@ def test_goal_proposal_rejects_execution_authority_or_non_proposed_status():
         proposal(authority="execute")
     with pytest.raises(ValueError, match="start as proposed"):
         proposal(status="approved")
+
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_only_creates_workspace_bound_store_after_read_only_schema_probe():
+    client = Client()
+
+    result = bootstrap_goal_proposal_store(client, "workspace-a")
+
+    assert result.status == "ready"
+    assert result.store is not None
+    assert result.store.workspace_id == "workspace-a"
+    assert client.proposals == {}
+
+
+def test_bootstrap_fails_closed_when_proposal_migration_is_not_present():
+    class MissingSchemaClient(Client):
+        def table(self, name):
+            if name == "organism_goal_proposals":
+                raise RuntimeError("relation does not exist")
+            return super().table(name)
+
+    result = bootstrap_goal_proposal_store(MissingSchemaClient(), "workspace-a")
+
+    assert result.store is None
+    assert result.status == "disabled_schema_not_ready"
+
+
+def test_bootstrap_refuses_missing_or_inactive_workspace():
+    client = Client()
+    missing = bootstrap_goal_proposal_store(client, "workspace-missing")
+    assert missing.store is None
+    assert missing.status == "disabled_workspace_unavailable"
+
+    client.workspaces[0]["status"] = "suspended"
+    inactive = bootstrap_goal_proposal_store(client, "workspace-a")
+    assert inactive.store is None
+    assert inactive.status == "disabled_workspace_inactive"
+
+
+def test_bootstrap_requires_explicit_service_role_client():
+    result = bootstrap_goal_proposal_store(None, "workspace-a")
+    assert result.store is None
+    assert result.status == "disabled_no_service_role_client"
+
+
+@pytest.mark.asyncio
+async def test_bootstrapped_goal_store_rejects_cross_workspace_proposals_and_reads():
+    client = Client()
+    result = bootstrap_goal_proposal_store(client, "workspace-a")
+    assert result.store is not None
+
+    with pytest.raises(GoalProposalStoreError, match="proposal_workspace_mismatch"):
+        await result.store.persist(proposal(workspace_id="workspace-b"))
+    with pytest.raises(GoalProposalStoreError, match="proposal_workspace_mismatch"):
+        await result.store.list_pending("workspace-b", now=NOW)
+
+    assert client.proposals == {}
+
+
+
+@pytest.mark.asyncio
+async def test_authenticated_organism_start_injects_only_workspace_bound_goal_store(monkeypatch):
+    import services.supabase as supabase_module
+
+    client = Client()
+    monkeypatch.setattr(supabase_module, "_service_client", client)
+    organism = Organism(OrganismConfig(workspace_id="workspace-a"))
+    runtime = organism.runtime
+    runtime.recovery_status = "restored"
+    organism._council = object()
+    organism._memory = object()
+
+    await organism.start()
+
+    assert organism._running is True
+    assert runtime.goal_proposal_store is not None
+    assert runtime.goal_proposal_store.workspace_id == "workspace-a"
+    assert runtime.goal_proposal_store_status == "ready"
+    await organism.stop()
+
+
+@pytest.mark.asyncio
+async def test_organism_starts_but_keeps_goal_store_disabled_when_migration_is_missing(monkeypatch):
+    import services.supabase as supabase_module
+
+    class MissingSchemaClient(Client):
+        def table(self, name):
+            if name == "organism_goal_proposals":
+                raise RuntimeError("relation does not exist")
+            return super().table(name)
+
+    client = MissingSchemaClient()
+    monkeypatch.setattr(supabase_module, "_service_client", client)
+    organism = Organism(OrganismConfig(workspace_id="workspace-a"))
+    runtime = organism.runtime
+    runtime.recovery_status = "restored"
+    organism._council = object()
+    organism._memory = object()
+
+    await organism.start()
+
+    assert organism._running is True
+    assert runtime.goal_proposal_store is None
+    assert runtime.goal_proposal_store_status == "disabled_schema_not_ready"
+    await organism.stop()
