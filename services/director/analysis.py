@@ -758,15 +758,17 @@ class LearningLoop:
     def get_recent_success_rate(self, capability: str, days: Optional[int] = None) -> Optional[float]:
         days = days or self.decay_days
         cutoff = now() - timedelta(days=days)
-        recent = [
+        recent_window = [
             s for s in self.signals
             if s.capability == capability and s.timestamp >= cutoff
         ]
-        recent = [s for s in recent if s.outcome in ("success", "failure")]
-        if not recent:
-            return self.get_success_rate(capability)
-        successes = sum(1 for s in recent if s.outcome == "success")
-        return successes / len(recent)
+        recent_verified = [s for s in recent_window if s.outcome in ("success", "failure")]
+        if not recent_verified:
+            # Recent unverified attempts make recent reliability unknown; do not
+            # silently fall back to older verified samples as if they were recent.
+            return None if recent_window else self.get_success_rate(capability)
+        successes = sum(1 for s in recent_verified if s.outcome == "success")
+        return successes / len(recent_verified)
 
     def get_context_success_rate(
         self,
@@ -1016,8 +1018,14 @@ class LearningLoop:
             "targets_tracked": len(self.target_failure_counts),
             "capabilities": {
                 cap: {
-                    "success_rate": round(self.get_success_rate(cap) or 0, 2),
-                    "recent_rate": round(self.get_recent_success_rate(cap) or 0, 2),
+                    "success_rate": (
+                        round(self.get_success_rate(cap), 2)
+                        if self.get_success_rate(cap) is not None else None
+                    ),
+                    "recent_rate": (
+                        round(self.get_recent_success_rate(cap), 2)
+                        if self.get_recent_success_rate(cap) is not None else None
+                    ),
                     "avg_duration_ms": round(self.get_avg_duration_ms(cap) or 0, 0),
                     "total": stats["successes"] + stats["failures"] + stats.get("unverified", 0),
                     "verified_outcome_count": stats["successes"] + stats["failures"],
