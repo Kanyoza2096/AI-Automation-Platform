@@ -630,6 +630,7 @@ class Director:
     async def _startup(self) -> None:
         await asyncio.sleep(2)
         try:
+            await self._restore_decisions()
             await self._restore_tasks()
             await self._replay_learning_history()
             await self._observe_async()
@@ -638,6 +639,41 @@ class Director:
             self.briefing(Briefing.CHECKPOINT)
         except Exception as exc:
             log.exception("Startup failed: %s", sanitize_error_message(exc))
+
+    async def _restore_decisions(self) -> dict:
+        """Restore the bounded decision audit trail from the configured store."""
+        try:
+            records = await self.store.list_decisions(limit=2000)
+        except Exception as exc:
+            log.warning("Director decision restore failed: %s", sanitize_error_message(exc))
+            return {"restored": 0, "errors": 1}
+
+        restored = errors = 0
+        for record in records or []:
+            try:
+                raw = record.get("payload", record) if isinstance(record, dict) else record
+                if isinstance(raw, str):
+                    import json
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw.get("id"):
+                    errors += 1
+                    continue
+                fields = {key: raw[key] for key in Decision.__dataclass_fields__ if key in raw}
+                stamp = fields.get("timestamp")
+                if isinstance(stamp, str) and stamp:
+                    fields["timestamp"] = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
+                fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
+                self.decisions.append(Decision(**fields))
+                restored += 1
+            except Exception as exc:
+                errors += 1
+                log.warning("Skipping invalid persisted Director decision: %s", sanitize_error_message(exc))
+
+        summary = {"restored": restored, "errors": errors}
+        log.info("Director decision restore: %s", summary)
+        return summary
 
     async def _restore_tasks(self) -> dict:
         try:
@@ -1723,6 +1759,7 @@ class Director:
             "capability": cap_name,
             "sector": sector.value,
         })
+        self._record_decision(f"Planned: {desc}", reason, task, outcome="planned", stage="planning")
         return task
 
     def decide(self) -> List[Task]:
@@ -2648,20 +2685,99 @@ class Director:
         reason: str,
         task: Task,
         outcome: str = None,
+        stage: str = "execution",
     ) -> None:
+        observed_state = []
+        evidence_sources = []
+        direct_sources = set(getattr(task, "sources", []) or [])
+        for observer_name, observation in self.observations.items():
+            source = str(getattr(observation, "source", observer_name) or observer_name)
+            direct_match = (
+                observer_name in direct_sources
+                or source in direct_sources
+                or f"engine_signal:{observer_name}" in direct_sources
+                or f"engine_signal:{source}" in direct_sources
+            )
+            if direct_sources and not direct_match:
+                continue
+            stamp = getattr(observation, "timestamp", None)
+            observed_at = iso(stamp) if isinstance(stamp, datetime) else None
+            age_seconds = None
+            freshness = "unknown"
+            if isinstance(stamp, datetime):
+                stamp_utc = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+                age_seconds = (datetime.now(timezone.utc) - stamp_utc).total_seconds()
+                freshness = "fresh" if -30 <= age_seconds <= 300 else "stale"
+            status = getattr(getattr(observation, "status", None), "value", getattr(observation, "status", None))
+            evidence = {
+                "observer": observer_name,
+                "source": source,
+                "sector": getattr(getattr(observation, "sector", None), "value", str(getattr(observation, "sector", "unknown"))),
+                "status": str(status or "unknown").lower(),
+                "observed_at": observed_at,
+                "freshness": freshness,
+                "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
+                "relationship": "direct_source" if direct_match else "platform_context",
+            }
+            observed_state.append({
+                "observer": observer_name,
+                "sector": evidence["sector"],
+                "reported_status": evidence["status"],
+                "observed_at": observed_at,
+                "freshness": freshness,
+            })
+            evidence_sources.append(evidence)
+
+        fresh_evidence_count = sum(1 for item in evidence_sources if item["freshness"] == "fresh")
+        evidence_state = (
+            "unknown" if fresh_evidence_count == 0
+            else "partial" if fresh_evidence_count < len(evidence_sources)
+            else "present"
+        )
+        rationale = str(reason or "")
         d = Decision(
             id=f"decision_{uuid.uuid4().hex[:12]}",
             timestamp=now(),
             decision=decision_text,
-            reason=reason,
+            reason=rationale,
             confidence=task.confidence,
             sector=task.sector,
             authority=task.authority,
             risk=task.risk,
             task_id=task.id,
             outcome=outcome,
+            stage=stage,
+            observed_state=observed_state,
+            inferences=([{
+                "claim": rationale,
+                "classification": "inference",
+                "verification": "not_independently_verified",
+            }] if rationale else []),
+            assumptions=[],
+            evidence_sources=evidence_sources,
+            evidence_state=evidence_state,
+            justification=rationale,
+            action_taken={
+                "task_id": task.id,
+                "capability": task.capability,
+                "task_status": getattr(task.status, "value", str(task.status)),
+                "stage": stage,
+                "outcome": outcome,
+            },
+            confidence_basis={
+                "value_source": "legacy_task_confidence",
+                "calibration": "not_evidence_calibrated",
+                "evidence_source_count": len(evidence_sources),
+                "fresh_evidence_source_count": fresh_evidence_count,
+            },
         )
         self.decisions.append(d)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.debug("Director decision retained in memory; no running loop for persistence")
+        else:
+            loop.create_task(self.store.save_decision(d))
 
     def _learn(self, task: Task, signal: Optional[LearningSignal] = None) -> None:
         if signal is not None:

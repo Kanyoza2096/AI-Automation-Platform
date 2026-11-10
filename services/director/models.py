@@ -316,6 +316,16 @@ class Decision:
     task_id: Optional[str] = None
     outcome: Optional[str] = None
     correlation_id: str = field(default_factory=generate_correlation_id)
+    # Evidence-aware decision audit fields. Defaults preserve legacy records.
+    stage: str = "execution"
+    observed_state: List[Dict[str, Any]] = field(default_factory=list)
+    inferences: List[Dict[str, Any]] = field(default_factory=list)
+    assumptions: List[str] = field(default_factory=list)
+    evidence_sources: List[Dict[str, Any]] = field(default_factory=list)
+    evidence_state: str = "unknown"
+    justification: str = ""
+    action_taken: Dict[str, Any] = field(default_factory=dict)
+    confidence_basis: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
