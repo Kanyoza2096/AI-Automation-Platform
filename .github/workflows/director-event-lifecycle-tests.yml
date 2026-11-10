@@ -5,8 +5,10 @@ on:
     paths:
       - "services/director/core.py"
       - "services/director/models.py"
+      - "services/director/analysis.py"
       - "tests/test_director_executive_report_truth.py"
       - "tests/test_director_decision_evidence.py"
+      - "tests/test_director_learning_evidence.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   push:
     branches:
@@ -72,6 +74,7 @@ jobs:
             tests/test_health_monitor_observability.py \
             tests/test_director_executive_report_truth.py \
             tests/test_director_decision_evidence.py \
+            tests/test_director_learning_evidence.py \
             tests/test_engine_truth.py \
             tests/test_meta_engine_lifecycle_identity.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
