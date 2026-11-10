@@ -1314,11 +1314,13 @@ director: Optional[Director] = None
 _lock = asyncio.Lock()
 
 
-async def init_director(supabase_client=None, auto_start: bool = True) -> Director:
+async def init_director(supabase_client=None, auto_start: bool = True, strategic_planner=None) -> Director:
     global director
     async with _lock:
         if director is None:
-            director = Director(supabase_client=supabase_client)
+            director = Director(supabase_client=supabase_client, strategic_planner=strategic_planner)
+        elif strategic_planner is not None:
+            director.strategic_planner = strategic_planner
         if auto_start and not director.running:
             await director.start()
     return director

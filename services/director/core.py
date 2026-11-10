@@ -1065,7 +1065,7 @@ class Director:
 
     async def create_strategic_plan(self, objective: dict, planner=None) -> dict:
         """Create and persist a validated advisory plan; never execute it."""
-        plan = self.plan_objective(objective, planner=planner)
+        plan = await asyncio.to_thread(self.plan_objective, objective, planner)
         if plan.get("status") == "unavailable":
             return plan
         saved = await self.store.save_strategic_plan(plan)
