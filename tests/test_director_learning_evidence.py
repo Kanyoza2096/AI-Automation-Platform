@@ -98,3 +98,17 @@ def test_replay_accepts_explicit_unverified_outcome_without_resetting_failures()
     assert loop.rebuild_from_signals([signal]) == 1
     assert loop.target_failure_counts["run_health_scan:worker-pool-a"] == 2
     assert loop.target_last_error["run_health_scan:worker-pool-a"] == "NETWORK_TIMEOUT"
+
+
+def test_verified_success_resets_failure_window_without_losing_unverified_counter():
+    loop = LearningLoop()
+    loop.target_failure_counts["run_health_scan:worker-pool-a"] = 1
+    loop.target_last_error["run_health_scan:worker-pool-a"] = "NETWORK_TIMEOUT"
+
+    loop.record_outcome(task(Status.VERIFIED), duration_ms=100, target="worker-pool-a")
+    signal = loop.record_outcome(task(Status.COMPLETED), duration_ms=100, target="worker-pool-a")
+
+    assert signal is not None
+    assert signal.outcome == "unverified"
+    assert loop.context_stats["infra:run_health_scan:worker-pool-a"]["unverified"] == 1
+    assert loop.time_stats[f"infra:run_health_scan:worker-pool-a:{loop._get_time_context()}"]["unverified"] == 1
