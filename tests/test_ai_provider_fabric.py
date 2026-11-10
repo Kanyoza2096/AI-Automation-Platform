@@ -174,6 +174,7 @@ def test_gemini_adapter_forwards_output_token_budget_and_finish_reason():
     def handler(request):
         payload = json.loads(request.content)
         assert payload["generationConfig"]["maxOutputTokens"] == 654
+        assert payload["generationConfig"]["responseMimeType"] == "application/json"
         return httpx.Response(200, json={
             "candidates": [{
                 "content": {"parts": [{"text": '{"summary":"ok"}'}]},
