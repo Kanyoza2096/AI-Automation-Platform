@@ -63,5 +63,5 @@ def test_executive_summary_does_not_call_high_score_excellent_with_degraded_sect
     assert "overall score is high, but sector-level degradation" in report
     assert "0 issue records reported" in report
     assert "evidence gap, not proof that there are zero issues" in report
-    assert "CONTENT**: DEGRADED" in report
+    assert "content**: DEGRADED" in report
     assert "Investigate degraded sector observations" in report
