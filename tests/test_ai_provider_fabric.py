@@ -61,9 +61,12 @@ def test_cloudflare_empty_output_is_failed():
 
 
 def test_provider_registry_is_explicit():
-    assert supported_ai_providers() == ("cloudflare_ai",)
+    assert supported_ai_providers() == ("cloudflare_ai", "gemini")
     adapter = create_ai_provider_adapter("cloudflare_ai", account_id="acct", token="token", client=client(lambda r: httpx.Response(200, json={"result":{"response":"ok"}})))
     assert isinstance(adapter, CloudflareAIAdapter)
+    from services.connectors.gemini_ai_adapter import GeminiAIAdapter
+    gemini = create_ai_provider_adapter("gemini", api_key="test-key", client=client(lambda r: httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "ok"}]}}]})))
+    assert isinstance(gemini, GeminiAIAdapter)
 
 
 def test_policy_selects_provider_without_application_coupling():
