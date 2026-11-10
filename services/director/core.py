@@ -2952,7 +2952,6 @@ class Director:
 
     def _init_capabilities(self) -> None:
         for name, sector, desc, auth, risk, target_param in [
-            ("publish_scheduled_content", Sector.CONTENT, "Publish scheduled content", Authority.AUTO, Risk.LOW, "brand_id"),
             ("optimize_content_schedule", Sector.CONTENT, "Adjust safe scheduling", Authority.NOTIFY, Risk.LOW, "brand_id"),
             ("review_content_quality", Sector.CONTENT, "Review measured low-quality content", Authority.NOTIFY, Risk.LOW, "brand_id"),
             ("calculate_brand_health", Sector.BRANDS, "Calculate brand health", Authority.AUTO, Risk.LOW, "brand_id"),

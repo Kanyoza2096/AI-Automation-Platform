@@ -8,14 +8,12 @@ Lifecycle imports:
     )
 
 v16.4 (2026-10-05) — PUBLISH FENCE:
-  - 'publish_scheduled_content' is NO LONGER BOUND to the Director. The
-    Director's review_content_strategy decision (issued ~every 30 minutes)
-    was invoking this capability, which called mgr.trigger_all() and
-    published for every brand on each cycle. That produced duplicate
-    publishes on top of the scheduler's own fires, drained the Cloudflare
-    and Gemini daily quotas, and pushed the pipeline into the
-    deterministic-caption fallback path. The scheduler is now the sole
-    authoritative publisher.
+  - 'publish_scheduled_content' is neither registered in the Director
+    capability catalog nor bound to the Director. The Director's former
+    review_content_strategy path invoked this capability, which called
+    mgr.trigger_all() and published for every brand on each cycle. That
+    duplicated scheduler publishes and drained provider quotas. The brand
+    scheduler is the sole authoritative publisher.
   - The publish_scheduled_content function remains defined below for any
     non-Director caller (e.g. a future trend bridge), but it now refuses
     to run unless an explicit `source` is provided. Autonomous Director
