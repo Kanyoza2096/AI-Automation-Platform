@@ -238,6 +238,60 @@ class AsyncSupabaseStore:
         )
         return [dict(row) for row in (result.data or [])] if result else []
 
+    async def save_strategic_plan(self, plan: dict) -> bool:
+        """Persist a validated advisory strategic plan."""
+        result = await self._execute_with_retry(
+            "upsert director_strategic_plans",
+            lambda: self.supabase.table("director_strategic_plans").upsert({
+                "plan_id": plan["plan_id"],
+                "objective_id": plan["objective"]["objective_id"],
+                "status": "proposed",
+                "authority": "none",
+                "advisory_only": True,
+                "execution_started": False,
+                "tasks_created": False,
+                "source_context_fingerprint": plan["source_context_fingerprint"],
+                "payload": json.dumps(safe(plan)),
+                "created_at": iso_now(),
+                "updated_at": iso_now(),
+            }).execute(),
+        )
+        return result is not None
+
+    async def get_strategic_plan(self, plan_id: str) -> Optional[dict]:
+        result = await self._execute_with_retry(
+            "get director_strategic_plans",
+            lambda: self.supabase.table("director_strategic_plans")
+            .select("payload").eq("plan_id", plan_id).limit(1).execute(),
+        )
+        if not result or not result.data:
+            return None
+        payload = result.data[0].get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                return None
+        return payload if isinstance(payload, dict) else None
+
+    async def list_strategic_plans(self, limit: int = 50) -> List[dict]:
+        result = await self._execute_with_retry(
+            "list director_strategic_plans",
+            lambda: self.supabase.table("director_strategic_plans")
+            .select("payload").order("created_at", desc=True).limit(limit).execute(),
+        )
+        plans = []
+        for row in (result.data or []) if result else []:
+            payload = row.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    continue
+            if isinstance(payload, dict):
+                plans.append(payload)
+        return plans
+
     async def save_observation(self, observation: Observation) -> None:
         await self._execute_with_retry(
             "insert into director_observations",
@@ -368,6 +422,7 @@ class InMemoryStore:
         self.observations: deque = deque(maxlen=self.MAX_OBSERVATIONS)
         self.approvals: Dict[str, dict] = {}
         self.learnings: deque = deque(maxlen=self.MAX_LEARNINGS)
+        self.strategic_plans: Dict[str, dict] = {}
 
     async def save_task(self, task: Task) -> bool:
         if len(self.tasks) >= self.MAX_TASKS:
@@ -391,6 +446,21 @@ class InMemoryStore:
 
     async def list_decisions(self, limit: int = 100) -> List[dict]:
         return list(self.decisions)[-limit:]
+
+    MAX_STRATEGIC_PLANS = 100
+
+    async def save_strategic_plan(self, plan: dict) -> bool:
+        self.strategic_plans[plan["plan_id"]] = safe(plan)
+        while len(self.strategic_plans) > self.MAX_STRATEGIC_PLANS:
+            self.strategic_plans.pop(next(iter(self.strategic_plans)))
+        return True
+
+    async def get_strategic_plan(self, plan_id: str) -> Optional[dict]:
+        plan = self.strategic_plans.get(plan_id)
+        return safe(plan) if plan is not None else None
+
+    async def list_strategic_plans(self, limit: int = 50) -> List[dict]:
+        return [safe(plan) for plan in list(self.strategic_plans.values())[-limit:][::-1]]
 
     async def save_observation(self, observation: Observation) -> None:
         self.observations.append(safe(asdict(observation)))
