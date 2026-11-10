@@ -2228,15 +2228,37 @@ class Director:
                 "status": self._status_label(score).value,
                 "score": round(score, 1),
                 "issues": sum(len(o.issues) for o in ol),
+                "reported_issue_records": sum(len(o.issues) for o in ol),
+                "non_nominal_observers": sum(
+                    1 for o in ol
+                    if str(getattr(o.status, "value", o.status)).lower()
+                    not in {"nominal", "healthy", "ok", "ready"}
+                ),
+                "unknown_observers": sum(
+                    1 for o in ol
+                    if str(getattr(o.status, "value", o.status)).lower() == "unknown"
+                ),
                 "observers": len(ol),
             }
         overall = sum(scores) / len(scores) if scores else 50
+        status_counts = Counter(
+            str(getattr(o.status, "value", o.status)).lower()
+            for o in self.observations.values()
+        )
+        issue_count = sum(len(o.issues) for o in self.observations.values())
+        non_nominal_count = sum(
+            count for status, count in status_counts.items()
+            if status not in {"nominal", "healthy", "ok", "ready"}
+        )
         return {
             "status": self._status_label(overall).value,
             "score": round(overall, 1),
             "sectors": sectors,
             "observer_count": len(self.observers),
-            "issue_count": sum(len(o.issues) for o in self.observations.values()),
+            "status_counts": dict(status_counts),
+            "non_nominal_observer_count": non_nominal_count,
+            "unknown_observer_count": status_counts.get("unknown", 0),
+            "issue_count": issue_count,
             "timestamp": iso(now()),
         }
 
@@ -2417,8 +2439,13 @@ class Director:
         health = self.health()
         outlook = self.generate_strategic_outlook()
         allocations = self.allocate_attention()
-        if health["score"] >= 90:
+        if health["score"] >= 90 and not any(
+            s.get("status") in ("critical", "degraded", "unknown")
+            for s in health.get("sectors", {}).values()
+        ):
             opening = "The platform is operating excellently."
+        elif health["score"] >= 90:
+            opening = "The overall score is high, but sector-level degradation or unknown health remains."
         elif health["score"] >= 70:
             opening = "The platform is stable with minor areas for attention."
         elif health["score"] >= 50:
@@ -2430,7 +2457,17 @@ class Director:
             f"*{utcnow().strftime('%B %d, %Y — %H:%M UTC')}*", "",
             opening, "",
             f"### Health: {health['score']:.0f}/100 ({health['status'].upper()})",
+            (
+                f"Evidence: {health.get('observer_count', 0)} observers; "
+                f"{health.get('non_nominal_observer_count', 0)} non-nominal; "
+                f"{health.get('issue_count', 0)} issue records reported."
+            ),
         ]
+        if health.get("issue_count", 0) == 0 and health.get("non_nominal_observer_count", 0) > 0:
+            parts.append(
+                "Degraded or unknown health statuses have no attached issue records; "
+                "treat this as an evidence gap, not proof that there are zero issues."
+            )
         pending = [p for p in self.proposals.values() if p.status == ProposalStatus.PENDING]
         if pending:
             parts.append("")
@@ -2445,13 +2482,26 @@ class Director:
             parts.append("")
             parts.append("### ⚠️ Areas Requiring Attention")
             for name, s in critical_sectors[:3]:
-                parts.append(f"- **{name}**: {s['status'].upper()} ({s['score']:.0f}%) — {s.get('issues', 0)} issues")
-        if allocations:
+                parts.append(
+                    f"- **{name}**: {s['status'].upper()} ({s['score']:.0f}%) — "
+                    f"{s.get('reported_issue_records', s.get('issues', 0))} issue records reported; "
+                    f"{s.get('non_nominal_observers', 0)} non-nominal of {s.get('observers', 0)} observers"
+                )
+        recommended_focus = [
+            a for a in allocations if a.recommended_attention_pct > 15
+        ]
+        if critical_sectors and not recommended_focus:
             parts.append("")
             parts.append("### 📊 Recommended Focus")
-            for a in allocations[:3]:
-                if a.recommended_attention_pct > 15:
-                    parts.append(f"- **{a.sector.value}**: {a.reasoning}")
+            parts.append(
+                "- Investigate degraded sector observations and attach source-backed "
+                "issue details before declaring the platform issue-free."
+            )
+        elif recommended_focus:
+            parts.append("")
+            parts.append("### 📊 Recommended Focus")
+            for a in recommended_focus[:3]:
+                parts.append(f"- **{a.sector.value}**: {a.reasoning}")
         if outlook:
             parts.append("")
             parts.append(f"### 🔮 {outlook.horizon_days}-Day Outlook")
