@@ -154,6 +154,7 @@ class CloudflareAIAdapter:
         model: Optional[str] = None,
         correlation_id: str,
         structured: bool = False,
+        max_output_tokens: Optional[int] = None,
     ) -> AIReceipt:
         selected_model = (model or self.model).strip()
         fingerprint = request_fingerprint(
@@ -169,6 +170,8 @@ class CloudflareAIAdapter:
             content += "\nReturn only a JSON object. Do not return markdown."
         messages.append({"role": "user", "content": content})
         body = {"model": selected_model, "messages": messages, "stream": False}
+        if isinstance(max_output_tokens, int) and max_output_tokens > 0:
+            body["max_tokens"] = max_output_tokens
         try:
             response = self.client.post(
                 f"{self.base_url}/chat/completions",
