@@ -507,4 +507,4 @@ jobs:
 
 # Keep U2 provenance signer changes covered by the focused PR test workflow.
 
-# U2 durable provenance replay verifier coverage.
+# U2 durable provenance replay verifier and freshness fixture coverage.
