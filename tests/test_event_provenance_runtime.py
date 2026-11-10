@@ -6,6 +6,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from core.event_provenance import ActorPrincipal
 from core.unified_bus import UnifiedEventBus
 from core.event_provenance_runtime import install_tenant_facebook_provenance
 from services.v69_tenant_facebook_health_producer import (
@@ -268,6 +269,12 @@ def test_facebook_producer_capability_cannot_sign_unrelated_event_types():
     proof = result.runtime.registry.verify(
         result.runtime.capability,
         workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
         brand_id="brand-a",
     )
 
@@ -335,3 +342,93 @@ def test_health_evidence_attestation_is_not_enough_when_required_columns_are_mis
     assert result.runtime.health_evidence_ready is False
     assert bus._tenant_health_evidence_ready is False
     assert len(client.calls) == 2
+
+
+
+def valid_facebook_health_signing_request(proof):
+    event_id = "evt-health-001"
+    event_name = "connector.health.observed"
+    brand_id = "brand-a"
+    payload = {
+        "service": "facebook:connection-a",
+        "status": "degraded",
+        "health_state": "degraded",
+        "connection_id": "connection-a",
+        "social_account_id": "page-a",
+        "connector_key": "facebook",
+        "provider": "facebook",
+        "connector_version": "1.0.0",
+        "observation_id": "observation-a",
+        "evidence_id": "evidence-a",
+        "evidence_hash": "a" * 64,
+        "observed_at": "2026-11-09T12:00:00+00:00",
+        "workspace_id": "workspace-a",
+        "brand_id": brand_id,
+        "correlation_id": "evidence-a",
+        "_nerve": {
+            "event_id": event_id,
+            "event_name": event_name,
+            "workspace_id": "workspace-a",
+            "brand_id": brand_id,
+        },
+    }
+    return {"event_id": event_id, "event_name": event_name, "payload": payload, "brand_id": brand_id}
+
+
+def _facebook_signing_proof(result):
+    return result.runtime.registry.verify(
+        result.runtime.capability,
+        workspace_id="workspace-a",
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
+        brand_id="brand-a",
+    )
+
+
+def test_facebook_health_signer_accepts_only_complete_safe_evidence_payload():
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ=valid_environment())
+    proof = _facebook_signing_proof(result)
+    envelope = bus._provenance_signer(proof, **valid_facebook_health_signing_request(proof))
+    assert isinstance(envelope, dict)
+    assert len(envelope["signature"]) == 128
+    assert envelope["event_name"] == "connector.health.observed"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("access_token", "must-never-be-signed", "contains_unapproved_fields"),
+        ("evidence_hash", "bad-hash", "evidence_hash_invalid"),
+        ("evidence_id", "", "evidence_id_invalid"),
+        ("service", "facebook:other-connection", "service_binding_mismatch"),
+        ("observed_at", "not-a-timestamp", "observed_at_invalid"),
+        ("health_state", "healthy", "state_mismatch"),
+        ("social_account_id", "", "social_account_id_invalid"),
+    ],
+)
+def test_facebook_health_signer_rejects_incomplete_or_secret_bearing_payloads(field, value, error):
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ=valid_environment())
+    proof = _facebook_signing_proof(result)
+    event = valid_facebook_health_signing_request(proof)
+    event["payload"][field] = value
+    with pytest.raises(ValueError, match=error):
+        bus._provenance_signer(proof, **event)
+
+
+def test_facebook_health_signer_rejects_cross_brand_or_workspace_nerve_envelopes():
+    client = FakeSupabase(ready=True)
+    bus = UnifiedEventBus(supabase_client=client)
+    result = install_tenant_facebook_provenance(bus, supabase_client=client, environ=valid_environment())
+    proof = _facebook_signing_proof(result)
+    event = valid_facebook_health_signing_request(proof)
+    event["payload"]["_nerve"]["workspace_id"] = "workspace-b"
+    with pytest.raises(ValueError, match="nerve_scope_mismatch"):
+        bus._provenance_signer(proof, **event)

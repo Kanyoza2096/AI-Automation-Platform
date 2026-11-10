@@ -127,13 +127,24 @@ class TenantFacebookHealthProducer:
         except Exception as exc:
             raise TenantHealthPublisherError("tenant_account_resolution_failed") from exc
 
-        # Verify this exact in-process capability against the trusted registry
-        # and authenticated actor before probing the provider.
+        # Bind the producer to the validated request actor, not merely the
+        # caller-supplied identity object. Missing actor context must fail
+        # before any provider probe or evidence write.
+        try:
+            actor = current_actor_principal()
+        except Exception as exc:
+            raise TenantHealthPublisherError(
+                "authenticated_actor_provenance_required"
+            ) from exc
+        if actor is None or actor.workspace_id != binding.workspace_id:
+            raise TenantHealthPublisherError(
+                "authenticated_actor_provenance_required"
+            )
         try:
             self._producer_registry.verify(
                 self._producer_capability,
                 workspace_id=binding.workspace_id,
-                actor=current_actor_principal(),
+                actor=actor,
                 brand_id=binding.brand_id,
             )
         except Exception as exc:

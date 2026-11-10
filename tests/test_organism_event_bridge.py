@@ -140,7 +140,7 @@ async def test_bridge_start_is_idempotent_and_stop_unsubscribes():
 
 from dataclasses import replace
 
-from core.event_provenance import ProducerPrincipal, VerifiedEventProvenance
+from core.event_provenance import ActorPrincipal, ProducerPrincipal, VerifiedEventProvenance
 from organism.event_bridge import observation_from_event
 
 
@@ -154,7 +154,12 @@ def _facebook_health_proof(
 ):
     return VerifiedEventProvenance(
         producer=ProducerPrincipal(producer_id, producer_class),
-        actor=None,
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id=workspace_id,
+        ),
         workspace_id=workspace_id,
         brand_id=brand_id,
         verification=verification,
@@ -210,6 +215,13 @@ def test_signed_facebook_health_observation_gets_trust_only_with_full_evidence_l
     _facebook_health_proof(workspace_id="workspace-b"),
     _facebook_health_proof(brand_id="brand-b"),
     _facebook_health_proof(verification="serialized_verified_flag"),
+    VerifiedEventProvenance(
+        producer=ProducerPrincipal("kdo-tenant-health-facebook", "tenant_connector_health"),
+        actor=None,
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        verification="ed25519_v1",
+    ),
 ])
 def test_facebook_health_source_labels_or_mismatched_proofs_never_raise_trust(provenance):
     observation = observation_from_event(_facebook_health_event(provenance))
