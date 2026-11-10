@@ -498,3 +498,5 @@ jobs:
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
+
+# Keep U2 goal bootstrap and signed-event integration tests in the focused CI gate.
