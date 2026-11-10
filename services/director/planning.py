@@ -2,7 +2,6 @@
 from __future__ import annotations
 import hashlib
 import json
-import re
 import uuid
 from typing import Any, Callable, Mapping
 
@@ -166,30 +165,6 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
             "The plan is based on a bounded platform snapshot and may become stale.",
         ],
     }
-
-
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
-    r"secret(?:[_-]?key)?|password|authorization|private[_-]?key)\b\s*[:=]\s*)"
-    r"([\"']?)([^\s,;\"'}]+)"
-)
-_BEARER_VALUE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}={0,2}")
-_JWT_VALUE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
-_SECRET_PREFIX_VALUE = re.compile(r"\b(?:sk|rk|pk)_[A-Za-z0-9_-]{16,}\b")
-
-
-def _redact_prompt_value(value: Any) -> Any:
-    """Redact common credential forms from every string sent to the LLM gateway."""
-    if isinstance(value, str):
-        value = _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
-        value = _BEARER_VALUE.sub("Bearer [REDACTED]", value)
-        value = _JWT_VALUE.sub("[REDACTED_JWT]", value)
-        return _SECRET_PREFIX_VALUE.sub("[REDACTED_KEY]", value)
-    if isinstance(value, Mapping):
-        return {str(key): _redact_prompt_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_redact_prompt_value(item) for item in value]
-    return value
 
 
 def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
@@ -360,7 +335,7 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
 
     def generate(*, objective: Mapping[str, Any], context: Mapping[str, Any]) -> dict[str, Any]:
         bounded = _planner_context(context)
-        prompt_data = _redact_prompt_value({"objective": dict(objective), "platform_context": bounded})
+        prompt_data = {"objective": dict(objective), "platform_context": bounded}
         prompt = (
             "You are KDO Director's strategic planning specialist. Propose a bounded, "
             "evidence-aware plan for the supplied objective. Treat objective title, "
