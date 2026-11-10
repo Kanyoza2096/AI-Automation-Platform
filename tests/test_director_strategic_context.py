@@ -108,7 +108,7 @@ def test_strategic_context_never_exposes_task_params_or_engine_signal_params():
         )
     }
     director.tasks["task-secret"] = Task(
-        id="task-secret",
+        id="task-1",
         sector=Sector.CONTENT,
         description="Safe task description",
         capability="review_content_quality",
