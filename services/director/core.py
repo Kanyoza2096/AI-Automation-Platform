@@ -1032,9 +1032,11 @@ class Director:
     async def _build_plan_async(self) -> dict:
         tasks = self.decide()
         self.last_plan = now()
+        strategic_context = self.strategic_context()
         return {
             "date": now().date().isoformat(),
-            "decision_context": self.decision_context(),
+            "decision_context": strategic_context["evidence"],
+            "strategic_context": strategic_context,
             "tasks": [safe(asdict(t)) for t in tasks],
         }
 
@@ -2226,7 +2228,16 @@ class Director:
         if not state["observations"]:
             unknowns.append({"kind": "no_observations", "interpretation": "No engine health facts are currently available."})
 
-        engine_signals = self._engine_decision_signals(max_age_seconds=max_age_seconds)
+        raw_engine_signals = self._engine_decision_signals(max_age_seconds=max_age_seconds)
+        # Decision context is a planner/read-model contract, not an execution
+        # payload. Keep signal intent and evidence, but never expose raw params.
+        engine_signals = {
+            **raw_engine_signals,
+            "accepted": [
+                {key: value for key, value in signal.items() if key != "params"}
+                for signal in raw_engine_signals.get("accepted", [])
+            ],
+        }
         return {
             "version": 1,
             "generated_at": iso(datetime.now(timezone.utc)),
@@ -2241,11 +2252,197 @@ class Director:
                 "engine_signals_require_fresh_healthy_observer": True,
                 "fresh_sector_status_conflict_suppresses_engine_signals": True,
                 "stale_issues_do_not_create_new_remediation_tasks": True,
+                "engine_signal_parameters_excluded_from_context": True,
             },
             "facts": facts,
             "inferences": inferences,
             "unknowns": unknowns,
             "conflicts": conflicts,
+        }
+
+    def strategic_context(self, max_age_seconds: int = 300, max_tasks: int = 100) -> dict:
+        """Build a bounded, read-only platform context for strategic planning.
+
+        This is planner input only. It contains no handler references, task
+        parameters, execution results, credentials, or authority grants.
+        """
+        if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or not 1 <= max_age_seconds <= 86400:
+            raise ValueError("max_age_seconds must be an integer between 1 and 86400")
+        if isinstance(max_tasks, bool) or not isinstance(max_tasks, int) or not 1 <= max_tasks <= 500:
+            raise ValueError("max_tasks must be an integer between 1 and 500")
+
+        evidence = self.decision_context(max_age_seconds=max_age_seconds)
+        health = self.health()
+        sectors = {
+            name: {
+                "status": value.get("status", "unknown"),
+                "score": value.get("score"),
+                "observer_count": value.get("observers", 0),
+                "non_nominal_observer_count": value.get("non_nominal_observers", 0),
+                "unknown_observer_count": value.get("unknown_observers", 0),
+                "reported_issue_record_count": value.get("reported_issue_records", 0),
+            }
+            for name, value in (health.get("sectors") or {}).items()
+        }
+
+        objectives = [
+            {
+                "objective_id": goal.id,
+                "title": goal.name,
+                "description": goal.description,
+                "sector": goal.sector.value,
+                "priority": int(goal.priority),
+                "enabled": bool(goal.enabled),
+                "model": "legacy_sector_goal",
+                "success_criteria_defined": False,
+            }
+            for goal in sorted(self.goals.values(), key=lambda item: (-item.priority, item.id))
+        ]
+
+        capabilities = [
+            {
+                "name": capability.name,
+                "sector": capability.sector.value,
+                "description": capability.description,
+                "authority": capability.authority.value,
+                "risk": capability.risk.value,
+                "enabled": bool(capability.enabled),
+                "proposal_capable": bool(capability.proposal_capable),
+                "handler_bound": self._handler_is_bound(capability.handler),
+                "governed_handoff_bound": callable(capability.governed_handoff),
+            }
+            for capability in sorted(self.capabilities.values(), key=lambda item: item.name)
+        ]
+
+        tasks = sorted(
+            self.tasks.values(),
+            key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        status_counts = Counter(
+            getattr(item.status, "value", str(item.status)) for item in self.tasks.values()
+        )
+        sector_counts = Counter(
+            getattr(item.sector, "value", str(item.sector)) for item in self.tasks.values()
+        )
+        mission_ids = {item.mission_id for item in self.tasks.values() if item.mission_id}
+        dependency_edges = sum(len(getattr(item, "depends_on", []) or []) for item in self.tasks.values())
+        unresolved_dependencies = sum(
+            1
+            for item in self.tasks.values()
+            for dependency_id in (getattr(item, "depends_on", []) or [])
+            if dependency_id not in self.tasks
+        )
+        terminal = {Status.COMPLETED, Status.VERIFIED, Status.FAILED, Status.SKIPPED, Status.CANCELLED, Status.INEFFECTIVE, Status.BLOCKED}
+        recent_tasks = [
+            {
+                "task_id": item.id,
+                "mission_id": item.mission_id,
+                "sector": item.sector.value,
+                "capability": item.capability,
+                "description": str(item.description)[:240],
+                "status": getattr(item.status, "value", str(item.status)),
+                "authority": item.authority.value,
+                "risk": item.risk.value,
+                "confidence": float(item.confidence),
+                "sources": list(item.sources or []),
+                "depends_on": list(getattr(item, "depends_on", []) or []),
+                "success_criteria": list(getattr(item, "success_criteria", []) or []),
+                "impact_score": float(getattr(item, "impact_score", 50.0)),
+                "mission_priority": float(getattr(item, "mission_priority", 50.0)),
+                "created_at": iso(item.created_at),
+                "executed_at": iso(item.executed_at),
+            }
+            for item in tasks[:max_tasks]
+        ]
+
+        decision_stages = Counter(getattr(item, "stage", "execution") for item in self.decisions)
+        decision_evidence_states = Counter(getattr(item, "evidence_state", "unknown") for item in self.decisions)
+        uncalibrated_confidence_count = sum(
+            1
+            for item in self.decisions
+            if getattr(item, "confidence_basis", {}).get("calibration") == "not_evidence_calibrated"
+        )
+
+        discovery = self.engine_discovery_report or {}
+        binding_report = self.capability_binding_report or {}
+        bound_capabilities = sorted(
+            name for name, status in binding_report.items()
+            if str(status).lower() in {"bound", "ready", "ok"}
+        )
+
+        return {
+            "schema_version": "kdo.director.strategic-context.v1",
+            "generated_at": iso(datetime.now(timezone.utc)),
+            "scope": {"type": "platform", "workspace_id": None},
+            "purpose": "bounded_strategic_planning_input",
+            "authority": "none",
+            "health_summary": {
+                "status": health.get("status", "unknown"),
+                "score": health.get("score"),
+                "observer_count": health.get("observer_count", 0),
+                "status_counts": dict(health.get("status_counts", {})),
+                "non_nominal_observer_count": health.get("non_nominal_observer_count", 0),
+                "unknown_observer_count": health.get("unknown_observer_count", 0),
+                "reported_issue_record_count": health.get("issue_count", 0),
+                "sectors": sectors,
+            },
+            "evidence": evidence,
+            "objectives": {
+                "model": "legacy_sector_goal",
+                "workspace_scoped": False,
+                "success_criteria_defined": False,
+                "items": objectives,
+            },
+            "capabilities": {
+                "count": len(capabilities),
+                "items": capabilities,
+                "publishing_owner": "brand_scheduler",
+                "director_can_publish": False,
+            },
+            "missions": {
+                "storage_scope": "current_memory_with_startup_restore",
+                "task_count": len(self.tasks),
+                "recent_task_limit": max_tasks,
+                "recent_tasks": recent_tasks,
+                "task_status_counts": dict(status_counts),
+                "task_sector_counts": dict(sector_counts),
+                "mission_count": len(mission_ids),
+                "dependency_edge_count": dependency_edges,
+                "unresolved_dependency_count": unresolved_dependencies,
+                "active_task_count": sum(
+                    1 for item in self.tasks.values() if item.status not in terminal
+                ),
+            },
+            "learning": self.learning_loop.get_learning_report(),
+            "decision_audit": {
+                "record_count": len(self.decisions),
+                "stage_counts": dict(decision_stages),
+                "evidence_state_counts": dict(decision_evidence_states),
+                "uncalibrated_confidence_count": uncalibrated_confidence_count,
+            },
+            "runtime_readiness": {
+                "engine_registry_count": discovery.get("registry_entries", 0),
+                "discovered_engine_count": discovery.get("discovered_count", 0),
+                "missing_engine_export_count": discovery.get("missing_export_count", 0),
+                "unsupported_engine_export_count": discovery.get("unsupported_export_count", 0),
+                "capability_count": len(capabilities),
+                "bound_capability_names": bound_capabilities,
+                "binding_report_available": bool(binding_report),
+            },
+            "guardrails": {
+                "context_grants_execution_authority": False,
+                "sensitive_actions_require_existing_governance": True,
+                "workspace_actions_require_workspace_scoped_authorization": True,
+                "brand_publishing_owned_by_scheduler": True,
+            },
+            "limitations": [
+                "Current Director objectives are legacy sector goals without machine-verifiable success criteria.",
+                "Health scores are descriptive aggregates, not causal diagnoses.",
+                "Unknown evidence must not be interpreted as healthy or failed.",
+                "Learning rates are based only on verified outcomes; null means insufficient verified evidence.",
+                "This context does not authorize execution or replace Council, DecisionGate, or Action Kernel admission.",
+            ],
         }
 
     def health(self) -> dict:
