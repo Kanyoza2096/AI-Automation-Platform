@@ -1,9 +1,10 @@
 from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from services.director import Director
-from services.director.planning import StrategicPlanningError
+from services.director.planning import StrategicPlanningError, make_llm_strategic_planner
 
 
 def objective():
@@ -122,3 +123,60 @@ def test_director_rejects_planner_output_with_execution_authority_fields():
 
     with pytest.raises(StrategicPlanningError, match="planner_output_invalid"):
         director.plan_objective(objective())
+
+
+def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payloads():
+    class FakeGateway:
+        def __init__(self):
+            self.calls = []
+
+        def complete_structured(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return SimpleNamespace(ok=True, data=generated_plan())
+
+    gateway = FakeGateway()
+    adapter = make_llm_strategic_planner(gateway)
+    director = Director(supabase_client=None)
+    context = director.strategic_context()
+    context["evidence"]["engine_signals"]["accepted"] = [{
+        "capability": "review_content_quality",
+        "description": "Review evidence",
+        "params": {"api_key": "do-not-send-this-secret"},
+    }]
+    context["missions"]["recent_tasks"] = [{
+        "task_id": "task-1",
+        "capability": "review_content_quality",
+        "status": "planned",
+        "params": {"access_token": "also-do-not-send"},
+    }]
+
+    result = adapter(objective=objective(), context=context)
+
+    assert result == generated_plan()
+    assert len(gateway.calls) == 1
+    prompt, kwargs = gateway.calls[0]
+    assert kwargs["caller"] == "director"
+    assert kwargs["workspace_id"] == "platform"
+    assert kwargs["required_keys"] == ["summary", "steps"]
+    assert kwargs["temperature"] == 0.1
+    assert "do-not-send-this-secret" not in prompt
+    assert "also-do-not-send" not in prompt
+    assert '"params"' not in prompt
+    assert "brand scheduler" in prompt.lower()
+
+
+def test_llm_adapter_fails_closed_when_gateway_is_unavailable():
+    class UnavailableGateway:
+        def complete_structured(self, prompt, **kwargs):
+            return SimpleNamespace(ok=False, reason="provider_not_configured")
+
+    director = Director(supabase_client=None)
+    adapter = make_llm_strategic_planner(UnavailableGateway())
+
+    with pytest.raises(StrategicPlanningError, match="llm_strategic_planner_unavailable"):
+        adapter(objective=objective(), context=director.strategic_context())
+
+
+def test_llm_adapter_requires_structured_gateway():
+    with pytest.raises(StrategicPlanningError, match="configured_llm_gateway_required"):
+        make_llm_strategic_planner(None)
