@@ -1234,6 +1234,7 @@ async def _boot_supabase(container: ServiceContainer) -> None:
 
 async def _boot_shared_event_bus(container: ServiceContainer) -> None:
     from core.shared_event_bus import init_shared_event_bus, SharedEventBus
+    from core.event_provenance_runtime import build_durable_event_provenance_verifier
     from config.settings import settings
 
     try:
@@ -1246,10 +1247,32 @@ async def _boot_shared_event_bus(container: ServiceContainer) -> None:
         os.getenv("SERVICE_MODE", "")
         or getattr(settings, "service_mode", "full")
     ).strip().lower()
+    provenance_verifier = None
+    try:
+        provenance_verifier = build_durable_event_provenance_verifier()
+    except Exception as exc:
+        logger.warning(
+            "SharedEventBus durable provenance verification disabled: %s",
+            _sanitize_error_message(exc),
+        )
     bus = init_shared_event_bus(
-        supabase_client=supabase_client, source_service=source_service
+        supabase_client=supabase_client,
+        source_service=source_service,
+        provenance_verifier=provenance_verifier,
     )
     container.register_instance(SharedEventBus, bus)
+    # Attach the organism bridge to the durable transport when its runtime
+    # has already been composed. Invalid/legacy envelopes remain untrusted.
+    try:
+        from organism.event_bridge import OrganismEventBridge
+        organism_event_bridge = container.try_resolve(OrganismEventBridge)
+        if organism_event_bridge is not None:
+            await organism_event_bridge.start_shared(bus)
+    except Exception as exc:
+        logger.warning(
+            "Organism durable event bridge unavailable: %s",
+            _sanitize_error_message(exc),
+        )
     await health_registry.register(bus)
     await shutdown_registry.register(
         "SharedEventBus", bus.stop, timeout_seconds=5.0
