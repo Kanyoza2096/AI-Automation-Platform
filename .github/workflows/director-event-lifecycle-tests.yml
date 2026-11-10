@@ -5,6 +5,8 @@ on:
     paths:
       - "services/director/core.py"
       - "services/director/planning.py"
+      - "services/director/api.py"
+      - "lifecycle.py"
       - "tests/test_director_strategic_planning.py"
       - "services/director/models.py"
       - "services/director/analysis.py"
