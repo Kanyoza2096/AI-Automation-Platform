@@ -160,11 +160,10 @@ class DurableProvenanceKeyProvider:
         self._public_keys = MappingProxyType(normalized_keys)
         self._key_owners = MappingProxyType(normalized_owners)
         self._revoked_key_ids = revoked
-        if not supplied_states:
-            states = {key_id: ("revoked" if key_id in revoked else "retained") for key_id in public_keys}
-            if active_signing_key is not None:
-                states[active_signing_key.key_id] = "active"
-        self._key_states = MappingProxyType(dict(states))
+        # Legacy deployments without explicit lifecycle metadata remain
+        # compatible; do not guess whether consumer-only keys are active or
+        # retained. Expose lifecycle states only when operators configure them.
+        self._key_states = MappingProxyType(dict(states)) if supplied_states else MappingProxyType({})
 
     @classmethod
     def from_environment(
