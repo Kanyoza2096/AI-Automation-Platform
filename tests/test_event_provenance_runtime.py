@@ -493,3 +493,99 @@ def test_consumer_verifier_fails_closed_for_malformed_public_key_configuration()
             "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": "{}",
             "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": "{}",
         })
+
+
+
+def _historical_runtime_test_envelope(*, key_id=KEY_ID, seed=SEED):
+    proof = VerifiedEventProvenance(
+        producer=ProducerPrincipal(PRODUCER_ID, PRODUCER_CLASS),
+        actor=ActorPrincipal(
+            principal_type="human",
+            subject_id="user-a",
+            auth_method="api_key",
+            workspace_id="workspace-a",
+        ),
+        workspace_id="workspace-a",
+        brand_id="brand-a",
+        verification="composition_root_capability",
+    )
+    payload = {"service": "facebook:connection-a", "status": "degraded"}
+    envelope = sign_durable_provenance(
+        proof,
+        event_id="evt-key-lifecycle",
+        event_name="connector.health.observed",
+        payload=payload,
+        key_id=key_id,
+        signing_key=seed,
+        issued_at=1_000,
+        ttl_seconds=60,
+    )
+    event = {
+        "event_id": "evt-key-lifecycle",
+        "event_name": "connector.health.observed",
+        "workspace_id": "workspace-a",
+        "brand_id": "brand-a",
+        "payload": payload,
+    }
+    return envelope, event
+
+
+def test_startup_consumer_verifier_honors_emergency_revocation_configuration():
+    from core.durable_event_provenance import DurableProvenanceError
+
+    env = valid_environment()
+    envelope, event = _historical_runtime_test_envelope()
+    consumer_env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": env["KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"],
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": env["KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"],
+        "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON": json.dumps([KEY_ID]),
+    }
+
+    verifier = build_durable_event_provenance_verifier(consumer_env)
+
+    assert callable(verifier)
+    with pytest.raises(DurableProvenanceError, match="unknown or retired signing key"):
+        verifier(envelope, **event)
+
+
+def test_startup_consumer_verifier_rejects_revocation_for_unknown_key_id():
+    env = valid_environment()
+    consumer_env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": env["KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"],
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": env["KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"],
+        "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON": json.dumps(["KDO-UNKNOWN-KEY"]),
+    }
+
+    with pytest.raises(ProvenanceKeyConfigError, match="revoked_key_id_not_in_public_keyring"):
+        build_durable_event_provenance_verifier(consumer_env)
+
+
+def test_startup_consumer_verifier_preserves_historical_verification_for_retained_rotation_key():
+    old_seed = b"retained-historical-health-key!!!"[:32]
+    old_private = Ed25519PrivateKey.from_private_bytes(old_seed)
+    old_public = old_private.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+    env = valid_environment()
+    public_keys = json.loads(env["KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON"])
+    owners = json.loads(env["KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON"])
+    old_key_id = "KDO-TENANT-HEALTH-RETAINED-01"
+    public_keys[old_key_id] = base64.b64encode(old_public).decode()
+    owners[old_key_id] = PRODUCER_ID
+    consumer_env = {
+        "KDO_EVENT_PROVENANCE_PUBLIC_KEYS_JSON": json.dumps(public_keys),
+        "KDO_EVENT_PROVENANCE_KEY_OWNERS_JSON": json.dumps(owners),
+        "KDO_EVENT_PROVENANCE_REVOKED_KEY_IDS_JSON": "[]",
+    }
+    envelope, event = _historical_runtime_test_envelope(
+        key_id=old_key_id,
+        seed=old_seed,
+    )
+
+    verifier = build_durable_event_provenance_verifier(consumer_env)
+    verified = verifier(envelope, **event)
+
+    assert verified.verification == "ed25519_v1"
+    assert verified.producer.producer_id == PRODUCER_ID
+    assert verified.workspace_id == "workspace-a"
