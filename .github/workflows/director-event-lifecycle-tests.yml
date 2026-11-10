@@ -8,6 +8,7 @@ on:
       - "ai/gateway.py"
       - "services/connectors/cloudflare_ai_adapter.py"
       - "services/connectors/gemini_ai_adapter.py"
+      - "services/ai_provider.py"
       - "services/ai_policy.py"
       - "tests/test_ai_provider_fabric.py"
       - "lifecycle.py"
