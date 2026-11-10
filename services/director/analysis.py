@@ -484,11 +484,9 @@ class LearningLoop:
     Feeds task outcomes back into decision-making.
 
     v5.4:
-      - record_outcome returns Optional[LearningSignal]. Only VERIFIED,
-        COMPLETED, INEFFECTIVE, and FAILED tasks produce signals.
-        SKIPPED, APPROVAL, CANCELLED, PLANNED, EXECUTING, FLAGGED, and
-        APPROVED do not — they are decision outcomes, not execution
-        attempts.
+      - VERIFIED, COMPLETED, INEFFECTIVE, and FAILED tasks produce signals.
+      - VERIFIED is positive learning evidence; COMPLETED is explicitly
+        unverified and is excluded from success/failure rates.
       - INEFFECTIVE is recorded as a failure with
         error_class=OUTCOME_NOT_VERIFIED. This distinguishes "handler
         threw an error" from "handler reported success but the world
@@ -526,10 +524,10 @@ class LearningLoop:
         self.failure_patterns: Dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
 
         self.context_stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {"successes": 0, "failures": 0}
+            lambda: {"successes": 0, "failures": 0, "unverified": 0}
         )
         self.time_stats: Dict[str, Dict[str, int]] = defaultdict(
-            lambda: {"successes": 0, "failures": 0}
+            lambda: {"successes": 0, "failures": 0, "unverified": 0}
         )
 
         self.target_failure_counts: Dict[str, int] = defaultdict(int)
@@ -651,8 +649,11 @@ class LearningLoop:
         if task.status not in self._SIGNAL_STATUSES:
             return None
 
-        if task.status in (Status.VERIFIED, Status.COMPLETED):
+        if task.status == Status.VERIFIED:
             outcome = "success"
+            error_class = None
+        elif task.status == Status.COMPLETED:
+            outcome = "unverified"
             error_class = None
         elif task.status == Status.INEFFECTIVE:
             outcome = "failure"
@@ -691,18 +692,26 @@ class LearningLoop:
 
         stats = self.capability_stats.setdefault(
             task.capability,
-            {"successes": 0, "failures": 0, "total_duration_ms": 0},
+            {"successes": 0, "failures": 0, "unverified": 0, "total_duration_ms": 0},
         )
-        stats["successes" if outcome == "success" else "failures"] += 1
+        stats.setdefault("unverified", 0)
+        stats["successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"] += 1
         stats["total_duration_ms"] += duration_ms
 
         ctx_key = self._context_key(task.sector, task.capability, target)
-        self.context_stats[ctx_key]["successes" if outcome == "success" else "failures"] += 1
+        self.context_stats[ctx_key][
+            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
+        ] += 1
 
         time_key = self._time_key(task.sector, task.capability, target)
-        self.time_stats[time_key]["successes" if outcome == "success" else "failures"] += 1
+        self.time_stats[time_key][
+            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
+        ] += 1
 
         self.duration_stats[task.capability].append(duration_ms)
+
+        if outcome == "unverified":
+            return signal
 
         if outcome == "failure":
             self.failure_patterns[task.capability].append({
@@ -753,6 +762,7 @@ class LearningLoop:
             s for s in self.signals
             if s.capability == capability and s.timestamp >= cutoff
         ]
+        recent = [s for s in recent if s.outcome in ("success", "failure")]
         if not recent:
             return self.get_success_rate(capability)
         successes = sum(1 for s in recent if s.outcome == "success")
@@ -913,7 +923,7 @@ class LearningLoop:
         sector = self._coerce_sector(self._sig_get(s, "sector"))
         outcome = self._sig_get(s, "outcome")
 
-        if not capability or sector is None or outcome not in ("success", "failure"):
+        if not capability or sector is None or outcome not in ("success", "failure", "unverified"):
             return False
 
         duration_ms = float(self._sig_get(s, "duration_ms", 0) or 0)
@@ -933,6 +943,10 @@ class LearningLoop:
             self.classify_error(error_type) if outcome == "failure" else None
         )
         task_status_str = context.get("status")
+        # Historical COMPLETED records used "success" before verification
+        # was separated. Reclassify them conservatively during replay.
+        if task_status_str == Status.COMPLETED.value and outcome == "success":
+            outcome = "unverified"
 
         # Verification stats during replay
         if task_status_str == Status.VERIFIED.value:
@@ -944,22 +958,30 @@ class LearningLoop:
 
         stats = self.capability_stats.setdefault(
             capability,
-            {"successes": 0, "failures": 0, "total_duration_ms": 0},
+            {"successes": 0, "failures": 0, "unverified": 0, "total_duration_ms": 0},
         )
-        stats["successes" if outcome == "success" else "failures"] += 1
+        stats.setdefault("unverified", 0)
+        stats["successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"] += 1
         stats["total_duration_ms"] += duration_ms
 
         ctx_key = self._context_key(sector, capability, target)
-        self.context_stats[ctx_key]["successes" if outcome == "success" else "failures"] += 1
+        self.context_stats[ctx_key][
+            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
+        ] += 1
 
         time_bucket = self._get_time_context(timestamp)
         base = f"{sector.value}:{capability}"
         if target:
             base = f"{base}:{target}"
         time_key = f"{base}:{time_bucket}"
-        self.time_stats[time_key]["successes" if outcome == "success" else "failures"] += 1
+        self.time_stats[time_key][
+            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
+        ] += 1
 
         self.duration_stats[capability].append(duration_ms)
+
+        if outcome == "unverified":
+            return True
 
         if outcome == "failure":
             self.failure_patterns[capability].append({
@@ -973,7 +995,7 @@ class LearningLoop:
                 tkey = self._target_key(capability, target)
                 self.target_failure_counts[tkey] += 1
                 self.target_last_error[tkey] = error_class or "UNKNOWN"
-        else:
+        elif outcome == "success":
             if target:
                 tkey = self._target_key(capability, target)
                 self.target_failure_counts.pop(tkey, None)
@@ -997,7 +1019,9 @@ class LearningLoop:
                     "success_rate": round(self.get_success_rate(cap) or 0, 2),
                     "recent_rate": round(self.get_recent_success_rate(cap) or 0, 2),
                     "avg_duration_ms": round(self.get_avg_duration_ms(cap) or 0, 0),
-                    "total": stats["successes"] + stats["failures"],
+                    "total": stats["successes"] + stats["failures"] + stats.get("unverified", 0),
+                    "verified_outcome_count": stats["successes"] + stats["failures"],
+                    "unverified_outcome_count": stats.get("unverified", 0),
                     "verification_rate": (
                         round(self.get_verification_rate(cap) or 0, 2)
                         if self.get_verification_rate(cap) is not None else None
