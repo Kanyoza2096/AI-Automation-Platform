@@ -211,3 +211,36 @@ def test_llm_gateway_forwards_requested_output_token_budget(monkeypatch):
     result = LLMGateway().complete("Return JSON", caller="director", capability="structured_json", max_tokens=777)
     assert result.ok is True
     assert observed["max_output_tokens"] == 777
+
+
+def test_llm_gateway_rejects_structured_output_truncated_at_token_limit(monkeypatch):
+    from ai.gateway import LLMGateway
+    from services.ai_provider import AIReceipt
+
+    class FakeAdapter:
+        def analyze(self, **kwargs):
+            return AIReceipt(
+                status="succeeded", provider="gemini", model="m",
+                raw_output='{"summary":"apparently complete"}',
+                structured_output={"summary": "apparently complete"}, usage=None,
+                correlation_id=kwargs["correlation_id"], request_fingerprint="f",
+                finish_reason="length",
+            )
+        def close(self):
+            pass
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "services.connectors.ai_registry.create_ai_provider_adapter",
+        lambda *a, **k: FakeAdapter(),
+    )
+    monkeypatch.setattr(
+        "services.ai_policy.select_ai_route",
+        lambda task: (type("Route", (), {"provider": "gemini", "model": "model"})(),),
+    )
+    result = LLMGateway().complete_structured(
+        "Return JSON", caller="director", required_keys=["summary"]
+    )
+    assert result.ok is False
+    assert result.reason == "structured_output_truncated"
+    assert result.finish_reason == "length"
