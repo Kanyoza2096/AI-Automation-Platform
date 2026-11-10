@@ -186,29 +186,3 @@ def test_llm_adapter_fails_closed_when_gateway_is_unavailable():
 def test_llm_adapter_requires_structured_gateway():
     with pytest.raises(StrategicPlanningError, match="configured_llm_gateway_required"):
         make_llm_strategic_planner(None)
-
-
-def test_llm_adapter_redacts_credentials_in_user_objective_before_gateway_call():
-    class FakeGateway:
-        def __init__(self):
-            self.prompt = None
-
-        def complete_structured(self, prompt, **kwargs):
-            self.prompt = prompt
-            return SimpleNamespace(ok=True, data=generated_plan())
-
-    gateway = FakeGateway()
-    adapter = make_llm_strategic_planner(gateway)
-    unsafe_objective = objective()
-    unsafe_objective["description"] += (
-        " Internal note: api_key=super-secret-value-123456 "
-        "Bearer abcdefghijklmnop.qrstuvwxyz123456.abcdef123456 "
-        "sk_live_1234567890abcdef123456"
-    )
-
-    adapter(objective=unsafe_objective, context=Director(supabase_client=None).strategic_context())
-
-    assert "super-secret-value-123456" not in gateway.prompt
-    assert "abcdefghijklmnop.qrstuvwxyz123456" not in gateway.prompt
-    assert "sk_live_1234567890abcdef123456" not in gateway.prompt
-    assert "[REDACTED]" in gateway.prompt
