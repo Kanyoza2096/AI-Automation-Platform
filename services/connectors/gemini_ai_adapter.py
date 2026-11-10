@@ -152,8 +152,13 @@ class GeminiAIAdapter:
         body: dict[str, Any] = {
             "contents": contents,
         }
+        generation_config: dict[str, Any] = {}
         if isinstance(max_output_tokens, int) and max_output_tokens > 0:
-            body["generationConfig"] = {"maxOutputTokens": max_output_tokens}
+            generation_config["maxOutputTokens"] = max_output_tokens
+        if structured:
+            generation_config["responseMimeType"] = "application/json"
+        if generation_config:
+            body["generationConfig"] = generation_config
         if system_prompt.strip():
             body["systemInstruction"] = {
                 "role": "system",
