@@ -29,6 +29,7 @@ from typing import Dict, Optional
 # "query.request is required" error that appeared on every
 # /director/* endpoint with a Request parameter.
 from starlette.requests import Request
+from pydantic import BaseModel, Field
 
 from .utils import safe
 from .models import (
@@ -60,6 +61,15 @@ from .analysis import (
 )
 from .core import Director, auto_discover_engines
 log = logging.getLogger("kanyoza.director")
+
+class StrategicObjectiveBody(BaseModel):
+    objective_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str = Field(..., min_length=1, max_length=4000)
+    success_criteria: list[str] = Field(..., min_length=1, max_length=20)
+    constraints: list[str] = Field(default_factory=list, max_length=20)
+
+
 
 try:
     from opentelemetry import trace
@@ -188,13 +198,6 @@ def create_app(director: Director):
                         status_code=403,
                         detail="Director mutation requires operator role or above",
                     )
-
-    class StrategicObjectiveBody(BaseModel):
-        objective_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
-        title: str = Field(..., min_length=1, max_length=200)
-        description: str = Field(..., min_length=1, max_length=4000)
-        success_criteria: list[str] = Field(..., min_items=1, max_items=20)
-        constraints: list[str] = Field(default_factory=list, max_items=20)
 
     class ApprovalBody(BaseModel):
         actor: str = Field(
