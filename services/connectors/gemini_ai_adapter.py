@@ -106,6 +106,23 @@ class GeminiAIAdapter:
             )
         return raw, structured, usage
 
+    @staticmethod
+    def _extract_finish_reason(payload: Any) -> Optional[str]:
+        """Normalize Gemini candidate finish reasons into the shared receipt vocabulary."""
+        if not isinstance(payload, dict):
+            return None
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+            return None
+        reason = str(candidates[0].get("finishReason") or "").strip().upper()
+        if reason in ("STOP", "FINISH_REASON_STOP"):
+            return "stop"
+        if reason in ("MAX_TOKENS", "FINISH_REASON_MAX_TOKENS"):
+            return "length"
+        if reason in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"):
+            return "content_filter"
+        return "other" if reason else None
+
     def analyze(
         self,
         *,
@@ -114,6 +131,7 @@ class GeminiAIAdapter:
         model: Optional[str] = None,
         correlation_id: str,
         structured: bool = False,
+        max_output_tokens: Optional[int] = None,
     ) -> AIReceipt:
         selected_model = (model or self.model).strip()
         fingerprint = request_fingerprint(
@@ -134,6 +152,8 @@ class GeminiAIAdapter:
         body: dict[str, Any] = {
             "contents": contents,
         }
+        if isinstance(max_output_tokens, int) and max_output_tokens > 0:
+            body["generationConfig"] = {"maxOutputTokens": max_output_tokens}
         if system_prompt.strip():
             body["systemInstruction"] = {
                 "role": "system",
@@ -206,6 +226,7 @@ class GeminiAIAdapter:
         try:
             payload = response.json()
             raw, structured_output, usage = self._parse_content(payload)
+            finish_reason = self._extract_finish_reason(payload)
         except (ValueError, TypeError) as exc:
             return AIReceipt(
                 status="failed",
@@ -217,6 +238,7 @@ class GeminiAIAdapter:
                 correlation_id=correlation_id,
                 request_fingerprint=fingerprint,
                 error=f"invalid AI response: {str(exc)[:300]}",
+                finish_reason=None,
             )
 
         if not raw.strip():
@@ -232,6 +254,7 @@ class GeminiAIAdapter:
                 correlation_id=correlation_id,
                 request_fingerprint=fingerprint,
                 error="Gemini returned empty output",
+                finish_reason=finish_reason,
             )
 
         return AIReceipt(
@@ -243,4 +266,5 @@ class GeminiAIAdapter:
             usage=usage,
             correlation_id=correlation_id,
             request_fingerprint=fingerprint,
+            finish_reason=finish_reason,
         )
