@@ -1002,6 +1002,23 @@ class LLMGateway:
         )
         if not result.ok:
             return result
+        # A syntactically valid prefix is not a complete structured response
+        # when the provider reports that its output-token limit was reached.
+        if result.finish_reason == "length":
+            return IntelligenceResult(
+                ok=False,
+                mode=IntelligenceMode.DEGRADED,
+                text=result.text,
+                reason="structured_output_truncated",
+                provider=result.provider,
+                model=result.model,
+                latency_ms=result.latency_ms,
+                capability="structured_json",
+                workspace_id=workspace_id,
+                request_id=result.request_id,
+                ai_receipt=result.ai_receipt,
+                finish_reason=result.finish_reason,
+            )
         data = parse_structured_json(result.text)
         if data is None:
             return IntelligenceResult(
