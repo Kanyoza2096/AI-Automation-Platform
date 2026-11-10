@@ -1,6 +1,11 @@
 name: Cross-Subsystem Event Lifecycle Tests
 
 on:
+  pull_request:
+    paths:
+      - "services/director/core.py"
+      - "tests/test_director_executive_report_truth.py"
+      - ".github/workflows/director-event-lifecycle-tests.yml"
   push:
     branches:
       - staging
@@ -39,10 +44,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out staging source
+      - name: Check out source under test
         uses: actions/checkout@v4
         with:
-          ref: staging
+          ref: ${{ github.event.pull_request.head.sha || 'staging' }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -63,6 +68,7 @@ jobs:
             tests/test_condition_engine_event_context.py \
             tests/test_condition_engine_council_approval_fence.py \
             tests/test_health_monitor_observability.py \
+            tests/test_director_executive_report_truth.py \
             tests/test_engine_truth.py \
             tests/test_meta_engine_lifecycle_identity.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
