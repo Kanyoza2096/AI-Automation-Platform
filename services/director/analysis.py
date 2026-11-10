@@ -739,8 +739,8 @@ class LearningLoop:
                     maxlen=patterns.maxlen or 50,
                 )
 
-            self.context_stats[ctx_key] = {"successes": 0, "failures": 0}
-            self.time_stats[time_key] = {"successes": 0, "failures": 0}
+            self.context_stats[ctx_key] = {"successes": 0, "failures": 0, "unverified": 0}
+            self.time_stats[time_key] = {"successes": 0, "failures": 0, "unverified": 0}
 
         return signal
 
