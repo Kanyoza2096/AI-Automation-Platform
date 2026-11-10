@@ -575,6 +575,7 @@ class LLMGateway:
                         correlation_id=correlation_id,
                         model=kwargs.get("model", selected_model),
                         structured=capability in ("structured_json", "structured"),
+                        max_output_tokens=max_tokens,
                     )
                 finally:
                     adapter.close()
