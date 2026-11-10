@@ -1063,6 +1063,30 @@ class Director:
         plan = self.strategic_plans.get(str(plan_id))
         return dict(plan) if plan is not None else None
 
+    async def create_strategic_plan(self, objective: dict, planner=None) -> dict:
+        """Create and persist a validated advisory plan; never execute it."""
+        plan = self.plan_objective(objective, planner=planner)
+        if plan.get("status") == "unavailable":
+            return plan
+        saved = await self.store.save_strategic_plan(plan)
+        if not saved:
+            self.strategic_plans.pop(plan["plan_id"], None)
+            raise RuntimeError("strategic_plan_persistence_unavailable")
+        return plan
+
+    async def load_strategic_plan(self, plan_id: str) -> Optional[dict]:
+        """Load a plan from durable storage, falling back to the bounded cache."""
+        plan = await self.store.get_strategic_plan(str(plan_id))
+        if plan is not None:
+            self.strategic_plans[plan_id] = plan
+            return plan
+        return self.strategic_plans.get(plan_id)
+
+    async def list_strategic_plans(self, limit: int = 50) -> list[dict]:
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        return await self.store.list_strategic_plans(limit=limit)
+
     async def _build_plan_async(self) -> dict:
         tasks = self.decide()
         self.last_plan = now()
