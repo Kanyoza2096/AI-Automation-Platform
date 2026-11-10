@@ -88,3 +88,38 @@ def test_service_registry_resolves_current_director_singleton(monkeypatch):
     monkeypatch.setattr(director_api, "director", live_director)
 
     assert _resolve_director(None) is live_director
+
+
+def test_director_does_not_register_or_accept_brand_scheduler_publishing():
+    from services.director import Director
+    from services.director.models import Health, Observation, Sector
+    from datetime import datetime, timezone
+
+    director = Director(supabase_client=None)
+    assert "publish_scheduled_content" not in director.capabilities
+
+    director.observations = {
+        "brand-engine": Observation(
+            source="brand-engine",
+            sector=Sector.CONTENT,
+            status=Health.NOMINAL,
+            timestamp=datetime.now(timezone.utc),
+            metrics={
+                "director_signal_contract": "metrics.director_signals/v1",
+                "director_signals": [{
+                    "capability": "publish_scheduled_content",
+                    "description": "Publish the next scheduled brand post",
+                    "params": {"brand_id": "brand-1"},
+                    "confidence": 0.99,
+                }],
+            },
+        )
+    }
+
+    result = director._engine_decision_signals()
+    assert result["accepted"] == []
+    assert result["rejected"] == [{
+        "observer": "brand-engine",
+        "index": 0,
+        "reason": "unknown_capability",
+    }]
