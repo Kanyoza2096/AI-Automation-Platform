@@ -94,6 +94,7 @@ on:
       - "migrations/160_v69_integration_evidence_atomic_append.sql"
       - "migrations/161_u2_atomic_connector_health_observation.sql"
       - "migrations/162_u2_tenant_connector_resource_binding.sql"
+      - "migrations/163_restrict_resource_binding_trigger_function_execute.sql"
       - "services/v69_connector_runtime_gateway.py"
       - "tests/test_v69_10_connector_runtime_gateway.py"
       - "repositories/social_account_repository.py"
@@ -317,6 +318,7 @@ jobs:
                   "migrations/160_v69_integration_evidence_atomic_append.sql",
                   "migrations/161_u2_atomic_connector_health_observation.sql",
                   "migrations/162_u2_tenant_connector_resource_binding.sql",
+                  "migrations/163_restrict_resource_binding_trigger_function_execute.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
