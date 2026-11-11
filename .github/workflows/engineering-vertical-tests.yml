@@ -122,6 +122,8 @@ on:
       - "services/health_monitor_service.py"
       - "services/director/api.py"
       - "services/director/core.py"
+      - "services/director/analysis.py"
+      - "tests/test_engine_truth.py"
       - "services/condition_engine/core.py"
       - "tests/test_condition_engine_readiness_contract.py"
       - "api/organism_body_routes.py"
@@ -534,6 +536,7 @@ jobs:
             tests/test_director_platform_state.py \
             tests/test_condition_engine_readiness_contract.py \
             tests/test_organism_platform_state_projection.py \
+            tests/test_engine_truth.py \
             tests/test_platform_state_migration_postgres.py
 
 # Keep U2 goal bootstrap and signed-event integration tests in the focused CI gate.
