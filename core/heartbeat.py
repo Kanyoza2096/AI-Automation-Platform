@@ -136,7 +136,6 @@ heartbeat = HeartbeatPublisher()
 
 async def init_heartbeat(container=None, event_bus=None) -> HeartbeatPublisher:
     """Initialize heartbeat."""
-    global heartbeat
     heartbeat._container = container
     heartbeat._event_bus = event_bus
     await heartbeat.start(interval_seconds=10)
