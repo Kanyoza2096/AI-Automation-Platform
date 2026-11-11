@@ -71,6 +71,8 @@ def build_platform_state_from_health_reports(
     now: datetime | None = None,
     stale_after: timedelta = timedelta(minutes=5),
     dependencies: Mapping[str, tuple[str, ...]] = CANONICAL_ENGINE_DEPENDENCIES,
+    supplemental_statuses: Mapping[str, str] | None = None,
+    supplemental_observed_at: datetime | None = None,
 ) -> PlatformStateSnapshot:
     """Build a conservative projection from owner-named health reports.
 
@@ -78,18 +80,28 @@ def build_platform_state_from_health_reports(
     service_name must match its registry key, which prevents accidental
     aliasing from attributing one provider's report to another service.
     """
+    owner_overrides = {
+        "redis": "health_monitor",
+        "supabase": "health_monitor",
+        "gemini": "health_monitor",
+    }
     manifests = tuple(
         ServiceManifest(
             service_id=service_id,
-            owner=service_id,
+            owner=owner_overrides.get(service_id, service_id),
             dependencies=tuple(required),
         )
         for service_id, required in dependencies.items()
     )
     observations: list[ServiceObservation] = []
     for service_id, report in reports.items():
-        manifest_owner = service_id if service_id in dependencies else None
-        if manifest_owner is None:
+        manifest_owner = (
+            owner_overrides.get(service_id, service_id)
+            if service_id in dependencies else None
+        )
+        if manifest_owner is None or service_id in owner_overrides:
+            # Infrastructure probes are owned by HealthMonitor and supplied
+            # separately below; do not accept a similarly named provider.
             continue
         reported_name = str(_field(report, "service_name", service_id) or "")
         if reported_name != service_id:
@@ -117,6 +129,32 @@ def build_platform_state_from_health_reports(
             correlation_id=str(correlation_id) if correlation_id else None,
         ))
 
+    observed_at = _timestamp(supplemental_observed_at) if supplemental_observed_at else None
+    for service_id, raw_status in (supplemental_statuses or {}).items():
+        manifest = next((item for item in manifests if item.service_id == service_id), None)
+        if manifest is None or manifest.owner != "health_monitor" or observed_at is None:
+            continue
+        status = str(raw_status or "unknown").strip().lower()
+        readiness = {
+            "ok": Readiness.HEALTHY,
+            "healthy": Readiness.HEALTHY,
+            "down": Readiness.UNAVAILABLE,
+            "unhealthy": Readiness.UNAVAILABLE,
+        }.get(status, Readiness.UNKNOWN)
+        evidence = EvidenceRef(
+            source=f"health_monitor_probe:{service_id}",
+            observed_at=observed_at,
+            source_version="health-monitor-probe-v1",
+        )
+        observations.append(ServiceObservation(
+            service_id=service_id,
+            owner=manifest.owner,
+            readiness=readiness,
+            observed_at=observed_at,
+            source_version="health-monitor-probe-v1",
+            evidence=(evidence,),
+        ))
+
     return build_platform_state(
         manifests,
         observations,
@@ -132,6 +170,7 @@ def read_platform_state_from_health_registry(
     previous_revision: int = 0,
     now: datetime | None = None,
     stale_after: timedelta = timedelta(minutes=5),
+    supplemental_statuses: Mapping[str, str] | None = None,
 ) -> PlatformStateSnapshot:
     """Read the cached health snapshot without triggering any health probes."""
     if registry is None:
@@ -147,6 +186,8 @@ def read_platform_state_from_health_registry(
         previous_revision=previous_revision,
         now=now,
         stale_after=stale_after,
+        supplemental_statuses=supplemental_statuses,
+        supplemental_observed_at=now or datetime.now(timezone.utc),
     )
 
 
