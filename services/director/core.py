@@ -437,7 +437,7 @@ class Director:
     MAX_CONCURRENT_EXECUTIONS = 5
     DETECTOR_INTERVAL_SECONDS = 6 * 3600
 
-    def __init__(self, supabase_client=None, interval: int = 60, strategic_planner=None):
+    def __init__(self, supabase_client=None, interval: int = 60, strategic_planner=None, platform_state_reader=None):
         self.store = AsyncSupabaseStore(supabase_client) if supabase_client else InMemoryStore()
         log.info("Director storage: %s", "Supabase" if supabase_client else "In-Memory")
 
@@ -487,6 +487,21 @@ class Director:
         self.last_plan: Optional[datetime] = None
         self.strategic_planner = strategic_planner
         self.strategic_plans: Dict[str, dict] = {}
+        self._platform_state_reader = platform_state_reader
+        if self._platform_state_reader is None and supabase_client is not None:
+            try:
+                from core.platform_state_reader import PlatformStateReader
+                self._platform_state_reader = PlatformStateReader(supabase_client)
+            except Exception:
+                log.warning("Director Platform State reader could not be initialized; shared state remains unknown")
+        self._platform_state_context: Dict[str, Any] = {
+            "status": "unavailable",
+            "freshness": "unknown",
+            "revision": 0,
+            "services": [],
+            "capabilities": [],
+            "reason": "platform_state_reader_not_configured",
+        }
         self.last_observation: Optional[datetime] = None
         self._last_daily_briefing: Optional[str] = None
         self._consecutive_failures: int = 0
@@ -530,6 +545,121 @@ class Director:
     @property
     def service_name(self) -> str:
         return "director"
+
+    async def refresh_platform_state_context(self, max_age_seconds: int = 300) -> dict:
+        """Refresh a bounded, read-only Platform State view for planning.
+
+        The snapshot is advisory context only. Missing, expired, or unreadable
+        state is represented explicitly and never converted to healthy.
+        """
+        if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or max_age_seconds < 1:
+            raise ValueError("max_age_seconds must be a positive integer")
+        reader = self._platform_state_reader
+        if reader is None or not callable(getattr(reader, "get_snapshot", None)):
+            self._platform_state_context = {
+                "status": "unavailable", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_reader_not_configured",
+            }
+            return dict(self._platform_state_context)
+
+        try:
+            snapshot = await reader.get_snapshot()
+        except Exception:
+            log.warning("Director Platform State refresh failed closed", exc_info=True)
+            self._platform_state_context = {
+                "status": "unavailable", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_read_failed",
+            }
+            return dict(self._platform_state_context)
+
+        if snapshot is None:
+            self._platform_state_context = {
+                "status": "uninitialized", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_snapshot_missing",
+            }
+            return dict(self._platform_state_context)
+
+        updated_at = getattr(snapshot, "updated_at", None)
+        now_utc = datetime.now(timezone.utc)
+        if not isinstance(updated_at, datetime) or updated_at.tzinfo is None:
+            freshness, status, reason = "invalid", "unknown", "platform_state_timestamp_invalid"
+            age_seconds = None
+        else:
+            age_seconds = (now_utc - updated_at.astimezone(timezone.utc)).total_seconds()
+            if age_seconds < -30:
+                freshness, status, reason = "invalid", "unknown", "platform_state_timestamp_in_future"
+            elif age_seconds > max_age_seconds:
+                freshness, status, reason = "stale", "stale", "platform_state_snapshot_expired"
+            else:
+                freshness, status, reason = "fresh", "available", None
+
+        service_items = list(getattr(snapshot, "services", ()) or ())
+        capability_items = list(getattr(snapshot, "capabilities", ()) or ())
+        readiness_counts: Dict[str, int] = {}
+        for item in service_items:
+            readiness = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
+            readiness_counts[readiness] = readiness_counts.get(readiness, 0) + 1
+
+        services = []
+        for item in service_items[:100]:
+            evidence = []
+            for ref in list(getattr(item, "evidence", ()) or ())[:3]:
+                observed = getattr(ref, "observed_at", None)
+                evidence.append({
+                    "source": str(getattr(ref, "source", "unknown"))[:100],
+                    "source_version": str(getattr(ref, "source_version", "unknown"))[:80],
+                    "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                    "correlation_id": getattr(ref, "correlation_id", None),
+                    "reference": getattr(ref, "reference", None),
+                })
+            observed = getattr(item, "observed_at", None)
+            services.append({
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "owner": str(getattr(item, "owner", "unknown"))[:120],
+                "readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "reason": str(getattr(item, "reason", "") or "")[:200] or None,
+                "critical": bool(getattr(item, "critical", False)),
+                "evidence": evidence,
+            })
+
+        capabilities = []
+        for item in capability_items[:100]:
+            observed = getattr(item, "observed_at", None)
+            capabilities.append({
+                "capability_id": str(getattr(item, "capability_id", "unknown"))[:120],
+                "owner_service": str(getattr(item, "owner_service", "unknown"))[:120],
+                "readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "reason": str(getattr(item, "reason", "") or "")[:200] or None,
+            })
+
+        self._platform_state_context = {
+            "status": status,
+            "freshness": freshness,
+            "revision": int(getattr(snapshot, "revision", 0)),
+            "schema_version": int(getattr(snapshot, "schema_version", 1)),
+            "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
+            "age_seconds": round(age_seconds, 2) if age_seconds is not None else None,
+            "service_count": len(service_items),
+            "capability_count": len(capability_items),
+            "readiness_counts": readiness_counts,
+            "services": services,
+            "capabilities": capabilities,
+            "services_truncated": len(service_items) > len(services),
+            "capabilities_truncated": len(capability_items) > len(capabilities),
+            "reason": reason,
+            "policy": {
+                "read_only": True,
+                "unknown_is_not_healthy": True,
+                "grants_execution_authority": False,
+                "sensitive_actions_require_existing_governance": True,
+            },
+        }
+        return dict(self._platform_state_context)
 
     async def start(self) -> None:
         if self.running:
@@ -1065,6 +1195,7 @@ class Director:
 
     async def create_strategic_plan(self, objective: dict, planner=None) -> dict:
         """Create and persist a validated advisory plan; never execute it."""
+        await self.refresh_platform_state_context()
         plan = await asyncio.to_thread(self.plan_objective, objective, planner)
         if plan.get("status") == "unavailable":
             return plan
@@ -1088,6 +1219,7 @@ class Director:
         return await self.store.list_strategic_plans(limit=limit)
 
     async def _build_plan_async(self) -> dict:
+        await self.refresh_platform_state_context()
         tasks = self.decide()
         self.last_plan = now()
         strategic_context = self.strategic_context()
@@ -2446,6 +2578,7 @@ class Director:
                 "sectors": sectors,
             },
             "evidence": evidence,
+            "platform_state": dict(self._platform_state_context),
             "objectives": {
                 "model": "legacy_sector_goal",
                 "workspace_scoped": False,
