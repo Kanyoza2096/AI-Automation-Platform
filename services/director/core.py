@@ -84,6 +84,7 @@ from .proposals import (
     ProposalGenerator,
 )
 from .planning import build_strategic_plan
+from .plan_verifier import verify_strategic_plan as verify_plan_contract
 
 log = logging.getLogger("kanyoza.director")
 
@@ -1086,6 +1087,13 @@ class Director:
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         return await self.store.list_strategic_plans(limit=limit)
+
+    def verify_strategic_plan(self, plan: dict, max_age_seconds: int = 300) -> dict:
+        """Independently verify a persisted advisory plan against a fresh read-only context."""
+        context = self.strategic_context(max_age_seconds=max_age_seconds)
+        return verify_plan_contract(
+            plan, context, max_age_seconds=max_age_seconds
+        )
 
     async def _build_plan_async(self) -> dict:
         tasks = self.decide()
@@ -2446,6 +2454,9 @@ class Director:
                 "sectors": sectors,
             },
             "evidence": evidence,
+            # Populated by the Platform State consumer integration when available.
+            # Absence remains unknown; it is never interpreted as healthy.
+            "platform_state": {},
             "objectives": {
                 "model": "legacy_sector_goal",
                 "workspace_scoped": False,
