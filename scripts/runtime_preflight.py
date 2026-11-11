@@ -43,8 +43,6 @@ REQUIRED_DISTRIBUTIONS: dict[str, str] = {
     "Flask": "flask",
     "requests-oauthlib": "requests_oauthlib",
     "stripe": "stripe",
-    "google-auth": "google.auth",
-    "google-api-python-client": "googleapiclient",
 }
 
 
