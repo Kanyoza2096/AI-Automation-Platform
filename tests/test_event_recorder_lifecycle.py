@@ -64,15 +64,25 @@ def test_start_awaits_all_subscriptions_and_is_idempotent():
     asyncio.run(run())
 
     assert recorder.is_started
-    assert sum(map(len, bus.subscribers.values())) == 5
+    assert sum(map(len, bus.subscribers.values())) == 6
 
     bus.emit(EventType.POST_PUBLISHED, {"topic": "KDO", "platform": "x", "post_id": "p1"})
+    for handler in tuple(bus.subscribers.get("post_published", [])):
+        handler({
+            "event_name": "post_published",
+            "payload": {"topic": "legacy", "platform": "x", "post_id": "p-legacy"},
+            "source": "pipeline",
+            "event_id": "event-legacy",
+        })
     bus.emit(EventType.POST_GENERATED, {"topic": "KDO", "provider": "test"})
     bus.emit(EventType.SCAN_COMPLETED, {"scan_id": "s1"})
     bus.emit(EventType.MESSAGE_RECEIVED, {"sender_id": "u1"})
     bus.emit(EventType.MESSAGE_SENT, {"sender_id": "u2"})
 
-    assert repo.posts == [{"topic": "KDO", "platform": "x", "post_id": "p1"}]
+    assert repo.posts == [
+        {"topic": "KDO", "platform": "x", "post_id": "p1"},
+        {"topic": "legacy", "platform": "x", "post_id": "p-legacy"},
+    ]
     assert [item["event"] for item in repo.events] == ["post_generated", "scan_completed"]
     assert repo.messages == [
         {"sender_id": "u1", "direction": "inbound"},
@@ -108,7 +118,7 @@ def test_start_stop_start_does_not_duplicate_delivery():
     bus.emit(EventType.POST_PUBLISHED, {"post_id": "p2"})
 
     assert len(repo.posts) == 1
-    assert sum(map(len, bus.subscribers.values())) == 5
+    assert sum(map(len, bus.subscribers.values())) == 6
 
 
 def test_partial_subscription_failure_rolls_back_prior_subscriptions():
