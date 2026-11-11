@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from services.director import Director
-from services.director.planning import StrategicPlanningError, make_llm_strategic_planner
+from services.director.planning import (\n    StrategicPlanningError, _planner_context, _evidence_reference_ids,\n    make_llm_strategic_planner,\n)
 
 
 def objective():
@@ -217,3 +217,33 @@ def test_llm_adapter_fails_closed_when_gateway_is_unavailable():
 def test_llm_adapter_requires_structured_gateway():
     with pytest.raises(StrategicPlanningError, match="configured_llm_gateway_required"):
         make_llm_strategic_planner(None)
+
+
+def test_bounded_evidence_index_is_rebuilt_after_prompt_trimming():
+    director = Director(supabase_client=None)
+    context = director.strategic_context()
+    context["evidence"]["facts"] = [
+        {"kind": "fact", "source": f"source-{index}", "summary": "x" * 1800}
+        for index in range(10)
+    ]
+    bounded = _planner_context(context)
+
+    assert len(bounded["evidence"]["facts"]) == 5
+    assert "fact:4" in bounded["evidence_index"]
+    assert "fact:5" not in bounded["evidence_index"]
+    assert _evidence_reference_ids(bounded) == set(bounded["evidence_index"])
+
+
+def test_plan_validation_rejects_evidence_hidden_by_prompt_trimming():
+    director = Director(supabase_client=None)
+    context = director.strategic_context()
+    context["evidence"]["facts"] = [
+        {"kind": "fact", "source": f"source-{index}", "summary": "x" * 1800}
+        for index in range(10)
+    ]
+    candidate = deepcopy(generated_plan())
+    candidate["steps"][0]["evidence_refs"] = ["fact:8"]
+    director._strategic_planner = lambda **kwargs: candidate
+
+    with pytest.raises(StrategicPlanningError, match="plan_references_unknown_evidence"):
+        director.plan_objective(objective())
