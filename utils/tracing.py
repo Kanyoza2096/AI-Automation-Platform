@@ -111,5 +111,4 @@ def get_recent_traces(limit: int = 50) -> list:
     except Exception:
         pass
     
-    global _traces_buffer
     return _traces_buffer[:limit]
