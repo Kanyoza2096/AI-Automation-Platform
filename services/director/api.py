@@ -1322,13 +1322,10 @@ def create_app(director: Director):
                 )
         try:
             from services.supabase import get_service_client_from_settings
-            from core.platform_state_store import PlatformStateStore
+            from core.platform_state_reader import PlatformStateReader
 
             client = await asyncio.to_thread(get_service_client_from_settings)
-            snapshot = await PlatformStateStore(client).load(
-                scope_type="platform",
-                scope_id="platform",
-            )
+            snapshot = await PlatformStateReader(client).get_snapshot()
         except Exception:
             log.warning("Platform State read unavailable", exc_info=True)
             raise HTTPException(
