@@ -82,6 +82,15 @@ def _shared_snapshot(updated_at=None):
                 reason="dependency_degraded",
             ),
         ),
+        observer_observations=(
+            SimpleNamespace(
+                service_id="director",
+                observer_id="meta_engine",
+                readiness=Readiness.DEGRADED,
+                observed_at=updated_at,
+                source_version="meta-v7.1",
+            ),
+        ),
         capabilities=(
             SimpleNamespace(
                 capability_id="condition_analysis",
@@ -102,6 +111,8 @@ def test_async_health_exposes_shared_platform_state_without_changing_local_readi
     assert health["platform_state"]["status"] == "available"
     assert health["platform_state"]["revision"] == 12
     assert health["platform_state"]["services"][1]["readiness"] == "degraded"
+    assert health["platform_state"]["observer_observations"][0]["observer_id"] == "meta_engine"
+    assert health["platform_state"]["observer_observations"][0]["readiness"] == "degraded"
     assert health["platform_state"]["policy"]["read_only"] is True
     assert health["platform_state"]["policy"]["grants_execution_authority"] is False
     assert health["readiness"]["analysis_ready"] is True
