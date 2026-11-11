@@ -49,6 +49,7 @@ def _plan(context, *, now=None):
             "evidence_refs": ["fact:monitor_a"],
         }],
         "source_context_fingerprint": _fingerprint(context),
+        "source_context_generated_at": context["generated_at"],
         "authority": "none",
         "advisory_only": True,
         "execution_started": False,
@@ -182,3 +183,16 @@ def test_non_mapping_inputs_fail_closed():
 
     assert report["verdict"] == "rejected"
     assert report["execution_permitted"] is False
+
+
+
+def test_context_refresh_time_alone_does_not_invalidate_plan():
+    original_time = datetime.now(timezone.utc)
+    context = _context(original_time)
+    plan = _plan(context)
+    refreshed = _context(original_time + timedelta(seconds=5))
+
+    report = verify_strategic_plan(plan, refreshed, now=original_time + timedelta(seconds=5))
+
+    assert report["verdict"] == "verified_for_governance_review"
+    assert report["checks"]["context_binding"] == "pass"
