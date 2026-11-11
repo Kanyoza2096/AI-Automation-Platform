@@ -9,6 +9,7 @@ on:
       - "services/director/core.py"
       - "services/director/api.py"
       - "tests/test_director_plan_verifier.py"
+      - "tests/test_director_strategic_planning.py"
       - "tests/engineering_vertical/**"
       - "migrations/*engineering*"
       - "requirements.txt"
