@@ -70,6 +70,7 @@ def snapshot(revision=1):
                 source_version="v1",
                 dependencies=(),
                 capabilities=(),
+                critical=True,
                 evidence=(EvidenceRef("health_registry:director", NOW, "v1"),),
             ),
         ),
@@ -119,4 +120,5 @@ def test_store_loads_json_object_snapshot():
     assert loaded.revision == original.revision
     assert loaded.services[0].service_id == "director"
     assert loaded.services[0].readiness is Readiness.HEALTHY
+    assert loaded.services[0].critical is True
     assert loaded.services[0].evidence[0].source == "health_registry:director"
