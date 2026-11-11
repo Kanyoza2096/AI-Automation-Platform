@@ -140,9 +140,101 @@ Candidate statistics:
 - Every admission and decision is auditable, attributable, and subject to cancellation/rollback controls.
 - Rejection, timeout, missing evidence, or governance unavailability fails closed.
 
+### 3.6 Workload identity and cryptographic authority
+
+**Responsibility:** Give each autonomous actor a verifiable non-human identity and bind its authority to a signed, short-lived session credential.
+
+**Director identity:**
+- Register Director as a dedicated workload/service principal, for example `svc:kdo:director`, not as a human user account with an `is_species` flag.
+- Its initial scope set is deliberately narrow: `director:read` and `director:dispatch`.
+- `director:read` permits only the platform-state and evidence projections explicitly exposed to Director.
+- `director:dispatch` permits Director to submit a typed, traceable dispatch/proposal request to the governed coordination path. It does **not** permit direct handler execution, arbitrary tool invocation, publishing, approval, or production deployment.
+- Tool-specific permissions, workspace scope, environment scope, and risk policy further restrict each request.
+
+**Signed workload token contract:**
+- Issue short-lived signed workload/session tokens from a trusted platform identity issuer. Prefer asymmetric signing so services verify with public keys and the private signing key remains isolated from application workloads.
+- Bind at least issuer (`iss`), audience (`aud`), subject (`sub`), actor type, agent ID, scopes, platform/workspace scope, issued-at (`iat`), not-before (`nbf`), expiry (`exp`), unique token ID (`jti`), and signing key ID (`kid`).
+- Verify signature, allowed algorithm, issuer, audience, time bounds, actor status, token revocation/rotation policy, and registry binding on every authenticated request.
+- Enforce a short maximum lifetime, key rotation, revocation, replay-sensitive operation controls, and fail-closed behavior for unknown keys or malformed claims.
+- Effective authority is the intersection of signed token scopes, active Agent Registry grants, service/tool policy, workspace scope, and governance requirements. A token claim alone cannot create a new permission.
+- Never accept actor type, agent ID, or scopes from request headers, user metadata, mutable profile fields, or unsigned payloads.
+
+**Migration away from `is_species`:**
+- `is_species` is currently present in the canonical `AuthIdentity` model and Director authorization paths. It must not remain an independent source of platform authority.
+- First inventory every read/write of `is_species`, `species_privileges`, master-token and Gateway-token paths, and every authorization branch that treats them as global access.
+- Introduce a typed verified-principal context derived from signed workload claims and explicit human platform grants. Migrate each consumer to named scopes and explicit platform/workspace boundaries.
+- During transition, any compatibility projection must be derived only from a verified principal and must not grant broader authority than its scopes. It must not trust or persist a mutable database flag.
+- Remove the legacy boolean and broad master/service-token bypass only after all consumers, middleware, background jobs, and tests have migrated. No blanket replacement or lockout-prone cutover.
+- Human operator and owner permissions remain distinct from workload identities; a workload principal must never impersonate a human.
+
+**Boundary:** authentication proves who is calling and what signed scopes the issuer granted. Authorization still evaluates registry grants, policy, workspace boundaries, Council/DecisionGate, and the canonical Action Kernel path.
+
+### 3.7 Platform Agent Registry — autonomous actor governance
+
+**Responsibility:** Maintain the authoritative inventory of every autonomous actor that can reason, call tools, dispatch work, or initiate an automated workflow.
+
+This is distinct from the service-manifest registry:
+- Service manifests describe software services, their owners, interfaces, and operational contracts.
+- Agent Registry entries describe autonomous principals, their accountable team, allowed tools, scopes, and lifecycle.
+- An actor may run within a service, but service ownership does not implicitly grant that actor the service's permissions.
+
+Each actor record should include:
+- Stable `agent_id`, principal subject, display name, actor class, purpose, version, and lifecycle state (proposed, active, suspended, retired).
+- Owning team and accountable human/service owner.
+- Runtime/service association and permitted environments.
+- Explicit allowlisted tool IDs and tool versions.
+- Maximum scopes, workspace/platform boundaries, data classifications, and delegation constraints.
+- Risk class, autonomy level, required Council/DecisionGate path, human-approval conditions, and budget/operational limits where applicable.
+- Credential issuer/key binding and token policy reference; never store plaintext credentials or private signing keys in the registry.
+- Created/updated provenance, reviewer/approver, and audit history.
+
+Initial inventory must explicitly include Director, Council actors, Content Engine/brand scheduler actors, Guardian, and the AI Software Engineering Vertical's planner, orchestrator, specialist agents, and worker identities where they can act autonomously. The inventory must be derived from repository/runtime discovery and owner confirmation; this list is a minimum, not a claim that it is exhaustive.
+
+**Enforcement rules:**
+- Unknown, unregistered, suspended, retired, or ownerless actors are denied tool execution and dispatch by default.
+- Runtime token identity must match the registered principal and active actor record.
+- Effective tools and scopes are the intersection of the registry allowlist, signed token claims, capability permissions, and governance policy.
+- Tool grants are explicit and versioned; registering an actor does not authorize every tool available to its runtime.
+- Delegation preserves the original actor, records the delegating actor and target, and cannot widen scopes or cross workspace boundaries.
+- Council is registered as a governance actor with its own narrow deliberation/decision tools; it does not inherit Director's dispatch identity.
+- Content Engine and brand schedulers retain their own publishing ownership and scoped authority. Director cannot borrow or impersonate those credentials.
+- Registry changes are themselves governed, audited, and subject to review; emergency suspension must take effect promptly.
+
+**Reuse first:** inspect and reconcile `services/v71_1_agent_identity.py`, `services/v71_2_agent_capability_permissions.py`, `services/advanced_agent_control_plane.py`, the existing engineering Agent Registry, and current identity/session hardening. Extend the existing canonical identity/permission components or compose them behind one platform registry; do not create a competing in-memory-only registry.
+
+### 3.8 Structured Director tool-call tracing
+
+**Responsibility:** Make every Director tool invocation diagnosable from the originating objective/run through the exact tool request, authorization decision, result, and failure.
+
+Reuse the existing Phase 9.2 correlation contract and OpenTelemetry integration. Each invocation should create a child span and structured invocation record containing:
+- `run_id`, `invocation_id`, `agent_id`, `tool_id`, tool version, and owning service;
+- `trace_id`, `span_id`, `correlation_id`, and parent/causation identity;
+- authenticated principal subject, effective scope names, workspace/platform scope, and environment;
+- start/end timestamps, duration, attempt/retry number, and terminal status;
+- validated argument schema/version, safe structured argument values, redaction metadata, and an argument digest;
+- policy/registry check result and governance decision reference before invocation;
+- bounded result summary or result digest, without dumping sensitive payloads;
+- error class/code, sanitized message, retryability, and a protected diagnostic reference for stack details where appropriate.
+
+**Argument and secret safety:**
+- Record exact semantic arguments only after schema validation and redaction. Preserve safe identifiers and values needed to reproduce the failure, but redact tokens, API keys, passwords, authorization headers, private keys, personal data, and other classified fields.
+- Never record bearer tokens, raw credentials, signing material, or unrestricted request/response bodies.
+- Apply access controls and retention policy to traces; privileged stack traces and sensitive diagnostic payloads must not be exposed in ordinary Director reports.
+- A digest of canonicalized arguments can support integrity and comparison, but it does not replace the safe argument record needed for diagnosis.
+
+**Failure behavior:**
+- A tool exception, timeout, authorization denial, schema error, retry, or cancellation must produce a terminal invocation outcome with the corresponding reason and parent run correlation.
+- Do not collapse tool failures into only `task_failed`. The task event should reference the invocation IDs and summarize the failure chain.
+- Preserve the original exception classification and sanitized diagnostics; never turn a failed tool into a successful empty result.
+- Trace creation failure must not bypass authorization or cause a tool to execute without its required policy checks. For consequential tools, inability to establish required audit evidence should fail closed.
+
+**Example:** if `run_guardian_scan` fails, an operator should be able to follow the Director run → tool invocation span → exact validated/redacted repository and scan options → authorization decision → Guardian service result/exception → retry or terminal failure, all under one correlation ID.
+
+**Boundary:** tracing is observability, not authority. Trace data cannot authorize a tool or alter a governance decision.
+
 ## 4. End-to-end operating model
 
-The five capabilities form one governed feedback loop:
+The five strategic capabilities operate with a cross-cutting identity, agent-governance, and observability plane:
 
 1. Subsystems publish typed observations and lifecycle events.
 2. platform_state reconciles these events with authoritative subsystem records.
@@ -152,7 +244,7 @@ The five capabilities form one governed feedback loop:
 6. Council and DecisionGate govern consequential recommendations.
 7. Workforce admission and Action Kernel execute only authorized work.
 8. Receipts and independently verified outcomes update the evidence base and capability statistics.
-9. Director explains what changed, why it changed, and what remains uncertain.
+9. Each autonomous actor authenticates as its registered non-human principal with short-lived signed scopes; unknown actors are denied.\n10. Director tool calls emit correlated, redacted invocation traces linked to decisions, governance checks, results, and errors.\n11. Director explains what changed, why it changed, and what remains uncertain.
 
 ## 5. Delivery sequence and review gates
 
@@ -182,12 +274,12 @@ The five capabilities form one governed feedback loop:
 - Derive statistics only from existing verified receipts and outcomes initially.
 - **Exit:** missing/unverified evidence cannot increase reliability scores; score changes are explainable.
 
-### Gate 5 — Council governance convergence
+### Gate 5 — Workload identity, Agent Registry, and tool-call observability\n- Define the signed workload-token claims, issuer/verifier/key-rotation contract, scope vocabulary, revocation, and replay controls.\n- Reconcile existing agent identity and capability permission registries into a platform-wide actor inventory with accountable owners and explicit tool allowlists.\n- Migrate Director and other autonomous actors away from mutable `is_species` authorization, using a compatibility bridge only while all call sites are migrated.\n- Instrument Director tool calls using Phase 9.2 correlation context and OpenTelemetry spans, with safe argument capture, redaction, authorization decisions, results, and errors.\n- **Exit:** forged/expired/revoked tokens, unknown agents, scope escalation, delegation widening, workspace crossing, secret leakage, trace gaps, and tool failure attribution tests all pass.\n\n### Gate 6 — Council governance convergence
 - Map Director recommendations through Council, DecisionGate, workspace authorization, workforce admission, and Action Kernel.
 - Remove or block any parallel path that can bypass the canonical authority boundary.
 - **Exit:** allowed, rejected, unauthorized, high-risk, and human-approval scenarios are covered end to end.
 
-### Gate 6 — organism-level acceptance
+### Gate 7 — organism-level acceptance
 - Test cross-subsystem planning, event delivery, restart/reconciliation, workspace isolation, false success receipts, dependency failure, retries, cancellation, and rollback.
 - Demonstrate that Director never triggers content publishing.
 - **Exit:** staging evidence proves the complete observe-to-verified-outcome loop; no production deployment is implied.
@@ -202,7 +294,7 @@ A phase is complete only when its tests and runtime evidence demonstrate:
 - Event delivery is idempotent and traceable through fan-out and retry.
 - Capability reliability reflects verified outcomes, not acknowledgements.
 - Workspace isolation holds across state, events, plans, statistics, and governance.
-- Council and DecisionGate cannot be bypassed by Director or model output.
+- Council and DecisionGate cannot be bypassed by Director or model output.\n- Every autonomous actor is registered, owned, scope-bound, and denied by default when unknown or suspended.\n- Signed workload scopes are verified and intersected with registry/tool grants; no mutable `is_species` flag grants platform authority.\n- Director tool invocations have correlated, redacted traces with sufficient validated arguments and error evidence to diagnose failures without leaking secrets.
 - Unapproved plans create no executable tasks and cause no side effects.
 - The AI Software Engineering Vertical remains functional and retains its governed execution path.
 - Director does not own brand publishing or directly invoke publishing workflows.
@@ -217,7 +309,7 @@ This proposal does not authorize:
 - changing Gateway or Command Center behavior;
 - replacing the existing unified bus, Action Kernel, Council, or workforce runtime;
 - removing or weakening the AI Software Engineering Vertical;
-- granting Director autonomous production execution.
+- granting Director autonomous production execution;\n- treating `director:dispatch` as permission to execute tools directly;\n- logging raw credentials or unrestricted tool arguments/results;\n- replacing existing agent identity, session, event, or trace infrastructure before the Gate 0 audit proves a gap.
 
 ## 8. Decisions requested from reviewers
 
@@ -226,6 +318,6 @@ This proposal does not authorize:
 3. Confirm the existing unified bus is the coordination transport; only contracts and reliability semantics are standardized here.
 4. Confirm capability statistics use independently verified outcomes and cannot grant authority.
 5. Confirm Council → DecisionGate → workforce admission → Action Kernel is the sole consequential execution path.
-6. Confirm the delivery gates and explicit non-goals before implementation is decomposed into small, testable PRs.
+6. Confirm the delivery gates and explicit non-goals before implementation is decomposed into small, testable PRs.\n7. Confirm Director is a non-human principal with only `director:read` and `director:dispatch` initially, with dispatch limited to governed admission.\n8. Confirm signed workload tokens and the Agent Registry—not mutable `is_species` state—are the authority source for autonomous actors.\n9. Confirm the Agent Registry covers Director, Council, Content Engine/brand schedulers, Guardian, and AI Software Engineering actors, with explicit owner teams and tool allowlists.\n10. Confirm all Director tool invocations require correlated structured traces with redacted argument capture and actionable error attribution.
 
 **Recommendation:** approve or amend this architecture contract first. Only after review should Gate 0 be implemented as a read-only audit, followed by separately reviewed implementation increments.
