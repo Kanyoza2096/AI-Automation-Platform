@@ -63,6 +63,9 @@ BEGIN
        WHERE execution_id = r.execution_id
        RETURNING * INTO r;
     END IF;
+    -- The acquisition marker is a one-call capability, not durable row state.
+    -- Strip it from every existing reservation returned to a later caller.
+    r.output := COALESCE(r.output, '{}'::jsonb) - '_reservation_acquired';
     RETURN NEXT r;
     RETURN;
   END IF;
