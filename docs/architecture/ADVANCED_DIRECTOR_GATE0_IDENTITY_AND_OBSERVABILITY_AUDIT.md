@@ -1095,3 +1095,16 @@ This is consistent with the Advanced Director proposal and is the governing impl
 This checkpoint improves the source-level component map but does not close Gate 0. Remaining items include exhaustive exact-commit producer/consumer inventory, reconciliation of the two dependency models, complete Condition Engine event/transition mapping, live runtime actor/process reconciliation, and the final ownership/rollback review.
 
 No application code, schema, database, credential, runtime configuration, test result, deployment, or production state changed.
+
+### 27.6 Meta → Director → Condition → Organism event-chain boundary
+
+A focused re-read of the current staging source confirms:
+
+- Meta Engine's monitor cycle emits a `service_heartbeat` event for its own aggregate snapshot. Its diagnosis path emits `engine_alert` events containing the diagnosed engine, severity, symptom and root-cause summary.
+- Director's health-observation path updates its own `observations` and local `SystemTopology`, then runs root-cause analysis. The inspected path creates Director health tasks and sends a diagnostic alert; it does not establish a durable write to a shared platform-state projection.
+- The Autonomous Loop has handlers for `service_heartbeat` and `engine_alert`, but the `condition.changed` handler specifically records brand health using `brand_id` and `health_score`.
+- The Meta Engine module also defines an async UnifiedEventBus publisher helper, but the focused source search found no call site for that helper in the inspected file. The active observed emissions use the existing synchronous event helper.
+
+**Finding:** the components already exchange useful health and alert signals, but the exact end-to-end chain in the agreed example is not implemented as one authoritative state transition. We must not treat the existence of similarly named events as proof of a complete coordination contract.
+
+**Required Phase 1 adapter contract:** normalize Meta observations and Director diagnosis evidence into typed, provenance-bearing platform observations; retain the original source identity and timestamp; derive affected capabilities from the canonical dependency/manifest graph; and publish a versioned state-change event through the existing event infrastructure. Condition Engine and Organism should consume that contract through explicit adapters, not by overloading the brand-health handler.
