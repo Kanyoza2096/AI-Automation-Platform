@@ -80,7 +80,7 @@ def _clean(result: Any, text: str) -> dict[str, Any] | None:
             safe_evidence.append(item[:240])
     return {
         "provider": "internal_gateway",
-        "model": os.getenv("KDO_AI_MODEL", "gemini-2.5-flash") if False else "gemini-2.5-flash",
+        "model": "gemini-2.5-flash",
         "intent": intent,
         "confidence": round(confidence, 3),
         "evidence": safe_evidence,
