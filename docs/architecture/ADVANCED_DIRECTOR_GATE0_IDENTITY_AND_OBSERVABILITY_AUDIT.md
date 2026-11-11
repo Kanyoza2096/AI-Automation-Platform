@@ -310,3 +310,30 @@ Still required before Gate 0 can be marked complete:
 7. Define test cases and rollback sequencing before any credential cutover.
 
 **No runtime change, migration, secret rotation, database change, staging deployment, or production operation is authorized by this audit.**
+
+
+## 11. Render deployment inventory snapshot (read-only)
+
+**Source:** connected Render workspace `My Workspace`, queried on 2026-11-11. This is a point-in-time infrastructure inventory, not a guarantee that no other external provider or manually operated worker exists.
+
+| Render service | Type | Branch | State | Auto-deploy | Relevance |
+|---|---|---|---|---|---|
+| `kdo-engineering-staging` | Web service / Docker | `staging` | Not suspended | Off | Current staging runtime; one configured instance |
+| `Kanyoza-Digital-organism` | Web service / Docker | `main` | Suspended by user | On (configured) | Production service; left untouched |
+
+The connected Render workspace returned **two web services and no separately listed Render cron-job or worker services** in this inventory call. The staging service is a single web-service instance; its service metadata exposes no separate per-agent runtime identity or actor inventory.
+
+### Implications
+
+- The source contains internal schedulers, background loops, and agent orchestration components, but this Render snapshot does not show them as independently deployed Render services. They may execute inside the web-service process or through external providers not represented in this workspace listing.
+- The Agent Registry therefore needs to register logical workload principals and runtime bindings, even when several actors share one host process. A process or container identity is not sufficient to distinguish Director, Council, Guardian, Content Engine, or individual engineering workers.
+- Before token cutover, the staging runtime must identify each in-process actor at the call boundary and enforce actor-specific scopes; do not assume container-level isolation already exists.
+- Production remains suspended. Its auto-deploy setting is configured as enabled, but no action was taken on it. The staging service remains on `staging` with auto-deploy disabled. No deploy was triggered.
+
+### Runtime discovery still outstanding
+
+- Confirm whether any queues, scheduled tasks, or external workers run outside the connected Render workspace.
+- Inspect staging process startup and lifecycle registration to identify which schedulers/background loops actually start.
+- Reconcile service runtime environment-variable **names and bindings** with actor identities without exporting secret values into audit records.
+- Verify whether the single staging instance starts more than one scheduler/loop replica and how leases/idempotency prevent duplicate actor execution.
+- Capture actor identity, runtime instance, deployment commit, and owner team in the eventual registry binding.
