@@ -164,6 +164,16 @@ def _platform_snapshot(updated_at=None):
                 evidence=(),
             ),
         ),
+        observer_observations=(
+            SimpleNamespace(
+                service_id="director",
+                observer_id="meta_engine",
+                readiness=Readiness.DEGRADED,
+                observed_at=updated_at,
+                source_version="meta-v7.1",
+                evidence=(),
+            ),
+        ),
         capabilities=(
             SimpleNamespace(
                 capability_id="strategic_planning",
@@ -189,6 +199,9 @@ def test_director_refreshes_shared_platform_state_into_bounded_planning_context(
     assert state["revision"] == 9
     assert state["readiness_counts"] == {"healthy": 1, "degraded": 1}
     assert state["services"][1]["service_id"] == "job_service"
+    assert state["observer_observations"][0]["observer_id"] == "meta_engine"
+    assert state["observer_observations"][0]["reported_readiness"] == "degraded"
+    assert context["platform_state"]["observer_observations"][0]["readiness"] == "degraded"
     assert context["platform_state"]["revision"] == 9
     assert context["platform_state"]["policy"]["read_only"] is True
     assert context["platform_state"]["policy"]["grants_execution_authority"] is False
