@@ -976,3 +976,36 @@ This means `publish`'s current return value combines multiple states: `None` may
 - Add crash tests after CRM provider acceptance, after event persistence, before dispatch enqueue, after dispatch enqueue, and after consumer side effect before acknowledgement.
 
 **Status:** Sales single-action delegation confirmed; stable CRM lifecycle-event identity and durable dispatch recovery are not established by the inspected source. This is a source-level finding, not a live duplicate-event incident. No code, tests, migrations, database rows, provider calls or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 26. Durable event transport, consumer fan-out and Business Automation inbox audit
+
+### 26.1 Two different buses and delivery contracts exist
+
+`UnifiedEventBus` is the async in-process event path. It persists to `events` through a process-local `_persistence_queue`/worker and dispatches live subscribers through a separate process-local `_dispatch_queue`. It awaits durable persistence before returning a successful ID when Supabase is configured, but subscriber dispatch is not durable in this bus itself. A crash after persistence and before dispatch loses the live dispatch attempt; its local dead-letter queue and replay are also process-local.
+
+`SharedEventBus` is the cross-process worker transport. It polls persisted `events`, creates `event_deliveries` for its configured `source_service`, claims a group delivery with a token/lease, and records durable per-handler receipts. Its implementation explicitly states at-least-once semantics and that a crash after an external side effect but before handler receipt commit can duplicate the effect. Completed handler receipts are skipped on a group retry. This is meaningful existing recovery infrastructure, not an exactly-once guarantee.
+
+### 26.2 Business Automation has a durable inbox consumer but its row producer is unresolved
+
+`BusinessAutomationEventBridge.wire` subscribes to live `UnifiedEventBus` events and, when a DB client exists, starts a durable polling loop. That loop always claims consumer group `business_automation` via `claim_business_automation_event_deliveries`; completion is fenced by the claim token in migration 062. The live handler and durable loop both call the same canonical event admission path (or engine fallback), so event-driven rule execution may be attempted by both paths. The downstream Business Automation execution reservation/idempotency key is the intended duplicate fence.
+
+However, the inspected row-provisioning path does not establish that `event_deliveries` rows are created for the `business_automation` group. `SharedEventBus._ensure_delivery` creates rows only for `self.source_service`. `lifecycle._boot_shared_event_bus` derives that service from `SERVICE_MODE` or settings (the web/worker/full process role), while the Business Automation bridge independently hardcodes `CONSUMER_GROUP = "business_automation"`. No dedicated producer, fan-out trigger, or backfill path for this group was identified in the inspected code/migrations. Thus the durable loop can be enabled yet remain empty unless another producer/trigger exists outside this focused review. This is a high-priority verification item, not a confirmed live outage.
+
+### 26.3 SharedEventBus implementation/schema contract needs reconciliation
+
+The reviewed base migrations 037, 040 and 062 establish `event_deliveries`, Business Automation claim/complete RPCs and claim-token fencing. The current `SharedEventBus` source also references `dead_lettered_at`, `next_attempt_at`, `event_handler_deliveries`, and `complete_shared_event_delivery`; those definitions were not found in the migration files examined in this pass. The migration inventory/search was not exhaustive, so do not conclude they are absent from the complete repository or deployed database. Verify exact DDL/RPCs, indexes, RLS and grants against the full migration chain and live staging schema.
+
+A source-level query defect candidate also exists in `_ensure_delivery`: after insert failure it checks for an existing row by `event_id` but omits `consumer_group` from the lookup. An unrelated consumer group's delivery could therefore make the method return true even when this group's row does not exist; the subsequent group-scoped claim then finds nothing. Correct lookup must include both event ID and consumer group, and insertion conflicts must be distinguished from other database errors.
+
+### 26.4 Required verification and design
+
+- Prove the event fan-out producer creates one delivery per configured durable consumer group, including `business_automation`, with a unique `(event_id, consumer_group)` fence.
+- Verify web/worker process modes and confirm which process creates the Business Automation delivery rows; test restart and backfill from persisted events.
+- Verify that the live UnifiedEventBus subscriber and durable inbox can race safely via the same execution identity, and that the rule reservation's stale-reclaim defect is corrected before any retry can re-enter consequential work.
+- Verify SharedEventBus lease fencing, per-handler receipt DDL/RPCs, retry schedule, dead-letter transitions and RLS against the full migration chain and actual staging schema.
+- Fix `_ensure_delivery`'s existing-row lookup to include consumer group and fail closed on non-unique-violation errors.
+- Test crash points: after event persistence, before delivery row creation; after group claim, before handler; after provider side effect, before handler receipt; after handler receipt, before group completion.
+- Keep V69 business-event fabric distinct until its storage, routing, idempotency and authority adapters are explicitly integrated.
+
+**Status:** Durable event-delivery infrastructure exists and has at-least-once/lease/receipt mechanisms. The Business Automation durable inbox's delivery-row provisioning is unresolved in the inspected topology; schema compatibility and live staging operation remain unverified. No runtime code, migrations, database rows, tests or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
