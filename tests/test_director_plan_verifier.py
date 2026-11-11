@@ -196,3 +196,24 @@ def test_context_refresh_time_alone_does_not_invalidate_plan():
 
     assert report["verdict"] == "verified_for_governance_review"
     assert report["checks"]["context_binding"] == "pass"
+
+
+
+def test_director_core_verification_uses_fresh_read_only_context(monkeypatch):
+    from services.director.core import Director
+
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    plan = _plan(context)
+    director = Director.__new__(Director)
+    monkeypatch.setattr(
+        director,
+        "strategic_context",
+        lambda max_age_seconds=300: _context(now + timedelta(seconds=5)),
+        raising=False,
+    )
+
+    report = director.verify_strategic_plan(plan, max_age_seconds=60)
+
+    assert report["verdict"] == "verified_for_governance_review"
+    assert report["execution_permitted"] is False
