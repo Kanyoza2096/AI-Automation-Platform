@@ -119,6 +119,7 @@ on:
       - "core/platform_state_health.py"
       - "core/platform_state_publisher.py"
       - "core/platform_state_reader.py"
+      - "services/meta_engine/core.py"
       - "services/health_monitor_service.py"
       - "services/director/api.py"
       - "services/director/core.py"
