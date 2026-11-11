@@ -1,4 +1,5 @@
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -122,3 +123,120 @@ def test_platform_state_route_denies_unscoped_admin_without_species_privilege(mo
         headers={"Authorization": "Bearer valid-user-session"},
     )
     assert response.status_code == 403
+
+
+class FakePlatformStateReader:
+    def __init__(self, snapshot=None, error=None):
+        self.snapshot = snapshot
+        self.error = error
+        self.calls = 0
+
+    async def get_snapshot(self):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.snapshot
+
+
+def _platform_snapshot(updated_at=None):
+    updated_at = updated_at or datetime.now(timezone.utc)
+    return SimpleNamespace(
+        revision=9,
+        schema_version=1,
+        updated_at=updated_at,
+        services=(
+            SimpleNamespace(
+                service_id="director",
+                owner="director",
+                readiness=Readiness.HEALTHY,
+                observed_at=updated_at,
+                reason=None,
+                critical=True,
+                evidence=(),
+            ),
+            SimpleNamespace(
+                service_id="job_service",
+                owner="job_service",
+                readiness=Readiness.DEGRADED,
+                observed_at=updated_at,
+                reason="dependency_degraded",
+                critical=True,
+                evidence=(),
+            ),
+        ),
+        capabilities=(
+            SimpleNamespace(
+                capability_id="strategic_planning",
+                owner_service="director",
+                readiness=Readiness.HEALTHY,
+                observed_at=updated_at,
+                reason=None,
+            ),
+        ),
+    )
+
+
+def test_director_refreshes_shared_platform_state_into_bounded_planning_context():
+    reader = FakePlatformStateReader(_platform_snapshot())
+    director = Director(supabase_client=None, platform_state_reader=reader)
+
+    state = asyncio.run(director.refresh_platform_state_context())
+    context = director.strategic_context()
+
+    assert reader.calls == 1
+    assert state["status"] == "available"
+    assert state["freshness"] == "fresh"
+    assert state["revision"] == 9
+    assert state["readiness_counts"] == {"healthy": 1, "degraded": 1}
+    assert state["services"][1]["service_id"] == "job_service"
+    assert context["platform_state"]["revision"] == 9
+    assert context["platform_state"]["policy"]["read_only"] is True
+    assert context["platform_state"]["policy"]["grants_execution_authority"] is False
+    assert context["authority"] == "none"
+
+
+def test_director_marks_expired_platform_snapshot_stale_not_healthy():
+    reader = FakePlatformStateReader(
+        _platform_snapshot(datetime.now(timezone.utc) - timedelta(minutes=10))
+    )
+    director = Director(supabase_client=None, platform_state_reader=reader)
+
+    state = asyncio.run(director.refresh_platform_state_context(max_age_seconds=60))
+
+    assert state["status"] == "stale"
+    assert state["freshness"] == "stale"
+    assert state["reason"] == "platform_state_snapshot_expired"
+    assert state["revision"] == 9
+
+
+def test_director_fails_closed_when_platform_state_reader_raises():
+    reader = FakePlatformStateReader(error=RuntimeError("database unavailable"))
+    director = Director(supabase_client=None, platform_state_reader=reader)
+
+    state = asyncio.run(director.refresh_platform_state_context())
+
+    assert state["status"] == "unavailable"
+    assert state["freshness"] == "unknown"
+    assert state["reason"] == "platform_state_read_failed"
+    assert state["services"] == []
+
+
+def test_director_reports_uninitialized_shared_state_when_snapshot_missing():
+    reader = FakePlatformStateReader(snapshot=None)
+    director = Director(supabase_client=None, platform_state_reader=reader)
+
+    state = asyncio.run(director.refresh_platform_state_context())
+
+    assert state["status"] == "uninitialized"
+    assert state["freshness"] == "unknown"
+    assert state["reason"] == "platform_state_snapshot_missing"
+
+
+def test_director_keeps_platform_state_unknown_when_reader_is_not_configured():
+    director = Director(supabase_client=None)
+
+    state = asyncio.run(director.refresh_platform_state_context())
+
+    assert state["status"] == "unavailable"
+    assert state["freshness"] == "unknown"
+    assert state["reason"] == "platform_state_reader_not_configured"
