@@ -125,7 +125,6 @@ def test_partial_subscription_failure_rolls_back_prior_subscriptions():
 def test_non_callable_unsubscribe_is_rejected_and_rolled_back():
     class BrokenBus(FakeUnifiedBus):
         async def subscribe(self, event_name, handler):
-            await super().subscribe(event_name, handler)
             return None
 
     bus, repo = BrokenBus(), FakeRepository()
