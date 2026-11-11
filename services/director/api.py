@@ -299,6 +299,25 @@ def create_app(director: Director):
             raise HTTPException(404, "strategic plan not found")
         return plan
 
+    @app.get("/strategic-plans/{plan_id}/verification")
+    async def verify_strategic_plan(
+        plan_id: str,
+        request: Request,
+        max_age_seconds: int = 300,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Return an independent, read-only verification report for a stored plan."""
+        await _require_auth(request, credentials)
+        _require_platform_scope(request)
+        if max_age_seconds < 1 or max_age_seconds > 86400:
+            raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
+        plan = await director.load_strategic_plan(plan_id)
+        if plan is None:
+            raise HTTPException(404, "strategic plan not found")
+        return await director.verify_strategic_plan(
+            plan, max_age_seconds=max_age_seconds
+        )
+
     @app.get("/missions/graph")
     async def get_mission_graph(
         request: Request,

@@ -26,6 +26,8 @@ def generated_plan():
                 "capability": "review_content_quality",
                 "sector": "content",
                 "objective": "Review the evidence behind the quality gap.",
+                "target": "Current content quality observations and source reports",
+                "verification_method": "Compare current observer reports with the stated quality criteria and record missing baselines.",
                 "depends_on": [],
                 "acceptance_criteria": ["A quality review is supported by current evidence."],
                 "deliverables": ["Evidence-linked quality assessment"],
@@ -36,6 +38,8 @@ def generated_plan():
                 "capability": "optimize_content_schedule",
                 "sector": "content",
                 "objective": "Recommend a schedule optimization based on the review.",
+                "target": "Brand scheduler configuration and verified quality assessment",
+                "verification_method": "Trace proposed adjustments to the quality assessment without changing the scheduler.",
                 "depends_on": ["review"],
                 "acceptance_criteria": ["A recommendation is supported by the review."],
                 "deliverables": ["Schedule recommendation"],
@@ -172,8 +176,11 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert "brand scheduler" in prompt.lower()
     assert "summary (string) and steps (array)" in prompt
     assert "Do not rename steps to plan, actions" in prompt
+    assert "target" in prompt
+    assert "verification_method" in prompt
     for field in (
-        "step_id", "capability", "sector", "objective", "depends_on",
+        "step_id", "capability", "sector", "objective", "target",
+        "verification_method", "depends_on",
         "acceptance_criteria", "deliverables", "rationale",
     ):
         assert field in prompt

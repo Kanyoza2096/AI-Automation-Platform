@@ -96,18 +96,24 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     if not isinstance(raw_steps, (list, tuple)) or not 1 <= len(raw_steps) <= 12:
         raise StrategicPlanningError("plan_step_count_invalid")
 
-    allowed = {"step_id", "capability", "sector", "objective", "depends_on",
-               "acceptance_criteria", "deliverables", "rationale"}
+    allowed = {"step_id", "capability", "sector", "objective", "target",
+               "verification_method", "depends_on", "acceptance_criteria",
+               "deliverables", "rationale", "criterion_refs", "evidence_refs"}
+    available_evidence_refs = set(
+        _planner_context(context).get("evidence", {}).get("reference_ids", [])
+    )
     steps = []
     for raw in raw_steps:
         if not isinstance(raw, Mapping) or set(raw) - allowed:
             raise StrategicPlanningError("plan_step_fields_invalid")
         step_id, cap_name = raw.get("step_id"), raw.get("capability")
-        step_objective, sector, rationale = (
-            raw.get("objective"), raw.get("sector"), raw.get("rationale")
+        step_objective, sector, rationale, target, verification_method = (
+            raw.get("objective"), raw.get("sector"), raw.get("rationale"),
+            raw.get("target"), raw.get("verification_method"),
         )
         if not all(isinstance(v, str) and v.strip() for v in (
-            step_id, cap_name, step_objective, sector, rationale
+            step_id, cap_name, step_objective, sector, rationale,
+            target, verification_method,
         )):
             raise StrategicPlanningError("plan_step_required_field_missing")
         capability = capabilities.get(cap_name.strip())
@@ -120,12 +126,30 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
             not isinstance(v, str) or not v.strip() for v in dependencies
         ):
             raise StrategicPlanningError("plan_dependencies_invalid")
+        criterion_refs = raw.get("criterion_refs", [])
+        evidence_refs = raw.get("evidence_refs", [])
+        if not isinstance(criterion_refs, (list, tuple)) or any(
+            not isinstance(value, str) or not value.strip() for value in criterion_refs
+        ):
+            raise StrategicPlanningError("plan_criterion_refs_invalid")
+        if not isinstance(evidence_refs, (list, tuple)) or any(
+            not isinstance(value, str) or not value.strip() for value in evidence_refs
+        ):
+            raise StrategicPlanningError("plan_evidence_refs_invalid")
+        normalized_evidence_refs = [value.strip() for value in evidence_refs]
+        if (len(normalized_evidence_refs) != len(set(normalized_evidence_refs))
+                or not set(normalized_evidence_refs).issubset(available_evidence_refs)):
+            raise StrategicPlanningError("plan_references_unknown_evidence")
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
             "sector": sector.strip(), "objective": step_objective.strip(),
+            "target": target.strip(),
+            "verification_method": verification_method.strip(),
             "depends_on": [v.strip() for v in dependencies],
             "acceptance_criteria": _strings(raw.get("acceptance_criteria"), "step_acceptance_criteria"),
             "deliverables": _strings(raw.get("deliverables"), "step_deliverables"),
+            "criterion_refs": [value.strip() for value in criterion_refs],
+            "evidence_refs": normalized_evidence_refs,
             "rationale": rationale.strip(),
             "capability_readiness": {
                 "enabled": bool(capability.get("enabled")),
@@ -142,7 +166,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     context_fingerprint = _fingerprint({
         key: context.get(key) for key in (
             "schema_version", "generated_at", "health_summary", "evidence",
-            "objectives", "capabilities", "missions", "learning"
+            "objectives", "capabilities", "missions", "learning", "platform_state"
         )
     })
     return {
@@ -244,6 +268,20 @@ def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
             },
         },
         "evidence": {
+            "reference_ids": (
+                [f"fact:{item['observer']}" for item in (evidence.get("facts") or [])[:10]
+                 if isinstance(item, Mapping) and isinstance(item.get("observer"), str)]
+                + [f"inference:{item['observer']}:{item['issue_type']}" for item in (evidence.get("inferences") or [])[:10]
+                   if isinstance(item, Mapping) and isinstance(item.get("observer"), str)
+                   and isinstance(item.get("issue_type"), str)]
+                + [f"unknown:{item['kind']}:{item.get('observer', 'platform')}" for item in (evidence.get("unknowns") or [])[:10]
+                   if isinstance(item, Mapping) and isinstance(item.get("kind"), str)]
+                + [f"conflict:{item['sector']}" for item in (evidence.get("conflicts") or [])[:8]
+                   if isinstance(item, Mapping) and isinstance(item.get("sector"), str)]
+                + [f"signal:{item['observer']}:{item['capability']}" for item in (evidence.get("engine_signals", {}).get("accepted") or [])[:8]
+                   if isinstance(item, Mapping) and isinstance(item.get("observer"), str)
+                   and isinstance(item.get("capability"), str)]
+            ),
             "facts": (evidence.get("facts") or [])[:10],
             "inferences": (evidence.get("inferences") or [])[:10],
             "unknowns": (evidence.get("unknowns") or [])[:10],
@@ -296,6 +334,27 @@ def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
         compact["evidence"]["unknowns"] = compact["evidence"]["unknowns"][:5]
         compact["capabilities"] = compact["capabilities"][:25]
         compact["missions"]["recent_tasks"] = compact["missions"]["recent_tasks"][:5]
+
+    # Rebuild references after trimming: the model must not cite evidence
+    # that was removed from the prompt-size-bounded context.
+    bounded_evidence = compact["evidence"]
+    reference_ids = []
+    for item in bounded_evidence["facts"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str):
+            reference_ids.append(f"fact:{item['observer']}")
+    for item in bounded_evidence["inferences"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("issue_type"), str):
+            reference_ids.append(f"inference:{item['observer']}:{item['issue_type']}")
+    for item in bounded_evidence["unknowns"]:
+        if isinstance(item, Mapping) and isinstance(item.get("kind"), str):
+            reference_ids.append(f"unknown:{item['kind']}:{item.get('observer', 'platform')}")
+    for item in bounded_evidence["conflicts"]:
+        if isinstance(item, Mapping) and isinstance(item.get("sector"), str):
+            reference_ids.append(f"conflict:{item['sector']}")
+    for item in bounded_evidence["engine_signals"]["accepted"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("capability"), str):
+            reference_ids.append(f"signal:{item['observer']}:{item['capability']}")
+    compact["evidence"]["reference_ids"] = reference_ids
     return compact
 
 
@@ -315,18 +374,23 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
                 "items": {
                     "type": "object", "additionalProperties": False,
                     "required": [
-                        "step_id", "capability", "sector", "objective",
-                        "depends_on", "acceptance_criteria", "deliverables", "rationale",
+                        "step_id", "capability", "sector", "objective", "target",
+                        "verification_method", "depends_on", "acceptance_criteria",
+                        "deliverables", "rationale", "criterion_refs", "evidence_refs",
                     ],
                     "properties": {
                         "step_id": {"type": "string"},
                         "capability": {"type": "string"},
                         "sector": {"type": "string"},
                         "objective": {"type": "string"},
+                        "target": {"type": "string"},
+                        "verification_method": {"type": "string"},
                         "depends_on": {"type": "array", "items": {"type": "string"}},
                         "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                         "deliverables": {"type": "array", "items": {"type": "string"}},
                         "rationale": {"type": "string"},
+                        "criterion_refs": {"type": "array", "items": {"type": "string"}},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
                     },
                 },
             },
@@ -347,10 +411,17 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
             "keys: summary (string) and steps (array). Do not rename steps to plan, actions, "
             "recommendations, or another key. Every steps item must contain exactly these "
             "fields: step_id (string), capability (string copied from the catalogue), sector "
-            "(string matching that capability), objective (string), depends_on (array of step_id "
-            "strings, or []), acceptance_criteria (array of strings), deliverables (array of "
-            "strings), and rationale (string). Do not omit any field, including empty "
-            "depends_on. Keep every field concise: one short sentence per objective, rationale, "
+            "(string matching that capability), objective (string), target (string naming the "
+            "specific subsystem, metric, process, or artifact to inspect), verification_method "
+            "(string describing a concrete read-only verification method), depends_on (array of "
+            "step_id strings, or []), acceptance_criteria (array of strings), deliverables "
+            "(array of strings), criterion_refs (array using criterion:0, criterion:1, etc. to map "
+            "objective success criteria), evidence_refs (array copied exactly from the "
+            "platform_context evidence.reference_ids), and rationale (string). Do not omit "
+            "any field, including empty depends_on, criterion_refs, or evidence_refs. "
+            "Every target must identify a concrete scope; every verification_method must explain " +
+            "how to verify the step without changing system state. Keep every field concise: " +
+            "one short sentence per objective, rationale, "
             "acceptance criterion, and deliverable. Prefer the smallest useful plan over "
             "exhaustive coverage. "
             "Use evidence to distinguish observed facts, inferences, and unknowns. Do not "
