@@ -2018,8 +2018,29 @@ async def _boot_brand_schedulers(container: ServiceContainer) -> None:
 
 async def _boot_health_monitor(container: ServiceContainer) -> None:
     from services.health_monitor_service import HealthMonitorService
+    from core.unified_bus import get_unified_bus
+    from core.platform_state_store import PlatformStateStore
 
-    hm = HealthMonitorService(container=container)
+    event_bus = get_unified_bus()
+    platform_state_store = None
+    try:
+        from services.supabase import get_service_client_from_settings
+        service_role_client = await _run_in_thread(get_service_client_from_settings)
+        if service_role_client is not None:
+            platform_state_store = PlatformStateStore(service_role_client)
+    except Exception as exc:
+        # Platform State is additive observability; a missing service-role
+        # client must not prevent the existing Health Monitor from starting.
+        logger.warning(
+            "Platform State persistence is disabled: %s",
+            _sanitize_error_message(exc),
+        )
+
+    hm = HealthMonitorService(
+        container=container,
+        event_bus=event_bus,
+        platform_state_store=platform_state_store,
+    )
     result = hm.start()
     if asyncio.iscoroutine(result) or asyncio.isfuture(result):
         await result
