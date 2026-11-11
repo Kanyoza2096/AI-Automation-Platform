@@ -212,6 +212,7 @@ async def _platform_state_for_species(request: Request) -> Optional[Dict[str, An
                 "revision": 0,
                 "services": [],
                 "capabilities": [],
+                "observer_observations": [],
             }
         updated_at = getattr(snapshot, "updated_at", None)
         now_utc = datetime.now(timezone.utc)
@@ -229,6 +230,26 @@ async def _platform_state_for_species(request: Request) -> Optional[Dict[str, An
         def effective_readiness(item: Any) -> str:
             reported = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
             return reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+
+        observer_items = list(getattr(snapshot, "observer_observations", ()) or ())
+        observer_observations = []
+        for item in observer_items[:100]:
+            observed = getattr(item, "observed_at", None)
+            reported = getattr(
+                getattr(item, "readiness", None),
+                "value",
+                str(getattr(item, "readiness", "unknown")),
+            )
+            effective = reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+            observer_observations.append({
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
+                "readiness": effective,
+                "reported_readiness": reported,
+                "freshness": freshness,
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "source_version": str(getattr(item, "source_version", "unknown"))[:80],
+            })
 
         return {
             "status": status,
@@ -255,6 +276,9 @@ async def _platform_state_for_species(request: Request) -> Optional[Dict[str, An
                 }
                 for item in list(getattr(snapshot, "capabilities", ()) or ())[:100]
             ],
+            "observer_observations": observer_observations,
+            "observer_observation_count": len(observer_items),
+            "observer_observations_truncated": len(observer_items) > len(observer_observations),
             "policy": {
                 "platform_operator_only": True,
                 "read_only": True,
@@ -270,6 +294,7 @@ async def _platform_state_for_species(request: Request) -> Optional[Dict[str, An
             "revision": 0,
             "services": [],
             "capabilities": [],
+            "observer_observations": [],
         }
 
 
