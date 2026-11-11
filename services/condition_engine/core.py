@@ -177,7 +177,7 @@ class AutonomousConditionEngine:
                 logger.warning("ConditionEngine Platform State reader unavailable; shared state remains unknown")
         self._platform_state_context: Dict[str, Any] = {
             "status": "unavailable", "freshness": "unknown", "revision": 0,
-            "services": [], "capabilities": [],
+            "services": [], "capabilities": [], "observer_observations": [],
             "reason": "platform_state_reader_not_configured",
         }
         if kwargs:
@@ -292,7 +292,7 @@ class AutonomousConditionEngine:
         if reader is None or not callable(getattr(reader, "get_snapshot", None)):
             self._platform_state_context = {
                 "status": "unavailable", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_reader_not_configured",
             }
             return dict(self._platform_state_context)
@@ -302,14 +302,14 @@ class AutonomousConditionEngine:
             logger.warning("ConditionEngine Platform State read failed closed", exc_info=True)
             self._platform_state_context = {
                 "status": "unavailable", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_read_failed",
             }
             return dict(self._platform_state_context)
         if snapshot is None:
             self._platform_state_context = {
                 "status": "uninitialized", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_snapshot_missing",
             }
             return dict(self._platform_state_context)
@@ -350,12 +350,35 @@ class AutonomousConditionEngine:
             }
             for item in list(getattr(snapshot, "capabilities", ()) or ())[:100]
         ]
+        observer_items = list(getattr(snapshot, "observer_observations", ()) or ())
+        observer_observations = []
+        for item in observer_items[:100]:
+            observed = getattr(item, "observed_at", None)
+            reported = getattr(
+                getattr(item, "readiness", None),
+                "value",
+                str(getattr(item, "readiness", "unknown")),
+            )
+            effective = reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+            observer_observations.append({
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
+                "readiness": effective,
+                "reported_readiness": reported,
+                "freshness": freshness,
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "source_version": str(getattr(item, "source_version", "unknown"))[:80],
+            })
+
         self._platform_state_context = {
             "status": status, "freshness": freshness,
             "revision": int(getattr(snapshot, "revision", 0)),
             "schema_version": int(getattr(snapshot, "schema_version", 1)),
             "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
             "services": services, "capabilities": capabilities,
+            "observer_observations": observer_observations,
+            "observer_observation_count": len(observer_items),
+            "observer_observations_truncated": len(observer_items) > len(observer_observations),
             "services_truncated": len(getattr(snapshot, "services", ()) or ()) > len(services),
             "capabilities_truncated": len(getattr(snapshot, "capabilities", ()) or ()) > len(capabilities),
             "reason": reason,
