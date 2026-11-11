@@ -1206,7 +1206,7 @@ A direct re-read of `core/service_definitions.py` and `core/service_registry.py`
 
 **Interpretation:** neither 20/22 registration nor 18/19 Health Monitor health is a sufficient platform readiness verdict. Exact registration report entries and a common canonical service identity map are required. The Render filtered log inspection did not retrieve the registration report or exact skip/failure entries; those remain unknown, not presumed optional or healthy.
 
-**PR review drift:** GitHub compare at this checkpoint reports the proposal branch has 51 commits ahead and 16 commits behind `staging`, with a diverged history and merge base `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`. PR metadata currently reports mergeable true, but the base has advanced since that merge base. Before any future merge, re-review the complete two-document diff against current staging and reconcile the 16 commits of base drift. Do not treat the current mergeable flag as evidence that the proposal is current or safe to merge.
+**PR review drift:** GitHub compare at this checkpoint reports the proposal branch has 53 commits ahead and 16 commits behind `staging`, with a diverged history and merge base `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`. PR metadata currently reports mergeable true, but the base has advanced since that merge base. Before any future merge, re-review the complete two-document diff against current staging and reconcile the 16 commits of base drift. Do not treat the current mergeable flag as evidence that the proposal is current or safe to merge.
 
 No branch rebase, merge, tests, runtime changes, database changes or deployment occurred in this checkpoint.
 
