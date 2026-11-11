@@ -114,6 +114,7 @@ class ActionOutboxWorker:
         except Exception as exc:
             intent_id = str(row.get("intent_id") or "")
             workspace_id = str(row.get("workspace_id") or "")
+            error_message = str(exc)[:1000]
             logger.exception("action intent failed intent=%s: %s", intent_id, exc)
             # A worker crash/transport exception is deliberately represented as
             # reconciliation_required rather than a false success. The execution
@@ -123,7 +124,7 @@ class ActionOutboxWorker:
                 "status": "reconciliation_required",
                 "intent_id": intent_id,
                 "execution_id": str(row.get("execution_id") or intent_id),
-                "error": str(exc)[:1000],
+                "error": error_message,
                 "reconciliation_required": True,
             }
             if intent_id and workspace_id and row.get("lease_token"):
@@ -131,7 +132,7 @@ class ActionOutboxWorker:
                     await asyncio.to_thread(lambda: db.rpc("finalize_action_outbox", {
                         "p_intent_id": intent_id, "p_workspace_id": workspace_id,
                         "p_lease_token": row.get("lease_token"), "p_status": "reconciliation_required",
-                        "p_error": str(exc)[:1000],
+                        "p_error": error_message,
                     }).execute())
                 except Exception:
                     logger.exception("failed to persist action uncertainty intent=%s", intent_id)
