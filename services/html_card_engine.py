@@ -7,6 +7,7 @@ Verbose logging for debugging.
 
 import logging
 import json
+import requests
 
 from utils.http_client import HttpClient
 
