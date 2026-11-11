@@ -1399,3 +1399,43 @@ The live topology JSON does not expose the effective `SERVICE_MODE`, the Render 
 The exact live registration outcomes are reconciled with source definitions. Two skips are understood as optional resolver returns, but their initializer/impact is not fully established. Several missing nodes are explained as external infrastructure or mode-gated components by source; the deployed mode and health of those components remain unverified. Guardian ownership remains an explicit source gap. Gate 0 therefore remains open pending: (a) effective mode and process identity for each staging process, (b) initializer/owner mapping for engagement tracker, event recorder, guardian and guardian scheduler, and (c) source-owned timestamped health evidence for Redis, Supabase, Gemini and GitHub where those integrations are expected.
 
 No runtime code, tests, migrations, database writes, deployments, credentials or production state were changed by this source checkpoint.
+
+
+### 27.16 Initializer ownership findings — engagement tracker, event recorder and Guardian
+
+This checkpoint inspects the implementation behind the two live optional skips and the remaining Guardian topology nodes. These are source findings on the proposal branch; they do not prove which boot path was active in the deployed staging process.
+
+**Engagement tracker — missing lifecycle startup path**
+- `services/engagement_tracker.py` declares module-level `engagement_tracker: Optional[EngagementTracker] = None`.
+- The module's `start_engagement_tracking(container, interval_minutes=30)` function constructs the instance, resolves its Supabase client, Condition Engine and UnifiedEventBus dependencies, starts its periodic loop, and assigns the module global.
+- `core/service_definitions.py::_resolve_engagement_tracker` only imports and returns that module global; it does not construct or start the tracker.
+- The inspected `lifecycle.py::_build_boot_sequence` has no named EngagementTracker boot step or call to `start_engagement_tracking`.
+- Therefore the live `resolved_none` is consistent with a real initialization/ownership gap in this lifecycle path. Before adding a boot step, identify the intended owner/process mode and ensure the tracker is started exactly once, with clean shutdown and no duplicate polling across web/worker processes. Its canonical dependency from Condition Engine means this must be addressed in capability readiness, not silently waived.
+
+**Event recorder — lazy-factory versus instance-only registry mismatch**
+- `dependency_registry.py::_register_workflows` registers `EventRecorder` with `c.register(EventRecorder, _build_recorder, singleton=True)`; this is a lazy factory, not an eagerly created instance.
+- `core/service_definitions.py::_resolve_event_recorder` calls `_resolve_existing(container, EventRecorder)`, which uses `try_get_instance` and intentionally does not invoke lazy resolution.
+- Consequently, if no earlier boot path resolves the factory, the Meta service-registration pass reports `event_recorder: resolved_none` even though its factory is registered. This is not evidence that the factory or class is absent.
+- `EventRecorder.start()` installs subscriptions for published/generated posts, scan completions and message events. The inspected lifecycle boot sequence contains no explicit EventRecorder start/stop step.
+- There are two separate lifecycle obligations: make the instance available to the registry in the owning process, and start/stop its subscriptions exactly once. Merely changing the topology resolver to call `try_resolve` would instantiate it as a side effect of reporting and would not by itself establish subscription lifecycle correctness. Do not make that change without assigning a lifecycle owner.
+
+**Guardian — conditional DI registration, not a separate boot-owned canonical service**
+- `dependency_registry.py` invokes `_register_guardian` only when `settings.guardian_configured` is true; otherwise it records an optional not-configured binding.
+- When configured, `_register_guardian` registers a lazy `GuardianService` factory. The factory composes `GitHubClient`, `CodeGuardianScanner`, `AutoFixEngine`, the UnifiedEventBus and Facebook notification service.
+- `services/guardian_service.py::GuardianService` is the concrete scan orchestrator. Its status includes configured state, scan count and last scan. Auto-fix is separately gated by `GUARDIAN_AUTO_FIX`.
+- Director discovery exports `services.guardian_service.guardian_service` in the security sector, but the inspected `services/guardian_service.py` defines the class and does not define a module-level `guardian_service` singleton. The DI factory is keyed by the `GuardianService` class. This indicates a likely discovery/export-vs-DI identity mismatch that needs direct reconciliation; it does not justify inventing a second singleton.
+- The canonical topology's `guardian` node has dependencies `supabase` and `github`, but the GuardianService constructor shown above does not accept a Supabase client. Its direct operational dependencies in this factory are GitHub credentials/client, scanner, auto-fix engine, event bus and Facebook notifier. The graph may represent broader platform/security ownership, but its edge semantics need review against actual code.
+
+**Guardian scheduler — no implementation owner established**
+- Searches of the repository source and the inspected lifecycle/dependency registration paths found no `guardian_scheduler` implementation, service definition, or named boot step.
+- The canonical graph declares `guardian_scheduler -> guardian`, and Meta Engine's external-service exemption lists both names, but those declarations do not create an implementation or runtime owner.
+- Treat `guardian_scheduler` as an unresolved/stale topology declaration until a concrete scheduler implementation and owning process are found. Do not report it as an operational outage solely because it is absent.
+
+**Implications / recommended correction boundary**
+1. Add explicit owner/process-mode lifecycle contracts for EngagementTracker and EventRecorder, including startup, duplicate-instance prevention, shutdown and health evidence. Do not instantiate services as a side effect of topology reads.
+2. Reconcile Guardian's Director export with the DI-registered `GuardianService` class using one canonical instance identity. Keep scan execution and auto-fix governed; topology registration must not start scans or enable auto-fix.
+3. Either locate and document a real GuardianScheduler owner or remove/replace that canonical node through a separately reviewed topology change. Do not silently retain a phantom dependency.
+4. Revisit the Guardian dependency edges based on concrete injected dependencies and intended capability semantics. Do not infer a Supabase dependency from a generic platform association.
+5. Preserve the distinction between a factory being registered, an instance being constructed, an instance being running, and a capability being ready.
+
+This checkpoint is source-only. It does not change code, tests, migrations, database state, credentials, deployments or production.
