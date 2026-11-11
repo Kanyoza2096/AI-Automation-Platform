@@ -245,7 +245,7 @@ Reuse the existing Phase 9.2 correlation contract and OpenTelemetry integration.
 
 **Catalogue version:** kdo-authz-scopes/v1. Every scope definition is immutable once referenced by a signed token or authorization decision. A semantic change requires a new catalogue version and, where meaning or boundary changes, a new scope identifier. Renaming or widening an existing scope in place is prohibited.
 
-**Scope grammar:** <domain>:<resource>:<action> for resource-specific permissions; narrowly defined actor-level scopes may use <actor>:<action>. Scope strings are exact identifiers, not glob patterns. Wildcards (including *, admin, owner, and implicit superuser aliases) are not valid workload grants.
+**Scope grammar:** `&lt;domain&gt;:&lt;resource&gt;:&lt;action&gt;` for resource-specific permissions; narrowly defined actor-level scopes may use `&lt;actor&gt;:&lt;action&gt;`. Scope strings are exact identifiers, not glob patterns. Wildcards (including *, admin, owner, and implicit superuser aliases) are not valid workload grants.
 
 Each catalogue entry must define: scope ID; human-readable purpose; allowed resource types and action verbs; explicit exclusions; allowed actor classes; owning team; maximum risk tier; required workspace/environment constraints; required tool/capability IDs and versions; delegation policy; required policy and governance checks; approval class; audit event; and catalogue version. An authorization request must supply concrete resource IDs and environment/workspace context; a scope alone never implies unrestricted resource access.
 
