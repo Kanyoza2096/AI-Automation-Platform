@@ -21,6 +21,7 @@ class BusinessAutomationEventBridge:
     POLL_INTERVAL_SECONDS = 2.0
     CLAIM_BATCH_SIZE = 25
     FANOUT_READINESS_RPC = "business_automation_event_fanout_ready"
+    RECOVERY_READINESS_RPC = "business_automation_stale_reservation_guard_ready"
 
     def __init__(self, engine=None, event_bus=None):
         self.engine = engine
@@ -34,6 +35,7 @@ class BusinessAutomationEventBridge:
         self._durable_task = None
         self._durable_enabled = False
         self._fanout_ready = False
+        self._recovery_guard_ready = False
         self._durable_claimed = 0
         self._durable_processed = 0
         self._durable_failures = 0
@@ -56,13 +58,13 @@ class BusinessAutomationEventBridge:
         self._wired = True
 
         db = getattr(self.engine, "_get_db", lambda: None)()
-        self._fanout_ready = bool(
-            db is not None and await self._check_durable_fanout()
-        )
+        readiness = await self._check_durable_fanout() if db is not None else {}
+        self._fanout_ready = readiness.get("fanout", False)
+        self._recovery_guard_ready = readiness.get("recovery_guard", False)
         # A database connection alone is not evidence that the producer-side
         # fan-out exists. Do not advertise or poll an inbox that cannot receive
         # new deliveries; the low-latency UnifiedEventBus path remains available.
-        self._durable_enabled = self._fanout_ready
+        self._durable_enabled = self._fanout_ready and self._recovery_guard_ready
         if self._durable_enabled:
             self._durable_task = asyncio.create_task(
                 self._durable_loop(),
@@ -71,13 +73,15 @@ class BusinessAutomationEventBridge:
         else:
             logger.error(
                 "BusinessAutomation durable inbox unavailable: "
-                "event fan-out trigger is not confirmed; live event path remains active"
+                "fan-out and stale-reservation safeguards are not both confirmed; "
+                "live event path remains active"
             )
         logger.info(
-            "BusinessAutomationEventBridge v%s wired durable_inbox=%s fanout_ready=%s",
+            "BusinessAutomationEventBridge v%s wired durable_inbox=%s fanout_ready=%s recovery_guard_ready=%s",
             self.VERSION,
             self._durable_enabled,
             self._fanout_ready,
+            self._recovery_guard_ready,
         )
 
     async def unwire(self) -> None:
@@ -96,6 +100,7 @@ class BusinessAutomationEventBridge:
         self._durable_task = None
         self._durable_enabled = False
         self._fanout_ready = False
+        self._recovery_guard_ready = False
         self._wired = False
 
     async def _durable_loop(self) -> None:
@@ -172,21 +177,24 @@ class BusinessAutomationEventBridge:
                 await asyncio.sleep(delay)
         return None
 
-    async def _check_durable_fanout(self) -> bool:
-        """Fail closed unless the database confirms the atomic event fan-out trigger."""
-        try:
-            result = await self._execute_db_rpc(
-                self.FANOUT_READINESS_RPC,
-                {},
-                max_retries=0,
-            )
-            return bool(result is not None and result.data is True)
-        except Exception as exc:
-            logger.warning(
-                "BusinessAutomation event fan-out readiness check failed: %s",
-                str(exc)[:200],
-            )
-            return False
+    async def _check_durable_fanout(self) -> dict[str, bool]:
+        """Require both producer fan-out and stale-reservation recovery safeguards."""
+        readiness = {"fanout": False, "recovery_guard": False}
+        checks = (
+            ("fanout", self.FANOUT_READINESS_RPC),
+            ("recovery_guard", self.RECOVERY_READINESS_RPC),
+        )
+        for key, rpc_name in checks:
+            try:
+                result = await self._execute_db_rpc(rpc_name, {}, max_retries=0)
+                readiness[key] = bool(result is not None and result.data is True)
+            except Exception as exc:
+                logger.warning(
+                    "BusinessAutomation readiness check '%s' failed: %s",
+                    rpc_name,
+                    str(exc)[:200],
+                )
+        return readiness
 
     async def _claim_durable_events(self) -> list[dict[str, Any]]:
         result = await self._execute_db_rpc(
@@ -288,6 +296,7 @@ class BusinessAutomationEventBridge:
             "durable_inbox": {
                 "enabled": self._durable_enabled,
                 "fanout_ready": self._fanout_ready,
+                "recovery_guard_ready": self._recovery_guard_ready,
                 "claimed": self._durable_claimed,
                 "processed": self._durable_processed,
                 "failures": self._durable_failures,
