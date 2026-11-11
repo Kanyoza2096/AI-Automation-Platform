@@ -93,6 +93,69 @@ def test_wrong_provider_identity_is_ignored():
     assert snapshot.services[0].readiness is Readiness.UNKNOWN
 
 
+def test_meta_engine_observations_are_advisory_and_do_not_replace_owner_readiness():
+    reports = {
+        "meta_engine": Report(
+            "meta_engine",
+            "healthy",
+            metadata={
+                "version": "7.1.0",
+                "engine_observations": [{
+                    "service_id": "director",
+                    "status": "degraded",
+                    "observed_at": NOW.isoformat(),
+                    "source_version": "director-v5.5",
+                }],
+            },
+        ),
+    }
+    snapshot = build_platform_state_from_health_reports(
+        reports,
+        now=NOW,
+        dependencies={"meta_engine": (), "director": ()},
+        service_ownership={
+            "meta_engine": ("meta_engine", True),
+            "director": ("director", True),
+        },
+    )
+    services = {item.service_id: item for item in snapshot.services}
+    assert services["director"].readiness is Readiness.UNKNOWN
+    assert len(snapshot.observer_observations) == 1
+    observed = snapshot.observer_observations[0]
+    assert observed.service_id == "director"
+    assert observed.observer_id == "meta_engine"
+    assert observed.readiness is Readiness.DEGRADED
+    assert observed.evidence[0].source == "meta_engine:engine_health"
+
+
+def test_stale_meta_engine_observation_is_preserved_as_stale():
+    reports = {
+        "meta_engine": Report(
+            "meta_engine",
+            "healthy",
+            metadata={
+                "engine_observations": [{
+                    "service_id": "director",
+                    "status": "healthy",
+                    "observed_at": (NOW - timedelta(minutes=8)).isoformat(),
+                    "source_version": "director-v5.5",
+                }],
+            },
+        ),
+    }
+    snapshot = build_platform_state_from_health_reports(
+        reports,
+        now=NOW,
+        stale_after=timedelta(minutes=5),
+        dependencies={"meta_engine": (), "director": ()},
+        service_ownership={
+            "meta_engine": ("meta_engine", True),
+            "director": ("director", True),
+        },
+    )
+    assert snapshot.observer_observations[0].readiness is Readiness.STALE
+
+
 def test_registry_reader_uses_cache_without_invoking_health_probes():
     registry = FakeRegistry({"director": Report("director", "healthy")})
     snapshot = read_platform_state_from_health_registry(
