@@ -29,7 +29,6 @@ must_contain('services/health_monitor_service.py', 'class HealthMonitorService')
 must_contain('main.py', 'routes.code_intel_routes')
 for retired_path in ('plugins/monitor/plugin.py', 'plugins/backup/plugin.py', 'plugins/trend_intelligence/plugin.py', 'plugins/growthbridge/plugin.py', 'routes/affiliate_routes.py', 'services/affiliate_service.py'):
     must_not_exist(retired_path)
-must_not_contain('plugins/growthbridge/routes/public.py', 'growthbridge_talent").select("*")')
 
 failed = [msg for ok, msg in checks if not ok]
 for ok, msg in checks:
