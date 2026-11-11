@@ -108,8 +108,6 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
     for m in (
         "routes.event_api", "routes.code_intel_routes", "routes.backend_contract_routes", "routes.cp_gap_routes",
         "api.v1", "routes.rule_routes", "routes.meta_routes", "routes.email_routes", "routes.webhook",
-        "plugins.trend_intelligence.routes.public", "plugins.trend_intelligence.routes.admin",
-        "plugins.backup.routes.public", "plugins.backup.routes.admin",
         "api.timeline_routes", "api.e2e_routes", "api.action_intent_routes", "api.metabolism_routes", "api.organism_body_routes",
         "api.outbox_routes", "api.report_routes", "api.slo_routes", "api.observability_routes", "api.web_intelligence",
         "api.health_unified", "api.content_intelligence_automation", "routes.council_routes", "routes.circulation_routes", "routes.pulse_routes",
@@ -128,7 +126,7 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
             continue
         if mod.startswith("api.routers.") and "api.v1" in mounts:
             continue
-        if mod.startswith("plugins.") and mod.split(".")[1] in {"growthbridge", "github_connector", "monitor"} and "_mount_plugin" in source:
+        if mod.startswith("plugins.") and mod.split(".")[1] == "github_connector" and "_mount_plugin" in source:
             continue
         orphaned.append(mod)
     assert orphaned == []
