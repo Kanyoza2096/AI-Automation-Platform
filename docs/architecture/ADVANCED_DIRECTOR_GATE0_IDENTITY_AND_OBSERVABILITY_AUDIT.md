@@ -632,3 +632,45 @@ The companion architecture proposal now defines the proposed KDO Workload Token 
 
 **Decision status:** pending architecture, identity/security, runtime and governance review. Gate 0 remains partially complete. No token issuer, verifier, registry implementation, migration, grant, test run, deployment or production action is authorized by this checkpoint.
 
+## 16. Existing identity infrastructure convergence checkpoint
+
+A focused source inspection of the staging branch was completed for V71.1, V71.2, V71.13, V71.18, the Advanced Agent Control Plane, V83, V84, the engineering role registry and their directly relevant tests. This is not a repository-wide persistence, migration, RLS, route-reachability or production-wiring audit.
+
+### Confirmed source-level findings
+
+| Component | Evidence-based finding | Gate 0 implication |
+|---|---|---|
+| V71.1 | Workspace-scoped agent identity/lifecycle and declared capabilities; SHA-256 fingerprint; explicit no-authority/no-execution methods | Strong reusable identity domain model, but lacks platform subject, accountable owner, runtime attestation, environment and key binding |
+| V71.2 | Workspace-scoped capability allow/deny grants; declared-capability validation; explicit deny wins; empty permission scope matches globally within that permission subject to identity/governance | Reuse as a capability-policy input, but empty scopes and legacy capability names require explicit migration classification; never translate to wildcard token scopes |
+| V71.13 | Creates V71.1/V71.2 in-memory registries per workspace runtime, then composes workforce services; fail-closed on durable hydration failure | Preserve as the single runtime composition path; prevent duplicate registry instances |
+| V71.18 | Hydrates identities, capability permissions and workforce records from workspace-filtered Supabase tables, verifies record fingerprints, and reports restart safety | Existing durable workforce tables are the first persistence reuse candidate; hydration alone does not prove all write, transaction, uniqueness, RLS or audit semantics |
+| Advanced Agent Control Plane | Read-only, fingerprinted snapshot over existing registries; authority_granted and execution_requested remain false | Reuse as an operator/read-model projection, never as an authorization service |
+| V83 | Tenant/workspace-bound identity and access sessions, expiry/state checks and integrity fingerprints; SQLite defaults to :memory: | Reuse assurance concepts/tests only after confirming production configuration and durable shared storage |
+| V84 | Validates V83 sessions and asks the action pipeline for a decision with enqueue disabled and no domain executor; records decision evidence; SQLite defaults to :memory: | Decision-evidence component only; not token issuance, workload scope registry or action execution |
+| Engineering Agent Registry | Static role catalogue and host-installed adapter registry; selected role readiness is distinct from execution authorization | Preserve as specialist role metadata; map roles to workload principals/tools explicitly without replacing the engineering vertical |
+
+### Convergence decision
+
+**Recommended:** keep V71 as the canonical workforce-agent identity/capability foundation and extend it through a narrow platform-principal binding. Retain V71.13/V71.18 as the runtime composition and durable hydration path. Reuse V83/V84 only for their distinct identity/session assurance and authorization-decision evidence responsibilities after wiring/storage verification. Retain the Engineering Agent Registry as role/adapter metadata. Add workload-token issuer/verifier adapters only after proof-of-possession and key custody decisions; do not create a parallel registry database.
+
+### Unresolved verification items before Gate 0 exit
+
+- Trace every V71 registry mutation to its durable write adapter and confirm transaction boundaries, optimistic/concurrent update behavior, uniqueness/indexes, foreign keys, schema migration history and Supabase RLS.
+- Confirm V71.18 hydration and all write paths behave consistently across multiple web/worker processes and runtime restarts; inspect stale cache and duplicate-runtime behavior.
+- Determine whether V83/V84 are wired into live API authentication or remain separately callable components; inspect production storage configuration without reading secret values.
+- Reconcile V71 workforce agent IDs to actual engineering worker/planner/specialist runtime actors and determine whether they are independent principals or role metadata.
+- Establish canonical mapping between human identity, workspace API-token identities, non-human service credentials and future workload principal subjects without reusing human super-admin or shared master/Python service credentials.
+- Confirm exact accountable owner and runtime binding for each actor family; source labels alone are not evidence of an independently authenticated principal.
+- Review all relevant table migrations and RLS policies, not just Python hydration code. No live database queries or mutations were performed in this focused source review.
+
+### Required migration safety
+
+- Preserve existing V71 agent IDs, workspace boundaries, capability declarations, planning, memory, budgets, takeover, coordination, durable runtime and worker governance.
+- Shadow-map V71 capability grants to the new scope catalogue; explicit-deny precedence remains. Empty-scope grants are quarantined for review until resource boundaries are made explicit.
+- Keep signed scopes, capability eligibility, tool bindings, registry constraints and governance approval as distinct layers.
+- Never treat SHA-256 record fingerprints as signatures, issuer authentication or proof-of-possession.
+- Preserve V83/V84 tenant/session and tamper tests, V71 persistence/restart tests, Advanced Agent Control Plane read-only tests and the entire AI Software Engineering / Code Intelligence suite.
+- No new Supabase project, paid database, migration, token issuance, grant activation, runtime code, test run, deployment or production operation is authorized by this checkpoint.
+
+**Decision status:** architecture recommendation documented; owner/security/runtime review pending. Gate 0 remains partially complete because persistence write paths, migrations/RLS, complete actor mappings and live wiring are not yet exhaustively verified.
+
