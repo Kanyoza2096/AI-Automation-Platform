@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 from services.director.plan_verifier import verify_strategic_plan, _fingerprint
@@ -206,6 +207,13 @@ def test_director_core_verification_uses_fresh_read_only_context(monkeypatch):
     context = _context(now)
     plan = _plan(context)
     director = Director.__new__(Director)
+    async def refresh_platform_state_context(max_age_seconds=300):
+        return {}
+
+    monkeypatch.setattr(
+        director, "refresh_platform_state_context",
+        refresh_platform_state_context, raising=False,
+    )
     monkeypatch.setattr(
         director,
         "strategic_context",
@@ -213,7 +221,7 @@ def test_director_core_verification_uses_fresh_read_only_context(monkeypatch):
         raising=False,
     )
 
-    report = director.verify_strategic_plan(plan, max_age_seconds=60)
+    report = asyncio.run(director.verify_strategic_plan(plan, max_age_seconds=60))
 
     assert report["verdict"] == "verified_for_governance_review"
     assert report["execution_permitted"] is False
