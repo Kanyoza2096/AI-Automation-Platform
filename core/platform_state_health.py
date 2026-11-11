@@ -171,6 +171,7 @@ def read_platform_state_from_health_registry(
     now: datetime | None = None,
     stale_after: timedelta = timedelta(minutes=5),
     supplemental_statuses: Mapping[str, str] | None = None,
+    dependencies: Mapping[str, tuple[str, ...]] = CANONICAL_ENGINE_DEPENDENCIES,
 ) -> PlatformStateSnapshot:
     """Read the cached health snapshot without triggering any health probes."""
     if registry is None:
@@ -188,6 +189,7 @@ def read_platform_state_from_health_registry(
         stale_after=stale_after,
         supplemental_statuses=supplemental_statuses,
         supplemental_observed_at=now or datetime.now(timezone.utc),
+        dependencies=dependencies,
     )
 
 
