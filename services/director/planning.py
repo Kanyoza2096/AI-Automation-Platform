@@ -96,9 +96,9 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     if not isinstance(raw_steps, (list, tuple)) or not 1 <= len(raw_steps) <= 12:
         raise StrategicPlanningError("plan_step_count_invalid")
 
-    allowed = {"step_id", "capability", "sector", "objective", "depends_on",
-               "acceptance_criteria", "deliverables", "rationale",
-               "criterion_refs", "evidence_refs"}
+    allowed = {"step_id", "capability", "sector", "objective", "target",
+               "verification_method", "depends_on", "acceptance_criteria",
+               "deliverables", "rationale", "criterion_refs", "evidence_refs"}
     available_evidence_refs = set(
         _planner_context(context).get("evidence", {}).get("reference_ids", [])
     )
@@ -107,11 +107,13 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         if not isinstance(raw, Mapping) or set(raw) - allowed:
             raise StrategicPlanningError("plan_step_fields_invalid")
         step_id, cap_name = raw.get("step_id"), raw.get("capability")
-        step_objective, sector, rationale = (
-            raw.get("objective"), raw.get("sector"), raw.get("rationale")
+        step_objective, sector, rationale, target, verification_method = (
+            raw.get("objective"), raw.get("sector"), raw.get("rationale"),
+            raw.get("target"), raw.get("verification_method"),
         )
         if not all(isinstance(v, str) and v.strip() for v in (
-            step_id, cap_name, step_objective, sector, rationale
+            step_id, cap_name, step_objective, sector, rationale,
+            target, verification_method,
         )):
             raise StrategicPlanningError("plan_step_required_field_missing")
         capability = capabilities.get(cap_name.strip())
@@ -141,6 +143,8 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
             "sector": sector.strip(), "objective": step_objective.strip(),
+            "target": target.strip(),
+            "verification_method": verification_method.strip(),
             "depends_on": [v.strip() for v in dependencies],
             "acceptance_criteria": _strings(raw.get("acceptance_criteria"), "step_acceptance_criteria"),
             "deliverables": _strings(raw.get("deliverables"), "step_deliverables"),
@@ -370,15 +374,17 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
                 "items": {
                     "type": "object", "additionalProperties": False,
                     "required": [
-                        "step_id", "capability", "sector", "objective",
-                        "depends_on", "acceptance_criteria", "deliverables", "rationale",
-                        "criterion_refs", "evidence_refs",
+                        "step_id", "capability", "sector", "objective", "target",
+                        "verification_method", "depends_on", "acceptance_criteria",
+                        "deliverables", "rationale", "criterion_refs", "evidence_refs",
                     ],
                     "properties": {
                         "step_id": {"type": "string"},
                         "capability": {"type": "string"},
                         "sector": {"type": "string"},
                         "objective": {"type": "string"},
+                        "target": {"type": "string"},
+                        "verification_method": {"type": "string"},
                         "depends_on": {"type": "array", "items": {"type": "string"}},
                         "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                         "deliverables": {"type": "array", "items": {"type": "string"}},
