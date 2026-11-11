@@ -855,3 +855,28 @@ Read-only inspection of the dedicated staging Supabase project on 2026-11-11 con
 This confirms the staging durable inbox is polling an empty delivery table because the expected fan-out path is not active in the observed full-mode topology. In addition, SharedEventBus currently seeds its configured `source_service` group, whereas the Business Automation inbox claims `business_automation`; an explicit consumer-group fan-out/adapter contract is still required even when SharedEventBus is running. See audit section 26.6 for exact database, policy, RPC and Render evidence.
 
 **Decision:** keep this as a Gate 0 blocker. Design a single authoritative fan-out mechanism and readiness contract before authorizing runtime changes. No production resources, staging rows, schemas, environment variables, code or deployments were modified during this verification.
+
+
+### 3.23 Lifecycle ownership and evidence-derived capability readiness
+
+The Gate 0 source audit found that service registration, instance construction, startup, health observation and capability readiness are currently distinct facts. The architecture must preserve those distinctions rather than treating registry membership or a topology boolean as readiness.
+
+**Lifecycle contract.** Every service/capability owner declares its canonical identity, process-mode expectation, construction strategy, instance scope, start/stop owner, startup deadline, required/optional dependencies, readiness evidence source and freshness TTL, criticality, degradation policy and recovery owner. This is a contract overlay referencing existing SERVICE_DEFINITIONS, CANONICAL_ENGINE_DEPENDENCIES and lifecycle boot steps; it must not become a duplicate service registry or dependency graph.
+
+**Readiness states.** Derive one of not_expected, starting, healthy, degraded, unavailable, stale or unknown from typed, provenance-bearing observations. Each observation includes source and process/instance identity, scope, observed-at/expiry, evidence reference, correlation/causation and bounded redacted details. Conflicting fresh observations become unknown/reconciliation-required; expired evidence becomes stale; missing evidence is never healthy. A required dependency gates readiness. Optional dependency behavior must be explicitly declared and tested by the owning capability; graph edges alone do not establish optionality.
+
+**Lifecycle invariants.**
+- A service absent from a process role that does not own it is not_expected, not unavailable.
+- Lazy dependency-injection factories remain unconstructed until their actual owner resolves them; topology reads must never instantiate or start services.
+- Process-local singleton guarantees do not extend across web/worker processes. Each process reports its own instance identity and lifecycle.
+- Workspace-scoped runtime composition is workspace-isolated and concurrency-safe; no module-global workspace state.
+- External providers are represented by source-owned adapters, not synthetic local service instances. Configured, connected, authenticated and operation-ready are separate states.
+- Topology diagnostics are observational and bounded. They never invoke scans, remediation, publishing, startup or other work.
+
+**Current owner decisions still required.** EngagementTracker needs a single process-mode lifecycle owner and an explicit decision on whether Condition Engine can operate without it. EventRecorder needs separate construction and subscription start/stop ownership. Guardian discovery and DI must resolve one GuardianService identity while keeping scan separate from governed remediation. GuardianScheduler must be mapped to a real implementation/owner or removed through a separately reviewed topology change. MetaEngine needs self-health evidence without requiring self-registration as its own child. Redis, Supabase, Gemini and GitHub readiness must come from their actual client/provider adapters. BrandSchedulers and EnterpriseEmitters must be evaluated against effective process role.
+
+**Reporting contract.** Preserve the existing topology endpoint's graph/registration semantics. A future versioned diagnostic response should report process expectation, boot owner, construction outcome, lifecycle phase, readiness status, evidence timestamp/expiry, probe identity/duration, dependency reasons and manifest/projection versions. Do not redefine the existing healthy field, which currently describes topology drift rather than comprehensive readiness.
+
+**Phase 1 acceptance.** Verify process-role classification, exactly-once start/stop, concurrent construction, side-effect-free topology reads, tracker dependency policy, recorder subscription lifecycle, Guardian identity convergence, GuardianScheduler ownership, provider readiness distinctions, observation idempotency/freshness/workspace isolation, versioned compare-and-swap projection, post-commit state-change events and separation of readiness from authorization.
+
+This is a design contract only. Gate 0 remains partially complete until deployed process identities/modes, component owners, durable observation/event transaction boundaries, retention/redaction and scope controls are verified. No runtime implementation, migration, database change, test execution, deployment or production action is authorized by this proposal.
