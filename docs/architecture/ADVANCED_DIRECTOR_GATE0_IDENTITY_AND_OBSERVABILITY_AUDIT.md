@@ -1357,3 +1357,45 @@ The user retrieved the authenticated staging `GET /api/v1/topology` response fro
 - No critical resolver failure is shown by this response, but Gate 0 is not complete: ownership expectations, freshness, durable observation/event transaction boundaries, manifest authority, retention/redaction and scope controls remain open.
 
 The live response was supplied by the user. It is evidence from the staging endpoint at the time of retrieval, not a claim about current state beyond that observation. No token or credential was included in the shared response. This documentation update does not invoke the endpoint again or change runtime, database, migration, test, deployment, credential or production state.
+
+
+### 27.15 Canonical-node owner and process-mode reconciliation — source checkpoint
+
+This checkpoint cross-references the live missing-node/skip list from §27.14 against `lifecycle.py`, `core/service_definitions.py`, and the existing `scripts/audit_engine_topology.py`. It is a source-level classification; it does not infer the deployed Render `SERVICE_MODE` value.
+
+| Canonical node / outcome | Source owner or boot condition | Evidence-based classification | Remaining question |
+|---|---|---|---|
+| `brand_scheduler` | `BrandSchedulers` boot step in `full` or `workers`; canonical alias in the existing inventory maps it to the brand scheduler manager family | Process-mode-specific worker/business scheduler, not expected in every process | Confirm which staging process runs the scheduler boot step and whether it should register under this canonical name |
+| `engagement_tracker` (skipped) | Optional service definition; resolver imports `services.engagement_tracker.engagement_tracker`; no corresponding named boot step was found in the inspected `_build_boot_sequence` | Explicit optional resolver returned None in the live snapshot; no source evidence yet identifies its initializer/owner | Find its initializer and determine whether any active capability requires it |
+| `event_recorder` (skipped) | Optional service definition; resolver looks up an existing `EventRecorder` instance through the container; no matching named boot step was found in the inspected boot sequence | Explicit optional resolver returned None; resolver does not construct it | Determine whether another subsystem owns initialization or whether this is a dormant optional component |
+| `enterprise_emitters` | `EnterpriseEmitters` boot step only in `full` or `api` | Process-mode-specific observability component | Confirm actual web process mode and whether emitter registration is included in the topology registry |
+| `github` | Infrastructure node in canonical graph; `GitHubConnector` boot step in `full` or `github` | External integration plus process-mode-specific connector; not a normal service-definition entry | Confirm connector process mode and configured integration readiness independently |
+| `gemini` | Canonical infrastructure/provider node; no direct service resolver in `SERVICE_DEFINITIONS` or named boot step in inspected sequence | External LLM provider dependency, not expected to appear as a local registry instance solely because it is configured | Need provider-specific health/credential/configuration evidence from its owning gateway |
+| `redis` | Infrastructure node; `RedisClient` boot step is added in all modes | External backing infrastructure initialized by a boot step, but not registered as a canonical service instance by the service definitions | Distinguish successful client initialization from a topology registry node; obtain Redis client health evidence |
+| `supabase` | Infrastructure node; `SupabaseClient` boot step is added in all modes | External backing infrastructure initialized by a boot step, but not registered as a canonical service instance by the service definitions | Distinguish client initialization/database reachability from a topology registry node; obtain scoped database health evidence |
+| `guardian` | No direct service definition or named boot step found in the inspected lifecycle sequence; canonical graph declares dependency on `supabase` and `github` | Ownership unresolved by this source checkpoint | Locate actual guardian implementation/initializer and identify whether it is a separate process or dormant component |
+| `guardian_scheduler` | No direct service definition or named boot step found in the inspected lifecycle sequence; canonical graph declares dependency on `guardian` | Ownership unresolved by this source checkpoint | Locate actual scheduler implementation/initializer and identify its owning process |
+
+**Process-mode facts from source**
+- `_build_boot_sequence` resolves mode from `SERVICE_MODE`, falling back to `settings.service_mode` and then `full`.
+- `SupabaseClient`, `EventBus`, `KCPGEventBridge`, and `RedisClient` boot steps are included unconditionally in the inspected sequence.
+- `BrandSchedulers` is included only for `full`/`workers`; `EnterpriseEmitters` and `HealthMonitor` only for `full`/`api`; `GitHubConnector` only for `full`/`github`.
+- `MetaEngine`, `Director`, and `ConditionEngine` have distinct mode gates. The presence of a canonical node does not prove that the current process should instantiate it.
+- The existing inventory script has a partial `BOOT_OWNERS` map and already joins the canonical graph, service definitions and Director discovery. Its map should be enriched in place if a generated report is needed; no second graph or registry is warranted.
+
+**Important unresolved deployment evidence**
+The live topology JSON does not expose the effective `SERVICE_MODE`, the Render service/process identity, or the complete boot-step execution report. Earlier staging log inspection established that web and worker process roles exist, but did not establish the effective mode value for the process that returned this topology response. Therefore the table intentionally leaves deployment-specific expectations unresolved.
+
+**Capability impact**
+- The graph declares `brand_scheduler` dependent on `job_service`, `content_engine`, and `supabase`; its absence matters only to capabilities that require brand scheduling in the relevant process/worker deployment.
+- `engagement_tracker` is a dependency of `condition_engine` in the canonical graph. Its optional resolver skip therefore needs explicit capability impact analysis; optional registration does not make a required graph dependency optional.
+- `event_recorder` is a dependency of no other node in the supplied canonical edge list, so its absence does not propagate through this graph, though event audit/analytics requirements may still depend on it outside the graph.
+- `enterprise_emitters` and `github` are not dependencies of other nodes in the supplied canonical graph; their absence should be evaluated against their own functions, not used to degrade unrelated capabilities.
+- `redis` and `supabase` are shared infrastructure dependencies with multiple consumers. Their absence from `runtime_nodes` is a registry representation gap, not evidence of service outage; readiness must come from their owning clients and source-specific probes.
+- `gemini` is a declared dependency of `ai_orchestrator`; provider readiness must be supplied by the LLM gateway/provider adapter, not inferred from the absence of a local registry instance.
+- `guardian` and `guardian_scheduler` ownership remains unresolved, so no capability readiness conclusion should be drawn for their graph edges until their implementation and process owner are found.
+
+**Gate 0 status**
+The exact live registration outcomes are reconciled with source definitions. Two skips are understood as optional resolver returns, but their initializer/impact is not fully established. Several missing nodes are explained as external infrastructure or mode-gated components by source; the deployed mode and health of those components remain unverified. Guardian ownership remains an explicit source gap. Gate 0 therefore remains open pending: (a) effective mode and process identity for each staging process, (b) initializer/owner mapping for engagement tracker, event recorder, guardian and guardian scheduler, and (c) source-owned timestamped health evidence for Redis, Supabase, Gemini and GitHub where those integrations are expected.
+
+No runtime code, tests, migrations, database writes, deployments, credentials or production state were changed by this source checkpoint.
