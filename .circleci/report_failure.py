@@ -10,17 +10,17 @@ import urllib.request
 from pathlib import Path
 
 LOG_FILES = (
-    ("Critical lint", Path("/tmp/kdo-critical-lint.log")),
-    ("Unit and architecture tests", Path("/tmp/kdo-unit-tests.log")),
-    ("Mock integration tests", Path("/tmp/kdo-integration-tests.log")),
+    ("Critical lint", Path("ci-diagnostics/critical-lint.log")),
+    ("Unit and architecture tests", Path("ci-diagnostics/unit-tests.log")),
+    ("Mock integration tests", Path("ci-diagnostics/integration-tests.log")),
 )
 MAX_SECTION_CHARS = 12000
 MAX_BODY_CHARS = 45000
 
 def redact(value: str) -> str:
     patterns = (
-        (r"(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s]+", r"\\1[REDACTED]"),
-        (r"(?i)((?:api[_-]?key|access[_-]?token|secret|password)\\s*[:=]\\s*)[^\\s,;]+", r"\\1[REDACTED]"),
+        (r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
+        (r"(?i)((?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]"),
         (r"(?i)(gh[pousr]_[A-Za-z0-9_]{20,})", "[REDACTED_GITHUB_TOKEN]"),
         (r"(?i)(sk-[A-Za-z0-9_-]{20,})", "[REDACTED_API_KEY]"),
     )
@@ -40,21 +40,21 @@ def main() -> int:
         if path.exists():
             output = redact(path.read_text(errors="replace"))[-MAX_SECTION_CHARS:]
             if output.strip():
-                sections.append("### " + label + "\\n\\n" + output)
+                sections.append("### " + label + "\n\n" + output)
     if not sections:
         sections.append("No captured step output was found. Open the CircleCI job URL for details.")
     body = (
-        "Automated CircleCI failure report.\\n\\n"
-        + "- **Branch:** " + branch + "\\n"
-        + "- **Commit:** " + sha + "\\n"
-        + "- **Build:** #" + build_num + "\\n"
-        + "- **Pipeline/job:** " + (build_url or "See CircleCI project") + "\\n\\n"
-        + "\\n\\n".join(sections)
-        + "\\n\\n_Logs are redacted and truncated. Review CircleCI for full context._"
+        "Automated CircleCI failure report.\n\n"
+        + "- **Branch:** " + branch + "\n"
+        + "- **Commit:** " + sha + "\n"
+        + "- **Build:** #" + build_num + "\n"
+        + "- **Pipeline/job:** " + (build_url or "See CircleCI project") + "\n\n"
+        + "\n\n".join(sections)
+        + "\n\n_Logs are redacted and truncated. Review CircleCI for full context._"
     )[:MAX_BODY_CHARS]
     token = os.getenv("KDO_CI_REPORT_TOKEN")
     if not token:
-        print("KDO_CI_REPORT_TOKEN is not configured; logs remain available as CircleCI artifacts.")
+        print("KDO_CI_REPORT_TOKEN is not configured; detailed logs remain as CircleCI artifacts.")
         return 0
     endpoint = "https://api.github.com/repos/" + owner + "/" + repo + "/issues"
     payload = json.dumps({"title": "CI failure: " + branch + " build #" + build_num, "body": body}).encode()
