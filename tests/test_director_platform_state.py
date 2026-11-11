@@ -55,7 +55,7 @@ def test_platform_state_route_returns_authoritative_snapshot_for_platform_token(
         "services.supabase.get_service_client_from_settings",
         lambda: object(),
     )
-    monkeypatch.setattr("core.platform_state_store.PlatformStateStore", FakeStore)
+    monkeypatch.setattr("core.platform_state_reader.PlatformStateStore", FakeStore)
     client = TestClient(create_app(Director(supabase_client=None)))
 
     response = client.get(
