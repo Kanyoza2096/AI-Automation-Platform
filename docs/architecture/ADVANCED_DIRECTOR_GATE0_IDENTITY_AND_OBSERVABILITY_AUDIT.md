@@ -1175,3 +1175,21 @@ These critical/optional flags are service-definition metadata, not a complete ca
 **Phase 1 design constraint:** do not add another service registry, dependency graph, event broker or permission system. Extend the canonical graph/service definitions through backward-compatible adapters and derive capability readiness from authoritative, fresh observations. Readiness is descriptive input to admission; existing Council, DecisionGate, Action Kernel and workspace authorization remain authoritative for permission.
 
 **Unverified:** this is a source inventory on the staging branch. It does not establish which optional services are instantiated in each deployed process, whether health checks are fresh, or whether multiple Render processes agree. No runtime endpoint was queried in this checkpoint.
+
+### 27.10 Read-only staging runtime reconciliation — 2026-11-11
+
+Read-only Render inspection of staging service `kdo-engineering-staging` (`srv-dbl0mn9srm7s73bcguug`) confirmed:
+
+- Service is on branch `staging`, free plan, one configured instance, active/not suspended, with auto-deploy disabled. No service configuration was changed.
+- Recent logs identify a web process instance and a separate `worker.1` process role. The engineering worker repeatedly logs: `Engineering worker is disabled; waiting without polling.` Therefore a worker process existing in the service does not mean engineering execution is enabled.
+- Boot logs repeatedly report `Registered 20/22 services with Meta Engine`. This is not proof that the two remaining service definitions failed; the exact skip reasons were not established by this filtered log query and must be reconciled from the lifecycle registration report.
+- Health Monitor cycles on 2026-11-11 at 11:55–12:15 UTC reported 19 services total, 18 OK, 0 down, 1 unknown (`Plugin:facebook`). Meta Engine's nested snapshot was nominal with 19 engine states and no unknown/degraded/offline engines.
+- Earlier cycle samples included transient unknown states for Meta Engine and Health Monitor before returning to nominal. This reinforces that readiness must be timestamped and freshness-aware rather than inferred from a single aggregate status.
+- The observed Health Monitor inventory (19) and Meta Engine engine inventory (19) are different from the service-definition count (22) and the registration log (20/22). These counts are not interchangeable and need an explicit reconciliation map.
+- Recent logs are from a single configured Render instance, but show separate web and worker process roles. This observation does not establish all KDO execution topologies or other environments.
+
+**Runtime reconciliation finding:** the platform has live health observations and process-role evidence, but no single verified mapping currently joins (a) declared service definitions, (b) per-mode boot ownership, (c) registered live instances, (d) Meta Engine monitored engines, (e) Health Monitor targets and (f) Director capabilities.
+
+**Required next Gate 0 artifact:** a deterministic reconciliation matrix keyed by canonical service ID, with source owner, expected process modes, service-definition resolver/criticality, canonical dependencies, observed process/instance identity, Meta registration, Health Monitor coverage, Director capability bindings, last observation time and discrepancy reason. Missing/unknown evidence must remain unknown; it must not be coerced to healthy.
+
+No runtime state was changed. This checkpoint used read-only Render service metadata and logs only; no deploy, restart, environment edit, database query/write or production access occurred.
