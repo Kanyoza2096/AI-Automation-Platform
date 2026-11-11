@@ -1047,3 +1047,51 @@ Target was explicitly restricted to Supabase project `kdo-engineering-staging` (
 5. Add a staging verification that publishes a non-consequential test event, proves the expected group and handler receipts appear, restarts the consumer, and proves completed receipts are not re-executed. Keep the test isolated from production and external providers.
 
 Only read-only database/catalog queries and Render service/log reads were performed. No table rows, schemas, migrations, environment variables, code, deployments, or production resources were changed. This evidence upgrades the event-delivery finding from source-level concern to **confirmed staging operational gap**; Gate 0 overall remains **PARTIALLY COMPLETE**.
+
+## 27. Shared-state coordination source checkpoint — 2026-11-11
+
+**Scope:** Read-only inspection of the current `staging` source for service topology, Director dependency reasoning, Condition Engine state/events, and Organism vitals. No runtime probes, database access, migrations, tests, or deployments were performed in this checkpoint.
+
+### 27.1 Existing service registry and dependency topology
+
+- `core/service_registry.py` is a live-instance registry that registers services with Meta Engine, exposes registration/topology reports, and explicitly distinguishes topology completeness from health (`health_evaluated: false`).
+- `core/engine_topology.py` contains `CANONICAL_ENGINE_DEPENDENCIES` and validates missing/undeclared nodes, invalid dependency edges, and cycles.
+- Director's `services/director/analysis.py` also defines a separate `SystemTopology` with its own initialized dependency nodes and dependency edges. Its `RootCauseAnalyzer` uses this local topology.
+- The source therefore has useful dependency models, but the inspected Director analysis path does not establish that it consumes the same canonical graph used by `core/service_registry.py`.
+
+**Finding:** dependency ownership is duplicated at the model level. Gate 1/2 must define one canonical manifest/dependency contract and adapt existing consumers to it; do not add a third topology registry or silently change existing graph semantics.
+
+### 27.2 Condition Engine state and event semantics
+
+- `services/condition_engine/core.py` implements `AutonomousConditionEngine`; its observations, decisions, state, plans, goals and related collections are maintained in engine-owned in-process structures protected by its lock.
+- The observed `Observation` model is brand-scoped (including `brand_id`), and `get_status(brand_id)` reports that brand's decision state and observation counts.
+- Condition Engine publishes through `UnifiedEventBus`; this is useful transport integration, but it does not by itself establish a durable, platform-wide condition-state authority.
+- `core/autonomous_loop.py` routes `condition.changed` to `_handle_brand_health`. This is a brand-health handler, not evidence of a general platform condition transition consumer.
+
+**Finding:** preserve the Condition Engine's domain-specific decision model. Introduce a separately typed platform-condition projection/contract and an explicit adapter from verified platform observations; do not reinterpret brand decision states as service-health or organism-condition states.
+
+### 27.3 Organism vitals and current projection
+
+- `core/organism.py` explicitly documents that `Organism.vitals()` reports process-local organism lifecycle state and is not a claim that every dependency or provider is healthy.
+- `api/organism_body_routes.py` exposes `GET /api/v1/organism/vitals`, combining organism lifecycle vitals, metabolism, UnifiedEventBus health, synapse statistics, workspace SLOs, and recent events.
+- The route filters recent events by workspace/platform scope, but the inspected implementation does not read a canonical, versioned `platform_state` projection.
+- `core/species_scale.py` persists organism census snapshots to the existing `organism_state` table. This is an existing organism persistence boundary, not proof of a reconciled cross-engine truth plane.
+
+**Finding:** the current endpoint is a useful read-only dashboard projection. It must not be described as the completed shared-state layer. Preserve its existing semantics while incrementally adding an evidence-backed platform-state projection.
+
+### 27.4 Architecture invariant confirmed
+
+`ORGANISM_ARCHITECTURE_2_0.md` states that Organism State is a derived truth-plane snapshot, not a second database of subsystem records, and that existing subsystems remain authoritative for their own data.
+
+This is consistent with the Advanced Director proposal and is the governing implementation constraint:
+- subsystem owners remain authoritative for their records;
+- platform state stores bounded, provenance-bearing observations and derived projections;
+- missing, stale, conflicting and unknown evidence remains explicit;
+- service manifests describe ownership/contracts and do not grant permissions;
+- the existing UnifiedEventBus remains the transport; no second broker is introduced.
+
+### 27.5 Gate 0 status
+
+This checkpoint improves the source-level component map but does not close Gate 0. Remaining items include exhaustive exact-commit producer/consumer inventory, reconciliation of the two dependency models, complete Condition Engine event/transition mapping, live runtime actor/process reconciliation, and the final ownership/rollback review.
+
+No application code, schema, database, credential, runtime configuration, test result, deployment, or production state changed.
