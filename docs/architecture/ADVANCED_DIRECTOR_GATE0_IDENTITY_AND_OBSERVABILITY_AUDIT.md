@@ -1281,3 +1281,43 @@ Events carry IDs, subject, scope, projection version, source/evidence references
 5. Specify retention, redaction, workspace isolation, platform-scope authorization and reconciliation SLOs.
 
 No migration, runtime implementation, database operation, test execution, deployment or production change is included. Phase 1 implementation remains blocked on the Gate 0 evidence and storage-boundary checks above.
+
+
+### 27.13 Topology endpoint contract and evidence interpretation (staging source audit)
+
+The current staging source for `routes/backend_contract_routes.py` defines authenticated `GET /api/v1/topology` and returns:
+- canonical topology nodes and dependency edges;
+- `runtime_nodes`, derived from registered service instances plus a small explicit singleton-probe set;
+- canonical graph drift and a topology-level `healthy` boolean;
+- `registry_topology`, from `ServiceRegistry.get_topology_report()`;
+- `registry_registration`, from `ServiceRegistry.get_registration_report()`.
+
+The registration report has four distinct arrays:
+- `registered`: successfully resolved and registered service names;
+- `skipped`: optional resolver failures/None results, with service, reason and `critical: false`;
+- `failed`: critical resolver failures/None results, with service, reason and `critical: true`;
+- `meta_registration_failures`: services whose instance entered the service registry but whose Meta Engine registration raised an exception.
+
+The lifecycle registration implementation records `resolved_none` when a resolver returns None and the exception class name when a resolver raises. Its log `Registered N/M services with Meta Engine` reports only the successful registration count; it does not identify the skipped or failed services.
+
+The registry topology report separately exposes:
+- registry runtime nodes and Meta Engine nodes;
+- names missing from Meta Engine;
+- instance-identity mismatches;
+- missing/undeclared canonical runtime nodes;
+- invalid dependencies and cycles;
+- `topology_complete` and the explicit `health_evaluated: false` marker.
+
+**Important evidence limitation:** the topology route itself calls each registered service's `health_check` or `get_status` method and awaits async results. It also probes selected process singletons not present in the registry. These are diagnostic probes and may perform service-defined work; this is not a pure registry read. The route normalizes returned status strings but does not attach a uniform source timestamp, expiry, probe duration, or evidence reference. The top-level `healthy` value is derived from canonical topology drift, not a comprehensive health/readiness verdict.
+
+**Interpretation rules for the pending live response:**
+1. Do not treat `registered` as healthy or ready.
+2. Do not treat a missing runtime node as unavailable until the owning process mode says that service is expected there.
+3. Treat `skipped` and `failed` as different lifecycle outcomes; a critical failure is a Gate 0 escalation, while an optional skip still needs owner/dependency impact analysis.
+4. Treat `meta_registration_failures` as a split-brain supervision gap: the service may exist in the service registry but not be supervised by Meta Engine.
+5. Compare `registry_topology.runtime_nodes` with `registry_topology.meta_engine_nodes`, canonical topology nodes, and the process-mode owner inventory. Do not infer equivalence from equal counts.
+6. Record returned health statuses as point-in-time probe results only; they are not freshness-governed platform observations.
+
+**Next live evidence:** retrieve the authenticated response from the current staging deployment and redact any unrelated sensitive diagnostic detail before sharing. The token must remain local and must never be pasted into chat. This endpoint's response should include both `registry_registration` and `registry_topology`; if either is null, capture the response status/body and investigate the route's registry initialization path rather than inferring an empty report.
+
+This section is source-derived from staging branch files `routes/backend_contract_routes.py`, `core/service_registry.py`, and `core/service_definitions.py`. No route was invoked by this source audit, and no runtime, database, migration, test, deployment, credential or production state was changed.
