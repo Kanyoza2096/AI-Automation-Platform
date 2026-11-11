@@ -298,3 +298,25 @@ def test_health_observation_rpc_atomically_links_health_and_evidence():
                     """,
                     (workspace_id, connection_id),
                 )
+
+
+@pytest.mark.skipif(not DSN, reason="disposable PostgreSQL migration test runs in CI")
+def test_resource_binding_trigger_function_has_no_direct_execute_grants():
+    with psycopg.connect(DSN) as connection:
+        privileges = connection.execute(
+            """
+            SELECT
+                has_function_privilege('anon',
+                    'public.validate_integration_connection_resource_binding()', 'EXECUTE'),
+                has_function_privilege('authenticated',
+                    'public.validate_integration_connection_resource_binding()', 'EXECUTE'),
+                has_function_privilege('service_role',
+                    'public.validate_integration_connection_resource_binding()', 'EXECUTE'),
+                EXISTS (
+                    SELECT 1 FROM pg_trigger
+                    WHERE tgname = 'integration_connections_resource_binding_guard'
+                      AND NOT tgisinternal
+                )
+            """
+        ).fetchone()
+    assert privileges == (False, False, False, True)
