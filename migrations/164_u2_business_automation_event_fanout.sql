@@ -74,6 +74,7 @@ AS $$
         WHERE namespace.nspname = 'public'
           AND relation.relname = 'events'
           AND trigger_row.tgname = 'trg_fanout_business_automation_event_delivery'
+          AND trigger_row.tgfoid = 'public.fanout_business_automation_event_delivery()'::regprocedure
           AND trigger_row.tgisinternal IS FALSE
           AND trigger_row.tgenabled IN ('O', 'A')
     );
