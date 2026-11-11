@@ -79,12 +79,25 @@ class EventRecorder:
 
     @staticmethod
     def _make_handler(event_type: EventType):
-        def handle(payload, source="unknown", event_id=None, **_metadata) -> None:
+        def handle(event_data, **_metadata) -> None:
+            # UnifiedEventBus invokes handlers with an envelope containing
+            # event metadata and the original domain payload.
+            if isinstance(event_data, dict) and "payload" in event_data:
+                payload = event_data.get("payload")
+                source = event_data.get("source", "unified")
+                event_id = event_data.get("event_id")
+            else:
+                payload = event_data
+                source = "unified"
+                event_id = None
+            event_kwargs = {}
+            if event_id:
+                event_kwargs["event_id"] = event_id
             event = DomainEvent(
                 event_type=event_type,
                 payload=payload if isinstance(payload, dict) else {},
                 source=source or "unified",
-                event_id=event_id or None,
+                **event_kwargs,
             )
             if event_type == EventType.POST_PUBLISHED:
                 EventRecorder._handle_post_published_from(event)
