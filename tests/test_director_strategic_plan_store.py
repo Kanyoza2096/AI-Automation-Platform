@@ -40,12 +40,18 @@ class FakeQuery:
             rows = [{"payload": row["payload"]}] if row else []
         else:
             rows = [{"payload": row["payload"]} for row in self.client.rows.values()]
+        if self.client.read_payload_as_legacy_string:
+            rows = [
+                {"payload": json.dumps(row["payload"]) if isinstance(row["payload"], dict) else row["payload"]}
+                for row in rows
+            ]
         return SimpleNamespace(data=rows)
 
 
 class FakeSupabase:
     def __init__(self):
         self.rows = {}
+        self.read_payload_as_legacy_string = False
 
     def table(self, _name):
         return FakeQuery(self)
@@ -90,3 +96,16 @@ def test_strategic_plan_reader_keeps_legacy_json_string_compatibility():
 
     assert asyncio.run(store.get_strategic_plan(plan["plan_id"])) == plan
     assert asyncio.run(store.list_strategic_plans()) == [plan]
+
+
+def test_strategic_plan_write_rejects_legacy_json_string_scalar_readback():
+    client = FakeSupabase()
+    client.read_payload_as_legacy_string = True
+    store = AsyncSupabaseStore(client)
+
+    saved = asyncio.run(store.save_strategic_plan(sample_plan()))
+
+    assert saved is False
+    # The normal read API remains backward-compatible with legacy rows.
+    plan_id = "dplan_test_jsonb_object"
+    assert asyncio.run(store.get_strategic_plan(plan_id)) == sample_plan()
