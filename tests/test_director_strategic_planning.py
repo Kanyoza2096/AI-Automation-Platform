@@ -162,6 +162,7 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert kwargs["workspace_id"] == "platform"
     assert kwargs["required_keys"] == ["summary", "steps"]
     assert kwargs["temperature"] == 0.1
+    assert kwargs["max_tokens"] == 4096
     assert "do-not-send-this-secret" not in prompt
     assert "also-do-not-send" not in prompt
     assert "secret-rationale-do-not-send" not in prompt

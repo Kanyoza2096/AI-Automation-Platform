@@ -146,5 +146,6 @@ class AIProviderPort(Protocol):
         model: Optional[str] = None,
         correlation_id: str,
         structured: bool = False,
+        max_output_tokens: Optional[int] = None,
     ) -> AIReceipt:
         """Return interpretation evidence only; never an ActionIntent."""

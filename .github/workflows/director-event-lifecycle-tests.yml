@@ -5,6 +5,12 @@ on:
     paths:
       - "services/director/core.py"
       - "services/director/planning.py"
+      - "ai/gateway.py"
+      - "services/connectors/cloudflare_ai_adapter.py"
+      - "services/connectors/gemini_ai_adapter.py"
+      - "services/ai_provider.py"
+      - "services/ai_policy.py"
+      - "tests/test_ai_provider_fabric.py"
       - "lifecycle.py"
       - "services/director/stores.py"
       - "services/director/api.py"
@@ -83,6 +89,7 @@ jobs:
             tests/test_health_monitor_observability.py \
             tests/test_director_strategic_context.py \
             tests/test_director_strategic_planning.py \
+            tests/test_ai_provider_fabric.py \
             tests/test_director_strategic_plan_persistence.py \
             tests/test_director_auth_boundary.py \
             tests/test_director_executive_report_truth.py \
