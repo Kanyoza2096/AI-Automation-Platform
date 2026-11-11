@@ -87,6 +87,7 @@ class ServiceState:
     source_version: str
     dependencies: tuple[str, ...]
     capabilities: tuple[str, ...]
+    critical: bool = False
     evidence: tuple[EvidenceRef, ...] = ()
     reason: str | None = None
 
@@ -211,7 +212,7 @@ def build_platform_state(
                 service_id=service_id, owner=manifest.owner, readiness=readiness,
                 observed_at=observed_at, source_version=version,
                 dependencies=manifest.dependencies, capabilities=manifest.capabilities,
-                evidence=evidence, reason=reason,
+                critical=manifest.critical, evidence=evidence, reason=reason,
             )
             pending.remove(service_id)
             progressed = True
