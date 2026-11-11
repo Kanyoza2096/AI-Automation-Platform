@@ -616,10 +616,14 @@ class Director:
                     "reference": getattr(ref, "reference", None),
                 })
             observed = getattr(item, "observed_at", None)
+            reported_readiness = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
+            effective_readiness = reported_readiness if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
             services.append({
                 "service_id": str(getattr(item, "service_id", "unknown"))[:120],
                 "owner": str(getattr(item, "owner", "unknown"))[:120],
-                "readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "readiness": effective_readiness,
+                "reported_readiness": reported_readiness,
+                "freshness": freshness,
                 "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
                 "reason": str(getattr(item, "reason", "") or "")[:200] or None,
                 "critical": bool(getattr(item, "critical", False)),
@@ -629,10 +633,14 @@ class Director:
         capabilities = []
         for item in capability_items[:100]:
             observed = getattr(item, "observed_at", None)
+            reported_readiness = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
+            effective_readiness = reported_readiness if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
             capabilities.append({
                 "capability_id": str(getattr(item, "capability_id", "unknown"))[:120],
                 "owner_service": str(getattr(item, "owner_service", "unknown"))[:120],
-                "readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "readiness": effective_readiness,
+                "reported_readiness": reported_readiness,
+                "freshness": freshness,
                 "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
                 "reason": str(getattr(item, "reason", "") or "")[:200] or None,
             })
