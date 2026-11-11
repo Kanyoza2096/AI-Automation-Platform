@@ -270,12 +270,20 @@ class AsyncSupabaseStore:
         if result is None:
             return False
 
-        # Acknowledgement alone is not proof that the canonical JSON shape
-        # was stored. Read it back through the same public persistence path.
-        persisted = await self.get_strategic_plan(plan["plan_id"])
-        if persisted != payload:
+        # Read the raw JSONB value, not the compatibility decoder: a legacy
+        # JSON string scalar can decode to the same dict but is not canonical.
+        persisted_result = await self._execute_with_retry(
+            "verify director_strategic_plans JSONB object",
+            lambda: self.supabase.table("director_strategic_plans")
+            .select("payload").eq("plan_id", plan["plan_id"]).limit(1).execute(),
+        )
+        raw_payload = (
+            persisted_result.data[0].get("payload")
+            if persisted_result and persisted_result.data else None
+        )
+        if not isinstance(raw_payload, dict) or raw_payload != payload:
             log.error(
-                "Director DB: strategic plan read-after-write verification failed "
+                "Director DB: strategic plan JSONB object verification failed "
                 "for plan_id=%s",
                 plan["plan_id"],
             )
