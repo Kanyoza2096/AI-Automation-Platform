@@ -132,10 +132,14 @@ def test_condition_engine_shared_state_read_failure_is_unknown_not_healthy():
     assert state["services"] == []
 
 
-def test_condition_engine_can_receive_platform_state_reader_after_lifecycle_injection():
+def test_condition_engine_lifecycle_supabase_injection_configures_platform_state_reader(monkeypatch):
     reader = FakePlatformStateReader(_shared_snapshot())
+    monkeypatch.setattr(
+        "core.platform_state_reader.PlatformStateReader",
+        lambda _client: reader,
+    )
     engine = AutonomousConditionEngine()
-    engine._platform_state_reader = reader
+    engine.set_supabase_client(object())
 
     state = asyncio.run(engine.refresh_platform_state_context())
 
