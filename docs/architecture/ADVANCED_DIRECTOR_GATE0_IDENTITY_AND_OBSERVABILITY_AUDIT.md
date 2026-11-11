@@ -1128,3 +1128,50 @@ Do not create another dependency graph or repeat P11. Extend the canonical decla
 - Its generated report explicitly distinguishes source ownership from live health and directs operators to runtime topology and system-health endpoints for live verification.
 
 **Decision:** reuse and extend this inventory/reporting path for Gate 0. Do not introduce a parallel manifest generator or claim the static report proves runtime presence, readiness, or health.
+
+### 27.9 Service ownership and capability-readiness inventory
+
+Focused source inventory of `core/service_definitions.py`, `core/engine_topology.py`, `core/service_registry.py`, and Director strategic-context construction:
+
+**Service definitions (22 named resolvers):**
+
+- Marked critical: `event_bus`, `job_service`, `prompt_builder`, `content_engine`, `director`, `condition_engine`, `meta_engine`.
+- Marked optional: `job_stats_service`, `render_queue`, `task_queue`, `ai_orchestrator`, `plugin_registry`, `scheduler`, `event_recorder`, `health_monitor`, `email_service`, `engagement_tracker`, `autonomous_loop`, `autonomous_content`, `card_renderer`, `image_engine`, `topic_selector`.
+
+These critical/optional flags are service-definition metadata, not a complete capability risk or runtime admission policy.
+
+**Canonical dependency graph:**
+
+- `core/engine_topology.py` declares 30 nodes, including infrastructure/provider nodes and application engines.
+- It records consumer-to-provider edges and validates graph shape, missing/undeclared runtime nodes, invalid edges and cycles.
+- It does not itself declare capability-level ownership, freshness requirements, degradation policy or an authorization grant.
+
+**Current runtime registry contract:**
+
+- `ServiceRegistry.register` accepts live instances and may register the same instance with Meta Engine.
+- `get_topology_report` compares registered names to the canonical graph and reports topology completeness, identity mismatches and Meta registration gaps.
+- The report explicitly sets `health_evaluated: false`; topology completeness is not a health/readiness verdict.
+- `health_check_all` and `get_service_status` separately call service health/status methods. The inspected registry code does not normalize observation provenance, freshness, dependency propagation or a versioned readiness snapshot.
+
+**Director capability contract:**
+
+- Strategic context exports capability name, sector, description, authority, risk, enabled, proposal-capable and handler-bound fields.
+- Runtime readiness exports engine-registry/discovery counts, missing/unsupported export counts, capability count, bound capability names and binding-report availability.
+- Strategic plan validation ensures a named capability exists in the catalogue and records whether it is enabled and handler-bound.
+- It does not establish that the capability's declared dependencies are currently healthy, fresh and usable. The plan explicitly states capability readiness is descriptive and grants no runtime permission.
+
+**Ownership/readiness matrix (source-level, not live runtime status):**
+
+| Domain | Current source of declaration/observation | Authority established | Gate 0 gap |
+|---|---|---|---|
+| Dependency edges | `CANONICAL_ENGINE_DEPENDENCIES` | Canonical graph structure | Add manifest semantics only where proven absent; preserve P11 parity |
+| Service resolver/criticality | `SERVICE_DEFINITIONS` | Resolver and critical flag | Explicit owner, service mode, lifecycle and capability mapping |
+| Live instance presence | `ServiceRegistry` | Registered instance names | Process/instance identity, freshness and cross-process reconciliation |
+| Health observations | Meta Engine and service health methods | Component-specific health evidence | Normalize status, source, observed_at, expiry and evidence reference |
+| Director capabilities | Director capability catalogue and binding report | Enabled/handler-bound metadata | Dependency-aware runtime admission; no authority inferred from binding |
+| Condition decisions | Condition Engine | Brand-scoped decision model | Separate platform-condition projection and explicit adapter |
+| Organism vitals | Organism lifecycle + API projection | Process lifecycle and existing metrics | Versioned shared-state projection with unknown/stale/conflict preserved |
+
+**Phase 1 design constraint:** do not add another service registry, dependency graph, event broker or permission system. Extend the canonical graph/service definitions through backward-compatible adapters and derive capability readiness from authoritative, fresh observations. Readiness is descriptive input to admission; existing Council, DecisionGate, Action Kernel and workspace authorization remain authoritative for permission.
+
+**Unverified:** this is a source inventory on the staging branch. It does not establish which optional services are instantiated in each deployed process, whether health checks are fresh, or whether multiple Render processes agree. No runtime endpoint was queried in this checkpoint.
