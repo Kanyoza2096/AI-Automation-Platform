@@ -91,46 +91,26 @@ async def collect_unified_health(container=None) -> Dict[str, Any]:
     except Exception as exc:
         details["director_error"] = str(exc)[:120]
 
-    # Content activity (trends / posts last 24h soft signal)
+    # Content activity (published posts in the last 24h soft signal)
     try:
         from services.supabase import get_service_client_from_settings
         client = get_service_client_from_settings()
         if client:
             from datetime import timedelta
             since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            score = 40.0
             try:
                 posts = (
-                    client.table("trend_posts")
+                    client.table("posts")
                     .select("id")
-                    .gte("fetched_at", since)
+                    .gte("created_at", since)
                     .limit(20)
                     .execute()
                 )
                 n = len(posts.data or [])
-                score = min(100.0, 40.0 + n * 3)
-                details["trend_posts_24h"] = n
-            except Exception as e1:
-                details["trend_posts_error"] = str(e1)[:80]
-            try:
-                jobs = (
-                    client.table("trend_publish_jobs")
-                    .select("id,status")
-                    .gte("requested_at", since)
-                    .limit(20)
-                    .execute()
-                )
-                data = jobs.data or []
-                published = sum(1 for j in data if str(j.get("status", "")).lower() in ("published", "done", "success"))
-                details["publish_jobs_24h"] = len(data)
-                details["published_24h"] = published
-                if published > 0:
-                    score = min(100.0, score + 25)
-                elif data:
-                    score = min(100.0, score + 10)
-            except Exception as e2:
-                details["publish_jobs_error"] = str(e2)[:80]
-            dims["content"] = score
+                dims["content"] = min(100.0, 40.0 + n * 3)
+                details["posts_24h"] = n
+            except Exception as post_error:
+                details["posts_error"] = str(post_error)[:120]
     except Exception as exc:
         details["content_error"] = str(exc)[:120]
 
