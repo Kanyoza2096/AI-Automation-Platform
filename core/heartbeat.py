@@ -144,7 +144,6 @@ async def init_heartbeat(container=None, event_bus=None) -> HeartbeatPublisher:
 
 async def shutdown_heartbeat() -> None:
     """Stop heartbeat."""
-    global heartbeat
     await heartbeat.stop()
 
 
