@@ -132,3 +132,41 @@ Use the previously proposed states `not_expected`, `starting`, `healthy`, `degra
 ## 8. Delivery boundary
 
 This document is design-only. It does not authorize code changes, tests, migrations, database writes, credential changes, service restarts, deployments, merges or production operations. Any runtime implementation should be a separate, narrowly scoped PR, staging-first, with tests and verified logs before any deployment.
+
+
+## 9. Follow-up source reconciliation (2026-11-11)
+
+A deeper search of the current `staging` source refines the earlier inventory. These findings supersede any broad implication that Guardian or EventRecorder has no DI factory.
+
+### 9.1 Guardian already has a lazy DI factory
+
+`dependency_registry.py::_register_guardian` registers a singleton factory for the concrete `GuardianService` class when `settings.guardian_configured` is true. The factory builds GitHub client, scanner, auto-fix engine, EventBus and Facebook dependencies. The factory is lazy: registration alone does not construct the service.
+
+The authenticated Guardian API routes resolve `GuardianService` through the container. The Director `ENGINE_REGISTRY` and Meta Engine's module-attribute discovery instead request `services.guardian_service.guardian_service`, which is not exported by the inspected module. This is an adapter/identity-discovery mismatch, not proof that the service class is absent.
+
+**Revised proposal:** do not add a second Guardian factory or module singleton. Add a typed adapter that asks the existing composition-root container for `GuardianService`, and have Director/Meta discovery consume that same instance through an explicitly injected resolver. Keep the instance-only topology resolver separate so health/registration reads do not force the lazy factory. Confirm how the deployed process constructs its container before changing the adapter.
+
+### 9.2 EventRecorder also has a lazy DI factory
+
+`dependency_registry.py` registers a singleton factory for `EventRecorder`, resolving `AnalyticsRepository` and `UnifiedEventBus`. This means the class is constructible through the main dependency container. The separate Meta/service-registry resolver deliberately calls `try_get_instance`, so it will report no instance until an owner has explicitly resolved and started it.
+
+The existing `EventBus.subscribe(event_type, handler)` returns an unsubscribe callable. EventRecorder currently discards those return values and has no `stop()` method.
+
+**Revised proposal:** no new repository or bus adapter is needed merely to support teardown. Retain the five unsubscribe callables in EventRecorder, implement idempotent start/stop with rollback if a subscription fails partway through, and let one lifecycle owner resolve/start the existing factory. Add the shutdown hook immediately after successful start. Verify whether the actual runtime uses the legacy EventBus bridge or another bus implementation and test the exact type contract.
+
+### 9.3 Guardian ScanScheduler exists but is not established as an active owner
+
+`scheduler/scan_scheduler.py` defines a daemon-thread scheduler with `start()`, `stop()` and `status()`. Its run loop executes the callback immediately on startup, then repeats on the configured interval. Repository-wide code search found no `ScanScheduler(` construction call in the indexed source; this must be rechecked against a full checkout before treating that absence as conclusive.
+
+**Security consequence:** do not wire this scheduler into generic boot. Its immediate callback invokes Guardian scanning. Any future owner must be an explicitly approved security/maintenance process, with the scan callback's external effects, auto-fix configuration, GitHub PR behavior, cancellation and shutdown timeout covered by policy and tests. The existing scheduler class is a candidate to reuse, not authorization to run it.
+
+### 9.4 Updated component status
+
+| Component | Corrected source status | Remaining work |
+|---|---|---|
+| GuardianService | Existing lazy DI factory; Director/Meta discovery expects wrong module attribute | Unify discovery through the existing container; no second factory |
+| EventRecorder | Existing lazy DI factory; event bus returns unsubscribe callables | Retain handles, add safe stop/rollback, assign owner |
+| ScanScheduler | Class exists; starts callback immediately; no active construction found in indexed search | Establish owner and explicit scan policy before any start |
+| EngagementTracker | Existing lifecycle helper; no corresponding lifecycle boot step found | Confirm process-mode owner and dependency policy |
+
+These corrections make the implementation target narrower: reuse existing factories, bus contracts and scheduler class; repair identity/lifecycle integration rather than duplicating services.
