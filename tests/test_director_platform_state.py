@@ -207,6 +207,9 @@ def test_director_marks_expired_platform_snapshot_stale_not_healthy():
     assert state["freshness"] == "stale"
     assert state["reason"] == "platform_state_snapshot_expired"
     assert state["revision"] == 9
+    assert state["services"][0]["readiness"] == "stale"
+    assert state["services"][0]["reported_readiness"] == "healthy"
+    assert state["capabilities"][0]["readiness"] == "stale"
 
 
 def test_director_fails_closed_when_platform_state_reader_raises():
