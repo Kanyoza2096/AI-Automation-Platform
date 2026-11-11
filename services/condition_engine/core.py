@@ -161,12 +161,25 @@ class AutonomousConditionEngine:
         config: Optional[EngineConfig] = None,
         action_executor: Optional[Callable[[ActionPlan], Dict[str, Any]]] = None,
         event_bus: Any = None,
+        platform_state_reader: Any = None,
         **kwargs: Any,
     ):
         self.supabase = supabase_client
         self.config = config or EngineConfig()
         self.action_executor = action_executor
         self._event_bus = event_bus
+        self._platform_state_reader = platform_state_reader
+        if self._platform_state_reader is None and supabase_client is not None:
+            try:
+                from core.platform_state_reader import PlatformStateReader
+                self._platform_state_reader = PlatformStateReader(supabase_client)
+            except Exception:
+                logger.warning("ConditionEngine Platform State reader unavailable; shared state remains unknown")
+        self._platform_state_context: Dict[str, Any] = {
+            "status": "unavailable", "freshness": "unknown", "revision": 0,
+            "services": [], "capabilities": [],
+            "reason": "platform_state_reader_not_configured",
+        }
         if kwargs:
             logger.debug("ConditionEngine ignoring extra kwargs: %s", list(kwargs.keys()))
         self._lock = threading.RLock()
@@ -271,10 +284,92 @@ class AutonomousConditionEngine:
         except Exception as exc:
             return {"status": "degraded", "error": str(exc)[:200]}
     
+    async def refresh_platform_state_context(self, max_age_seconds: int = 300) -> Dict[str, Any]:
+        """Read the canonical Platform State without changing Condition Engine authority."""
+        if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or max_age_seconds < 1:
+            raise ValueError("max_age_seconds must be a positive integer")
+        reader = self._platform_state_reader
+        if reader is None or not callable(getattr(reader, "get_snapshot", None)):
+            self._platform_state_context = {
+                "status": "unavailable", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_reader_not_configured",
+            }
+            return dict(self._platform_state_context)
+        try:
+            snapshot = await reader.get_snapshot()
+        except Exception:
+            logger.warning("ConditionEngine Platform State read failed closed", exc_info=True)
+            self._platform_state_context = {
+                "status": "unavailable", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_read_failed",
+            }
+            return dict(self._platform_state_context)
+        if snapshot is None:
+            self._platform_state_context = {
+                "status": "uninitialized", "freshness": "unknown", "revision": 0,
+                "services": [], "capabilities": [],
+                "reason": "platform_state_snapshot_missing",
+            }
+            return dict(self._platform_state_context)
+
+        updated_at = getattr(snapshot, "updated_at", None)
+        now_utc = datetime.now(timezone.utc)
+        if not isinstance(updated_at, datetime) or updated_at.tzinfo is None:
+            freshness, status, reason = "invalid", "unknown", "platform_state_timestamp_invalid"
+        else:
+            age = (now_utc - updated_at.astimezone(timezone.utc)).total_seconds()
+            if age < -30:
+                freshness, status, reason = "invalid", "unknown", "platform_state_timestamp_in_future"
+            elif age > max_age_seconds:
+                freshness, status, reason = "stale", "stale", "platform_state_snapshot_expired"
+            else:
+                freshness, status, reason = "fresh", "available", None
+
+        def readiness(item: Any) -> str:
+            reported = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
+            return reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+
+        services = [
+            {
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "readiness": readiness(item),
+                "reported_readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "owner": str(getattr(item, "owner", "unknown"))[:120],
+                "reason": str(getattr(item, "reason", "") or "")[:200] or None,
+            }
+            for item in list(getattr(snapshot, "services", ()) or ())[:100]
+        ]
+        capabilities = [
+            {
+                "capability_id": str(getattr(item, "capability_id", "unknown"))[:120],
+                "readiness": readiness(item),
+                "reported_readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                "owner_service": str(getattr(item, "owner_service", "unknown"))[:120],
+            }
+            for item in list(getattr(snapshot, "capabilities", ()) or ())[:100]
+        ]
+        self._platform_state_context = {
+            "status": status, "freshness": freshness,
+            "revision": int(getattr(snapshot, "revision", 0)),
+            "schema_version": int(getattr(snapshot, "schema_version", 1)),
+            "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
+            "services": services, "capabilities": capabilities,
+            "services_truncated": len(getattr(snapshot, "services", ()) or ()) > len(services),
+            "capabilities_truncated": len(getattr(snapshot, "capabilities", ()) or ()) > len(capabilities),
+            "reason": reason,
+            "policy": {"read_only": True, "grants_execution_authority": False, "unknown_is_not_healthy": True},
+        }
+        return dict(self._platform_state_context)
+
     async def check_health_async(self) -> Dict[str, Any]:
-        """Async health check."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.check_health)
+        """Async health check with a separate read-only shared-state projection."""
+        await self.refresh_platform_state_context()
+        loop = asyncio.get_running_loop()
+        health = await loop.run_in_executor(None, self.check_health)
+        health["platform_state"] = dict(self._platform_state_context)
+        return health
     
     # ═══════════════════════════════════════════════════════════════════════
     # WIRING
@@ -285,8 +380,17 @@ class AutonomousConditionEngine:
         self.action_executor = executor
     
     def set_supabase_client(self, client: Any) -> None:
-        """Set Supabase client."""
+        """Set Supabase client and its read-only Platform State adapter."""
         self.supabase = client
+        if client is None:
+            self._platform_state_reader = None
+            return
+        try:
+            from core.platform_state_reader import PlatformStateReader
+            self._platform_state_reader = PlatformStateReader(client)
+        except Exception:
+            self._platform_state_reader = None
+            logger.warning("ConditionEngine Platform State reader unavailable; shared state remains unknown")
     
     # ═══════════════════════════════════════════════════════════════════════
     # STRATEGIES
