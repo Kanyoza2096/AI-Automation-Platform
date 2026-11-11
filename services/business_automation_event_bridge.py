@@ -16,10 +16,12 @@ logger = logging.getLogger("kanyoza.business_automation.event_bridge")
 
 
 class BusinessAutomationEventBridge:
-    VERSION = "2.0.0"
+    VERSION = "2.1.0"
     CONSUMER_GROUP = "business_automation"
     POLL_INTERVAL_SECONDS = 2.0
     CLAIM_BATCH_SIZE = 25
+    FANOUT_READINESS_RPC = "business_automation_event_fanout_ready"
+    RECOVERY_READINESS_RPC = "business_automation_stale_reservation_guard_ready"
 
     def __init__(self, engine=None, event_bus=None):
         self.engine = engine
@@ -32,6 +34,8 @@ class BusinessAutomationEventBridge:
         self._errors = 0
         self._durable_task = None
         self._durable_enabled = False
+        self._fanout_ready = False
+        self._recovery_guard_ready = False
         self._durable_claimed = 0
         self._durable_processed = 0
         self._durable_failures = 0
@@ -52,11 +56,33 @@ class BusinessAutomationEventBridge:
             raise RuntimeError("UnifiedEventBus is required")
         self._unsubscribe = await self.event_bus.subscribe_all(self._handle)
         self._wired = True
+
         db = getattr(self.engine, "_get_db", lambda: None)()
-        self._durable_enabled = db is not None
+        readiness = await self._check_durable_fanout() if db is not None else {}
+        self._fanout_ready = readiness.get("fanout", False)
+        self._recovery_guard_ready = readiness.get("recovery_guard", False)
+        # A database connection alone is not evidence that the producer-side
+        # fan-out exists. Do not advertise or poll an inbox that cannot receive
+        # new deliveries; the low-latency UnifiedEventBus path remains available.
+        self._durable_enabled = self._fanout_ready and self._recovery_guard_ready
         if self._durable_enabled:
-            self._durable_task = asyncio.create_task(self._durable_loop(), name="business-automation-event-inbox")
-        logger.info("BusinessAutomationEventBridge v%s wired durable_inbox=%s", self.VERSION, self._durable_enabled)
+            self._durable_task = asyncio.create_task(
+                self._durable_loop(),
+                name="business-automation-event-inbox",
+            )
+        else:
+            logger.error(
+                "BusinessAutomation durable inbox unavailable: "
+                "fan-out and stale-reservation safeguards are not both confirmed; "
+                "live event path remains active"
+            )
+        logger.info(
+            "BusinessAutomationEventBridge v%s wired durable_inbox=%s fanout_ready=%s recovery_guard_ready=%s",
+            self.VERSION,
+            self._durable_enabled,
+            self._fanout_ready,
+            self._recovery_guard_ready,
+        )
 
     async def unwire(self) -> None:
         if self._unsubscribe:
@@ -72,6 +98,9 @@ class BusinessAutomationEventBridge:
             except asyncio.CancelledError:
                 pass
         self._durable_task = None
+        self._durable_enabled = False
+        self._fanout_ready = False
+        self._recovery_guard_ready = False
         self._wired = False
 
     async def _durable_loop(self) -> None:
@@ -148,6 +177,25 @@ class BusinessAutomationEventBridge:
                 await asyncio.sleep(delay)
         return None
 
+    async def _check_durable_fanout(self) -> dict[str, bool]:
+        """Require both producer fan-out and stale-reservation recovery safeguards."""
+        readiness = {"fanout": False, "recovery_guard": False}
+        checks = (
+            ("fanout", self.FANOUT_READINESS_RPC),
+            ("recovery_guard", self.RECOVERY_READINESS_RPC),
+        )
+        for key, rpc_name in checks:
+            try:
+                result = await self._execute_db_rpc(rpc_name, {}, max_retries=0)
+                readiness[key] = bool(result is not None and result.data is True)
+            except Exception as exc:
+                logger.warning(
+                    "BusinessAutomation readiness check '%s' failed: %s",
+                    rpc_name,
+                    str(exc)[:200],
+                )
+        return readiness
+
     async def _claim_durable_events(self) -> list[dict[str, Any]]:
         result = await self._execute_db_rpc(
             "claim_business_automation_event_deliveries",
@@ -211,7 +259,7 @@ class BusinessAutomationEventBridge:
         event_id = str(envelope.get("event_id") or event.get("event_id") or "").strip()
         # Never admit an event without a durable identity; Business Automation
         # uses event_id as its replay fence. Missing identity is rejected rather
-        # than converted into a shared ``missing`` idempotency key.
+        # than converted into a shared `missing` idempotency key.
         if not event_id:
             self._errors += 1
             logger.warning("rejecting event without event_id event=%s workspace=%s", event_name, workspace_id)
@@ -245,7 +293,14 @@ class BusinessAutomationEventBridge:
             "events_routed": self._events_routed,
             "executions": self._executions,
             "errors": self._errors,
-            "durable_inbox": {"enabled": self._durable_enabled, "claimed": self._durable_claimed, "processed": self._durable_processed, "failures": self._durable_failures},
+            "durable_inbox": {
+                "enabled": self._durable_enabled,
+                "fanout_ready": self._fanout_ready,
+                "recovery_guard_ready": self._recovery_guard_ready,
+                "claimed": self._durable_claimed,
+                "processed": self._durable_processed,
+                "failures": self._durable_failures,
+            },
         }
 
 
