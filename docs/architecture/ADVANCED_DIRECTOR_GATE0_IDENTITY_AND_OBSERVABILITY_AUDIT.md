@@ -411,3 +411,65 @@ Add regression coverage for:
 - trace correlation from Director capability invocation through handler and downstream service.
 
 **Status remains PARTIALLY COMPLETE.** The Render Procfile and lifecycle give a stronger source-derived process map, but the live environment's `SERVICE_MODE`, worker enablement, external queue/scheduler providers, and route mount/reachability still need confirmation. Do not infer those values from repository defaults.
+
+
+## 13. Live staging route and runtime verification — 2026-11-11
+
+This section adds read-only Render runtime evidence to the source inventory. It distinguishes the currently deployed commit from the current `staging` branch head.
+
+### 13.1 Deployment and source drift
+
+- Render reports staging service `kdo-engineering-staging` as not suspended, one configured instance, free plan, branch `staging`, and auto-deploy disabled.
+- The latest observed live deployment was `dep-dbq140uk1f9s73da1hc0`, status `live`, started at 2026-11-11 06:58:11 UTC and completed at 06:58:50 UTC.
+- That deployment runs commit `70ce311da34aa9fd1d74b2923b7d8913394b5377` (`Capture CI diagnostics and publish failure reports`). Render recorded the trigger as `service_updated` with `envUpdated=true`; this audit did not initiate that deployment.
+- The current `staging` branch head at inspection is `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`, whose parent is the deployed commit. Therefore staging has advanced beyond the running deployment. Auto-deploy is off, so the current branch head is not automatically live.
+- The relevant `routes/council_routes.py`, `routes/event_api.py`, and `services/director/api.py` blobs are identical between deployed commit `70ce311` and current staging head `a51d7dd`. `main.py` differs because the later staging commit includes the plugin-retirement route cleanup. This audit does not assume all application code on the branch is live.
+
+### 13.2 Live startup and process evidence
+
+Render application logs from the latest live instance confirm:
+
+- Boot environment is `staging`; runtime version log reports `14.7.5`, Python `3.12.16`, and `SERVICE_MODE=full`.
+- Director proxy is disabled because Director runs in-process. The logs confirm Director routes mounted directly at `/director/*`.
+- The Event API logs confirm routes mounted at `/api/v1/events/*`.
+- The Council control-plane router logs confirm it mounted successfully.
+- The Honcho `worker.1` process logs: `Engineering worker is disabled; waiting without polling.` Thus the worker process slot exists, but it is not polling or executing engineering jobs in this runtime snapshot.
+- Application startup completed at 2026-11-11 06:59:13 UTC.
+- The latest sampled health-monitor cycle at 07:44:28 UTC reported 20 services total, 19 OK, 0 down, and 1 unknown (`Plugin:facebook`). This is the platform health monitor's reported snapshot, not an independent probe of every service.
+- Brand scheduler logs show a brand named `KDO Semantic Evaluation Lab` being skipped because it has no AI profile. This is a configuration/eligibility observation, not evidence of a platform-wide scheduler failure.
+
+### 13.3 Route mounting versus endpoint reachability
+
+Confirmed by the deployed process's startup logs and source:
+
+| Surface | Mount evidence | Authentication evidence | Gate 0 implication |
+|---|---|---|---|
+| Director `/director/*` | Mounted directly in the live process | Director source retains a direct master/Python service-token fallback when canonical request context is absent | Remove fallback and require Director workload identity plus narrow scopes |
+| Council `/api/v1/council/*` | Council router mounted; `main.py` includes `routes.council_routes` | `routes/council_routes.py` directly accepts configured master or Python service token | Confirmed mounted shared-secret consumer; migrate to a distinct Council principal |
+| Event API `/api/v1/events/*` | Live startup log confirms mount; `main.py` registers `routes.event_api` | `routes/event_api.py` validates through canonical `SpeciesAuth`; publish/clear additionally require species privilege | Migrate publisher and reader permissions to event-type/channel scopes |
+| Legacy `core/event_api.py` | Not the module registered by the inspected `main.py` mount function; main registers `routes.event_api` | Contains a separate local master-token path and `disable_event_api_auth` bypass | Do not describe this duplicate helper as live-reachable through the confirmed Event API mount |
+| Product shared auth helper | Its own module docstring identifies it as legacy Flask auth not used by the FastAPI main app; it is not in the inspected main route-module list | Missing master configuration permits any non-empty token through this decorator | Conditional fail-open remains a code defect; no evidence here that it is mounted in the live FastAPI app |
+
+The Director, Council, and Event API mounts are confirmed from startup logs. **Authenticated endpoint behavior was not exercised.** The available request-log query returned no request records for the queried window, and direct public HTTP inspection was unavailable in this audit session. Do not equate route mounting with a successful authenticated request or with proof of external reachability through every proxy.
+
+### 13.4 Runtime configuration visibility and limits
+
+- The live startup log establishes `SERVICE_MODE=full`; it is stronger evidence than the repository default.
+- The worker's explicit disabled log establishes that it did not poll in this snapshot. The raw environment-variable values were not read or copied into this audit.
+- Render service metadata and logs do not establish the values of every Guardian, scheduler, external queue, or integration environment variable. No secret values were requested or exposed.
+- The connected Render workspace inventory still contains one staging web-service resource, not separate Render worker/cron resources. The two Procfile processes share the service/container; multiple in-process actors and lifecycle schedulers are active in `full` mode.
+- External queue providers, manually operated workers, and schedulers outside this Render workspace remain unverified.
+- No authenticated route probes, writes, remediation calls, database queries, environment-variable changes, deployments, or production operations were performed by this audit.
+
+### 13.5 Gate 0 status after runtime verification
+
+**Status remains PARTIALLY COMPLETE.** Runtime verification now confirms the active service mode, the disabled engineering worker, and successful startup mounting of Director, Council, and Event API surfaces. It also confirms a staging deployment lag: the live service runs `70ce311`, while the branch head is `a51d7dd`.
+
+Remaining work includes:
+1. Reconcile the live deployment commit with the intended staging source before treating branch-only route changes as runtime behavior. Any deployment remains a separate explicitly authorized action.
+2. Perform safe authenticated route tests in staging using dedicated test principals, once those principals and non-production credentials are approved.
+3. Finish exact-commit source/config classification and the consumer-to-scope migration matrix.
+4. Verify socket handshake/channel authorization, external workers/providers, trace exporter/collector behavior, and Director-to-tool downstream trace continuity.
+5. Complete the Guardian scan/remediation boundary and migration rollback plan.
+
+No runtime implementation, credential rotation, database change, deployment, or production action is authorized by this audit.
