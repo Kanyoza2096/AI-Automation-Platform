@@ -245,34 +245,8 @@ class ResearchStep(Step):
         sources_used: List[str] = []
         loop = asyncio.get_event_loop()
 
-        try:
-            from plugins.trend_intelligence.plugin import trend_plugin
-            if trend_plugin and trend_plugin.supabase:
-                encoded_topic = quote(topic, safe='')
-                try:
-                    result = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            None,
-                            lambda: trend_plugin.supabase.table("trend_posts")
-                            .select("title, source, url")
-                            .or_(f"title.ilike.%{topic}%,description.ilike.%{topic}%")
-                            .limit(self._config.research_top_k)
-                            .execute()
-                        ),
-                        timeout=self._config.trend_query_timeout_seconds,
-                    )
-                    if result and result.data:
-                        for row in result.data:
-                            research_facts.append(f"{row.get('title', '')} (source: {row.get('source', 'unknown')})")
-                            sources_used.append(row.get("source", "trend_intelligence"))
-                        logger.info("[Stage 2] TrendIntelligence research: %d facts", len(research_facts))
-                    else:
-                        logger.warning("[Stage 2] TrendIntelligence returned no data")
-                except asyncio.TimeoutError:
-                    logger.warning("[Stage 2] TrendIntelligence research timed out")
-        except Exception as exc:
-            logger.warning("[Stage 2] TrendIntelligence research failed: %s", str(exc)[:200])
-
+        # Trend Intelligence was an optional external research plugin and has been retired.
+        # Brand knowledge-base retrieval remains the supported research source.
         if not research_facts and self._brand:
             try:
                 if self._knowledge_repo is None:
