@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from enum import Enum
 from typing import Any, Mapping
 
 from core.platform_state import (
