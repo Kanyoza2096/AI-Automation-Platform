@@ -10,13 +10,5 @@ router = APIRouter(prefix="/api/v1/sensors", tags=["sensors"], dependencies=[Dep
 
 @router.get("/status")
 async def sensors_status():
-    sensors = {}
-    try:
-        from plugins.trend_intelligence.plugin import trend_plugin
-        if trend_plugin is not None:
-            sensors["trend_intelligence"] = trend_plugin.get_status()
-        else:
-            sensors["trend_intelligence"] = {"enabled": False, "running": False, "status": "not_started"}
-    except Exception as exc:
-        sensors["trend_intelligence"] = {"enabled": False, "running": False, "status": "unavailable", "error": str(exc)[:200]}
-    return {"ok": True, "sensors": sensors}
+    # The generic sensor endpoint remains available for future registered sensors.
+    return {"ok": True, "sensors": {}}
