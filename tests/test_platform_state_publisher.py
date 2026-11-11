@@ -149,3 +149,15 @@ def test_notification_failure_does_not_rollback_authoritative_snapshot():
     assert store.current is result
     assert len(store.saved) == 1
     assert len(bus.events) == 1
+
+
+def test_platform_state_event_is_a_platform_scoped_nerve_event():
+    from core.nerve import validate_and_normalize
+
+    envelope = validate_and_normalize(
+        "platform.state.updated",
+        {"revision": 1},
+        source="health_monitor",
+        strict=True,
+    )
+    assert envelope.workspace_id == "platform"
