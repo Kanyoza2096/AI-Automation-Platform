@@ -916,6 +916,7 @@ def _register_business_services(c: ServiceContainer, bindings: list[BindingMetad
     )
 
     from core.unified_bus import UnifiedEventBus
+    from core.event_bus import EventBusBridge
     from core.multi_tenant import WorkspaceManager
     from repositories.workspace_repository import WorkspaceRepository
 
