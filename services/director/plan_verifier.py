@@ -15,7 +15,7 @@ PLAN_SCHEMA = "kdo.director.strategic-plan.v1"
 CONTEXT_SCHEMA = "kdo.director.strategic-context.v1"
 FINGERPRINT_FIELDS = (
     "schema_version", "generated_at", "health_summary", "evidence",
-    "objectives", "capabilities", "missions", "learning",
+    "objectives", "capabilities", "missions", "learning", "platform_state",
 )
 
 
@@ -40,6 +40,31 @@ def _timestamp(value: Any) -> datetime | None:
         return None
     return parsed.astimezone(timezone.utc)
 
+
+
+def _evidence_ids(context: Mapping[str, Any]) -> set[str]:
+    evidence = context.get("evidence", {})
+    if not isinstance(evidence, Mapping):
+        return set()
+    ids: set[str] = set()
+    for item in evidence.get("facts", []) or []:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str):
+            ids.add(f"fact:{item['observer']}")
+    for item in evidence.get("inferences", []) or []:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("issue_type"), str):
+            ids.add(f"inference:{item['observer']}:{item['issue_type']}")
+    for item in evidence.get("unknowns", []) or []:
+        if isinstance(item, Mapping) and isinstance(item.get("kind"), str):
+            ids.add(f"unknown:{item['kind']}:{item.get('observer', 'platform')}")
+    for item in evidence.get("conflicts", []) or []:
+        if isinstance(item, Mapping) and isinstance(item.get("sector"), str):
+            ids.add(f"conflict:{item['sector']}")
+    signals = evidence.get("engine_signals", {})
+    if isinstance(signals, Mapping):
+        for item in signals.get("accepted", []) or []:
+            if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("capability"), str):
+                ids.add(f"signal:{item['observer']}:{item['capability']}")
+    return ids
 
 def _dag_errors(steps: list[Mapping[str, Any]]) -> list[str]:
     ids = [step.get("step_id") for step in steps]
@@ -174,6 +199,7 @@ def verify_strategic_plan(
 
     unavailable: list[str] = []
     unknown_readiness: list[str] = []
+    valid_evidence_ids = _evidence_ids(context)
     for step in steps:
         name = step.get("capability")
         capability = capabilities.get(name)
@@ -201,6 +227,10 @@ def verify_strategic_plan(
             unknown_readiness.append(f"evidence_refs:{step.get('step_id')}")
         elif not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
             errors.append(f"evidence_refs_invalid:{step.get('step_id')}")
+        elif not refs:
+            warnings.append(f"evidence_refs_empty:{step.get('step_id')}")
+        elif any(ref not in valid_evidence_ids for ref in refs):
+            errors.append(f"evidence_reference_unknown:{step.get('step_id')}")
 
     if unavailable:
         warnings.extend(f"capability_not_ready:{name}" for name in sorted(set(unavailable)))
