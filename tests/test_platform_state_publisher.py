@@ -123,19 +123,16 @@ def test_publisher_reloads_and_retries_compare_and_swap_conflict():
     assert bus.events[0][1]["revision"] == 3
 
 
-def test_publisher_requires_durable_event_transport():
+def test_snapshot_persists_without_event_transport_and_skips_notification():
     store = FakeStore()
     bus = FakeBus()
     bus.supabase = None
 
-    try:
-        asyncio.run(PlatformStatePublisher(store, bus).publish(snapshot()))
-    except Exception as exc:
-        assert "durable_event_transport_unavailable" in str(exc)
-    else:
-        raise AssertionError("publisher must fail closed without durable event transport")
+    result = asyncio.run(PlatformStatePublisher(store, bus).publish(snapshot()))
 
-    assert store.saved == []
+    assert result.revision == 1
+    assert store.current is result
+    assert len(store.saved) == 1
     assert bus.events == []
 
 
