@@ -60,22 +60,10 @@ Also accepted via settings: `cloudflare_account_id`, `cloudflare_api_token`.
 Without these, image path falls back to HuggingFace FLUX (needs `HF_TOKEN`) → Kroki → Picsum.
 
 
-## Trend Intelligence
-
-| Variable | Default | Notes |
-|----------|---------|--------|
-| `DEFAULT_WORKSPACE_ID` | `platform` | Soft filter for rules/posts when not `platform` |
-| `TREND_SCAN_INTERVAL_SECONDS` | `300` | Scan cadence |
-| `TREND_SEMANTIC_SCORE` | off | Gemini blend into relevance |
-| `TREND_LLM_BRIEFING` | off | Gemini rewrite before publish request |
-| `NEWSAPI_KEY` | — | NewsAPI adapter |
-| `TWITTER_BEARER_TOKEN` | — | X/Twitter adapter |
-
 ## Web Intelligence
 TAVILY_API_KEY=
 BRAVE_API_KEY=
 NEWSAPI_KEY=
-TREND_WEB_VERIFY=false
 
 
 ## Tool agent
