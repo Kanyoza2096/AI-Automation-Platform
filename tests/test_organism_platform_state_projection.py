@@ -28,6 +28,15 @@ def _snapshot(updated_at=None):
                 reason=None,
             ),
         ),
+        observer_observations=(
+            SimpleNamespace(
+                service_id="director",
+                observer_id="meta_engine",
+                readiness=Readiness.DEGRADED,
+                observed_at=updated_at,
+                source_version="meta-v7.1",
+            ),
+        ),
         capabilities=(
             SimpleNamespace(
                 capability_id="strategic_planning",
@@ -78,6 +87,8 @@ def test_species_vitals_can_read_platform_state_snapshot(monkeypatch):
     assert result["revision"] == 21
     assert result["services"][0]["service_id"] == "director"
     assert result["capabilities"][0]["capability_id"] == "strategic_planning"
+    assert result["observer_observations"][0]["observer_id"] == "meta_engine"
+    assert result["observer_observations"][0]["readiness"] == "degraded"
     assert result["policy"]["platform_operator_only"] is True
     assert result["policy"]["grants_execution_authority"] is False
 
