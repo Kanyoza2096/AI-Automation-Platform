@@ -55,19 +55,29 @@ BEGIN
             USING ERRCODE = '22023';
     END IF;
 
-    INSERT INTO public.platform_state_snapshots AS current_state
-        (scope_type, scope_id, revision, schema_version, state, updated_at)
-    VALUES
-        (p_scope_type, p_scope_id, 1,
-         COALESCE(NULLIF(p_state->>'schema_version', '')::INTEGER, 1),
-         p_state, NOW())
-    ON CONFLICT (scope_type, scope_id) DO UPDATE
-       SET revision = current_state.revision + 1,
-           schema_version = COALESCE(NULLIF(EXCLUDED.state->>'schema_version', '')::INTEGER, 1),
-           state = EXCLUDED.state,
-           updated_at = NOW()
-     WHERE current_state.revision = p_expected_revision
-    RETURNING revision INTO v_revision;
+    -- First write is valid only at revision 0. Subsequent writes update
+    -- only an existing row at the exact expected revision. Splitting these
+    -- paths prevents a stale writer from recreating a deleted/missing row.
+    IF p_expected_revision = 0 THEN
+        INSERT INTO public.platform_state_snapshots
+            (scope_type, scope_id, revision, schema_version, state, updated_at)
+        VALUES
+            (p_scope_type, p_scope_id, 1,
+             COALESCE(NULLIF(p_state->>'schema_version', '')::INTEGER, 1),
+             p_state, NOW())
+        ON CONFLICT (scope_type, scope_id) DO NOTHING
+        RETURNING revision INTO v_revision;
+    ELSE
+        UPDATE public.platform_state_snapshots
+           SET revision = revision + 1,
+               schema_version = COALESCE(NULLIF(p_state->>'schema_version', '')::INTEGER, 1),
+               state = p_state,
+               updated_at = NOW()
+         WHERE scope_type = p_scope_type
+           AND scope_id = p_scope_id
+           AND revision = p_expected_revision
+        RETURNING revision INTO v_revision;
+    END IF;
 
     IF v_revision IS NULL THEN
         RAISE EXCEPTION 'platform_state_revision_conflict'
