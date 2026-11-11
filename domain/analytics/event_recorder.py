@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Callable
 
 from core.events import DomainEvent, EventType
-from core.event_bus import EventBus
+from core.unified_bus import UnifiedEventBus
 
 if TYPE_CHECKING:
     from repositories.analytics_repository import AnalyticsRepository
@@ -13,59 +14,60 @@ logger = logging.getLogger(__name__)
 
 
 class EventRecorder:
-    """Persist selected domain events through the lifecycle-owned event bridge.
+    """Persist selected domain events from the authoritative async event bus."""
 
-    The recorder deliberately accepts the synchronous DomainEvent-compatible
-    EventBus interface. Dependency injection supplies EventBusBridge, which
-    forwards to the one lifecycle-owned UnifiedEventBus instance.
-    """
-
-    def __init__(self, repo: "AnalyticsRepository", bus: EventBus) -> None:
+    def __init__(self, repo: "AnalyticsRepository", bus: UnifiedEventBus) -> None:
         self._repo = repo
         self._bus = bus
         self._unsubscribe_callbacks: list[Callable[[], None]] = []
         self._started = False
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def is_started(self) -> bool:
         return self._started
 
-    def start(self) -> None:
-        """Install all subscriptions once, rolling back partial registration."""
-        if self._started:
-            return
+    async def start(self) -> None:
+        """Await all subscriptions and roll back if any registration fails."""
+        async with self._lifecycle_lock:
+            if self._started:
+                return
 
-        subscriptions = (
-            (EventType.POST_PUBLISHED, self._on_post_published),
-            (EventType.POST_GENERATED, self._on_post_generated),
-            (EventType.SCAN_COMPLETED, self._on_scan_completed),
-            (EventType.MESSAGE_RECEIVED, self._on_message),
-            (EventType.MESSAGE_SENT, self._on_message),
-        )
-        registered: list[Callable[[], None]] = []
-        try:
-            for event_type, handler in subscriptions:
-                unsubscribe = self._bus.subscribe(event_type, handler)
-                if not callable(unsubscribe):
-                    raise RuntimeError(
-                        f"Event bus did not return an unsubscribe callback for {event_type.value}"
+            event_types = (
+                EventType.POST_PUBLISHED,
+                EventType.POST_GENERATED,
+                EventType.SCAN_COMPLETED,
+                EventType.MESSAGE_RECEIVED,
+                EventType.MESSAGE_SENT,
+            )
+            registered: list[Callable[[], None]] = []
+            try:
+                for event_type in event_types:
+                    unsubscribe = await self._bus.subscribe(
+                        event_type.value,
+                        self._make_handler(event_type),
                     )
-                registered.append(unsubscribe)
-        except Exception:
-            self._unsubscribe_all(registered)
-            raise
+                    if not callable(unsubscribe):
+                        raise RuntimeError(
+                            f"UnifiedEventBus did not return an unsubscribe callback for {event_type.value}"
+                        )
+                    registered.append(unsubscribe)
+            except Exception:
+                self._unsubscribe_all(registered)
+                raise
 
-        self._unsubscribe_callbacks = registered
-        self._started = True
-        logger.info("EventRecorder: subscribed to %d event types", len(registered))
+            self._unsubscribe_callbacks = registered
+            self._started = True
+            logger.info("EventRecorder: subscribed to %d event types", len(registered))
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Remove this recorder's subscriptions; safe to call repeatedly."""
-        callbacks, self._unsubscribe_callbacks = self._unsubscribe_callbacks, []
-        self._started = False
-        self._unsubscribe_all(callbacks)
-        if callbacks:
-            logger.info("EventRecorder: unsubscribed from %d event types", len(callbacks))
+        async with self._lifecycle_lock:
+            callbacks, self._unsubscribe_callbacks = self._unsubscribe_callbacks, []
+            self._started = False
+            self._unsubscribe_all(callbacks)
+            if callbacks:
+                logger.info("EventRecorder: unsubscribed from %d event types", len(callbacks))
 
     @staticmethod
     def _unsubscribe_all(callbacks: list[Callable[[], None]]) -> None:
@@ -73,10 +75,41 @@ class EventRecorder:
             try:
                 unsubscribe()
             except Exception:
-                # Continue cleanup so one faulty handler cannot leak the rest.
                 logger.exception("EventRecorder: failed to remove event subscription")
 
+    @staticmethod
+    def _make_handler(event_type: EventType):
+        def handle(payload, source="unknown", event_id=None, **_metadata) -> None:
+            event = DomainEvent(
+                event_type=event_type,
+                payload=payload if isinstance(payload, dict) else {},
+                source=source or "unified",
+                event_id=event_id or None,
+            )
+            if event_type == EventType.POST_PUBLISHED:
+                EventRecorder._handle_post_published_from(event)
+            elif event_type == EventType.POST_GENERATED:
+                EventRecorder._handle_post_generated_from(event)
+            elif event_type == EventType.SCAN_COMPLETED:
+                EventRecorder._handle_scan_completed_from(event)
+            else:
+                EventRecorder._handle_message_from(event)
+
+        return handle
+
     def _on_post_published(self, event: DomainEvent) -> None:
+        self._handle_post_published_from(event)
+
+    def _on_post_generated(self, event: DomainEvent) -> None:
+        self._handle_post_generated_from(event)
+
+    def _on_scan_completed(self, event: DomainEvent) -> None:
+        self._handle_scan_completed_from(event)
+
+    def _on_message(self, event: DomainEvent) -> None:
+        self._handle_message_from(event)
+
+    def _handle_post_published_from(self, event: DomainEvent) -> None:
         p = event.payload
         self._repo.record_post_published(
             topic=p.get("topic", ""),
@@ -84,7 +117,7 @@ class EventRecorder:
             post_id=p.get("post_id", ""),
         )
 
-    def _on_post_generated(self, event: DomainEvent) -> None:
+    def _handle_post_generated_from(self, event: DomainEvent) -> None:
         self._repo.save({
             "event": "post_generated",
             "topic": event.payload.get("topic", ""),
@@ -93,13 +126,13 @@ class EventRecorder:
             "latency_ms": event.payload.get("latency_ms", 0),
         })
 
-    def _on_scan_completed(self, event: DomainEvent) -> None:
+    def _handle_scan_completed_from(self, event: DomainEvent) -> None:
         self._repo.save({
             "event": "scan_completed",
             **event.payload,
         })
 
-    def _on_message(self, event: DomainEvent) -> None:
+    def _handle_message_from(self, event: DomainEvent) -> None:
         direction = "inbound" if event.event_type == EventType.MESSAGE_RECEIVED else "outbound"
         self._repo.record_message(
             sender_id=event.payload.get("sender_id", ""),
