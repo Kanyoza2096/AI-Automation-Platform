@@ -243,3 +243,29 @@ def test_director_keeps_platform_state_unknown_when_reader_is_not_configured():
     assert state["status"] == "unavailable"
     assert state["freshness"] == "unknown"
     assert state["reason"] == "platform_state_reader_not_configured"
+
+
+def test_explicit_strategic_plan_refreshes_platform_state_before_planner_input(monkeypatch):
+    reader = FakePlatformStateReader(_platform_snapshot())
+    director = Director(supabase_client=None, platform_state_reader=reader)
+    captured = []
+
+    def fake_build_strategic_plan(*, objective, context, generator):
+        captured.append(context["platform_state"])
+        return {"plan_id": "plan-platform-state-test", "status": "proposed"}
+
+    async def save_plan(_plan):
+        return True
+
+    monkeypatch.setattr(
+        "services.director.core.build_strategic_plan",
+        fake_build_strategic_plan,
+    )
+    director.store.save_strategic_plan = save_plan
+
+    result = asyncio.run(director.create_strategic_plan({"objective_id": "test"}))
+
+    assert result["status"] == "proposed"
+    assert reader.calls == 1
+    assert captured[0]["revision"] == 9
+    assert captured[0]["freshness"] == "fresh"
