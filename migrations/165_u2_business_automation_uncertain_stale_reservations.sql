@@ -83,3 +83,32 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.reserve_business_automation_execution(JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.reserve_business_automation_execution(JSONB) TO service_role;
+
+
+-- The bridge must not start the durable inbox merely because event fan-out is
+-- installed. Confirm that the authoritative reservation RPC has the
+-- reconciliation-first implementation as well.
+CREATE OR REPLACE FUNCTION public.business_automation_stale_reservation_guard_ready()
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+    SELECT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_proc AS p
+        JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND p.proname = 'reserve_business_automation_execution'
+          AND pg_catalog.pg_get_function_identity_arguments(p.oid) = 'p_execution jsonb'
+          AND p.prosecdef IS TRUE
+          AND p.prosrc LIKE '%status = ''uncertain''%'
+          AND p.prosrc LIKE '%reconciliation_required%'
+          AND p.prosrc LIKE '%stale_started_reservation%'
+          AND p.prosrc NOT LIKE '%attempt = r.attempt + 1%'
+    );
+$$;
+
+REVOKE ALL ON FUNCTION public.business_automation_stale_reservation_guard_ready() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.business_automation_stale_reservation_guard_ready() TO service_role;
