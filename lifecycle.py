@@ -2021,7 +2021,7 @@ async def _boot_health_monitor(container: ServiceContainer) -> None:
     from core.unified_bus import get_unified_bus
     from core.platform_state_store import PlatformStateStore
 
-    event_bus = get_unified_bus()
+    event_bus = await get_unified_bus()
     platform_state_store = None
     try:
         from services.supabase import get_service_client_from_settings
