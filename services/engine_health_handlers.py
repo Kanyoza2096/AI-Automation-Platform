@@ -205,46 +205,6 @@ def render_queue_health(engine: Any) -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MONITOR PLUGIN (NEW — was missing)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def monitor_plugin_health(engine: Any) -> Dict[str, Any]:
-    """Health check for MonitorPlugin."""
-    try:
-        if hasattr(engine, "get_status"):
-            return engine.get_status()
-        if hasattr(engine, "health_check"):
-            return engine.health_check()
-        if hasattr(engine, "supabase") and engine.supabase is not None:
-            return {"status": "healthy", "message": "MonitorPlugin Supabase wired"}
-        if engine is not None:
-            return {"status": "healthy", "message": "MonitorPlugin available"}
-        return {"status": "offline", "message": "MonitorPlugin not available"}
-    except Exception as exc:
-        return {"status": "degraded", "message": str(exc)}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BACKUP PLUGIN (NEW — was missing)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def backup_plugin_health(engine: Any) -> Dict[str, Any]:
-    """Health check for BackupPlugin."""
-    try:
-        if hasattr(engine, "get_status"):
-            return engine.get_status()
-        if hasattr(engine, "health_check"):
-            return engine.health_check()
-        if hasattr(engine, "supabase") and engine.supabase is not None:
-            return {"status": "healthy", "message": "BackupPlugin Supabase wired"}
-        if engine is not None:
-            return {"status": "healthy", "message": "BackupPlugin available"}
-        return {"status": "offline", "message": "BackupPlugin not available"}
-    except Exception as exc:
-        return {"status": "degraded", "message": str(exc)}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # TASK QUEUE
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -282,8 +242,6 @@ HEALTH_HANDLERS = {
     "health_monitor": health_monitor_health,       # NEW
     "plugin_registry": plugin_registry_health,     # NEW
     "render_queue": render_queue_health,           # NEW
-    "monitor_plugin": monitor_plugin_health,       # NEW
-    "backup_plugin": backup_plugin_health,         # NEW
     "task_queue": task_queue_health,
 }
 
@@ -299,7 +257,6 @@ NATIVE_HEALTH_ENGINES = {
     "scheduler",             # Has get_status()
     "job_service",           # Has get_stats()
     "event_bus",             # Has get_stats()
-    "growthbridge_plugin",   # Has health endpoint
 }
 
 

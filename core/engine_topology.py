@@ -39,10 +39,6 @@ CANONICAL_ENGINE_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
     "health_monitor": ("event_bus",),
     "enterprise_emitters": ("event_bus",),
     "scheduler": ("job_service", "content_engine"),
-    "monitor_plugin": ("supabase",),
-    "backup_plugin": ("supabase",),
-    "growthbridge_plugin": ("content_engine", "supabase"),
-    "trend_plugin": ("supabase",),
     "autonomous_content": ("ai_orchestrator", "content_engine", "event_bus", "supabase"),
     "autonomous_loop": ("meta_engine", "director", "condition_engine", "autonomous_content", "event_bus"),
 }

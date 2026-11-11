@@ -172,7 +172,6 @@ except ImportError:  # pragma: no cover
 
 
 from core.socket_server import create_socket_app
-from routes.affiliate_routes import router as _affiliate_router  # route audit anchor
 
 logger = logging.getLogger("kanyoza.main")
 
@@ -773,7 +772,6 @@ def _mount_routes(app: FastAPI) -> None:
         ("Email Service", "routes.email_routes", "router"),
         ("Webhook", "routes.webhook", "router"),
         ("Sensor Status", "routes.sensor_routes", "router"),
-        ("Affiliate Workload", "routes.affiliate_routes", "router"),
     ]
 
     for name, module_path, attr in route_modules:
@@ -787,56 +785,6 @@ def _mount_routes(app: FastAPI) -> None:
             logger.debug("%s routes not available — skipping.", name)
         except Exception as exc:
             logger.warning("%s routes failed to mount: %s", name, str(exc)[:300])
-
-    try:
-        from routes.affiliate_routes import public_router as affiliate_public_router
-
-        app.include_router(affiliate_public_router)
-        logger.info("Affiliate public routes mounted.")
-    except Exception as exc:
-        logger.error("Affiliate public routes failed to mount: %s", str(exc)[:300])
-
-    # Trend Intelligence routes
-    try:
-        from plugins.trend_intelligence.routes.public import router as trend_public_router
-
-        app.include_router(trend_public_router)
-        logger.info("Trend Intelligence public routes mounted.")
-    except ImportError:
-        logger.debug("Trend Intelligence public routes not available.")
-    except Exception as exc:
-        logger.warning("Trend Intelligence public routes mount failed: %s", str(exc)[:200])
-
-    try:
-        from plugins.trend_intelligence.routes.admin import router as trend_admin_router
-
-        app.include_router(trend_admin_router)
-        logger.info("Trend Intelligence admin routes mounted.")
-    except ImportError:
-        logger.debug("Trend Intelligence admin routes not available.")
-    except Exception as exc:
-        logger.warning("Trend Intelligence admin routes mount failed: %s", str(exc)[:200])
-
-    # Backup routes
-    try:
-        from plugins.backup.routes.public import router as backup_public_router
-
-        app.include_router(backup_public_router)
-        logger.info("Backup public routes mounted.")
-    except ImportError:
-        logger.debug("Backup public routes not available.")
-    except Exception as exc:
-        logger.warning("Backup public routes mount failed: %s", str(exc)[:200])
-
-    try:
-        from plugins.backup.routes.admin import router as backup_admin_router
-
-        app.include_router(backup_admin_router)
-        logger.info("Backup admin routes mounted.")
-    except ImportError:
-        logger.debug("Backup admin routes not available.")
-    except Exception as exc:
-        logger.warning("Backup admin routes mount failed: %s", str(exc)[:200])
 
     # Canonical /api/v1 contract routes — mount ONCE only (no duplicate loop)
     canonical_v1_routes = [
@@ -937,9 +885,7 @@ def _mount_routes(app: FastAPI) -> None:
     except Exception as exc:
         logger.warning("CP gap routes mount failed: %s", str(exc)[:300])
 
-    _mount_plugin(app, "growthbridge", "Growthbridge")
     _mount_plugin(app, "github_connector", "GitHub Connector")
-    _mount_plugin(app, "monitor", "Monitor")
 
     try:
         from routes.code_intel_routes import router as code_intel_router

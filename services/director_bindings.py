@@ -139,7 +139,7 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
         for non-autonomous callers but refuses to run when `source` is
         missing, which is the signature of an autonomous Director
         invocation. Legitimate callers must set `source` to something
-        explicit (e.g. "trend_intelligence", "operator", "content_bridge").
+        explicit (e.g. "operator", "content_bridge").
 
         Delegates to `execute_governed_publish` when content is supplied,
         or to `BrandSchedulerManager.trigger_all()` for a full-cycle
@@ -179,8 +179,8 @@ def _build_handlers_for(director, container) -> Dict[str, Callable]:
                 },
             )
 
-        # Explicit trend content → canonical publish via Action Kernel
-        if source in ("trend_intelligence", "trend") or content:
+        # Explicit content → canonical publish via Action Kernel
+        if content:
             workspace_id = str(params.get("workspace_id") or "").strip()
             if not workspace_id:
                 return _soft_fail("publish", "workspace_id is required for automated publishing", job_id=job_id)

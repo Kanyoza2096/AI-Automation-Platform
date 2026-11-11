@@ -170,19 +170,6 @@ class SystemTopology:
         self.add_node("enterprise_emitters", Sector.HEALTH, criticality=2)
         self.add_dependency("enterprise_emitters", "event_bus")
 
-        self.add_node("growthbridge_plugin", Sector.GROWTH, criticality=2)
-        self.add_dependency("growthbridge_plugin", "content_engine")
-        self.add_dependency("growthbridge_plugin", "supabase")
-
-        self.add_node("monitor_plugin", Sector.HEALTH, criticality=2)
-        self.add_dependency("monitor_plugin", "supabase")
-
-        self.add_node("backup_plugin", Sector.INFRA, criticality=3)
-        self.add_dependency("backup_plugin", "supabase")
-
-        self.add_node("trend_plugin", Sector.GROWTH, criticality=2)
-        self.add_dependency("trend_plugin", "supabase")
-
         try:
             from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
             # Preserve domain metadata where it is already defined above, but

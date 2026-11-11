@@ -85,8 +85,6 @@ class BusinessAutomationEngine:
         self.register_action("whatsapp_message", self._action_whatsapp_message)
         self.register_action("customer_communication", self._action_customer_communication)
         self.register_action("sales_orchestrate", self._action_sales_orchestrate)
-        self.register_action("create_affiliate_post", self._action_create_affiliate_post)
-        self.register_action("affiliate_optimize", self._action_affiliate_optimize)
 
     def set_supabase_client(self, client) -> None:
         self._db = client
@@ -663,34 +661,6 @@ class BusinessAutomationEngine:
             raise ValueError("crm_add_meeting requires title")
         return await self._execute_governed_crm("crm_add_meeting", event, parameters, **kwargs)
 
-
-    async def _action_create_affiliate_post(self, event, parameters, **kwargs):
-        """Create a governed affiliate publication intent; never publish inline."""
-        from services.action_kernel import build_default_action_kernel
-        ws = str(kwargs.get("workspace_id") or "").strip()
-        if not ws:
-            raise ValueError("create_affiliate_post requires workspace scope")
-        kernel = build_default_action_kernel(self._get_db(), allow_in_memory=not self._production())
-        payload = {**event, **parameters}
-        return await kernel.enqueue(
-            workspace_id=ws, action_type="affiliate_publish_promotion", parameters=payload,
-            risk_level="high", decision_id=getattr(kwargs.get("rule"), "id", None),
-            correlation_id=str(event.get("correlation_id") or event.get("event_id") or ""),
-            idempotency_key=str(kwargs.get("idempotency_key") or ""), source="business_automation",
-        )
-
-    async def _action_affiliate_optimize(self, event, parameters, **kwargs):
-        from services.action_kernel import build_default_action_kernel
-        ws = str(kwargs.get("workspace_id") or "").strip()
-        if not ws:
-            raise ValueError("affiliate_optimize requires workspace scope")
-        kernel = build_default_action_kernel(self._get_db(), allow_in_memory=not self._production())
-        return await kernel.execute(
-            workspace_id=ws, action_type="affiliate_optimize_campaign", parameters={**event, **parameters},
-            risk_level="medium", decision_id=getattr(kwargs.get("rule"), "id", None),
-            correlation_id=str(event.get("correlation_id") or event.get("event_id") or ""),
-            idempotency_key=str(kwargs.get("idempotency_key") or ""), source="business_automation",
-        )
 
     async def _action_generate_workspace_report(self, event, parameters, **kwargs):
         ws = str(kwargs.get("workspace_id") or "").strip()

@@ -32,8 +32,3 @@ def test_kernel_managed_connector_has_explicit_execution_boundary():
     assert "if execution_managed:" in source
     assert "if pipeline_ledger_key:" in source
 
-
-def test_affiliate_publish_inside_kernel_is_execution_managed():
-    source = (ROOT / "services/action_kernel.py").read_text(encoding="utf-8")
-    block = source[source.index("async def affiliate_publish"):source.index("async def affiliate_pause")]
-    assert "execution_managed=True" in block

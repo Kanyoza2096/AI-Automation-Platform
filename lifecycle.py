@@ -806,11 +806,6 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             action=partial(_boot_content_engine, container),
         ))
         steps.append(BootStep(
-            name="TrendPublishBridge",
-            phase=BootPhase.BUSINESS,
-            action=partial(_boot_trend_publish_bridge, container),
-        ))
-        steps.append(BootStep(
             name="AutonomousContent",
             phase=BootPhase.BUSINESS,
             action=partial(_boot_autonomous_content, container),
@@ -836,13 +831,6 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             phase=BootPhase.BUSINESS,
             action=partial(_boot_industry_plugins, app, container),
             rollback=partial(_stop_industry_plugins, container),
-        ))
-        steps.append(BootStep(
-            name="GrowthbridgePlugin",
-            phase=BootPhase.BUSINESS,
-            action=partial(_boot_growthbridge, container),
-            rollback=partial(_stop_growthbridge, container),
-            timeout_seconds=10.0,
         ))
         steps.append(BootStep(
             name="SocketBridge",
@@ -918,36 +906,6 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             name="EnterpriseEmitters",
             phase=BootPhase.OBSERVABILITY,
             action=partial(_start_enterprise_emitters, container),
-        ))
-
-    if mode in ("full", "monitor"):
-        steps.append(BootStep(
-            name="MonitorPlugin",
-            phase=BootPhase.OBSERVABILITY,
-            action=partial(
-                _boot_plugin_from_module, container,
-                "plugins.monitor.plugin", "init_monitor_plugin", "MonitorPlugin",
-            ),
-            timeout_seconds=10.0,
-        ))
-        steps.append(BootStep(
-            name="BackupPlugin",
-            phase=BootPhase.OBSERVABILITY,
-            action=partial(
-                _boot_plugin_from_module, container,
-                "plugins.backup.plugin", "init_backup_plugin", "BackupPlugin",
-            ),
-            timeout_seconds=10.0,
-        ))
-        steps.append(BootStep(
-            name="TrendIntelligence",
-            phase=BootPhase.OBSERVABILITY,
-            action=partial(
-                _boot_plugin_from_module, container,
-                "plugins.trend_intelligence.plugin",
-                "init_trend_plugin", "TrendIntelligence",
-            ),
-            timeout_seconds=15.0,
         ))
 
     if mode in ("full", "github"):
@@ -1488,19 +1446,6 @@ async def _boot_meta_health_handlers(container: ServiceContainer) -> None:
         raise
 
 
-async def _boot_trend_publish_bridge(container: ServiceContainer) -> None:
-    from core.unified_bus import UnifiedEventBus
-    from services.trend_publish_bridge import wire_trend_publish_bridge
-
-    bus = container.try_resolve(UnifiedEventBus)
-    if not bus:
-        raise RuntimeError("UnifiedEventBus unavailable for trend publish bridge")
-
-    if not await wire_trend_publish_bridge(bus):
-        raise RuntimeError("Failed to wire trend.publish.requested")
-
-    logger.info("Trend publish bridge wired")
-
 
 async def _boot_meta_engine(container: ServiceContainer) -> None:
     from services.meta_engine import MetaEngineV7, init_meta_engine
@@ -1737,51 +1682,6 @@ async def _boot_industry_plugins(app, container: ServiceContainer) -> None:
 
     logger.info("Industry plugins loaded: %s", list(plugins.keys()))
 
-
-async def _boot_growthbridge(container: ServiceContainer) -> None:
-    try:
-        from plugins.growthbridge.plugin import GrowthbridgePlugin
-        from services.supabase import get_service_client_from_settings
-
-        client = await _run_in_thread(get_service_client_from_settings)
-        plugin = GrowthbridgePlugin(supabase_client=client)
-
-        if not hasattr(container, "industry_plugins"):
-            container.industry_plugins = {}
-        container.industry_plugins["growthbridge"] = plugin
-
-        try:
-            from services.command_executor import CommandExecutor
-            for cmd in plugin.get_commands():
-                CommandExecutor.register_external_command("growthbridge", cmd)
-        except ImportError:
-            pass
-
-        if hasattr(plugin, "shutdown"):
-            await shutdown_registry.register(
-                "GrowthbridgePlugin", plugin.shutdown, timeout_seconds=10.0
-            )
-
-        if any(
-            hasattr(plugin, attr)
-            for attr in ("check_health", "check_health_async", "health_check")
-        ):
-            await health_registry.register(plugin)
-
-        logger.info("Growthbridge plugin loaded (standalone)")
-    except ImportError:
-        logger.debug("Growthbridge plugin not available")
-    except Exception as exc:
-        logger.warning(
-            "Growthbridge boot failed: %s", _sanitize_error_message(exc)
-        )
-
-
-async def _stop_growthbridge(container: ServiceContainer) -> None:
-    plugins = getattr(container, "industry_plugins", {})
-    plugin = plugins.get("growthbridge")
-    if plugin and hasattr(plugin, "shutdown"):
-        await _run_in_thread(plugin.shutdown)
 
 
 def _discover_industry_plugins(supabase_client=None, redis_client=None) -> dict:

@@ -202,8 +202,7 @@ class MetaEngineV7:
         "supabase", "redis", "github", "gemini",
         "meta_engine", "director", "guardian", "guardian_scheduler",
         "enterprise_emitters", "event_recorder",
-        "backup_plugin", "brand_scheduler", "engagement_tracker",
-        "growthbridge_plugin", "monitor_plugin", "trend_plugin",
+        "brand_scheduler", "engagement_tracker",
     }
 
     # v7.1 — Intelligence toggles

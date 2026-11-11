@@ -110,14 +110,11 @@ def main():
         if m in source: mounts.add(m)
     # The primary router list is represented as (display, module, attr) tuples.
     for m in ('api.v1','routes.rule_routes','routes.meta_routes','routes.email_routes','routes.webhook',
-              'plugins.trend_intelligence.routes.public','plugins.trend_intelligence.routes.admin',
-              'plugins.backup.routes.public','plugins.backup.routes.admin',
               'api.timeline_routes','api.e2e_routes','api.action_intent_routes','api.metabolism_routes','api.organism_body_routes',
               'api.outbox_routes','api.report_routes','api.slo_routes','api.observability_routes','api.web_intelligence',
-              'api.health_unified','api.content_intelligence_automation','routes.council_routes','routes.circulation_routes','routes.pulse_routes','routes.affiliate_routes',
+              'api.health_unified','api.content_intelligence_automation','routes.council_routes','routes.circulation_routes','routes.pulse_routes',
               'plugins.github_connector.routes.public','plugins.github_connector.routes.admin',
-              'plugins.growthbridge.routes.public','plugins.growthbridge.routes.admin',
-              'plugins.monitor.routes.public','plugins.monitor.routes.admin','routes.sensor_routes','routes.production_runtime_routes','routes.autonomous_workforce_bridge_routes','routes.runtime_wiring_routes','routes.legacy_runtime_fencing_routes','routes.workforce_execution_routes','routes.business_onboarding_routes','routes.command_center_routes','routes.sector_pack_routes','api.website_integrations','routes.connector_fabric_routes','routes.failure_recovery_routes','routes.tenant_health_observation_routes',
+'routes.sensor_routes','routes.production_runtime_routes','routes.autonomous_workforce_bridge_routes','routes.runtime_wiring_routes','routes.legacy_runtime_fencing_routes','routes.workforce_execution_routes','routes.business_onboarding_routes','routes.command_center_routes','routes.sector_pack_routes','api.website_integrations','routes.connector_fabric_routes','routes.failure_recovery_routes','routes.tenant_health_observation_routes',
               'routes.ai_control_plane_routes','routes.kdo_engineering_console','routes.species_routes'):
         if m in source: mounts.add(m)
     # Plugin routes are loaded dynamically from _mount_plugin; plugin name literals in main.py count.
@@ -135,7 +132,7 @@ def main():
             continue
         if mod.startswith('api.routers.') and 'api.v1' in mounted_set:
             continue
-        if mod.startswith('plugins.') and mod.split('.')[1] in {'growthbridge','github_connector','monitor'} and '_mount_plugin' in source:
+        if mod.startswith('plugins.') and mod.split('.')[1] == 'github_connector' and '_mount_plugin' in source:
             continue
         orphan_modules.append(mod)
     # services/director is an intentional sub-application mount, not an APIRouter module.

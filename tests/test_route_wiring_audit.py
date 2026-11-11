@@ -108,8 +108,6 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
     for m in (
         "routes.event_api", "routes.code_intel_routes", "routes.backend_contract_routes", "routes.cp_gap_routes",
         "api.v1", "routes.rule_routes", "routes.meta_routes", "routes.email_routes", "routes.webhook",
-        "plugins.trend_intelligence.routes.public", "plugins.trend_intelligence.routes.admin",
-        "plugins.backup.routes.public", "plugins.backup.routes.admin",
         "api.timeline_routes", "api.e2e_routes", "api.action_intent_routes", "api.metabolism_routes", "api.organism_body_routes",
         "api.outbox_routes", "api.report_routes", "api.slo_routes", "api.observability_routes", "api.web_intelligence",
         "api.health_unified", "api.content_intelligence_automation", "routes.council_routes", "routes.circulation_routes", "routes.pulse_routes",
@@ -128,7 +126,7 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
             continue
         if mod.startswith("api.routers.") and "api.v1" in mounts:
             continue
-        if mod.startswith("plugins.") and mod.split(".")[1] in {"growthbridge", "github_connector", "monitor"} and "_mount_plugin" in source:
+        if mod.startswith("plugins.") and mod.split(".")[1] == "github_connector" and "_mount_plugin" in source:
             continue
         orphaned.append(mod)
     assert orphaned == []
@@ -151,3 +149,39 @@ def test_route_wiring_audit_script_has_no_parse_errors():
     assert report["parse_errors"] == []
     assert report["orphan_router_modules"] == []
     assert report["route_count"] == 435
+
+
+def test_retired_integrations_are_absent_from_runtime_and_routes():
+    lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    retired_markers = (
+        "plugins.monitor", "plugins.backup", "plugins.trend_intelligence",
+        "plugins.growthbridge", "routes.affiliate_routes",
+    )
+    assert all(marker not in lifecycle for marker in retired_markers)
+    assert all(marker not in main for marker in retired_markers)
+
+    retired_paths = (
+        "plugins/monitor/plugin.py", "plugins/backup/plugin.py",
+        "plugins/trend_intelligence/plugin.py", "plugins/growthbridge/plugin.py",
+        "routes/affiliate_routes.py", "services/affiliate_service.py",
+        "services/trend_publish_bridge.py",
+    )
+    assert all(not (ROOT / path).exists() for path in retired_paths)
+
+
+def test_core_health_and_engineering_vertical_are_preserved():
+    lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'name="HealthMonitor"' in lifecycle
+    assert "_boot_health_monitor" in lifecycle
+    assert "routes.code_intel_routes" in main
+    assert (ROOT / "services/health_monitor_service.py").is_file()
+    assert (ROOT / "routes/code_intel_routes.py").is_file()
+
+
+def test_retired_engines_are_removed_from_director_topology():
+    from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
+
+    retired = {"monitor_plugin", "backup_plugin", "growthbridge_plugin", "trend_plugin"}
+    assert retired.isdisjoint(CANONICAL_ENGINE_DEPENDENCIES)
