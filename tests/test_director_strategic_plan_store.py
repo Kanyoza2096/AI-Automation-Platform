@@ -34,8 +34,13 @@ class FakeQuery:
         if self.operation == "upsert":
             self.client.rows[self.row["plan_id"]] = dict(self.row)
             return SimpleNamespace(data=[dict(self.row)])
-        row = self.client.rows.get(self.filters.get("plan_id"))
-        return SimpleNamespace(data=[{"payload": row["payload"]}] if row else [])
+        plan_id = self.filters.get("plan_id")
+        if plan_id is not None:
+            row = self.client.rows.get(plan_id)
+            rows = [{"payload": row["payload"]}] if row else []
+        else:
+            rows = [{"payload": row["payload"]} for row in self.client.rows.values()]
+        return SimpleNamespace(data=rows)
 
 
 class FakeSupabase:
