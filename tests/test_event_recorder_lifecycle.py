@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from core.events import DomainEvent, EventType
 from domain.analytics.event_recorder import EventRecorder
+from core.events import EventType
 
 
 class FakeRepository:
@@ -22,37 +24,39 @@ class FakeRepository:
         self.messages.append(kwargs)
 
 
-class FakeBus:
+class FakeUnifiedBus:
     def __init__(self, fail_at: int | None = None):
         self.subscribers = {}
         self.calls = 0
         self.fail_at = fail_at
 
-    def subscribe(self, event_type, handler):
+    async def subscribe(self, event_name, handler):
         self.calls += 1
         if self.calls == self.fail_at:
             raise RuntimeError("subscription failed")
-        self.subscribers.setdefault(event_type, []).append(handler)
+        self.subscribers.setdefault(event_name, []).append(handler)
 
         def unsubscribe():
-            self.subscribers[event_type] = [
-                item for item in self.subscribers[event_type] if item is not handler
+            self.subscribers[event_name] = [
+                item for item in self.subscribers[event_name] if item is not handler
             ]
 
         return unsubscribe
 
-    def emit(self, event_type, payload):
-        event = DomainEvent(event_type=event_type, payload=payload)
-        for handler in tuple(self.subscribers.get(event_type, [])):
-            handler(event)
+    def emit(self, event_type, payload, source="test"):
+        for handler in tuple(self.subscribers.get(event_type.value, [])):
+            handler(payload, source=source, event_id="event-1")
 
 
-def test_start_registers_all_subscriptions_and_is_idempotent():
-    bus, repo = FakeBus(), FakeRepository()
+def test_start_awaits_all_subscriptions_and_is_idempotent():
+    bus, repo = FakeUnifiedBus(), FakeRepository()
     recorder = EventRecorder(repo, bus)
 
-    recorder.start()
-    recorder.start()
+    async def run():
+        await recorder.start()
+        await recorder.start()
+
+    asyncio.run(run())
 
     assert recorder.is_started
     assert sum(map(len, bus.subscribers.values())) == 5
@@ -72,24 +76,30 @@ def test_start_registers_all_subscriptions_and_is_idempotent():
 
 
 def test_stop_removes_all_subscriptions_and_is_idempotent():
-    bus, repo = FakeBus(), FakeRepository()
+    bus, repo = FakeUnifiedBus(), FakeRepository()
     recorder = EventRecorder(repo, bus)
-    recorder.start()
 
-    recorder.stop()
-    recorder.stop()
+    async def run():
+        await recorder.start()
+        await recorder.stop()
+        await recorder.stop()
+
+    asyncio.run(run())
 
     assert not recorder.is_started
     assert sum(map(len, bus.subscribers.values())) == 0
 
 
 def test_start_stop_start_does_not_duplicate_delivery():
-    bus, repo = FakeBus(), FakeRepository()
+    bus, repo = FakeUnifiedBus(), FakeRepository()
     recorder = EventRecorder(repo, bus)
 
-    recorder.start()
-    recorder.stop()
-    recorder.start()
+    async def run():
+        await recorder.start()
+        await recorder.stop()
+        await recorder.start()
+
+    asyncio.run(run())
     bus.emit(EventType.POST_PUBLISHED, {"post_id": "p2"})
 
     assert len(repo.posts) == 1
@@ -97,27 +107,27 @@ def test_start_stop_start_does_not_duplicate_delivery():
 
 
 def test_partial_subscription_failure_rolls_back_prior_subscriptions():
-    bus, repo = FakeBus(fail_at=3)
+    bus, repo = FakeUnifiedBus(fail_at=3)
     recorder = EventRecorder(repo, bus)
 
     with pytest.raises(RuntimeError, match="subscription failed"):
-        recorder.start()
+        asyncio.run(recorder.start())
 
     assert not recorder.is_started
     assert sum(map(len, bus.subscribers.values())) == 0
 
 
 def test_non_callable_unsubscribe_is_rejected_and_rolled_back():
-    class BrokenBus(FakeBus):
-        def subscribe(self, event_type, handler):
-            super().subscribe(event_type, handler)
+    class BrokenBus(FakeUnifiedBus):
+        async def subscribe(self, event_name, handler):
+            await super().subscribe(event_name, handler)
             return None
 
     bus, repo = BrokenBus(), FakeRepository()
     recorder = EventRecorder(repo, bus)
 
     with pytest.raises(RuntimeError, match="unsubscribe callback"):
-        recorder.start()
+        asyncio.run(recorder.start())
 
     assert not recorder.is_started
     assert sum(map(len, bus.subscribers.values())) == 0
