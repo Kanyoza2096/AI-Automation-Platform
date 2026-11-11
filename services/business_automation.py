@@ -438,7 +438,7 @@ class BusinessAutomationEngine:
             await asyncio.to_thread(lambda: db.table("business_automation_executions").update({
                 "status": row["status"], "dry_run": row["dry_run"], "finished_at": row["finished_at"],
                 "output": row["output"], "error": row["error"], "attempt": row["attempt"]
-            }).eq("execution_id", execution.id).eq("workspace_id", execution.workspace_id).execute())
+            }).eq("execution_id", execution.id).eq("workspace_id", execution.workspace_id).eq("status", "started").execute())
             return
         if self._production(): raise RuntimeError("durable business automation database is required in production")
         async with self._lock:
