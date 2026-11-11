@@ -146,7 +146,10 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         ):
             raise StrategicPlanningError("plan_dependencies_invalid")
         evidence_refs = _strings(raw.get("evidence_refs"), "step_evidence_refs", maximum=6)
-        # Validate against the exact bounded snapshot supplied to the LLM;\n        # raw context may contain evidence omitted by prompt-size trimming.\n        available_evidence_refs = _evidence_reference_ids(_planner_context(context))\n        if len(evidence_refs) != len(set(evidence_refs)) or not set(evidence_refs).issubset(available_evidence_refs):
+        # Validate against the exact bounded snapshot supplied to the LLM;
+        # raw context may contain evidence omitted by prompt-size trimming.
+        available_evidence_refs = _evidence_reference_ids(_planner_context(context))
+        if len(evidence_refs) != len(set(evidence_refs)) or not set(evidence_refs).issubset(available_evidence_refs):
             raise StrategicPlanningError("plan_references_unknown_evidence")
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
