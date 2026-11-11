@@ -857,7 +857,6 @@ async def init_circulation_monitor(container=None, event_bus=None, supabase=None
 
 
 async def shutdown_circulation_monitor() -> None:
-    global dfmo
     await dfmo.stop()
 
 
