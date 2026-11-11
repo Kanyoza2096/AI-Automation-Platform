@@ -43,6 +43,8 @@ def _plan(context, *, now=None):
             "step_id": "step_1",
             "capability": "run_tests",
             "sector": "engineering",
+            "target": "Current test suite and test execution environment",
+            "verification_method": "Run the focused tests and inspect their exit status and failure output without changing application state.",
             "depends_on": [],
             "acceptance_criteria": ["all tests pass"],
             "deliverables": ["test report"],
