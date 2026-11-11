@@ -893,3 +893,34 @@ A deeper inspection of V71.10 lines 288–319 and V71.9 lines 293–352 corrects
 **Required tests:** inject process termination after lease claim, after reservation, before workflow entry, after Action Kernel/outbox acceptance, after V71.9 local completion, and before V71.10 finalization. Assert lease fencing, reservation idempotency, outbox receipt reconciliation, no blind replay, and authoritative terminal state. Also test direct-call reachability from production route/job composition.
 
 **Status:** canonical V71.17 → V71.10 → V71.9 call chain confirmed. Intermediate transition durability and all-caller reachability remain unresolved. Section 21's preliminary alternate-path characterization is superseded by this correction. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, tests, database, credentials or deployments were changed.
+
+
+## 23. Action Kernel / outbox / execution-ledger call-chain findings
+
+### 23.1 Two supported Action Kernel execution modes
+
+The inspected V71 path resolves through `run_catalog_workflow` into `BusinessAutomationEngine.run_event`. `run_event` requires a stable event ID and builds a rule-version-scoped key. `_execute_rule` calls the durable `reserve_business_automation_execution` RPC before action invocation; a pre-existing reservation is returned rather than executed again. The inspected governed CRM handlers call `ActionKernel.execute()` inline with that stable key. Inline mode persists an Action Kernel intent projection, then delegates provider work to `ExternalActionExecutor` and `ExecutionLedger`. It is not necessarily processed by `ActionOutboxWorker`.
+
+The separate asynchronous mode is `ActionKernel.enqueue()` → approval when required → `ActionOutboxWorker.claim_action_outbox()` → `ActionKernel.process_outbox_row()` → `ExternalActionExecutor` / `ExecutionLedger`. Migration 047 claims rows using `FOR UPDATE SKIP LOCKED`, stores a lease owner/token/expiry, and requires the lease token for outbox finalization. The worker renews its lease and routes uncertain/failure outcomes to V67 recovery. The two modes share the provider execution ledger but have different intent/outbox lifecycle entry points.
+
+### 23.2 Stable idempotency and receipt layers
+
+The source shows three distinct durable records in the inspected CRM workflow: business automation execution reservation, Action Kernel `action_outbox` intent projection, and `external_execution_ledger` provider-execution record. The stable event/rule key is propagated to the Action Kernel and provider execution ledger. Do not conflate acceptance/intent identity with a provider receipt. `ExternalActionExecutor` requires a provider object ID for `succeeded`; timeouts, transport exceptions, missing object IDs and receipt persistence failures become `uncertain` / reconciliation-required. The ledger uses workspace-scoped idempotency uniqueness and lease-fenced claim/renew/complete RPCs.
+
+### 23.3 High-priority failed-terminal replay inconsistency
+
+**Confirmed from source and migrations; not live-exercised.** `migrations/031_execution_rpc_hardening.sql` makes `claim_external_execution` return terminal rows for `succeeded`, `failed`, `cancelled` and `uncertain` without granting a fresh lease. `ExecutionLedger.claim` returns that row. But `ExternalActionExecutor.execute` only short-circuits `succeeded`, `uncertain` and `cancelled`; it omits `failed`, then proceeds if the returned record has no `locked_by` (as terminal failed rows do). It may invoke the provider operation without a newly acquired lease. On completion, migration 035 returns an existing terminal row without changing it. `ExecutionLedger.complete` only checks that RPC data is non-empty and returns its locally constructed `updated` object, which can diverge from the durable terminal row. Thus same-key retry after terminal failure may repeat a provider operation while durable status remains `failed` and the caller sees a locally reported later result.
+
+This is a source-level defect candidate with potentially consequential replay semantics. It does not establish that the deployed database has these exact migrations/functions or that a live duplicate occurred. Before Director/worker autonomy is widened, inspect the deployed migration state and resolve this lifecycle contract.
+
+**Required fix design (not implemented):** decide whether failed is terminal or retryable. If terminal, `ExternalActionExecutor` must return the durable failed receipt without invoking the provider. If retryable, use an explicit atomic retry/reopen RPC requiring policy eligibility, current attempt, and a fresh lease, with linked attempt lineage. In both cases require the executor to verify the exact worker owns a live lease before provider invocation, and require completion to validate the authoritative returned status/ownership/attempt. Do not use a new idempotency key as a workaround for uncertain state.
+
+### 23.4 Verification gaps and next checks
+
+- Determine the full registered action family used by workforce catalog workflows; the CRM inline handler is confirmed but not every action handler.
+- Trace all inline `ActionKernel.execute` callers and asynchronous `enqueue` callers, including their idempotency-key stability and governance decision provenance.
+- Inspect the complete action-outbox base-table migration and all later alterations, plus the deployed migration ledger/RLS/grants, without mutating data.
+- Add deterministic tests for same-key terminal-failed replay, two concurrent retries, lease rejection, receipt persistence failure, outbox lease expiry, worker death after provider acceptance, and reconciliation before replay.
+- Verify provider-specific idempotency/reconciliation support. Exactly-once external side effects are not guaranteed by KDO's database ledger alone.
+
+**Status:** source-level call-chain and retry-contract issue identified. No code/tests/migrations/database/credentials/deployments changed. Gate 0 remains **PARTIALLY COMPLETE**.
