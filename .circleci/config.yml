@@ -1,0 +1,140 @@
+
+version: 2.1
+
+executors:
+  kdo-python:
+    docker:
+      - image: cimg/python:3.12
+    working_directory: ~/repo
+
+commands:
+  install_kdo_dependencies:
+    steps:
+      - run:
+          name: Install Linux build dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              build-essential \
+              pkg-config \
+              libcairo2-dev \
+              libpango1.0-dev \
+              libgdk-pixbuf-2.0-dev \
+              libffi-dev \
+              libssl-dev \
+              libxml2-dev \
+              libxslt1-dev \
+              libpq-dev \
+              shared-mime-info
+
+      - restore_cache:
+          keys:
+            - kdo-pip-v1-py312-{{ checksum "requirements.txt" }}
+            - kdo-pip-v1-py312-
+
+      - run:
+          name: Install Python dependencies
+          command: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install flake8
+
+      - save_cache:
+          paths:
+            - ~/.cache/pip
+          key: kdo-pip-v1-py312-{{ checksum "requirements.txt" }}
+
+jobs:
+  quality_and_unit:
+    executor: kdo-python
+    steps:
+      - checkout
+      - install_kdo_dependencies
+
+      - run:
+          name: Critical lint checks
+          command: |
+            flake8 . \
+              --count \
+              --select=E9,F63,F7,F82 \
+              --show-source \
+              --statistics \
+              --exclude=.git,__pycache__,venv,.venv,node_modules,test-results
+
+      - run:
+          name: Advisory style analysis
+          command: |
+            flake8 . \
+              --count \
+              --exit-zero \
+              --max-complexity=10 \
+              --max-line-length=127 \
+              --statistics \
+              --exclude=.git,__pycache__,venv,.venv,node_modules,test-results
+
+      - run:
+          name: Run unit and architecture tests
+          command: |
+            mkdir -p test-results
+            set +e
+            pytest -q \
+              --ignore=tests/integration \
+              --ignore=tests/chaos \
+              --ignore=tests/load \
+              --junitxml=test-results/unit.xml \
+              --tb=short
+            status=$?
+            echo "$status" > /tmp/kdo-pytest-status
+            exit 0
+
+      - store_test_results:
+          path: test-results
+
+      - store_artifacts:
+          path: test-results
+
+      - run:
+          name: Enforce unit test result
+          command: |
+            status="$(cat /tmp/kdo-pytest-status)"
+            exit "$status"
+
+  mock_integration_tests:
+    executor: kdo-python
+    steps:
+      - checkout
+      - install_kdo_dependencies
+
+      - run:
+          name: Run mock-backed integration tests
+          command: |
+            mkdir -p test-results
+            set +e
+            pytest -q tests/integration \
+              --junitxml=test-results/integration.xml \
+              --tb=short
+            status=$?
+            echo "$status" > /tmp/kdo-integration-status
+            exit 0
+
+      - store_test_results:
+          path: test-results
+
+      - store_artifacts:
+          path: test-results
+
+      - run:
+          name: Enforce integration test result
+          command: |
+            status="$(cat /tmp/kdo-integration-status)"
+            exit "$status"
+
+workflows:
+  kdo_ci:
+    jobs:
+      - quality_and_unit
+
+      - mock_integration_tests:
+          requires:
+            - quality_and_unit
+          filters: pipeline.git.branch == "main" or pipeline.git.branch == "staging"
