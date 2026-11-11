@@ -23,14 +23,17 @@ class _Rpc:
             if self.db.raise_readiness_error:
                 raise RuntimeError("readiness RPC unavailable")
             return _Result(self.db.fanout_ready)
+        if self.name == "business_automation_stale_reservation_guard_ready":
+            return _Result(self.db.recovery_guard_ready)
         if self.name == "claim_business_automation_event_deliveries":
             return _Result([])
         raise AssertionError(f"unexpected RPC: {self.name}")
 
 
 class _Db:
-    def __init__(self, *, fanout_ready, raise_readiness_error=False):
+    def __init__(self, *, fanout_ready, recovery_guard_ready=True, raise_readiness_error=False):
         self.fanout_ready = fanout_ready
+        self.recovery_guard_ready = recovery_guard_ready
         self.raise_readiness_error = raise_readiness_error
         self.calls = []
 
@@ -52,7 +55,9 @@ def test_bridge_starts_durable_inbox_only_after_fanout_is_confirmed():
 
         assert bridge.stats()["durable_inbox"]["enabled"] is True
         assert bridge.stats()["durable_inbox"]["fanout_ready"] is True
+        assert bridge.stats()["durable_inbox"]["recovery_guard_ready"] is True
         assert "business_automation_event_fanout_ready" in db.calls
+        assert "business_automation_stale_reservation_guard_ready" in db.calls
         assert bridge._durable_task is not None
 
         await bridge.unwire()
@@ -71,7 +76,10 @@ def test_bridge_fails_closed_when_fanout_trigger_is_missing_or_disabled():
         assert inbox["enabled"] is False
         assert inbox["fanout_ready"] is False
         assert bridge._durable_task is None
-        assert db.calls == ["business_automation_event_fanout_ready"]
+        assert db.calls == [
+            "business_automation_event_fanout_ready",
+            "business_automation_stale_reservation_guard_ready",
+        ]
 
         # The low-latency event subscription remains wired; only the durable
         # inbox is marked unavailable.
@@ -131,3 +139,34 @@ def test_stale_started_reservations_become_uncertain_not_reexecutable():
     assert "_reservation_acquired', true" not in migration.split("IF FOUND THEN", 1)[1].split("END IF;", 1)[0]
     assert "automatic replay is prohibited" in migration
     assert "FOR UPDATE" in migration
+
+
+def test_bridge_fails_closed_when_stale_reservation_guard_is_not_installed():
+    async def run():
+        db = _Db(fanout_ready=True, recovery_guard_ready=False)
+        bridge = BusinessAutomationEventBridge(BusinessAutomationEngine(db), _EventBus())
+        await bridge.wire()
+
+        inbox = bridge.stats()["durable_inbox"]
+        assert inbox["enabled"] is False
+        assert inbox["fanout_ready"] is True
+        assert inbox["recovery_guard_ready"] is False
+        assert bridge._durable_task is None
+        await bridge.unwire()
+
+    asyncio.run(run())
+
+
+def test_stale_reservation_migration_exposes_guard_readiness_rpc():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "165_u2_business_automation_uncertain_stale_reservations.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "business_automation_stale_reservation_guard_ready" in migration
+    assert "p.prosecdef IS TRUE" in migration
+    assert "status = 'uncertain'" in migration
+    assert "reconciliation_required" in migration
+    assert "REVOKE ALL ON FUNCTION public.business_automation_stale_reservation_guard_ready()" in migration
+    assert "GRANT EXECUTE ON FUNCTION public.business_automation_stale_reservation_guard_ready() TO service_role" in migration
