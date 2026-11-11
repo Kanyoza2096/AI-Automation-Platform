@@ -45,7 +45,12 @@ class FakeUnifiedBus:
 
     def emit(self, event_type, payload, source="test"):
         for handler in tuple(self.subscribers.get(event_type.value, [])):
-            handler(payload, source=source, event_id="event-1")
+            handler({
+                "event_name": event_type.value,
+                "payload": payload,
+                "source": source,
+                "event_id": "event-1",
+            })
 
 
 def test_start_awaits_all_subscriptions_and_is_idempotent():
