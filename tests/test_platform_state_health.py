@@ -93,7 +93,8 @@ def test_registry_reader_uses_cache_without_invoking_health_probes():
         registry=registry,
         now=NOW,
     )
-    assert snapshot.services[0].readiness is Readiness.HEALTHY
+    services = {item.service_id: item for item in snapshot.services}
+    assert services["director"].readiness is Readiness.HEALTHY
     assert registry.probe_calls == 0
 
 
