@@ -337,3 +337,77 @@ The connected Render workspace returned **two web services and no separately lis
 - Reconcile service runtime environment-variable **names and bindings** with actor identities without exporting secret values into audit records.
 - Verify whether the single staging instance starts more than one scheduler/loop replica and how leases/idempotency prevent duplicate actor execution.
 - Capture actor identity, runtime instance, deployment commit, and owner team in the eventual registry binding.
+
+
+## 12. Follow-up authentication and runtime execution findings
+
+This section records additional direct reads of staging source. These are code-path findings; whether each route is externally mounted/reachable and which settings are present in the live environment must still be confirmed before describing an exploitable production vulnerability.
+
+### 12.1 Direct shared-secret authentication remains outside canonical identity
+
+| Source | Observed authentication behavior | Migration concern |
+|---|---|---|
+| `services/director/api.py` | If canonical request context is absent, compares request token directly against `MASTER_API_TOKEN` or `PYTHON_SERVICE_TOKEN` | Can bypass principal claims, registry binding, and scoped authorization; should not be an alternate Director auth path |
+| `core/event_api.py` | Accepts only the master token in its local `_require_auth`; has a `disable_event_api_auth` early allow branch | Must become a dedicated event API principal/scope contract; inspect whether the disable flag is configured or reachable |
+| `council/routes.py` | Accepts only the master token in its local `_require_auth`; has a `disable_council_auth` early allow branch | Council needs its own principal and deliberation/decision scopes, not borrowed platform-master authority |
+| `routes/council_routes.py` | Accepts either master or Python service token directly | Separate Council identity and route-specific permissions; no blanket service token |
+| `core/socket_server.py` | Maps master/Python service secrets to a socket auth method string | Socket handshake should validate a canonical principal and authorize each subscribed channel/event |
+| `products/shared/auth.py` | Decorator requires a non-empty token, but only rejects it when a master token is configured and does not match; when master configuration is empty, any non-empty token passes this decorator | **Fail-open conditional on missing configuration.** Confirm whether the decorated product route is mounted in the staging application; fix with fail-closed behavior before enabling that surface |
+| `api/routers/ai_chat.py` | Performs local token extraction and delegates to its own authentication service | Inspect the delegated service contract and ensure the resulting principal/scopes are canonical |
+| `services/kcpg_event_bridge.py` | Uses the Python service token for backend event bridge requests and also requires an event-signing secret | Preserve a narrow event-publish principal; do not retain species-wide privileges |
+
+The canonical SpeciesAuth currently turns the master and Python service secrets into `is_species=True` with `MASTER_PERMISSIONS = [read, write, admin, owner, species]`. That is the main broad-authority conversion point. The separate direct-secret paths above mean replacing only SpeciesAuth would not complete the migration.
+
+### 12.2 Director authentication is an independent legacy path
+
+The Director API:
+- first trusts a canonical request context only when an authenticated identity is also present;
+- otherwise directly compares the bearer/API-key value against master and Python service secrets;
+- uses `species_privileges` to allow platform-wide proposal/task access and platform mutations;
+- permits workspace operator/admin/owner roles for some writes.
+
+The target must be one authentication path that resolves a workload/human principal, checks the Agent Registry and capability grant, and then evaluates the exact Director action. No local master-token fallback should remain. The initial Director scopes do not authorize approval or execution of dispatched work.
+
+### 12.3 Render process topology correction
+
+The Render workspace has one staging web-service resource, but the Docker image starts **two Honcho Procfile processes**:
+
+- `web`: Gunicorn with one Uvicorn worker running `main:app`.
+- `worker`: `python -m services.kdo_engineering_worker_process`.
+
+The engineering worker is explicitly inert by default. It requires `KDO_ENGINEERING_WORKER_ENABLED`, a trusted host factory, a reachable Docker daemon, and the worker database configuration before it can poll/execute. Therefore it is a separate process slot inside the same Render service/container, not a separate Render worker service. The earlier Render inventory's statement that no separate Render worker service exists remains true, but process-level worker discovery is now partially confirmed.
+
+The main web process also composes V71 runtime convergence, runs the phased lifecycle boot, starts Meta Engine supervision, and conditionally boots schedulers according to `SERVICE_MODE`. In `full` mode, the lifecycle includes Content Engine/Autonomous Content and the autonomous loop; in `full` or `workers` mode, it includes sector reconciliation schedulers and BrandSchedulers. The Render process topology therefore does not isolate all autonomous actors into distinct OS processes.
+
+### 12.4 Worker and scheduler identity boundaries
+
+- The Engineering Worker process must receive a dedicated workload principal scoped to engineering task leases, approved workspace execution, and its trusted worker host. It must not inherit Director or general platform master authority.
+- Content Engine and BrandSchedulers must be distinct principals. Brand scheduling/publishing remains in the brand-owned lifecycle path; Director's historical publish capability remains intentionally unbound.
+- Meta Engine's service supervision identity must be observation/coordination scoped; it must not inherit content generation, remediation, or deployment authority.
+- Council API authentication is currently a shared-secret boundary rather than a distinct Council principal.
+- Event API publishers and socket subscribers require event-type/channel scopes, not a platform-wide operator flag.
+
+### 12.5 Guardian scan is not side-effect-free
+
+A direct read of `services/guardian_service.py` confirms `scan_all()` invokes a workflow that:
+1. validates GitHub access and discovers repositories;
+2. clones/pulls repositories and scans files;
+3. may invoke the auto-fix engine and create GitHub pull requests when both auto-fix configuration and `GUARDIAN_AUTO_FIX` are enabled;
+4. sends an owner notification;
+5. publishes a domain event and records analytics.
+
+The staging deployment configuration declares `GUARDIAN_ENABLED=false`, and the settings model defaults both Guardian enabled and auto-fix to false. This reduces current configured exposure but does not correct the capability contract: `run_guardian_scan` is still catalogued as `Authority.AUTO` / `Risk.LOW`. A read-only scan capability must not call the current all-in-one side-effecting workflow. Remediation must be a separate capability, principal scope, approval path, and audit record. Notifications/events/analytics should also be explicitly classified as allowed scan outputs rather than assumed to be pure observation.
+
+### 12.6 Follow-up tests and release gates
+
+Add regression coverage for:
+- all missing-secret configurations failing closed (including the shared product auth decorator);
+- disabling legacy local-auth bypasses and rejecting master/Python secrets at Director, Council, Event API, and socket entry points once migrated;
+- channel/event authorization after socket authentication;
+- workload identity and scope checks for worker, Council, event bridge, Meta Engine, and brand scheduler principals;
+- Director's `director:dispatch` never approving, directly executing, publishing, or remediating;
+- Guardian scan not invoking AutoFixEngine or creating PRs under any configuration; separately test approved remediation;
+- exactly one intended scheduler/worker leader per lease/brand/task and safe duplicate startup behavior;
+- trace correlation from Director capability invocation through handler and downstream service.
+
+**Status remains PARTIALLY COMPLETE.** The Render Procfile and lifecycle give a stronger source-derived process map, but the live environment's `SERVICE_MODE`, worker enablement, external queue/scheduler providers, and route mount/reachability still need confirmation. Do not infer those values from repository defaults.
