@@ -62,7 +62,7 @@ class FakePlatformStateReader:
         return self.snapshot
 
 
-def _shared_snapshot(updated_at=None):
+def _shared_snapshot(updated_at=None, observer_observed_at=None):
     updated_at = updated_at or datetime.now(timezone.utc)
     return SimpleNamespace(
         revision=12,
@@ -87,7 +87,7 @@ def _shared_snapshot(updated_at=None):
                 service_id="director",
                 observer_id="meta_engine",
                 readiness=Readiness.DEGRADED,
-                observed_at=updated_at,
+                observed_at=observer_observed_at or updated_at,
                 source_version="meta-v7.1",
             ),
         ),
@@ -156,3 +156,17 @@ def test_condition_engine_lifecycle_supabase_injection_configures_platform_state
 
     assert state["status"] == "available"
     assert state["revision"] == 12
+
+
+def test_condition_engine_downgrades_old_meta_observation_even_when_snapshot_is_fresh():
+    now = datetime.now(timezone.utc)
+    reader = FakePlatformStateReader(
+        _shared_snapshot(now, observer_observed_at=now - timedelta(minutes=10))
+    )
+    engine = AutonomousConditionEngine(platform_state_reader=reader)
+
+    state = asyncio.run(engine.refresh_platform_state_context(max_age_seconds=60))
+
+    assert state["freshness"] == "fresh"
+    assert state["observer_observations"][0]["freshness"] == "stale"
+    assert state["observer_observations"][0]["readiness"] == "stale"
