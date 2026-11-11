@@ -87,6 +87,7 @@ def test_wrong_provider_identity_is_ignored():
         {"director": Report("meta_engine", "healthy")},
         now=NOW,
         dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
     )
     assert snapshot.services[0].readiness is Readiness.UNKNOWN
 
