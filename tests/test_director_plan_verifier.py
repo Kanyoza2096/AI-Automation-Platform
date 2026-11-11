@@ -217,3 +217,20 @@ def test_director_core_verification_uses_fresh_read_only_context(monkeypatch):
 
     assert report["verdict"] == "verified_for_governance_review"
     assert report["execution_permitted"] is False
+
+
+def test_evidence_removed_by_prompt_trimming_is_not_accepted():
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    context["evidence"]["facts"] = [
+        {"observer": f"monitor_{index}", "summary": "x" * 2200}
+        for index in range(10)
+    ]
+    plan = _plan(context)
+    plan["steps"][0]["evidence_refs"] = ["fact:monitor_9"]
+    plan["source_context_fingerprint"] = _fingerprint(context)
+
+    report = verify_strategic_plan(plan, context, now=now)
+
+    assert report["verdict"] == "rejected"
+    assert "evidence_reference_unknown:step_1" in report["errors"]
