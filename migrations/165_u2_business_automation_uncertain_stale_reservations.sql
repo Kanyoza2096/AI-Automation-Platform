@@ -86,7 +86,7 @@ BEGIN
   VALUES(
       exec_id, rid, ws, action_name, 'started',
       COALESCE((p_execution->>'dry_run')::boolean, false),
-      COALESCE((p_execution->>'started_at')::timestamptz, now_ts), now_ts,
+      COALESCE((p_execution->>'started_at')::timestamptz, now_ts), NULL,
       jsonb_build_object('_reservation_acquired', true), NULL, idem, 1)
   RETURNING * INTO r;
 
