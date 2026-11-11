@@ -170,3 +170,33 @@ The existing `EventBus.subscribe(event_type, handler)` returns an unsubscribe ca
 | EngagementTracker | Existing lifecycle helper; no corresponding lifecycle boot step found | Confirm process-mode owner and dependency policy |
 
 These corrections make the implementation target narrower: reuse existing factories, bus contracts and scheduler class; repair identity/lifecycle integration rather than duplicating services.
+
+
+### 9.5 EventRecorder bus contract is a real runtime integration defect
+
+The source signatures establish a concrete mismatch:
+
+- `dependency_registry.py` builds EventRecorder with `c.resolve(UnifiedEventBus)`.
+- `UnifiedEventBus.subscribe` is `async` and returns an unsubscribe callable only after awaiting registration.
+- `EventRecorder.start` is synchronous and calls `self._bus.subscribe(...)` five times without awaiting or retaining the returned values.
+- EventRecorder handlers expect `DomainEvent` objects with `.payload` and `.event_type`.
+- The legacy `EventBusBridge` in `core/event_bus.py` exposes synchronous `subscribe`, returns an unsubscribe callable, schedules the underlying UnifiedEventBus subscription on the active loop, and wraps dict payloads as `DomainEvent`.
+
+Therefore, passing raw UnifiedEventBus to the current EventRecorder and calling `start()` does not establish its five subscriptions; the returned coroutine objects are discarded. This is stronger than a missing teardown hook.
+
+**Required design resolution:** choose exactly one of:
+1. Inject the existing composition-root `EventBusBridge` into EventRecorder, preserving its synchronous handler contract and retaining the five unsubscribe callables; or
+2. Convert EventRecorder lifecycle to async and explicitly adapt UnifiedEventBus payloads into the expected DomainEvent contract.
+
+Do not mix raw UnifiedEventBus and legacy EventBus semantics, and do not dual-publish. Confirm that the bridge instance used by EventRecorder is the same authoritative UnifiedEventBus-backed bridge installed by the process lifecycle.
+
+The inspected `build_container()` registers the lazy EventRecorder factory but no startup call to `EventRecorder.start()` was found in the indexed source. The service-definition registry intentionally only returns an already-created instance. Verify with full-repository search and staging runtime evidence before calling this a deployed failure, but the source-level integration path is incomplete.
+
+Acceptance tests must prove:
+- all five subscriptions are active after startup;
+- each receives a correctly adapted DomainEvent exactly once;
+- no un-awaited coroutine warnings occur;
+- partial subscription failure removes earlier subscriptions;
+- stop removes all subscriptions;
+- restart does not duplicate delivery;
+- one authoritative bus is used, with no parallel legacy event stream.
