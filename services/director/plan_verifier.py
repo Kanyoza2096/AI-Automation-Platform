@@ -99,6 +99,18 @@ def verify_strategic_plan(
     if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or max_age_seconds < 1:
         raise ValueError("max_age_seconds must be a positive integer")
 
+    if not isinstance(plan, Mapping) or not isinstance(context, Mapping):
+        return {
+            "schema_version": "kdo.director.plan-verification.v1",
+            "plan_id": "", "verdict": "rejected",
+            "checks": {"input_contract": "fail"},
+            "errors": ["plan_or_context_invalid"], "warnings": [],
+            "capabilities_not_ready": [], "authority": "none",
+            "execution_permitted": False, "task_creation_permitted": False,
+            "governance_required": True,
+            "verifier": "deterministic_director_plan_verifier",
+        }
+
     errors: list[str] = []
     warnings: list[str] = []
     checks: dict[str, str] = {}
@@ -150,7 +162,8 @@ def verify_strategic_plan(
     errors.extend(dag_errors)
     checks["dependency_graph"] = "fail" if dag_errors else "pass"
 
-    catalogue = context.get("capabilities", {}).get("items", [])
+    capability_context = context.get("capabilities", {})
+    catalogue = capability_context.get("items", []) if isinstance(capability_context, Mapping) else []
     if not isinstance(catalogue, list):
         catalogue = []
         errors.append("capability_catalogue_invalid")
@@ -201,6 +214,8 @@ def verify_strategic_plan(
         errors.append("objective_success_criteria_missing")
         checks["objective_coverage"] = "fail"
     else:
+        if any(not isinstance(item, str) or not item.strip() for item in success_criteria):
+            errors.append("objective_success_criteria_invalid")
         criterion_ids = {
             f"criterion:{index}" for index, _ in enumerate(success_criteria)
         }
@@ -211,9 +226,9 @@ def verify_strategic_plan(
             if not isinstance(refs, list):
                 has_mapping = False
                 continue
-            if any(ref not in criterion_ids for ref in refs):
+            if any(not isinstance(ref, str) or ref not in criterion_ids for ref in refs):
                 errors.append(f"unknown_criterion_reference:{step.get('step_id')}")
-            mapped.update(ref for ref in refs if isinstance(ref, str))
+            mapped.update(ref for ref in refs if isinstance(ref, str) and ref in criterion_ids)
         missing = sorted(criterion_ids - mapped)
         if not has_mapping:
             warnings.append("objective_criterion_mapping_not_supplied")
@@ -228,11 +243,14 @@ def verify_strategic_plan(
 
     # Current Platform State is advisory corroboration. Absence is unknown, never healthy.
     platform_state = context.get("platform_state", {})
+    platform_capabilities = platform_state.get("capabilities", []) if isinstance(platform_state, Mapping) else []
+    if not isinstance(platform_capabilities, list):
+        platform_capabilities = []
     platform_caps = {
         item.get("capability_id"): item
-        for item in platform_state.get("capabilities", [])
+        for item in platform_capabilities
         if isinstance(item, Mapping) and isinstance(item.get("capability_id"), str)
-    } if isinstance(platform_state, Mapping) else {}
+    }
     for step in steps:
         name = step.get("capability")
         state = platform_caps.get(name)
