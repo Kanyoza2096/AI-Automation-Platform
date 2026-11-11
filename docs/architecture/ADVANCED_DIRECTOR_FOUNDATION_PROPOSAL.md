@@ -784,32 +784,10 @@ The inspected V71.3–V71.9 registry methods write their process-local dictionar
 **Implementation gate:** first implement and test the shared persistence contract for ordinary V71 records, while preserving V71.10 and V71.21 as specialized transactional boundaries. Only then add runtime convergence/readiness claims. No code or migration is authorized by this proposal.
 
 
-### 3.17 Durable execution-path convergence and legacy-path isolation
-
-A focused orchestration trace across V71.13, V71.17, V71.10 and V71.9 establishes an important distinction: the codebase contains a durable governed execution path, but V71.9 also exposes a separate direct registry execution method. These must not be treated as interchangeable.
-
-**Durable path observed:** V71.13 composes the workspace registries and a `DurableAutonomousWorkforceRuntime`, then invokes V71.18 hydration before returning the runtime. V71.17's `execute_run` claims the durable run lease; `execute_claimed` reloads the durable snapshot, checks reconciliation/run status, validates the governance manifest and objective binding, resolves the workflow, and delegates to V71.10 `execute_claimed`. It deliberately supplies `approved=False`, preserving the existing Action Kernel approval/evidence path. V71.17 also exposes stale-run reconciliation through V71.10.
-
-**Separate V71.9 direct method observed:** `BoundedAutonomousOperationsRegistry.execute` mutates the local run to RUNNING, performs admission, optionally reserves budget, and calls `run_catalog_workflow` directly. In the inspected method it does not acquire a V71.10 durable run lease or persist each run transition through V71.10. Its exception handler conservatively commits a reservation even on failure, then marks the local run FAILED. This method may be a legacy/test/internal path; repository-wide callers and live route reachability must be inventoried before deciding whether it is active or safely removable.
-
-**Architecture decision:** V71.17 → V71.10 is the only candidate production execution entry path for governed workforce runs. V71.9's direct `execute` must be classified, guarded or retired only after caller and compatibility inventory. It must not be used as an alternate execution route that bypasses durable leases, restart recovery, or durable transition evidence. Preserve the existing Action Kernel/Council approval boundary; the workforce coordinator cannot self-approve.
-
-**Required acceptance evidence:** prove all production callers enter V71.17; prove no route/job can invoke V71.9 direct execution in production; prove lease claim precedes workflow entry; prove stale lease fencing prevents finalize; prove reservation and run state reconcile after uncertain external side effects; and prove all blocked/error paths preserve durable state and audit evidence. No implementation or retirement is authorized by this proposal.
-
-
 ### 3.17 Superseded preliminary execution-path interpretation
 
-> **Superseded by section 3.18.** The following was an initial hypothesis and must not be used as the current architecture decision.
+> **Superseded by section 3.18.** This preliminary hypothesis is retained only for audit history and must not be used as the current architecture decision.
 
-A focused trace across V71.13, V71.17, V71.10 and V71.9 establishes that the codebase contains a durable governed execution path alongside a separate direct registry execution method. These are not interchangeable.
-
-**Canonical path observed:** V71.13 composes workspace registries and V71.10 durable runtime, then invokes V71.18 hydration. V71.17 `execute_run` claims the durable run lease; `execute_claimed` reloads the durable snapshot, rejects reconciliation-required or non-RUNNING state, validates governance manifest and objective binding, resolves the workflow, and delegates to V71.10 `execute_claimed` with `approved=False`. V71.17 also delegates stale-run reconciliation to V71.10. This preserves the existing Action Kernel approval/evidence path.
-
-**Alternate path observed:** V71.9 `BoundedAutonomousOperationsRegistry.execute` changes the local run to RUNNING, performs admission, optionally reserves budget, and invokes `run_catalog_workflow` directly. In the inspected method it does not acquire a V71.10 lease or persist each run transition through V71.10. Its exception path attempts to commit a reservation conservatively and marks the local run FAILED. This may be a legacy/test/internal path; all callers and production reachability must be inventoried before classification.
-
-**Decision:** V71.17 → V71.10 is the only candidate production workforce execution entry path. V71.9 direct `execute` must be classified, guarded or retired only after caller/compatibility inventory. It must not provide an alternate route around durable leases, restart recovery or durable transition evidence. No implementation or retirement is authorized here.
-
-**Acceptance evidence:** prove production callers enter V71.17; prove no route/job can invoke V71.9 direct execution; prove lease claim precedes workflow entry; prove stale lease fencing; reconcile reservation and run state after uncertain side effects; preserve Action Kernel approval and audit evidence.
 
 
 ### 3.18 Correction: V71.9 is the governed execution delegate, not a proven alternate authority
