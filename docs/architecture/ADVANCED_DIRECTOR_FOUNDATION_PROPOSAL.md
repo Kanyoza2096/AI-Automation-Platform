@@ -230,6 +230,13 @@ Reuse the existing Phase 9.2 correlation contract and OpenTelemetry integration.
 
 **Example:** if `run_guardian_scan` fails, an operator should be able to follow the Director run → tool invocation span → exact validated/redacted repository and scan options → authorization decision → Guardian service result/exception → retry or terminal failure, all under one correlation ID.
 
+**Guardian-specific authority separation:**
+- The current Director catalogue labels `run_guardian_scan` as `Authority.AUTO` / `Risk.LOW`, while its bound `GuardianService.scan_all()` flow can invoke configured auto-fix behavior and create GitHub PRs.
+- Split the capability into `guardian:scan` (strictly read-only discovery/reporting) and a separate remediation capability such as `guardian:remediate`.
+- The scan implementation must not invoke auto-fix, even if a global Guardian auto-fix setting is enabled.
+- Remediation requires its own registered tool grant, higher risk classification, Council/DecisionGate review, and human approval where policy requires. Director's initial `director:dispatch` scope does not include remediation authority.
+- Acceptance tests must prove scan-only runs cannot modify repositories, create PRs, or trigger remediation side effects.
+
 **Boundary:** tracing is observability, not authority. Trace data cannot authorize a tool or alter a governance decision.
 
 ## 4. End-to-end operating model
