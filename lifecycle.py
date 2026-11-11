@@ -700,6 +700,15 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
         phase=BootPhase.INFRASTRUCTURE,
         action=partial(_boot_event_bus, container),
     ))
+    # Analytics recorder is owned by the business-serving web process.
+    if mode in ("full", "api", "core"):
+        steps.append(BootStep(
+            name="EventRecorder",
+            phase=BootPhase.INFRASTRUCTURE,
+            action=partial(_boot_event_recorder, container),
+            timeout_seconds=10.0,
+            critical=False,
+        ))
     if mode in ("workers", "director", "meta", "condition", "monitor", "github"):
         steps.append(BootStep(
             name="SharedEventBus",
@@ -1188,6 +1197,18 @@ async def _boot_supabase(container: ServiceContainer) -> None:
             "Supabase shutdown hook registration skipped: %s",
             _sanitize_error_message(exc),
         )
+
+
+async def _boot_event_recorder(container: ServiceContainer) -> None:
+    """Start analytics capture only in the process that owns the web event bus."""
+    from domain.analytics.event_recorder import EventRecorder
+
+    recorder = container.resolve(EventRecorder)
+    await recorder.start()
+    await shutdown_registry.register(
+        "EventRecorder", recorder.stop, timeout_seconds=5.0
+    )
+    logger.info("EventRecorder ready (four non-publish analytics subscriptions).")
 
 
 async def _boot_shared_event_bus(container: ServiceContainer) -> None:
