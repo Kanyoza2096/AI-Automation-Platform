@@ -139,6 +139,7 @@ def test_stale_started_reservations_become_uncertain_not_reexecutable():
     assert "_reservation_acquired', true" not in migration.split("IF FOUND THEN", 1)[1].split("END IF;", 1)[0]
     assert "automatic replay is prohibited" in migration
     assert "FOR UPDATE" in migration
+    assert "r.output := COALESCE(r.output, '{}'::jsonb) - '_reservation_acquired'" in migration
 
 
 def test_bridge_fails_closed_when_stale_reservation_guard_is_not_installed():
@@ -170,3 +171,16 @@ def test_stale_reservation_migration_exposes_guard_readiness_rpc():
     assert "reconciliation_required" in migration
     assert "REVOKE ALL ON FUNCTION public.business_automation_stale_reservation_guard_ready()" in migration
     assert "GRANT EXECUTE ON FUNCTION public.business_automation_stale_reservation_guard_ready() TO service_role" in migration
+
+
+def test_business_automation_finalization_cannot_overwrite_uncertain_reservation():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "services"
+        / "business_automation.py"
+    ).read_text(encoding="utf-8")
+
+    finalizer = source.split("async def _persist_execution", 1)[1].split(
+        "async def history", 1
+    )[0]
+    assert '.eq("status", "started")' in finalizer
