@@ -346,4 +346,4 @@ This proposal does not authorize:
 9. Confirm the Agent Registry covers Director, Council, Content Engine/brand schedulers, Guardian, and AI Software Engineering actors, with explicit owner teams and tool allowlists.
 10. Confirm all Director tool invocations require correlated structured traces with redacted argument capture and actionable error attribution.
 
-**Recommendation:** approve or amend this architecture contract first. Only after review should Gate 0 be implemented as a read-only audit, followed by separately reviewed implementation increments.
+**Recommendation:** approve or amend this architecture contract first. The attached Gate 0 document is an initial, focused source inspection—not an exhaustive repository/runtime inventory. After review, complete Gate 0's full read-only inventory, then proceed through separately reviewed implementation increments.
