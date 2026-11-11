@@ -42,10 +42,6 @@ BOOT_OWNERS = {
     "scheduler": ("BrandSchedulers / BrandSchedulerManager", "full/workers"),
     "health_monitor": ("HealthMonitor", "full/api"),
     "enterprise_emitters": ("EnterpriseEmitters", "full/api"),
-    "growthbridge_plugin": ("GrowthbridgePlugin", "full/api"),
-    "monitor_plugin": ("MonitorPlugin", "full/monitor"),
-    "backup_plugin": ("BackupPlugin", "full/monitor"),
-    "trend_plugin": ("TrendIntelligence", "full/monitor"),
     "github": ("GitHubConnector", "full/github"),
 }
 
