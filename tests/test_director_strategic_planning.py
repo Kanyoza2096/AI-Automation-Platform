@@ -170,7 +170,7 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert "task-criterion-secret" not in prompt
     assert '"params"' not in prompt
     assert "brand scheduler" in prompt.lower()
-    assert '"summary" (string) and "steps" (array)' in prompt
+    assert "summary (string) and steps (array)" in prompt
     assert "Do not rename steps to plan, actions" in prompt
     for field in (
         "step_id", "capability", "sector", "objective", "depends_on",
