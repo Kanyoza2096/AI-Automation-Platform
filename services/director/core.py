@@ -84,6 +84,7 @@ from .proposals import (
     ProposalGenerator,
 )
 from .planning import build_strategic_plan
+from .plan_verifier import verify_strategic_plan as verify_plan_contract
 
 log = logging.getLogger("kanyoza.director")
 
@@ -1271,6 +1272,14 @@ class Director:
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         return await self.store.list_strategic_plans(limit=limit)
+
+    async def verify_strategic_plan(self, plan: dict, max_age_seconds: int = 300) -> dict:
+        """Verify a stored advisory plan against freshly read Platform State and context."""
+        await self.refresh_platform_state_context(max_age_seconds=max_age_seconds)
+        context = self.strategic_context(max_age_seconds=max_age_seconds)
+        return verify_plan_contract(
+            plan, context, max_age_seconds=max_age_seconds
+        )
 
     async def _build_plan_async(self) -> dict:
         await self.refresh_platform_state_context()
