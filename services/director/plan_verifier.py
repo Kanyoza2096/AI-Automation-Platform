@@ -19,9 +19,14 @@ FINGERPRINT_FIELDS = (
 )
 
 
-def _fingerprint(context: Mapping[str, Any]) -> str:
+def _fingerprint(
+    context: Mapping[str, Any], *, generated_at_override: str | None = None
+) -> str:
+    values = {key: context.get(key) for key in FINGERPRINT_FIELDS}
+    if generated_at_override is not None:
+        values["generated_at"] = generated_at_override
     payload = json.dumps(
-        {key: context.get(key) for key in FINGERPRINT_FIELDS},
+        values,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
@@ -168,7 +173,10 @@ def verify_strategic_plan(
         else:
             checks["context_freshness"] = "pass"
 
-    expected_fingerprint = _fingerprint(context)
+    expected_fingerprint = _fingerprint(
+        context,
+        generated_at_override=plan.get("source_context_generated_at"),
+    )
     if plan.get("source_context_fingerprint") != expected_fingerprint:
         warnings.append("plan_context_fingerprint_mismatch")
         checks["context_binding"] = "stale"
