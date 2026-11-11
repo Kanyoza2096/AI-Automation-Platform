@@ -16,10 +16,11 @@ logger = logging.getLogger("kanyoza.business_automation.event_bridge")
 
 
 class BusinessAutomationEventBridge:
-    VERSION = "2.0.0"
+    VERSION = "2.1.0"
     CONSUMER_GROUP = "business_automation"
     POLL_INTERVAL_SECONDS = 2.0
     CLAIM_BATCH_SIZE = 25
+    FANOUT_READINESS_RPC = "business_automation_event_fanout_ready"
 
     def __init__(self, engine=None, event_bus=None):
         self.engine = engine
@@ -32,6 +33,7 @@ class BusinessAutomationEventBridge:
         self._errors = 0
         self._durable_task = None
         self._durable_enabled = False
+        self._fanout_ready = False
         self._durable_claimed = 0
         self._durable_processed = 0
         self._durable_failures = 0
@@ -52,11 +54,31 @@ class BusinessAutomationEventBridge:
             raise RuntimeError("UnifiedEventBus is required")
         self._unsubscribe = await self.event_bus.subscribe_all(self._handle)
         self._wired = True
+
         db = getattr(self.engine, "_get_db", lambda: None)()
-        self._durable_enabled = db is not None
+        self._fanout_ready = bool(
+            db is not None and await self._check_durable_fanout()
+        )
+        # A database connection alone is not evidence that the producer-side
+        # fan-out exists. Do not advertise or poll an inbox that cannot receive
+        # new deliveries; the low-latency UnifiedEventBus path remains available.
+        self._durable_enabled = self._fanout_ready
         if self._durable_enabled:
-            self._durable_task = asyncio.create_task(self._durable_loop(), name="business-automation-event-inbox")
-        logger.info("BusinessAutomationEventBridge v%s wired durable_inbox=%s", self.VERSION, self._durable_enabled)
+            self._durable_task = asyncio.create_task(
+                self._durable_loop(),
+                name="business-automation-event-inbox",
+            )
+        else:
+            logger.error(
+                "BusinessAutomation durable inbox unavailable: "
+                "event fan-out trigger is not confirmed; live event path remains active"
+            )
+        logger.info(
+            "BusinessAutomationEventBridge v%s wired durable_inbox=%s fanout_ready=%s",
+            self.VERSION,
+            self._durable_enabled,
+            self._fanout_ready,
+        )
 
     async def unwire(self) -> None:
         if self._unsubscribe:
@@ -72,6 +94,8 @@ class BusinessAutomationEventBridge:
             except asyncio.CancelledError:
                 pass
         self._durable_task = None
+        self._durable_enabled = False
+        self._fanout_ready = False
         self._wired = False
 
     async def _durable_loop(self) -> None:
@@ -148,6 +172,22 @@ class BusinessAutomationEventBridge:
                 await asyncio.sleep(delay)
         return None
 
+    async def _check_durable_fanout(self) -> bool:
+        """Fail closed unless the database confirms the atomic event fan-out trigger."""
+        try:
+            result = await self._execute_db_rpc(
+                self.FANOUT_READINESS_RPC,
+                {},
+                max_retries=0,
+            )
+            return bool(result is not None and result.data is True)
+        except Exception as exc:
+            logger.warning(
+                "BusinessAutomation event fan-out readiness check failed: %s",
+                str(exc)[:200],
+            )
+            return False
+
     async def _claim_durable_events(self) -> list[dict[str, Any]]:
         result = await self._execute_db_rpc(
             "claim_business_automation_event_deliveries",
@@ -211,7 +251,7 @@ class BusinessAutomationEventBridge:
         event_id = str(envelope.get("event_id") or event.get("event_id") or "").strip()
         # Never admit an event without a durable identity; Business Automation
         # uses event_id as its replay fence. Missing identity is rejected rather
-        # than converted into a shared ``missing`` idempotency key.
+        # than converted into a shared \`missing\` idempotency key.
         if not event_id:
             self._errors += 1
             logger.warning("rejecting event without event_id event=%s workspace=%s", event_name, workspace_id)
@@ -245,7 +285,13 @@ class BusinessAutomationEventBridge:
             "events_routed": self._events_routed,
             "executions": self._executions,
             "errors": self._errors,
-            "durable_inbox": {"enabled": self._durable_enabled, "claimed": self._durable_claimed, "processed": self._durable_processed, "failures": self._durable_failures},
+            "durable_inbox": {
+                "enabled": self._durable_enabled,
+                "fanout_ready": self._fanout_ready,
+                "claimed": self._durable_claimed,
+                "processed": self._durable_processed,
+                "failures": self._durable_failures,
+            },
         }
 
 
