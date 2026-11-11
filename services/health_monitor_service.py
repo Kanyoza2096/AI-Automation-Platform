@@ -61,7 +61,7 @@ class HealthMonitorService:
     daily-summary dedup, registry snapshot integration.
     """
 
-    def __init__(self, container=None, event_bus=None):
+    def __init__(self, container=None, event_bus=None, platform_state_store=None):
         self.container = container
         self._event_bus = event_bus
         self._running = False
@@ -82,6 +82,19 @@ class HealthMonitorService:
         self._last_health_snapshot: Dict[str, Any] = {}
         self._last_service_diagnostics: Dict[str, Any] = {}
         self._platform_state_snapshot = None
+        self._platform_state_persisted_revision = None
+        self._platform_state_publisher = None
+        if platform_state_store is not None and event_bus is not None:
+            try:
+                from core.platform_state_publisher import PlatformStatePublisher
+                self._platform_state_publisher = PlatformStatePublisher(
+                    platform_state_store, event_bus
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Platform State publisher unavailable: %s",
+                    sanitize_error_message(exc),
+                )
 
         # Alert pipeline
         self._alert_queue: "asyncio.Queue[Tuple[str, str]]" = asyncio.Queue(
@@ -245,11 +258,29 @@ class HealthMonitorService:
                     "supabase": services.get("Supabase", "unknown"),
                     "gemini": services.get("Gemini", "unknown"),
                 }
-                self._platform_state_snapshot = read_platform_state_from_health_registry(
+                candidate = read_platform_state_from_health_registry(
                     registry=health_registry,
                     previous_revision=previous_revision,
                     supplemental_statuses=infrastructure_statuses,
                 )
+                if self._platform_state_publisher is not None:
+                    try:
+                        self._platform_state_snapshot = await self._platform_state_publisher.publish(
+                            candidate
+                        )
+                        self._platform_state_persisted_revision = (
+                            self._platform_state_snapshot.revision
+                        )
+                    except Exception as publish_exc:
+                        # The in-process projection remains useful for diagnostics,
+                        # but it is never represented as a durable shared snapshot.
+                        self._platform_state_snapshot = candidate
+                        logger.warning(
+                            "Platform State durable publication unavailable: %s",
+                            sanitize_error_message(publish_exc),
+                        )
+                else:
+                    self._platform_state_snapshot = candidate
             except Exception as exc:
                 logger.debug(
                     "Platform State projection unavailable: %s",
@@ -712,7 +743,8 @@ class HealthMonitorService:
             "services_unknown": unknown,
             "snapshot_age_seconds": self._snapshot_age_seconds(),
             "alert_queue_depth": self._alert_queue.qsize(),
-            "platform_state_revision": (
+            "platform_state_revision": self._platform_state_persisted_revision,
+            "platform_state_projection_revision": (
                 self._platform_state_snapshot.revision
                 if self._platform_state_snapshot is not None else None
             ),
