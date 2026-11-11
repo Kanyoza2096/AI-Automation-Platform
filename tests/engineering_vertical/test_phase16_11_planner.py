@@ -23,6 +23,10 @@ def test_planner_returns_bounded_proposal_without_execution_authority():
     assert proposal["release_authorized"] is False
     assert gw.calls[0][1]["workspace_id"] == "workspace-1"
     assert gw.calls[0][1]["caller"] == "code_intelligence"
+    assert "ROLE TEMPLATE (planner v1)" in gw.calls[0][0]
+    assert "Add a secure API endpoint" in gw.calls[0][0]
+    assert proposal["planner"]["prompt_manifest"]["role_template_version"] == "1"
+    assert len(proposal["planner"]["prompt_manifest"]["assembled_prompt_sha256"]) == 64
 
 def test_planner_rejects_failed_gateway_response():
     gw = Gateway(result({}, ok=False))
@@ -38,3 +42,39 @@ def test_planner_requires_acceptance_criteria():
     gw = Gateway(result({}))
     with pytest.raises(EngineeringPlannerError, match="acceptance_criteria_required"):
         make_engineering_plan_generator(gw)(task={**TASK, "acceptance_criteria": []}, workspace_id="workspace-1")
+
+
+
+def test_planner_requires_task_id_for_auditable_prompt_manifest():
+    gw = Gateway(result({"status": "succeeded", "summary": "ok",
+                         "evidence": {"steps": ["Inspect", "Implement", "Test"]}}))
+    with pytest.raises(EngineeringPlannerError, match="task_id_required"):
+        make_engineering_plan_generator(gw)(
+            task={key: value for key, value in TASK.items() if key != "task_id"},
+            workspace_id="workspace-1",
+        )
+
+
+def test_planner_prompt_uses_injected_role_template_and_policy_version():
+    from services.kdo_engineering_prompt_assembler import EngineeringPromptAssembler, RoleTemplate
+
+    assembler = EngineeringPromptAssembler(role_templates={
+        "planner": RoleTemplate("planner", "custom-2", "Use the injected planning role contract.")
+    }, output_schema={
+        "type": "object",
+        "required": ["status", "summary", "evidence"],
+        "properties": {
+            "status": {"type": "string", "enum": ["succeeded", "failed", "uncertain"]},
+            "summary": {"type": "string"},
+            "evidence": {"type": "object"},
+        },
+        "additionalProperties": False,
+    })
+    gw = Gateway(result({"status": "succeeded", "summary": "ok",
+                         "evidence": {"steps": ["Inspect", "Implement", "Test"]}}))
+    proposal = make_engineering_plan_generator(
+        gw, prompt_assembler=assembler, policy_version="policy-9"
+    )(task=TASK, workspace_id="workspace-1")
+    assert "Use the injected planning role contract." in gw.calls[0][0]
+    assert proposal["planner"]["prompt_manifest"]["role_template_version"] == "custom-2"
+    assert proposal["planner"]["prompt_manifest"]["policy_version"] == "policy-9"
