@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from services.director import Director
-from services.director.planning import (\n    StrategicPlanningError, _planner_context, _evidence_reference_ids,\n    make_llm_strategic_planner,\n)
+from services.director.planning import (
+    StrategicPlanningError, _planner_context, _evidence_reference_ids,
+    make_llm_strategic_planner,
+)
 
 
 def objective():
