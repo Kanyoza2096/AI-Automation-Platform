@@ -45,6 +45,7 @@ def _state_payload(snapshot: PlatformStateSnapshot) -> dict[str, Any]:
                 "source_version": item.source_version,
                 "dependencies": list(item.dependencies),
                 "capabilities": list(item.capabilities),
+                "critical": item.critical,
                 "evidence": [
                     {
                         "source": evidence.source,
@@ -105,6 +106,7 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> PlatformStateSnapshot:
             source_version=str(item["source_version"]),
             dependencies=tuple(item.get("dependencies", [])),
             capabilities=tuple(item.get("capabilities", [])),
+            critical=bool(item.get("critical", False)),
             evidence=evidence,
             reason=item.get("reason"),
         ))
