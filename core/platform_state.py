@@ -81,7 +81,7 @@ class ServiceState:
     service_id: str
     owner: str
     readiness: Readiness
-    observed_at: datetime
+    observed_at: datetime | None
     source_version: str
     dependencies: tuple[str, ...]
     capabilities: tuple[str, ...]
