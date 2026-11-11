@@ -732,3 +732,24 @@ The source review confirms that V71.18 is a **workspace-scoped hydration mechani
 7. Only after persistence and identity convergence are proven should workload principal bindings, KDO namespace enforcement and token issuance consume the canonical registry.
 
 **Gate 0 status:** persistence/runtime convergence remains incomplete. The above are source-level findings from selected files and migrations; no live database schema/RLS inspection, authenticated route probe, write, migration, test run or deployment was performed. No new database or paid infrastructure is proposed.
+
+
+### 3.15 Full V71 workforce-state and durable-runtime convergence checkpoint
+
+A second focused source pass expanded the persistence review across V71.3–V71.10, V71.17–V71.18 and the V71.21 atomic budget-reservation SQL. The central architectural conclusion is that the current system has **three distinct state domains**, not one interchangeable persistence layer:
+
+1. **Workforce control-plane records:** identity, capability permissions, memory, plans, evaluations, budgets, human takeover cases and coordination requests. V71.18 can hydrate these nine table families into process-local registries, but the reviewed registry mutation methods remain in-memory and V71.18 does not provide general write-through operations.
+2. **Autonomous-run lifecycle:** V71.9 creates and mutates run objects in memory; V71.10 separately persists runs and coordinates worker leases and finalization through database operations/RPCs. This path must remain distinct from business side effects and must preserve reconciliation-required behavior after uncertain execution.
+3. **Budget reservation ledger:** V71.6 exposes a durable reservation facade backed by V71.21 SQL RPCs and a separate `agent_budget_reservations` table. It is not included in V71.18's nine-table hydration set and therefore needs its own recovery/convergence contract.
+
+**Design requirements before implementation:**
+- Define one versioned persistence boundary for the nine control-plane record families. Registry mutations must not silently appear successful when only process memory changed; define explicit durable, in-memory-test and unavailable modes.
+- Specify transaction boundaries and ordering for identity creation, permission grants, plans, evaluations, budgets, takeover and coordination transitions. Do not collapse permission grants into identity declarations or treat planning/evaluation/memory as authority.
+- Preserve V71.10's safety invariant: an expired run lease is not permission to repeat an external action. Fence uncertain runs and reconcile against the execution ledger/outbox before any retry.
+- Integrate V71.21 reservation recovery with run recovery. An expired reservation becomes uncertain; it must not be silently released or counted as committed without reconciliation. Define how reserved counters, reservation status and run status converge atomically or through an auditable saga.
+- Extend restart readiness to include the reservation ledger and all relevant run/lease state. A successful V71.18 hydration alone must not imply that all workforce runtime state is restart-safe.
+- Define cross-process consistency for web, worker and any other process: durable writes, cache invalidation/version checks, optimistic concurrency, idempotency, unique constraints, and stale-read/revocation behavior.
+- Verify database function ownership, execution grants, row-level security and transaction behavior against the actual deployed schema before trusting SQL RPCs. Migration source inspection is not proof of live Supabase policy or function privileges.
+- Keep V71.17 as an execution coordinator over the existing governed workflow/Action Kernel path. It is not a new authorization source or independent provider executor.
+
+**Decision:** retain the existing V71 domain boundaries, but do not declare the workforce persistence layer complete until ordinary registry mutations, run lifecycle and budget reservations have a single tested restart/concurrency story. No implementation or migration is authorized by this proposal.
