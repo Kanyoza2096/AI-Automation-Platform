@@ -674,3 +674,30 @@ A focused source inspection of the staging branch was completed for V71.1, V71.2
 
 **Decision status:** architecture recommendation documented; owner/security/runtime review pending. Gate 0 remains partially complete because persistence write paths, migrations/RLS, complete actor mappings and live wiring are not yet exhaustively verified.
 
+
+
+## 17. KDO namespace and generated-identifier standard checkpoint
+
+A cross-platform naming requirement has been added to the Advanced Director proposal: KDO-generated credentials and internal resource identifiers must be visibly attributable to KDO through a reserved, typed namespace. This is a design checkpoint only; no identifiers or credentials were changed.
+
+### Proposed convention
+
+- KDO-issued API keys and tokens use a reserved `kdo_` root with centrally defined typed variants (illustrative: `kdo_live_`, `kdo_test_`, `kdo_workload_`, `kdo_wskey_`). Credential handles/key IDs are prefixed; cryptographic key bytes and private material are not modified or exposed to satisfy naming.
+- KDO-owned workspace machine IDs and slugs use reserved KDO forms (illustrative: `kdo-ws-<opaque-id>` and `kdo-<slug>`). Immutable IDs remain distinct from display names.
+- KDO-generated agent, service, session, job, event, webhook-key and storage identifiers use centrally registered typed namespaces where supported.
+- Identifiers use a bounded lowercase ASCII grammar, safe opaque suffixes and no embedded secrets, personal data or authorization claims. Tenant ownership is a structured relation/claim, never inferred from a prefix.
+- Prefixes are not credentials and confer no trust or authority. Cryptographic verification, issuer/audience/environment checks, scopes, revocation, workspace isolation and governance remain mandatory.
+- Externally issued/provider-owned identifiers are mapped, not rewritten. Provider naming constraints must be respected.
+
+### Migration and verification gates
+
+- Inventory all KDO-issued credentials and KDO-owned workspace/resource identifiers; classify external and legacy identifiers separately.
+- Approve one central prefix catalogue, generator and validator before enforcing issuance.
+- New KDO-generated identifiers adopt the standard after shared implementation is reviewed.
+- Preserve existing immutable IDs and integrations using explicit aliases/mappings where needed. Credential changes require secure reissuance, verified cutover, overlap/revocation planning and audit; never prefix an existing secret in place.
+- Workspace renames require separate review of foreign keys, membership, RLS and tenant isolation. No bulk rename or schema migration is authorized here.
+- Add tests for type grammar, uniqueness/collisions, environment separation, malformed identifiers, cross-workspace isolation, legacy compatibility, revocation and secret redaction.
+
+### Scope and status
+
+This standard is intended to be cross-platform, including the API-key/workload-token contract, Platform Agent Registry, workspace model and engineering vertical. The examples are illustrative until a versioned catalogue is approved. It does not authorize implementation, key rotation, credential issuance, database changes or deployment. Gate 0 remains **PARTIALLY COMPLETE**.
