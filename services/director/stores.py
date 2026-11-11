@@ -239,7 +239,18 @@ class AsyncSupabaseStore:
         return [dict(row) for row in (result.data or [])] if result else []
 
     async def save_strategic_plan(self, plan: dict) -> bool:
-        """Persist a validated advisory strategic plan."""
+        """Persist and verify a validated advisory strategic plan.
+
+        Supabase JSONB columns must receive a JSON-compatible Python value.
+        Passing json.dumps(...) stores a JSON string scalar, not a JSON
+        object, which breaks JSONB key/path queries even though legacy
+        readers can decode the string.
+        """
+        payload = safe(plan)
+        if not isinstance(payload, dict):
+            log.error("Director DB: strategic plan payload is not an object")
+            return False
+
         result = await self._execute_with_retry(
             "upsert director_strategic_plans",
             lambda: self.supabase.table("director_strategic_plans").upsert({
@@ -251,12 +262,31 @@ class AsyncSupabaseStore:
                 "execution_started": False,
                 "tasks_created": False,
                 "source_context_fingerprint": plan["source_context_fingerprint"],
-                "payload": json.dumps(safe(plan)),
+                "payload": payload,
                 "created_at": iso_now(),
                 "updated_at": iso_now(),
             }).execute(),
         )
-        return result is not None
+        if result is None:
+            return False
+
+        persisted_result = await self._execute_with_retry(
+            "verify director_strategic_plans JSONB object",
+            lambda: self.supabase.table("director_strategic_plans")
+            .select("payload").eq("plan_id", plan["plan_id"]).limit(1).execute(),
+        )
+        raw_payload = (
+            persisted_result.data[0].get("payload")
+            if persisted_result and persisted_result.data else None
+        )
+        if not isinstance(raw_payload, dict) or raw_payload != payload:
+            log.error(
+                "Director DB: strategic plan JSONB object verification failed "
+                "for plan_id=%s",
+                plan["plan_id"],
+            )
+            return False
+        return True
 
     async def get_strategic_plan(self, plan_id: str) -> Optional[dict]:
         result = await self._execute_with_retry(
