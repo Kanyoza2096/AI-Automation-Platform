@@ -153,10 +153,10 @@ Candidate statistics:
 
 **Signed workload token contract:**
 - Issue short-lived signed workload/session tokens from a trusted platform identity issuer. Prefer asymmetric signing so services verify with public keys and the private signing key remains isolated from application workloads.
-- Bind at least issuer (`iss`), audience (`aud`), subject (`sub`), actor type, agent ID, scopes, platform/workspace scope, issued-at (`iat`), not-before (`nbf`), expiry (`exp`), unique token ID (`jti`), and signing key ID (`kid`).
+- Bind at least issuer (`iss`), audience (`aud`), subject (`sub`), actor type, agent ID, scopes, platform/workspace scope, session ID (`sid`), issued-at (`iat`), not-before (`nbf`), expiry (`exp`), unique token ID (`jti`), signing key ID (`kid`), and a confirmation/key-binding claim (`cnf`).
 - Verify signature, allowed algorithm, issuer, audience, time bounds, actor status, token revocation/rotation policy, and registry binding on every authenticated request.
-- Enforce a short maximum lifetime, key rotation, revocation, replay-sensitive operation controls, and fail-closed behavior for unknown keys or malformed claims.
-- Effective authority is the intersection of signed token scopes, active Agent Registry grants, service/tool policy, workspace scope, and governance requirements. A token claim alone cannot create a new permission.
+- Bind the signed token to the workload session key using mutual TLS or proof-of-possession (for example, a DPoP-style per-request signature validated against `cnf`); a copied bearer token alone must not be sufficient for a workload session. Enforce a short maximum lifetime, key rotation, revocation, nonce/replay controls, and fail-closed behavior for unknown keys or malformed claims.
+- Effective authority is the intersection of signed token scopes, active Agent Registry grants, service/tool policy, workspace scope, and governance requirements. Registry or database state may revoke or further restrict a signed grant, but must never broaden it; a token claim alone cannot create a new permission.
 - Never accept actor type, agent ID, or scopes from request headers, user metadata, mutable profile fields, or unsigned payloads.
 
 **Migration away from `is_species`:**
