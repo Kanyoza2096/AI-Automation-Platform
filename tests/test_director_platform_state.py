@@ -138,7 +138,7 @@ class FakePlatformStateReader:
         return self.snapshot
 
 
-def _platform_snapshot(updated_at=None):
+def _platform_snapshot(updated_at=None, observer_observed_at=None):
     updated_at = updated_at or datetime.now(timezone.utc)
     return SimpleNamespace(
         revision=9,
@@ -169,7 +169,7 @@ def _platform_snapshot(updated_at=None):
                 service_id="director",
                 observer_id="meta_engine",
                 readiness=Readiness.DEGRADED,
-                observed_at=updated_at,
+                observed_at=observer_observed_at or updated_at,
                 source_version="meta-v7.1",
                 evidence=(),
             ),
@@ -282,3 +282,17 @@ def test_explicit_strategic_plan_refreshes_platform_state_before_planner_input(m
     assert reader.calls == 1
     assert captured[0]["revision"] == 9
     assert captured[0]["freshness"] == "fresh"
+
+
+def test_director_downgrades_old_meta_observation_even_when_snapshot_is_fresh():
+    now = datetime.now(timezone.utc)
+    reader = FakePlatformStateReader(
+        _platform_snapshot(now, observer_observed_at=now - timedelta(minutes=10))
+    )
+    director = Director(supabase_client=None, platform_state_reader=reader)
+
+    state = asyncio.run(director.refresh_platform_state_context(max_age_seconds=60))
+
+    assert state["freshness"] == "fresh"
+    assert state["observer_observations"][0]["freshness"] == "stale"
+    assert state["observer_observations"][0]["readiness"] == "stale"
