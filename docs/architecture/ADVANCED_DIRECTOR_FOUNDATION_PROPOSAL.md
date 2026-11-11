@@ -244,7 +244,9 @@ The five strategic capabilities operate with a cross-cutting identity, agent-gov
 6. Council and DecisionGate govern consequential recommendations.
 7. Workforce admission and Action Kernel execute only authorized work.
 8. Receipts and independently verified outcomes update the evidence base and capability statistics.
-9. Each autonomous actor authenticates as its registered non-human principal with short-lived signed scopes; unknown actors are denied.\n10. Director tool calls emit correlated, redacted invocation traces linked to decisions, governance checks, results, and errors.\n11. Director explains what changed, why it changed, and what remains uncertain.
+9. Each autonomous actor authenticates as its registered non-human principal with short-lived signed scopes; unknown actors are denied.
+10. Director tool calls emit correlated, redacted invocation traces linked to decisions, governance checks, results, and errors.
+11. Director explains what changed, why it changed, and what remains uncertain.
 
 ## 5. Delivery sequence and review gates
 
@@ -274,7 +276,14 @@ The five strategic capabilities operate with a cross-cutting identity, agent-gov
 - Derive statistics only from existing verified receipts and outcomes initially.
 - **Exit:** missing/unverified evidence cannot increase reliability scores; score changes are explainable.
 
-### Gate 5 — Workload identity, Agent Registry, and tool-call observability\n- Define the signed workload-token claims, issuer/verifier/key-rotation contract, scope vocabulary, revocation, and replay controls.\n- Reconcile existing agent identity and capability permission registries into a platform-wide actor inventory with accountable owners and explicit tool allowlists.\n- Migrate Director and other autonomous actors away from mutable `is_species` authorization, using a compatibility bridge only while all call sites are migrated.\n- Instrument Director tool calls using Phase 9.2 correlation context and OpenTelemetry spans, with safe argument capture, redaction, authorization decisions, results, and errors.\n- **Exit:** forged/expired/revoked tokens, unknown agents, scope escalation, delegation widening, workspace crossing, secret leakage, trace gaps, and tool failure attribution tests all pass.\n\n### Gate 6 — Council governance convergence
+### Gate 5 — Workload identity, Agent Registry, and tool-call observability
+- Define the signed workload-token claims, issuer/verifier/key-rotation contract, scope vocabulary, revocation, and replay controls.
+- Reconcile existing agent identity and capability permission registries into a platform-wide actor inventory with accountable owners and explicit tool allowlists.
+- Migrate Director and other autonomous actors away from mutable `is_species` authorization, using a compatibility bridge only while all call sites are migrated.
+- Instrument Director tool calls using Phase 9.2 correlation context and OpenTelemetry spans, with safe argument capture, redaction, authorization decisions, results, and errors.
+- **Exit:** forged/expired/revoked tokens, unknown agents, scope escalation, delegation widening, workspace crossing, secret leakage, trace gaps, and tool failure attribution tests all pass.
+
+### Gate 6 — Council governance convergence
 - Map Director recommendations through Council, DecisionGate, workspace authorization, workforce admission, and Action Kernel.
 - Remove or block any parallel path that can bypass the canonical authority boundary.
 - **Exit:** allowed, rejected, unauthorized, high-risk, and human-approval scenarios are covered end to end.
@@ -294,7 +303,10 @@ A phase is complete only when its tests and runtime evidence demonstrate:
 - Event delivery is idempotent and traceable through fan-out and retry.
 - Capability reliability reflects verified outcomes, not acknowledgements.
 - Workspace isolation holds across state, events, plans, statistics, and governance.
-- Council and DecisionGate cannot be bypassed by Director or model output.\n- Every autonomous actor is registered, owned, scope-bound, and denied by default when unknown or suspended.\n- Signed workload scopes are verified and intersected with registry/tool grants; no mutable `is_species` flag grants platform authority.\n- Director tool invocations have correlated, redacted traces with sufficient validated arguments and error evidence to diagnose failures without leaking secrets.
+- Council and DecisionGate cannot be bypassed by Director or model output.
+- Every autonomous actor is registered, owned, scope-bound, and denied by default when unknown or suspended.
+- Signed workload scopes are verified and intersected with registry/tool grants; no mutable `is_species` flag grants platform authority.
+- Director tool invocations have correlated, redacted traces with sufficient validated arguments and error evidence to diagnose failures without leaking secrets.
 - Unapproved plans create no executable tasks and cause no side effects.
 - The AI Software Engineering Vertical remains functional and retains its governed execution path.
 - Director does not own brand publishing or directly invoke publishing workflows.
@@ -309,7 +321,10 @@ This proposal does not authorize:
 - changing Gateway or Command Center behavior;
 - replacing the existing unified bus, Action Kernel, Council, or workforce runtime;
 - removing or weakening the AI Software Engineering Vertical;
-- granting Director autonomous production execution;\n- treating `director:dispatch` as permission to execute tools directly;\n- logging raw credentials or unrestricted tool arguments/results;\n- replacing existing agent identity, session, event, or trace infrastructure before the Gate 0 audit proves a gap.
+- granting Director autonomous production execution;
+- treating `director:dispatch` as permission to execute tools directly;
+- logging raw credentials or unrestricted tool arguments/results;
+- replacing existing agent identity, session, event, or trace infrastructure before the Gate 0 audit proves a gap.
 
 ## 8. Decisions requested from reviewers
 
@@ -318,6 +333,10 @@ This proposal does not authorize:
 3. Confirm the existing unified bus is the coordination transport; only contracts and reliability semantics are standardized here.
 4. Confirm capability statistics use independently verified outcomes and cannot grant authority.
 5. Confirm Council → DecisionGate → workforce admission → Action Kernel is the sole consequential execution path.
-6. Confirm the delivery gates and explicit non-goals before implementation is decomposed into small, testable PRs.\n7. Confirm Director is a non-human principal with only `director:read` and `director:dispatch` initially, with dispatch limited to governed admission.\n8. Confirm signed workload tokens and the Agent Registry—not mutable `is_species` state—are the authority source for autonomous actors.\n9. Confirm the Agent Registry covers Director, Council, Content Engine/brand schedulers, Guardian, and AI Software Engineering actors, with explicit owner teams and tool allowlists.\n10. Confirm all Director tool invocations require correlated structured traces with redacted argument capture and actionable error attribution.
+6. Confirm the delivery gates and explicit non-goals before implementation is decomposed into small, testable PRs.
+7. Confirm Director is a non-human principal with only `director:read` and `director:dispatch` initially, with dispatch limited to governed admission.
+8. Confirm signed workload tokens and the Agent Registry—not mutable `is_species` state—are the authority source for autonomous actors.
+9. Confirm the Agent Registry covers Director, Council, Content Engine/brand schedulers, Guardian, and AI Software Engineering actors, with explicit owner teams and tool allowlists.
+10. Confirm all Director tool invocations require correlated structured traces with redacted argument capture and actionable error attribution.
 
 **Recommendation:** approve or amend this architecture contract first. Only after review should Gate 0 be implemented as a read-only audit, followed by separately reviewed implementation increments.
