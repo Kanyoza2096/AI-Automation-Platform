@@ -45,6 +45,7 @@ def test_maps_owner_named_health_reports_and_preserves_evidence():
     service = snapshot.services[0]
     assert service.readiness is Readiness.HEALTHY
     assert service.owner == "director"
+    assert service.critical is True
     assert service.source_version == "v5.5"
     assert service.evidence[0].source == "health_registry:director"
     assert service.evidence[0].correlation_id == "corr-1"
