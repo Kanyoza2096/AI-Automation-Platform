@@ -532,6 +532,8 @@ jobs:
             tests/test_platform_state_publisher.py \
             tests/test_platform_state_reader.py \
             tests/test_director_platform_state.py \
+            tests/test_condition_engine_readiness_contract.py \
+            tests/test_organism_platform_state_projection.py \
             tests/test_platform_state_migration_postgres.py
 
 # Keep U2 goal bootstrap and signed-event integration tests in the focused CI gate.
