@@ -1245,8 +1245,6 @@ __all__ = [
     "init_autonomous_content",
     "get_autonomous_content",
     "shutdown_autonomous_content",
-    "HealthReport",
-    "HealthStatus",
     "EngagementPrediction",
     "ContentQuality",
 ]
