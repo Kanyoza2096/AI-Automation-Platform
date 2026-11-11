@@ -149,3 +149,39 @@ def test_route_wiring_audit_script_has_no_parse_errors():
     assert report["parse_errors"] == []
     assert report["orphan_router_modules"] == []
     assert report["route_count"] == 435
+
+
+def test_retired_integrations_are_absent_from_runtime_and_routes():
+    lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    retired_markers = (
+        "plugins.monitor", "plugins.backup", "plugins.trend_intelligence",
+        "plugins.growthbridge", "routes.affiliate_routes",
+    )
+    assert all(marker not in lifecycle for marker in retired_markers)
+    assert all(marker not in main for marker in retired_markers)
+
+    retired_paths = (
+        "plugins/monitor/plugin.py", "plugins/backup/plugin.py",
+        "plugins/trend_intelligence/plugin.py", "plugins/growthbridge/plugin.py",
+        "routes/affiliate_routes.py", "services/affiliate_service.py",
+        "services/trend_publish_bridge.py",
+    )
+    assert all(not (ROOT / path).exists() for path in retired_paths)
+
+
+def test_core_health_and_engineering_vertical_are_preserved():
+    lifecycle = (ROOT / "lifecycle.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'name="HealthMonitor"' in lifecycle
+    assert "_boot_health_monitor" in lifecycle
+    assert "routes.code_intel_routes" in main
+    assert (ROOT / "services/health_monitor_service.py").is_file()
+    assert (ROOT / "routes/code_intel_routes.py").is_file()
+
+
+def test_retired_engines_are_removed_from_director_topology():
+    from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
+
+    retired = {"monitor_plugin", "backup_plugin", "growthbridge_plugin", "trend_plugin"}
+    assert retired.isdisjoint(CANONICAL_ENGINE_DEPENDENCIES)
