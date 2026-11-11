@@ -1019,7 +1019,12 @@ class LLMGateway:
                 ai_receipt=result.ai_receipt,
                 finish_reason=result.finish_reason,
             )
-        data = parse_structured_json(result.text)
+        # Provider adapters may already have parsed a schema-constrained
+        # response. Prefer that structured payload over reparsing raw text;
+        # raw text remains the compatibility fallback for legacy providers.
+        data = result.data if isinstance(result.data, dict) else None
+        if data is None:
+            data = parse_structured_json(result.text)
         if data is None:
             return IntelligenceResult(
                 ok=False,
