@@ -1313,13 +1313,14 @@ def create_app(director: Director):
         await _require_auth(request, credentials)
         _require_platform_scope(request)
         context = getattr(request.state, "request_context", None)
+        # A tenant role (including workspace owner/admin) is never sufficient
+        # for platform-wide state. Only the trusted platform/species privilege
+        # or a separately authenticated platform token may read this snapshot.
         if context is not None and not getattr(context, "species_privileges", False):
-            role = str(getattr(context, "role", "viewer") or "viewer").lower()
-            if role not in {"operator", "admin", "owner"}:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Platform State requires platform operator privileges",
-                )
+            raise HTTPException(
+                status_code=403,
+                detail="Platform State requires platform operator privileges",
+            )
         try:
             from services.supabase import get_service_client_from_settings
             from core.platform_state_reader import PlatformStateReader
