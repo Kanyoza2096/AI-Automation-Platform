@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from core.platform_state import (
     EvidenceRef,
+    ObserverObservation,
     PlatformStateSnapshot,
     Readiness,
     ServiceState,
@@ -94,6 +95,28 @@ def test_publisher_persists_before_emitting_revision_notification():
     assert len(payload["snapshot_digest"]) == 64
     assert kwargs["workspace_id"] == "platform"
     assert kwargs["source"] == "health_monitor"
+
+
+def test_observer_evidence_changes_emit_affected_service_id():
+    candidate = replace(
+        snapshot(),
+        observer_observations=(
+            ObserverObservation(
+                service_id="director",
+                observer_id="meta_engine",
+                readiness=Readiness.DEGRADED,
+                observed_at=NOW,
+                source_version="meta-v7.1",
+            ),
+        ),
+    )
+    store = FakeStore()
+    bus = FakeBus()
+
+    result = asyncio.run(PlatformStatePublisher(store, bus).publish(candidate))
+
+    assert result.revision == 1
+    assert bus.events[0][1]["changed_service_ids"] == ["director"]
 
 
 def test_publisher_does_not_write_or_emit_when_facts_are_unchanged():
