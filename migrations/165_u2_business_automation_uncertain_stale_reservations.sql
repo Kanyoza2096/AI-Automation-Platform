@@ -65,7 +65,11 @@ BEGIN
     END IF;
     -- The acquisition marker is a one-call capability, not durable row state.
     -- Strip it from every existing reservation returned to a later caller.
-    r.output := COALESCE(r.output, '{}'::jsonb) - '_reservation_acquired';
+    r.output := CASE
+      WHEN pg_catalog.jsonb_typeof(r.output) = 'object'
+        THEN r.output - '_reservation_acquired'
+      ELSE '{}'::jsonb
+    END;
     RETURN NEXT r;
     RETURN;
   END IF;
