@@ -359,13 +359,28 @@ class AutonomousConditionEngine:
                 "value",
                 str(getattr(item, "readiness", "unknown")),
             )
-            effective = reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+            observer_freshness = freshness
+            if freshness == "fresh":
+                if not isinstance(observed, datetime) or observed.tzinfo is None:
+                    observer_freshness = "unknown"
+                else:
+                    observer_age = (
+                        now_utc - observed.astimezone(timezone.utc)
+                    ).total_seconds()
+                    if observer_age < -30:
+                        observer_freshness = "unknown"
+                    elif observer_age > max_age_seconds:
+                        observer_freshness = "stale"
+            effective = (
+                reported if observer_freshness == "fresh"
+                else ("stale" if observer_freshness == "stale" else "unknown")
+            )
             observer_observations.append({
                 "service_id": str(getattr(item, "service_id", "unknown"))[:120],
                 "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
                 "readiness": effective,
                 "reported_readiness": reported,
-                "freshness": freshness,
+                "freshness": observer_freshness,
                 "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
                 "source_version": str(getattr(item, "source_version", "unknown"))[:80],
             })
