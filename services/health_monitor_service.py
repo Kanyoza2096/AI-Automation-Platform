@@ -240,9 +240,15 @@ class HealthMonitorService:
                     self._platform_state_snapshot.revision
                     if self._platform_state_snapshot is not None else 0
                 )
+                infrastructure_statuses = {
+                    "redis": services.get("Redis", "unknown"),
+                    "supabase": services.get("Supabase", "unknown"),
+                    "gemini": services.get("Gemini", "unknown"),
+                }
                 self._platform_state_snapshot = read_platform_state_from_health_registry(
                     registry=health_registry,
                     previous_revision=previous_revision,
+                    supplemental_statuses=infrastructure_statuses,
                 )
             except Exception as exc:
                 logger.debug(
