@@ -115,3 +115,19 @@ def test_event_fanout_migration_is_workspace_scoped_and_idempotent():
     assert "business_automation_event_fanout_ready" in migration
     assert "trigger_row.tgfoid = 'public.fanout_business_automation_event_delivery()'::regprocedure" in migration
     assert "does not backfill historical events" in migration
+
+
+def test_stale_started_reservations_become_uncertain_not_reexecutable():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "165_u2_business_automation_uncertain_stale_reservations.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "IF r.status = 'started' AND r.started_at < now_ts - stale_after" in migration
+    assert "SET status = 'uncertain'" in migration
+    assert "'reconciliation_required', true" in migration
+    assert "'stale_started_reservation'" in migration
+    assert "_reservation_acquired', true" not in migration.split("IF FOUND THEN", 1)[1].split("END IF;", 1)[0]
+    assert "automatic replay is prohibited" in migration
+    assert "FOR UPDATE" in migration
