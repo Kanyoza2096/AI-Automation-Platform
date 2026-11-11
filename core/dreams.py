@@ -353,7 +353,6 @@ dream_system = DreamSystem()
 
 async def init_dream_system(container=None, council=None) -> DreamSystem:
     """Initialize dream system."""
-    global dream_system
     dream_system._container = container
     dream_system._council = council
     await dream_system.start()
