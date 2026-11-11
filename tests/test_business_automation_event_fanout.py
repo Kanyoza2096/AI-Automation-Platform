@@ -106,7 +106,10 @@ def test_event_fanout_migration_is_workspace_scoped_and_idempotent():
     assert "rule.workspace_id = NEW.workspace_id" in migration
     assert "rule.enabled IS TRUE" in migration
     assert "jsonb_typeof(rule.parameters -> 'trigger_events') = 'array'" in migration
+    assert "jsonb_typeof(rule.parameters -> 'trigger_events') = 'string'" in migration
     assert "(rule.parameters -> 'trigger_events') ? NEW.event_type" in migration
+    assert "(rule.parameters -> 'trigger_events') ? '*'" in migration
+    assert "(rule.parameters ->> 'trigger_events') IN (NEW.event_type, '*')" in migration
     assert "ON CONFLICT (event_id, consumer_group) DO NOTHING" in migration
     assert "'business_automation'" in migration
     assert "business_automation_event_fanout_ready" in migration
