@@ -139,7 +139,8 @@ def test_stale_started_reservations_become_uncertain_not_reexecutable():
     assert "_reservation_acquired', true" not in migration.split("IF FOUND THEN", 1)[1].split("END IF;", 1)[0]
     assert "automatic replay is prohibited" in migration
     assert "FOR UPDATE" in migration
-    assert "r.output := COALESCE(r.output, '{}'::jsonb) - '_reservation_acquired'" in migration
+    assert "pg_catalog.jsonb_typeof(r.output) = 'object'" in migration
+    assert "THEN r.output - '_reservation_acquired'" in migration
 
 
 def test_bridge_fails_closed_when_stale_reservation_guard_is_not_installed():
@@ -184,3 +185,5 @@ def test_business_automation_finalization_cannot_overwrite_uncertain_reservation
         "async def history", 1
     )[0]
     assert '.eq("status", "started")' in finalizer
+    assert '.select("execution_id").execute()' in finalizer
+    assert "if not result.data:" in finalizer
