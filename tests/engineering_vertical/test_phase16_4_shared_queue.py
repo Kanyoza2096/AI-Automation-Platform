@@ -278,7 +278,6 @@ def test_postgres_complete_rejects_missing_worker_or_lease_token_before_database
         queue.complete(job, worker_id="", lease_token="token-a", status="awaiting_review")
     with pytest.raises(Phase163Error, match="worker_identity_and_lease_token_required"):
         queue.complete(job, worker_id="worker-a", lease_token="", status="awaiting_review")
-        main
 
 
 
