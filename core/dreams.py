@@ -361,7 +361,6 @@ async def init_dream_system(container=None, council=None) -> DreamSystem:
 
 async def shutdown_dream_system() -> None:
     """Stop dreaming."""
-    global dream_system
     await dream_system.stop()
 
 
