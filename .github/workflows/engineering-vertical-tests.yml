@@ -520,7 +520,7 @@ jobs:
             tests/test_route_wiring_audit.py \
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
-            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
+            tests/architecture/test_vnext_connector_fabric_evidence_read_model.py \
             tests/test_platform_state.py \
             tests/test_platform_state_health.py \
             tests/test_platform_state_store.py \
