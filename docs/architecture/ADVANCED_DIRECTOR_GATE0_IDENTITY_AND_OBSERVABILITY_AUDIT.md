@@ -1321,3 +1321,39 @@ The registry topology report separately exposes:
 **Next live evidence:** retrieve the authenticated response from the current staging deployment and redact any unrelated sensitive diagnostic detail before sharing. The token must remain local and must never be pasted into chat. This endpoint's response should include both `registry_registration` and `registry_topology`; if either is null, capture the response status/body and investigate the route's registry initialization path rather than inferring an empty report.
 
 This section is source-derived from staging branch files `routes/backend_contract_routes.py`, `core/service_registry.py`, and `core/service_definitions.py`. No route was invoked by this source audit, and no runtime, database, migration, test, deployment, credential or production state was changed.
+
+
+### 27.14 Authenticated staging topology response — live evidence (2026-11-11)
+
+The user retrieved the authenticated staging `GET /api/v1/topology` response from `kdo-engineering-staging`. This closes the live-response evidence request in §27.13. The response contained both `registry_registration` and `registry_topology`.
+
+**Observed canonical topology and runtime inventory**
+- Canonical topology contains 30 nodes and 43 dependency edges.
+- `runtime_nodes` contains 20 registered runtime names: `ai_orchestrator`, `autonomous_content`, `autonomous_loop`, `card_renderer`, `condition_engine`, `content_engine`, `director`, `email_service`, `event_bus`, `health_monitor`, `image_engine`, `job_service`, `job_stats_service`, `meta_engine`, `plugin_registry`, `prompt_builder`, `render_queue`, `scheduler`, `task_queue`, and `topic_selector`.
+- The registry reports 19 names in `meta_engine_nodes`; `meta_engine` itself is absent from that list. `missing_from_meta_engine` contains only `meta_engine`.
+- `identity_mismatches`, `undeclared_runtime_nodes`, `invalid_dependencies`, and `cycles` are empty.
+- Both canonical drift and registry topology report the same ten missing runtime nodes: `brand_scheduler`, `engagement_tracker`, `enterprise_emitters`, `event_recorder`, `gemini`, `github`, `guardian`, `guardian_scheduler`, `redis`, and `supabase`.
+- Top-level `healthy` is false and `registry_topology.topology_complete` is false. `health_evaluated` remains false.
+
+**Exact registration outcomes**
+- `registered` contains 20 services, matching the 20 runtime names above.
+- `skipped` contains exactly two optional resolver outcomes: `event_recorder` and `engagement_tracker`, both `reason: resolved_none`, `critical: false`.
+- `failed` is empty.
+- `meta_registration_failures` is empty.
+
+**Evidence-grounded interpretation**
+1. This response establishes no critical service-resolver failures and no Meta registration exceptions in the reported registration snapshot. It does not establish that all 20 registered services are healthy.
+2. The two optional skips are now explained at the resolver level (`resolved_none`), but their owning process-mode expectations and downstream capability impact remain unverified.
+3. The ten missing canonical runtime nodes cannot yet be classified as failures. The response does not identify whether each is an external provider, optional integration, intentionally absent process-role service, or expected local runtime service. In particular, `redis` and `supabase` appear as canonical dependencies but are not represented as runtime nodes; that alone does not prove either backing service is unavailable.
+4. `meta_engine` is present in the runtime registry but absent from Meta Engine's own node list. This is a self-registration/supervision representation gap in this report, not evidence that the Meta Engine process is down.
+5. Empty identity mismatch, invalid-dependency and cycle arrays are positive structural evidence. They do not resolve the ten missing runtime nodes or the separate readiness/freshness question.
+6. Status values on individual nodes include `healthy`, `idle`, and `unknown`. Because the endpoint marks `health_evaluated: false` and does not provide uniform observation timestamps/expiry, these values must not be promoted directly into authoritative platform capability readiness.
+
+**Gate 0 consequence / next required evidence**
+- The live endpoint response requirement in §27.13 is satisfied.
+- Remaining reconciliation is owner/process-mode mapping for the ten missing canonical nodes and the two optional skips, plus explanation of the Meta Engine self-entry.
+- Retrieve or produce a read-only owner inventory joining each canonical node to its service-definition entry, boot resolver, process-mode expectation, external-vs-local classification, criticality, and required/optional dependency policy. Reuse the existing source inventory tooling; do not create another topology graph.
+- Obtain source-owned, timestamped health/readiness evidence for capabilities and their required dependencies before defining any authoritative readiness projection.
+- No critical resolver failure is shown by this response, but Gate 0 is not complete: ownership expectations, freshness, durable observation/event transaction boundaries, manifest authority, retention/redaction and scope controls remain open.
+
+The live response was supplied by the user. It is evidence from the staging endpoint at the time of retrieval, not a claim about current state beyond that observation. No token or credential was included in the shared response. This documentation update does not invoke the endpoint again or change runtime, database, migration, test, deployment, credential or production state.
