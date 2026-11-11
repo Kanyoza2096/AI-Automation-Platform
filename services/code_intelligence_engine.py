@@ -1514,8 +1514,6 @@ def init_code_intelligence(
 
 def shutdown_code_intelligence() -> None:
     """Shutdown the engine (sync-compatible)."""
-    global code_intel_engine
-
     if code_intel_engine is None:
         return
 

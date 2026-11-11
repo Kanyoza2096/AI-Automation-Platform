@@ -1937,7 +1937,6 @@ meta_engine = MetaEngineV7()
 
 def init_meta_engine(event_bus: Any = None, container: Any = None, supabase_client: Any = None) -> MetaEngineV7:
     """Initialize the Meta Engine singleton."""
-    global meta_engine
     meta_engine.event_bus = event_bus
     meta_engine.container = container
     meta_engine.supabase = supabase_client
