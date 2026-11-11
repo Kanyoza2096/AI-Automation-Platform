@@ -580,3 +580,22 @@ Effective machine authority is the intersection of verified signed claims, activ
 7. Retire `is_species` and `species_privileges` only when repository-wide and runtime inventories show no remaining authorization consumers.
 
 Rollback must restore only the last known compatible authorization policy for the affected surface, never a global species-wide bypass. Keep production untouched; no database migration or new paid infrastructure is implied by this design phase.
+
+## 14. Authorization scope catalogue — design review checkpoint
+
+The companion architecture proposal now defines the proposed catalogue kdo-authz-scopes/v1. This is a design vocabulary only: no scope is active, assigned, issued in a token, or enforced by this documentation change.
+
+Review requirements before Gate 0 exit:
+
+- Confirm the owning team for every scope and identify a named accountable human owner; unresolved ownership blocks activation.
+- Reconcile each scope to exact route, capability, tool, event type/channel, resource class, workspace, environment and runtime consumer. The catalogue is not a substitute for that exhaustive mapping.
+- Validate that the Director's initial authority is exactly director:read and director:dispatch, with dispatch limited to governed admission.
+- Validate human-only critical authority boundaries, especially identity:registry:manage, production deployment, merge authority and credential/key operations.
+- Confirm Guardian scan/remediation, Content Engine generation/Brand Scheduler publication, Council deliberation/decision, and engineering planning/write/execute/merge/deploy are separate permissions and principals.
+- Confirm KCPG event publishing and socket subscriptions are constrained by event type, channel, direction, source identity and workspace.
+- Confirm the risk tier is calculated from the concrete operation and target; actor labels or tool metadata cannot lower it.
+- Specify issuer, audience, proof-of-possession, key rotation/revocation and catalogue-version pinning in the token implementation contract before any runtime rollout.
+- Review the catalogue for over-broad resource labels, missing owner teams, duplicate semantics and scope/action mismatch; add only scopes backed by an identified consumer.
+
+**Decision status:** pending owner/security/governance review. Gate 0 remains partially complete. This checkpoint does not authorize implementation, token issuance, permission grants, database changes, deployment, or production activity.
+
