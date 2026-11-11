@@ -198,7 +198,8 @@ def verify_strategic_plan(
     }
 
     unavailable: list[str] = []
-    unknown_readiness: list[str] = []
+    uncited_evidence: list[str] = []
+    unknown_platform_readiness: list[str] = []
     valid_evidence_ids = _evidence_ids(context)
     for step in steps:
         name = step.get("capability")
@@ -224,7 +225,7 @@ def verify_strategic_plan(
 
         refs = step.get("evidence_refs")
         if refs is None:
-            unknown_readiness.append(f"evidence_refs:{step.get('step_id')}")
+            uncited_evidence.append(f"evidence_refs:{step.get('step_id')}")
         elif not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
             errors.append(f"evidence_refs_invalid:{step.get('step_id')}")
         elif not refs:
@@ -268,7 +269,7 @@ def verify_strategic_plan(
             "pass" if has_mapping and not missing else "unverified"
         )
 
-    if unknown_readiness:
+    if uncited_evidence:
         warnings.append("plan_step_evidence_not_cited")
 
     # Current Platform State is advisory corroboration. Absence is unknown, never healthy.
@@ -285,10 +286,10 @@ def verify_strategic_plan(
         name = step.get("capability")
         state = platform_caps.get(name)
         if state is None:
-            unknown_readiness.append(f"platform_state:{name}")
+            unknown_platform_readiness.append(f"platform_state:{name}")
         elif state.get("readiness") != "healthy":
             warnings.append(f"platform_capability_{state.get('readiness', 'unknown')}:{name}")
-    if unknown_readiness:
+    if unknown_platform_readiness:
         checks["platform_readiness"] = "unknown"
         warnings.append("platform_readiness_not_fully_observed")
     else:
