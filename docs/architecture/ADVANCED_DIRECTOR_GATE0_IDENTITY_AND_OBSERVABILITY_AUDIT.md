@@ -1541,3 +1541,38 @@ Acceptance evidence must include:
 **Gate 0 disposition:** source ownership findings are documented, but deployed process identity/mode and several component owners remain unverified. The current endpoint is a structural/registration snapshot, not a readiness API. Gate 0 remains PARTIALLY COMPLETE. Implementation is still blocked on owner sign-off, exact process-mode evidence, storage/event transaction boundaries, scope/retention/redaction review and the staging acceptance plan.
 
 No runtime code, tests, migrations, database writes, credentials, deployments or production state were changed by this design checkpoint.
+
+
+### 27.18 Staging-source lifecycle re-verification and corrections
+
+This checkpoint re-fetches the relevant source files from the current `staging` branch. It supersedes any earlier wording in this audit that described EventRecorder as having a lazy factory in its service resolver or that stated EngagementTracker startup had already been wired into lifecycle boot.
+
+#### Source files and verified contracts
+
+- `services/engagement_tracker.py`: module singleton `engagement_tracker` initializes as `None`. `start_engagement_tracking(container, interval_minutes=30)` constructs the tracker, resolves its Supabase/Condition Engine/EventBus dependencies, and starts its periodic task. `shutdown_engagement_tracking()` stops the task and resets the module singleton. The service definition resolver only returns the module singleton. The inspected `lifecycle.py` contains no reference to either startup or shutdown function. Therefore the source establishes a callable lifecycle API but does not establish that it is invoked by the current lifecycle manager.
+- `core/service_definitions.py`: `_resolve_engagement_tracker` imports and returns `engagement_tracker`; `_resolve_event_recorder` imports `EventRecorder` and calls `_resolve_existing(container, EventRecorder)`.
+- `service_container.py`: `try_get_instance` returns only an already-created singleton and never invokes its factory. This is an intentional monitoring/registration safety boundary.
+- `domain/analytics/event_recorder.py`: `EventRecorder(repo, bus)` is constructed with explicit dependencies; `start()` subscribes to five event types. The inspected file contains no stop/unsubscribe method. The service definition resolver does not construct it or invoke `start()`.
+- `services/director/analysis.py`: the Director `ENGINE_REGISTRY` entry requests `services.guardian_service.guardian_service`.
+- `services/guardian_service.py`: the inspected module defines `GuardianService` class and no module-level `guardian_service` singleton. The class constructor requires GitHub client, scanner, auto-fix engine, event bus and Facebook service. Its `scan_all()` can cause external reads, notifications, events and—when configured—GitHub PR creation. It must never be invoked as a topology/readiness probe.
+- `scripts/audit_engine_topology.py`: `BOOT_OWNERS` contains explicit mappings for selected services, but no `guardian`, `guardian_scheduler`, `engagement_tracker` or `event_recorder` entry. Its fallback explicitly labels such ownership as not mapped and requiring verification. The script is a source inventory, not proof of effective deployed process mode.
+
+#### Corrected diagnosis
+
+1. **EngagementTracker — missing lifecycle wiring is supported by source inspection.** Its module has an explicit start/stop API, but the inspected lifecycle module does not call it. The live topology response reported `resolved_none`. Together these facts support a missing startup-wiring hypothesis for the observed process; they do not prove which process modes should own it or whether the tracker should be enabled in every deployment.
+2. **EventRecorder — instance-only discovery, construction and subscription are separate.** The resolver intentionally returns `None` unless an owning boot step has already constructed and registered an instance. The inspected service definition is not a lazy constructor. A future owner must explicitly provide repository and bus dependencies, construct/register the singleton, call `start()`, and own teardown/unsubscription. Since the current class has no stop method, lifecycle-safe teardown requires a separately reviewed implementation change; do not add a second recorder instance as a workaround.
+3. **Guardian — discovery export is inconsistent with the module API.** The current Director tuple points to a nonexistent module attribute in the inspected source. The DI factory/class path must be inspected and reconciled with the canonical service owner before any singleton is created. A future fix must preserve one instance identity and must not trigger scans or auto-fix during discovery.
+4. **GuardianScheduler — unresolved declaration.** The canonical node and Director graph edge exist, but the audited boot-owner inventory does not assign it an implementation or process role. This remains an unresolved architecture ownership decision, not proof that a runnable scheduler implementation is absent from every possible module.
+5. **Process modes — source map only.** The existing inventory lists expected modes for selected owners, but the fetched lifecycle excerpt and static map do not prove the effective `SERVICE_MODE` and process role of each currently running Render process. Obtain a redacted startup identity/mode record from each process before classifying absent services as outages.
+
+#### Safe next implementation boundary
+
+Do not patch lifecycle startup yet. First obtain an owner decision for each component and inspect the actual boot-step construction order and shutdown rollback path. Then propose a single lifecycle wiring change with:
+- process-mode allowlist and one owner per process;
+- dependency injection from already-owned instances (no hidden second container/client);
+- idempotent start and explicit stop/unsubscribe;
+- rollback if startup partially succeeds;
+- bounded startup/readiness evidence;
+- tests for repeated boot, concurrent boot, failed startup rollback, shutdown and mode exclusions.
+
+**Gate 0 remains PARTIALLY COMPLETE.** These source findings narrow the missing lifecycle work but do not establish deployed process mode, live instance identity, readiness, or owner approval. No runtime code, tests, migrations, database writes, credentials, deployment or production change was made by this audit update.
