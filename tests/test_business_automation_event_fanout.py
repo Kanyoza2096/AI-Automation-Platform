@@ -187,3 +187,17 @@ def test_business_automation_finalization_cannot_overwrite_uncertain_reservation
     assert '.eq("status", "started")' in finalizer
     assert '.select("execution_id").execute()' in finalizer
     assert "if not result.data:" in finalizer
+
+
+def test_new_started_reservation_has_no_finished_at_and_schema_allows_null():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "migrations"
+        / "165_u2_business_automation_uncertain_stale_reservations.sql"
+    ).read_text(encoding="utf-8")
+    insert_values = migration.split("INSERT INTO public.business_automation_executions", 1)[1]
+    insert_values = insert_values.split("RETURNING * INTO r", 1)[0]
+
+    assert "ALTER COLUMN finished_at DROP NOT NULL" in migration
+    assert "started_at, finished_at, output" in insert_values
+    assert "COALESCE((p_execution->>'started_at')::timestamptz, now_ts), NULL," in insert_values
