@@ -286,6 +286,9 @@ def verify_strategic_plan(
     }
     for step in steps:
         name = step.get("capability")
+        if not isinstance(name, str) or not name.strip():
+            unknown_platform_readiness.append(f"platform_state:{step.get('step_id', 'unknown')}")
+            continue
         state = platform_caps.get(name)
         if state is None:
             unknown_platform_readiness.append(f"platform_state:{name}")
