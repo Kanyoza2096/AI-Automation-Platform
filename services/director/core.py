@@ -558,7 +558,7 @@ class Director:
         if reader is None or not callable(getattr(reader, "get_snapshot", None)):
             self._platform_state_context = {
                 "status": "unavailable", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_reader_not_configured",
             }
             return dict(self._platform_state_context)
@@ -569,7 +569,7 @@ class Director:
             log.warning("Director Platform State refresh failed closed", exc_info=True)
             self._platform_state_context = {
                 "status": "unavailable", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_read_failed",
             }
             return dict(self._platform_state_context)
@@ -577,7 +577,7 @@ class Director:
         if snapshot is None:
             self._platform_state_context = {
                 "status": "uninitialized", "freshness": "unknown", "revision": 0,
-                "services": [], "capabilities": [],
+                "services": [], "capabilities": [], "observer_observations": [],
                 "reason": "platform_state_snapshot_missing",
             }
             return dict(self._platform_state_context)
@@ -645,6 +645,37 @@ class Director:
                 "reason": str(getattr(item, "reason", "") or "")[:200] or None,
             })
 
+        observer_items = list(getattr(snapshot, "observer_observations", ()) or ())
+        observer_observations = []
+        for item in observer_items[:100]:
+            observed = getattr(item, "observed_at", None)
+            reported_readiness = getattr(
+                getattr(item, "readiness", None),
+                "value",
+                str(getattr(item, "readiness", "unknown")),
+            )
+            effective_readiness = (
+                reported_readiness if freshness == "fresh"
+                else ("stale" if freshness == "stale" else "unknown")
+            )
+            evidence = []
+            for ref in list(getattr(item, "evidence", ()) or ())[:2]:
+                evidence.append({
+                    "source": str(getattr(ref, "source", "unknown"))[:100],
+                    "source_version": str(getattr(ref, "source_version", "unknown"))[:80],
+                })
+            observer_observations.append({
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
+                "readiness": effective_readiness,
+                "reported_readiness": reported_readiness,
+                "freshness": freshness,
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "source_version": str(getattr(item, "source_version", "unknown"))[:80],
+                "correlation_id": getattr(item, "correlation_id", None),
+                "evidence": evidence,
+            })
+
         self._platform_state_context = {
             "status": status,
             "freshness": freshness,
@@ -657,6 +688,9 @@ class Director:
             "readiness_counts": readiness_counts,
             "services": services,
             "capabilities": capabilities,
+            "observer_observations": observer_observations,
+            "observer_observation_count": len(observer_items),
+            "observer_observations_truncated": len(observer_items) > len(observer_observations),
             "services_truncated": len(service_items) > len(services),
             "capabilities_truncated": len(capability_items) > len(capabilities),
             "reason": reason,
