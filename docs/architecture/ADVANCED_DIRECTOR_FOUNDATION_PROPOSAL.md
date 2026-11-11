@@ -697,3 +697,38 @@ This proposal does not authorize:
 **Boundary:** This convention is cross-platform and applies to KDO-owned generated identifiers, but it does not supersede provider constraints, cryptographic identity, canonical authorization, tenant isolation or governance. It must be adopted by the API-token/workload-identity design, Platform Agent Registry, workspace model and engineering vertical without granting additional authority.
 
 **Decision status:** proposed platform standard for review. No existing key, workspace, secret, database record or external integration is renamed, reissued, rotated or modified by this documentation.
+
+
+### 3.14 Workforce persistence and runtime-convergence checkpoint
+
+The source review confirms that V71.18 is a **workspace-scoped hydration mechanism**, not a complete persistence/write-through layer for V71 identity and permission mutations.
+
+**Observed composition:**
+- V71.13 creates the V71 identity, permission, memory, planning, evaluation, budget, takeover, coordination and bounded-autonomy registries inside `workspace_runtime(workspace_id)`.
+- It caches the composed runtime in a process-local `_workspaces` dictionary keyed by workspace ID.
+- When a Supabase-like client is available, V71.18 reads each existing table with an explicit `workspace_id` filter, reconstructs records, verifies fingerprints and restores them into the already-created in-memory registries.
+- V71.18 does not expose durable create/update/delete methods. Its installer records whether a table-capable client is available; workspace-specific hydration happens lazily when V71.13 composes that workspace.
+- V71.10 separately persists autonomous runs and uses database RPCs for lease claim/renew/finalize when a durable client is available. That run lifecycle is not a substitute for persistence of every identity/permission mutation.
+
+**Confirmed gaps and risks requiring resolution:**
+- The V71.1 and V71.2 registry classes mutate in-memory dictionaries. The inspected V71.18 component only hydrates; no canonical atomic write-through adapter for those registry mutations was established in this focused audit.
+- `services/business_onboarding.py` is an existing direct writer to `agent_identities`. It upserts an `identity_fingerprint` literal `onboarding-provisioned`, rather than the SHA-256 fingerprint expected by V71.1/V71.18. A subsequent V71.18 hydration will reject that row as tampered and mark restart safety false. The writer also provisions role-derived agent IDs and does not create matching V71.2 capability permission rows in the inspected path.
+- V71.13's runtime cache is process-local and has no visible synchronization around first-time lookup/construction/store. Multiple processes necessarily have separate registries; concurrent first requests in one process may also race. The staging topology previously observed runs web and worker processes separately, so this must be treated as multiple independent runtime caches, not a single shared registry.
+- The V71.18 hydration tests use a lightweight fake DB/query object and verify reconstruction/fingerprint failure. They do not prove Supabase transactionality, multi-process consistency, uniqueness under concurrency, RLS behavior, or write-through.
+- Migration 088 defines V71.1 identity with composite primary key `(workspace_id, agent_id)` and a workspace/status index. Migration 089 defines V71.2 permissions with a global `permission_id` primary key plus a composite uniqueness constraint. The inspected DDL does not declare a foreign key from permission rows to the matching workspace/agent identity, nor does it define RLS policies. This is a finding about these migration files, not proof that no later external policy exists.
+- Migration 100 adds workspace-oriented lookup indexes only; it does not add mutation/write adapters or transaction guarantees.
+- Base workspace migration 003 explicitly says RLS policies were omitted for the internal API stage. It defines workspace slug as non-null but not unique in that DDL. The workspace API performs an application-level preflight uniqueness query, but its exception is swallowed; this is not a concurrency-safe uniqueness guarantee.
+- Workspace creation currently generates `ws-<random>` IDs, accepts a caller-supplied ID, and derives/sanitizes slugs without enforcing the proposed KDO namespace. Existing default workspace compatibility uses `default`.
+- API-token generation currently emits raw `kny_<random>` credentials and `tok-<random>` record IDs. The table stores only the token hash and scopes it to a workspace by relation; the token ID and token secret have distinct formats and must be migrated separately.
+- Other inspected generators use distinct legacy prefixes, including `onboard_` brand IDs, `plan_` plan IDs, `src_` event-source IDs, and `pub_` publishing job IDs. A separate event-source secret already uses `kdo_wh_`. This confirms that a central catalogue must account for existing typed namespaces, not flatten everything to one untyped prefix.
+
+**Recommended convergence sequence:**
+1. Inventory all writers and readers for V71 identity, permissions and every dependent workforce table, including onboarding and background processes. Classify each mutation and identify the authoritative persistence owner.
+2. Repair or replace the onboarding identity writer so it constructs canonical V71 objects and computes the exact canonical fingerprint; reject placeholder fingerprints. Ensure each declared capability has a separately governed permission record where policy requires it.
+3. Define a single persistence adapter contract with workspace-scoped reads and writes, deterministic serialization, fingerprint recomputation, unique constraints, optimistic concurrency/version checks, idempotency and auditable failure handling. Preserve deny precedence and quarantine ambiguous empty-scope grants.
+4. Review and, if approved separately, add appropriate foreign keys, uniqueness constraints, indexes and RLS policies based on actual service-role/tenant access patterns. Do not infer authorization from workspace IDs or prefixes.
+5. Define process-local cache invalidation/refresh, startup hydration readiness, cross-process consistency and a concurrency-safe runtime factory. Prove behavior across web/worker processes and restart cycles before declaring one canonical runtime.
+6. Keep V71.10 run leases/RPC lifecycle separate but consistent with the same workspace and principal model. Verify RPC transaction/locking semantics and failure handling independently.
+7. Only after persistence and identity convergence are proven should workload principal bindings, KDO namespace enforcement and token issuance consume the canonical registry.
+
+**Gate 0 status:** persistence/runtime convergence remains incomplete. The above are source-level findings from selected files and migrations; no live database schema/RLS inspection, authenticated route probe, write, migration, test run or deployment was performed. No new database or paid infrastructure is proposed.
