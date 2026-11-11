@@ -6,6 +6,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from plugins.base import Plugin
 
 if TYPE_CHECKING:
+    from repositories.social_account_repository import SocialAccountRepository
     from services.linkedIn import LinkedInService
 
 logger = logging.getLogger(__name__)
