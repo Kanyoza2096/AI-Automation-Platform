@@ -1209,3 +1209,75 @@ A direct re-read of `core/service_definitions.py` and `core/service_registry.py`
 **PR review drift:** GitHub compare at this checkpoint reports the proposal branch has 51 commits ahead and 16 commits behind `staging`, with a diverged history and merge base `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`. PR metadata currently reports mergeable true, but the base has advanced since that merge base. Before any future merge, re-review the complete two-document diff against current staging and reconcile the 16 commits of base drift. Do not treat the current mergeable flag as evidence that the proposal is current or safe to merge.
 
 No branch rebase, merge, tests, runtime changes, database changes or deployment occurred in this checkpoint.
+
+### 27.12 Phase 1 shared-state contract — proposed v1 (design checkpoint)
+
+This is a contract proposal, not an implementation or authorization to mutate runtime state.
+
+**A. Separate append-only observations from the derived state projection**
+
+1. An observation is immutable evidence emitted by an identified, registered source.
+2. A platform-state projection is a versioned, derived view over accepted observations and canonical dependency declarations.
+3. A Director decision references the exact projection version and evidence IDs it evaluated. It must not rewrite the underlying source observation.
+4. Subsystem-owned records remain in their existing authoritative stores. The projection stores references and bounded normalized summaries, not duplicate task, job, brand, provider or workforce records.
+
+**B. Proposed observation envelope**
+
+Required fields:
+- `schema_version` — versioned contract identifier.
+- `observation_id` — stable, unique ID; producer retries reuse it.
+- `subject_type` and `subject_id` — canonical service/engine/provider/capability identity.
+- `source_id` and `source_instance_id` — registered producer and process/instance identity.
+- `scope` — platform or workspace; platform-wide observations require an authorized platform-scoped producer.
+- `status` — normalized observation (`healthy`, `degraded`, `unavailable`, `unknown`); `stale` is derived from freshness, not asserted as a source health fact.
+- `observed_at` and `expires_at` — source observation time and freshness deadline.
+- `evidence_refs` — bounded references to the authoritative source evidence.
+- `correlation_id` and `causation_id` — optional trace lineage, not identity or authorization.
+- `details` — bounded, schema-specific, redacted diagnostic fields; never secrets or raw credentials.
+
+**C. Derived readiness rules**
+
+- Registration is presence evidence only; it never implies healthy.
+- A missing expected instance is `unavailable` only when the source owner confirms it should be present in that process mode; otherwise it is `unknown`.
+- A source observation past `expires_at` derives to `stale`, preserving the last reported status as historical evidence.
+- Conflicting fresh observations remain `unknown`/conflicted until source ownership or an explicit reconciliation rule resolves them; last-write-wins is prohibited as a silent conflict policy.
+- Dependency propagation is computed from the existing canonical consumer-to-provider graph. A capability is not ready when a required dependency is unavailable, stale or conflicted.
+- Optional dependencies may degrade a capability only where a capability-specific manifest explicitly declares that policy.
+- Readiness is an admission input, never an authorization grant. Council, DecisionGate, Action Kernel and workspace access controls continue to govern permission.
+
+**D. Versioning, idempotency and write ownership**
+
+- Producers submit typed observations through a single validated write boundary; no engine gets arbitrary table or projection write access.
+- The observation ID is the idempotency key. Replaying the same ID and same payload returns the original receipt; same ID with a different payload is rejected as an identity conflict.
+- Projection updates use a monotonic version and compare-and-swap/expected-version check. Concurrent writers cannot silently overwrite a newer projection.
+- Every accepted or rejected write returns a durable receipt with producer identity, observation ID, accepted/rejected reason and resulting projection version where applicable.
+- A state-change event is emitted only after the authoritative observation/projection transaction commits. The existing event infrastructure is adapted; no second broker is introduced.
+- Consumers track event identity and projection version, tolerate duplicate/out-of-order delivery, and fetch the latest projection when a gap is detected.
+
+**E. Event types (proposed names; catalogue registration still required)**
+
+- `platform.observation.recorded.v1` — immutable accepted observation receipt.
+- `platform.state.changed.v1` — projection version advanced.
+- `platform.capability.readiness.changed.v1` — derived readiness changed for a capability.
+- `platform.state.reconciliation.required.v1` — conflict, missing evidence, version gap or uncertain transition requires reconciliation.
+
+Events carry IDs, subject, scope, projection version, source/evidence references, occurred_at and correlation/causation lineage. They do not carry credentials or grant authority.
+
+**F. Existing components and adapters**
+
+- Meta Engine heartbeat/diagnosis and Health Monitor outputs become source observations with explicit source identity and timestamps.
+- Director health analysis contributes diagnostic observations/inferences with evidence references; it does not become a competing health authority.
+- Existing canonical dependency graph and service definitions remain the topology/ownership inputs; no duplicate registry or graph.
+- Condition Engine receives a platform-condition adapter distinct from its current brand-scoped condition path.
+- Organism vitals becomes a read projection over lifecycle metrics and the versioned platform-state snapshot; subsystem-owned state is not copied into a new database.
+- Capability statistics derive from manifest ownership, dependency closure, fresh observations and capability-specific requirements.
+
+**G. Gate 0 blockers before implementation**
+
+1. Retrieve the live authenticated `GET /api/v1/topology` response, including `registry_registration` and `registry_topology`, from the current staging deployment. The route is protected by `require_auth`; source inspection alone cannot supply live registration skip reasons.
+2. Reconcile all service-definition IDs against process-mode boot owners, live registry instances, Meta registrations and Health Monitor targets.
+3. Confirm deployed schema and existing event persistence/transaction boundaries before selecting the durable observation/outbox storage adapter.
+4. Define service-manifest owner and capability dependency requirements without duplicating `SERVICE_DEFINITIONS` or `CANONICAL_ENGINE_DEPENDENCIES`.
+5. Specify retention, redaction, workspace isolation, platform-scope authorization and reconciliation SLOs.
+
+No migration, runtime implementation, database operation, test execution, deployment or production change is included. Phase 1 implementation remains blocked on the Gate 0 evidence and storage-boundary checks above.
