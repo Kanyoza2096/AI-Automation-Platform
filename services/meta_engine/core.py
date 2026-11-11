@@ -334,11 +334,32 @@ class MetaEngineV7:
                     break
         return reports
 
+    @staticmethod
+    def _engine_observations_for_snapshot(snapshot: SystemSnapshot) -> list[dict[str, Any]]:
+        """Return timestamped supervisor observations without claiming ownership."""
+        observations = []
+        for name, health in sorted(getattr(snapshot, "engines", {}).items()):
+            checked_at = getattr(health, "checked_at", None)
+            if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
+                continue
+            status = getattr(
+                getattr(health, "status", None),
+                "value",
+                getattr(health, "status", "unknown"),
+            )
+            observations.append({
+                "service_id": str(name),
+                "status": str(status or "unknown"),
+                "observed_at": checked_at.isoformat(),
+                "source_version": str(getattr(health, "version", "") or "meta-engine-health-v1"),
+            })
+        return observations
+
     def check_health(self) -> Dict[str, Any]:
         snapshot = self._current_snapshot
         from core.director_signal_contract import director_signal_metrics
         if snapshot is None:
-            return {"status": "starting" if self._running else "stopped", "available": True, "version": self.VERSION, "engine_readiness": self._engine_readiness_report(), "metrics": director_signal_metrics()}
+            return {"status": "starting" if self._running else "stopped", "available": True, "version": self.VERSION, "engine_readiness": self._engine_readiness_report(), "engine_observations": [], "metrics": director_signal_metrics()}
         status = "healthy" if snapshot.overall_status == EngineStatus.NOMINAL else "unknown" if snapshot.overall_status == EngineStatus.UNKNOWN else "degraded"
         engine_states = {
             str(name): str(getattr(getattr(health, "status", None), "value", getattr(health, "status", "unknown")))
@@ -365,6 +386,7 @@ class MetaEngineV7:
             "risk_score": snapshot.risk_score,
             "snapshot_status": getattr(snapshot.overall_status, "value", str(snapshot.overall_status)),
             "engine_states": dict(sorted(engine_states.items())),
+            "engine_observations": self._engine_observations_for_snapshot(snapshot),
             "unknown_engines": unknown_engines,
             "degraded_engines": degraded_engines,
             "offline_engines": offline_engines,
