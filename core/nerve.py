@@ -37,6 +37,7 @@ SPECIES_EVENT_PREFIXES = (
     "engine_status_update",
     "chaos.",
     "system.",
+    "platform.state.",
     "universal.",
     "reliability.",
     "trend.",
