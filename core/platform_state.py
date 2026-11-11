@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Iterable, Mapping
+from typing import Iterable
 
 
 class Readiness(str, Enum):
@@ -72,6 +72,8 @@ class ServiceObservation:
             raise ValueError("service_id, owner and source_version are required")
         if self.observed_at.tzinfo is None:
             raise ValueError("observed_at must be timezone-aware")
+        if not isinstance(self.readiness, Readiness):
+            raise ValueError("readiness must be a Readiness value")
         if any(item.observed_at > self.observed_at for item in self.evidence):
             raise ValueError("evidence cannot be newer than its observation")
 
@@ -188,7 +190,9 @@ def build_platform_state(
                 observed_at, version, evidence = (
                     observation.observed_at, observation.source_version, observation.evidence
                 )
-                if current - observed_at > stale_after:
+                if observed_at > current + timedelta(seconds=30):
+                    readiness, reason = Readiness.UNKNOWN, "observation_from_future"
+                elif current - observed_at > stale_after:
                     readiness, reason = Readiness.STALE, "observation_expired"
                 else:
                     readiness = observation.readiness
