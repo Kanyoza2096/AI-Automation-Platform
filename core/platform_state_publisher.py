@@ -81,9 +81,6 @@ class PlatformStatePublisher:
         """
         if candidate.scope_type != "platform" or candidate.scope_id != "platform":
             raise ValueError("HealthMonitor may publish only platform scope")
-        if getattr(self._event_bus, "supabase", None) is None:
-            raise PlatformStateStoreError("durable_event_transport_unavailable")
-
         for attempt in range(self._max_conflict_retries):
             previous = await self._store.load(scope_type="platform", scope_id="platform")
             if previous and self._state_signature(previous) == self._state_signature(candidate):
@@ -110,6 +107,13 @@ class PlatformStatePublisher:
                 "changed_service_ids": changed_services,
                 "changed_capability_ids": changed_capabilities,
             }
+            if getattr(self._event_bus, "supabase", None) is None:
+                logger.error(
+                    "Platform State revision %s persisted but durable event transport is unavailable; "
+                    "consumers must reconcile from the snapshot store",
+                    next_snapshot.revision,
+                )
+                return next_snapshot
             try:
                 event_id = await self._event_bus.publish(
                     "platform.state.updated",
