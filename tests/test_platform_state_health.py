@@ -93,6 +93,32 @@ def test_wrong_provider_identity_is_ignored():
     assert snapshot.services[0].readiness is Readiness.UNKNOWN
 
 
+def test_meta_engine_exports_timestamped_observations_from_its_cached_snapshot():
+    from services.meta_engine.core import (
+        EngineHealth,
+        EngineStatus,
+        MetaEngineV7,
+        SystemSnapshot,
+    )
+
+    health = EngineHealth(
+        name="director",
+        status=EngineStatus.DEGRADED,
+        version="director-v5.5",
+        checked_at=NOW,
+    )
+    payload = MetaEngineV7._engine_observations_for_snapshot(
+        SystemSnapshot(engines={"director": health})
+    )
+
+    assert payload == [{
+        "service_id": "director",
+        "status": "degraded",
+        "observed_at": NOW.isoformat(),
+        "source_version": "director-v5.5",
+    }]
+
+
 def test_meta_engine_observations_are_advisory_and_do_not_replace_owner_readiness():
     reports = {
         "meta_engine": Report(
