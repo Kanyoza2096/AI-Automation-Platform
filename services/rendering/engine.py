@@ -81,6 +81,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .brand_style import BrandStyleResolver, BrandStyle
 from .layout_comparison import ComparisonLayout
