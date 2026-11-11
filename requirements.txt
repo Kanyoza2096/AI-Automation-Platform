@@ -25,7 +25,5 @@ pycairo>=1.26
 Flask>=3.0
 requests-oauthlib>=2.0
 stripe>=10.0
-google-auth>=2.29
-google-api-python-client>=2.100
 psycopg[binary]>=3.1
 PyYAML>=6.0
