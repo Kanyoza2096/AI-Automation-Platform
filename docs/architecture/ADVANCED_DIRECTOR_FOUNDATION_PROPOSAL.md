@@ -239,6 +239,99 @@ Reuse the existing Phase 9.2 correlation contract and OpenTelemetry integration.
 
 **Boundary:** tracing is observability, not authority. Trace data cannot authorize a tool or alter a governance decision.
 
+### 3.9 Versioned authorization scope catalogue
+
+**Status:** Proposed vocabulary and semantics for review; not active grants or runtime configuration.
+
+**Catalogue version:** kdo-authz-scopes/v1. Every scope definition is immutable once referenced by a signed token or authorization decision. A semantic change requires a new catalogue version and, where meaning or boundary changes, a new scope identifier. Renaming or widening an existing scope in place is prohibited.
+
+**Scope grammar:** <domain>:<resource>:<action> for resource-specific permissions; narrowly defined actor-level scopes may use <actor>:<action>. Scope strings are exact identifiers, not glob patterns. Wildcards (including *, admin, owner, and implicit superuser aliases) are not valid workload grants.
+
+Each catalogue entry must define: scope ID; human-readable purpose; allowed resource types and action verbs; explicit exclusions; allowed actor classes; owning team; maximum risk tier; required workspace/environment constraints; required tool/capability IDs and versions; delegation policy; required policy and governance checks; approval class; audit event; and catalogue version. An authorization request must supply concrete resource IDs and environment/workspace context; a scope alone never implies unrestricted resource access.
+
+#### Initial scope definitions
+
+| Scope | Permitted action and resource boundary | Eligible principal | Owner | Maximum risk / governance |
+|---|---|---|---|---|
+| director:read | Read only approved, redacted platform-state and evidence projections explicitly exposed to Director; no raw secret or unrestricted tenant data | Director | Platform Intelligence | Low; policy-filtered read and audit |
+| director:dispatch | Submit a typed proposal/dispatch envelope to governed admission; cannot invoke handlers, create an approved execution, approve, publish, remediate, mutate registry, or deploy | Director | Platform Intelligence | Medium; schema, ownership, scope and risk validation; Council/DecisionGate as required |
+| platform:state:read | Read explicitly named platform-state projections | Approved platform observers | Platform Core | Low; projection-level authorization |
+| platform:manifest:read | Read service manifest metadata | Approved platform observers | Platform Architecture | Low; sensitive fields filtered |
+| platform:manifest:manage | Propose or perform reviewed manifest lifecycle changes | Designated platform maintainers; machine actors only through governed proposal tools | Platform Architecture | High; reviewed change and audit |
+| platform:events:publish | Publish only allowlisted event types and schema versions, for the registered source identity and workspace | Named event-producing principals, including narrowly scoped bridge identities | Event Platform | Medium; event-type allowlist, schema validation, idempotency and audit |
+| platform:events:consume | Subscribe to named event types/channels and workspace partitions | Registered consumers | Event Platform | Low/medium; per-channel and per-workspace filters |
+| platform:observability:read | Read authorized health, metrics, traces and diagnostic summaries; sensitive payloads remain separately protected | Director, Guardian scanner, approved operators | Reliability | Low; redaction and data-classification filters |
+| platform:operations:operate | Execute explicitly listed operational actions on named non-production resources | Designated operators or approved operational actors | Platform Operations | High; DecisionGate and human approval according to action |
+| workspace:resource:read | Read named resource classes inside the token's bound workspace | Human members and explicitly registered workload actors | Workspace Platform | Low; workspace membership and resource policy |
+| workspace:resource:write | Write named resource classes inside the bound workspace | Explicitly authorized human or workload actors | Workspace Platform | Medium/high; resource policy, audit and approval where consequential |
+| council:deliberate | Read the decision packet and submit deliberation/recommendation records; no execution | Council actors | Governance | Medium; decision record and provenance |
+| council:decide | Record a Council decision only within assigned quorum, policy and decision domain; does not itself execute | Authorized Council actors | Governance | High; quorum, conflict-of-interest, evidence and immutable decision audit |
+| guardian:scan | Read-only repository discovery and security scanning; no write, fix, branch, PR, notification-triggered remediation, or deployment side effect | Guardian scanner | Platform Security | Low/medium; read-only tool allowlist and invocation trace |
+| guardian:remediate | Execute a specifically approved remediation plan against named repositories/resources | Separate Guardian remediation principal | Platform Security | High/critical; Council/DecisionGate and human approval as required |
+| content:generate | Generate content only for explicitly assigned brand/workspace and approved campaign inputs | Content Engine principal | Content Platform | Medium; brand policy and content review |
+| content:publish | Publish approved content to the assigned brand/channel under scheduler policy | Brand Scheduler principal only | Brand Operations | High; schedule, brand authorization, approval and publication audit |
+| engineering:plan | Produce implementation plans and task decomposition within the authorized engineering workspace | Engineering planner/orchestrator | AI Software Engineering | Medium; task policy and workspace boundary |
+| engineering:code:read | Read source and project artifacts in assigned engineering workspace | Named engineering agents/workers | AI Software Engineering | Low; repository/workspace boundary |
+| engineering:code:write | Modify files only in the assigned isolated workspace/branch; no merge or deployment implied | Named engineering specialists/workers | AI Software Engineering | High; plan approval, workspace isolation, tests and review |
+| engineering:execute | Run allowlisted commands/tests in an isolated, resource-bounded workspace | Engineering worker principal | AI Software Engineering | High; command policy, sandbox and execution receipt |
+| engineering:merge | Request or perform a reviewed merge only under repository branch protection and approval policy | Designated human maintainers; automation may submit a merge request, not bypass protection | Engineering Governance | Critical; independent review and required human authorization |
+| engineering:deploy:staging | Request or perform an approved staging deployment for explicitly named service/version | Designated release principal | Release Engineering | High; release gate, tests, authorization and rollback evidence |
+| engineering:deploy:production | Request a production release; execution requires separate explicit human release authorization and platform release controls | Human release authority; machine principal may only prepare/request | Release Engineering | Critical; explicit human authorization, independent checks and rollback plan |
+| identity:registry:read | Read redacted principal, grant and lifecycle metadata | Approved identity administrators/auditors | Identity & Security | Low; secrets never exposed |
+| identity:registry:manage | Propose or perform principal lifecycle, grant, key-binding and scope changes | Human identity administrators only | Identity & Security | Critical; dual control, step-up auth, immutable audit |
+| identity:credential:revoke | Revoke a specific credential/session/key binding | Human identity administrators and narrowly designated emergency security principal | Identity & Security | Critical; immediate effect, reason and immutable audit |
+
+This table is the initial vocabulary, not a claim that every listed scope is already implemented or that every actor should receive one. Before enforcement, each row must be expanded into machine-readable resource/action constraints and reconciled against the route/tool inventory. Domain-specific scopes must be added only with an accountable owner and a concrete consumer.
+
+#### Principal assignment and separation rules
+
+- Director receives exactly director:read and director:dispatch initially. No inherited platform:*, workspace:*, or service-owner authority.
+- Human platform super-admin is a human role backed by separate human authentication and explicit grants. It is never a workload scope and must never be copied into a machine token.
+- Council's deliberation and decision identities are distinct from Director. A Council decision is not an execution credential; admission still checks DecisionGate and Action Kernel.
+- Guardian scan and remediation use separate principals or cryptographically distinct workload identities. A scanner token cannot be upgraded by a mutable registry flag.
+- Content Engine generation and Brand Scheduler publishing remain distinct. Only the scheduler's explicitly bound principal can request publication, subject to brand and approval policy. Director has no content scopes.
+- Engineering planner, specialist, and worker identities are separate. Planning does not imply source-write; source-write does not imply command execution; execution does not imply merge or deployment.
+- KCPG bridge identities receive only platform:events:publish for an explicit event-type allowlist, source identity and workspace boundary. They receive no general platform read/write permission.
+- Socket access is authorized per channel and event direction; a successful socket handshake does not imply permission to subscribe, publish, or invoke every event.
+- No service principal inherits all permissions of its hosting service. Delegation preserves the original subject and cannot add scopes, expand resource sets, change environment, or cross workspace boundaries.
+
+#### Risk tiers and mandatory controls
+
+| Tier | Typical actions | Minimum controls |
+|---|---|---|
+| R0 — Read | Redacted state, manifests, approved metrics, repository scan | Exact scope + resource/workspace/environment filter; audit access |
+| R1 — Bounded proposal | Director dispatch, engineering plan, event publication, Council deliberation | R0 controls + schema validation, idempotency, owner check, policy evaluation and trace |
+| R2 — Reversible operation | Isolated workspace writes, bounded non-production operations | R1 controls + explicit tool allowlist, approved task/plan, sandbox or target constraints, execution receipt and rollback |
+| R3 — Consequential operation | Guardian remediation, content publication, merge, staging release, sensitive platform operation | R2 controls + DecisionGate/Council where applicable, independent review, human approval where policy requires, before/after evidence and rollback |
+| R4 — Critical authority | Production deployment, identity/grant/key changes, credential issuance or broad revocation | Explicit human authorization, step-up authentication, dual control, separation of duties, immutable audit, bounded execution window and verified rollback/recovery |
+
+Risk is assigned to the concrete operation and target, not merely to the actor or tool label. A low-risk actor invoking a high-risk tool remains subject to the tool's higher tier. A Council decision can satisfy a governance prerequisite but cannot bypass human approval or grant a token scope.
+
+#### Authorization evaluation order
+
+Every request must be denied unless all checks succeed, in this order:
+
+1. Verify token signature, allowed algorithm, issuer, audience, time bounds, key ID, session binding/proof-of-possession, nonce/replay policy and revocation state.
+2. Resolve the stable principal subject and confirm actor type, agent ID, lifecycle status, owner and runtime binding against the Agent Registry.
+3. Confirm the exact scope exists in the pinned catalogue version and is assigned to that principal; reject unknown scopes and wildcard syntax.
+4. Intersect signed token scopes with registry maximum grants, explicit tool/capability allowlist, and any narrower per-session grant. Registry state may revoke or narrow; it may not expand the signed token.
+5. Match the requested action to the exact resource type, resource ID, workspace, environment, event type/channel, repository, brand or deployment target constraints. Missing or ambiguous boundaries deny.
+6. Evaluate risk tier, policy, delegation chain, budget, separation-of-duties, Council/DecisionGate and human approval requirements.
+7. Establish the required audit/trace context before any consequential side effect. If mandatory evidence cannot be recorded, fail closed.
+8. Admit through the canonical governed execution path. A scope check alone is never a direct handler-execution shortcut.
+
+**Deny-by-default cases:** unknown or retired scope version; unknown principal/tool/resource; missing owner; suspended actor; expired or revoked token; invalid proof-of-possession; workspace/environment mismatch; missing event/channel allowlist; delegation widening; stale or conflicting approval; policy/governance unavailable; or required audit evidence unavailable.
+
+#### Versioning, migration and revocation
+
+- Tokens carry a pinned scope-catalogue version (scp_ver) and issuer/key identifier (kid). Verifiers reject unsupported versions rather than guessing semantics.
+- New scopes begin unassigned. Grant changes require review by the owning team and Identity & Security; R3/R4 grants require independent approval and documented expiry/review date.
+- Scope narrowing or revocation takes effect through registry/session revocation checks; scope broadening requires re-issuance of a new signed token after approval. A mutable database row cannot broaden an already-issued token.
+- Deprecation uses an overlap window with telemetry proving no active consumers; old scope IDs are denied after the announced cutoff. No silent aliasing to a broader permission.
+- Emergency revocation supports principal, session, token ID, signing key and scope-grant revocation. Revocation events are correlated, reasoned and auditable.
+- Compatibility with is_species is temporary and must be computed from verified identity plus explicit named grants. It must not map to a wildcard or super-admin scope.
+- The catalogue and policy engine must be tested against positive, negative, boundary, replay, delegation, cross-workspace, cross-environment, expired-grant, revoked-key, and governance-unavailable cases before any enforcement rollout.
+
 ## 4. End-to-end operating model
 
 The five strategic capabilities operate with a cross-cutting identity, agent-governance, and observability plane:
