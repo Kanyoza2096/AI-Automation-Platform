@@ -9,7 +9,7 @@ def _context(now=None):
         "schema_version": "kdo.director.strategic-context.v1",
         "generated_at": now.isoformat(),
         "health_summary": {"status": "nominal"},
-        "evidence": {"facts": [], "inferences": [], "unknowns": [], "conflicts": []},
+        "evidence": {"facts": [{"observer": "monitor_a"}], "inferences": [], "unknowns": [], "conflicts": []},
         "objectives": {"items": []},
         "capabilities": {
             "items": [{
@@ -46,7 +46,7 @@ def _plan(context, *, now=None):
             "acceptance_criteria": ["all tests pass"],
             "deliverables": ["test report"],
             "criterion_refs": ["criterion:0"],
-            "evidence_refs": ["fact:0"],
+            "evidence_refs": ["fact:monitor_a"],
         }],
         "source_context_fingerprint": _fingerprint(context),
         "authority": "none",
@@ -150,3 +150,35 @@ def test_future_context_timestamp_fails_closed():
 
     assert report["verdict"] == "rejected"
     assert "context_timestamp_in_future" in report["errors"]
+
+
+
+def test_platform_state_change_invalidates_context_binding():
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    plan = _plan(context)
+    context["platform_state"]["capabilities"][0]["readiness"] = "degraded"
+
+    report = verify_strategic_plan(plan, context, now=now)
+
+    assert report["verdict"] == "replan_required"
+    assert "plan_context_fingerprint_mismatch" in report["warnings"]
+
+
+def test_unknown_evidence_reference_rejects_plan():
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    plan = _plan(context)
+    plan["steps"][0]["evidence_refs"] = ["fact:not_in_context"]
+
+    report = verify_strategic_plan(plan, context, now=now)
+
+    assert report["verdict"] == "rejected"
+    assert "evidence_reference_unknown:step_1" in report["errors"]
+
+
+def test_non_mapping_inputs_fail_closed():
+    report = verify_strategic_plan(None, None)
+
+    assert report["verdict"] == "rejected"
+    assert report["execution_permitted"] is False
