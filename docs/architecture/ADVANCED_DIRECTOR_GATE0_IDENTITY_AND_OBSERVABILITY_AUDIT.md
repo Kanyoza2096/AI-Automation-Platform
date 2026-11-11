@@ -849,3 +849,32 @@ The inventory is based on the inspected registry source and method bodies. It is
 **Finding:** the architecture needs a shared durable mutation contract plus specialized run-lease and budget-reservation transactions. A single generic CRUD wrapper would be unsafe because it could bypass V71.10 fencing or V71.21 atomic accounting.
 
 **Status:** source-level mutation inventory expanded; caller/writer trace and live database verification remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, migration, test execution, live database operation, credential change, deployment or production action occurred.
+
+
+## 21. Durable execution orchestration trace and alternate-path finding
+
+### Observed runtime wiring
+
+- V71.13 composes V71.1–V71.9 registries plus V71.10 durable runtime and V71.11 observability control. It configures V71.9 with a DB client, configures V71.10 with `allow_in_memory=False`, then invokes V71.18 hydration before returning the workspace runtime.
+- V71.17 `execute_run` obtains the durable runtime and claims a run lease before delegating to `execute_claimed`.
+- V71.17 `execute_claimed` reloads the durable snapshot, rejects reconciliation-required or non-RUNNING runs, validates the workflow manifest and objective binding, derives the autonomy envelope, resolves the workflow and calls V71.10 `execute_claimed` with `approved=False`.
+- V71.17's blocked path attempts durable finalization as BLOCKED; stale-run reconciliation delegates to V71.10.
+
+### Critical alternate-path discrepancy
+
+V71.9 also exposes `BoundedAutonomousOperationsRegistry.execute`. The inspected method performs local admission, changes the in-memory run to RUNNING, optionally calls the V71.21 budget reservation facade, and invokes `run_catalog_workflow` directly. It does not visibly claim a V71.10 lease or persist run transitions through V71.10. On exceptions after reservation it attempts to finalize the reservation as committed, then changes the in-memory run to FAILED. This may be a legacy or test path; a complete caller/reachability inventory is required before classifying it as production-reachable.
+
+If reachable from production, this alternate method could bypass durable run fencing and recovery even though the canonical V71.17 path is lease-gated. Do not assume V71.13's construction of V71.10 means every V71.9 execution call uses it.
+
+### Required caller trace and containment
+
+1. Find every import, instantiation and invocation of V71.9 `execute`, V71.17 `execute_run`/`execute_claimed`, and V71.10 `execute_claimed` across routes, schedulers, workers, tests and compatibility wrappers.
+2. Identify production route and background-job reachability for each path, including feature flags and service-mode conditions.
+3. Establish V71.17 as the sole production workforce execution entry point; if V71.9 `execute` remains for tests, make its non-production/test-only status explicit and enforce it.
+4. Verify run transitions are persisted with workspace, version and lease fencing before/after workflow entry, and external side-effect receipts/outbox records are reconciled before retry.
+5. Verify budget reservation outcomes against actual workflow outcome. A failed Python call does not prove no external side effect occurred.
+6. Add negative tests proving production composition cannot invoke the alternate path and no self-approval capability exists.
+
+**Finding:** a durable governed coordinator exists, but the source also exposes an alternate local execution method. Production reachability is unresolved; this is a high-priority Gate 0 blocker before implementation or authority migration.
+
+**Status:** V71.13 → V71.17 → V71.10 canonical path traced; V71.9 alternate path identified; full caller inventory and live reachability remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No code, test, database, credential or deployment operation was performed.
