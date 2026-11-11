@@ -151,3 +151,162 @@ Ensure scan mode cannot invoke auto-fix even when the global Guardian auto-fix s
 - Production remains protected. Staging runtime verification is a separate later gate.
 - The AI Software Engineering Vertical and its planner, orchestrator, worker runtime, Code Intelligence, and governed execution remain protected.
 - Brand schedulers remain the sole owners of content generation and publishing.
+
+
+## 7. Expanded authority-consumer inventory (staging source inspection)
+
+The following is a **confirmed, focused consumer map** from direct reads of the staging branch. It is not a claim that every dynamic, indirect, generated, or plugin-local consumer has been found. The names below are grouped by the authority contract they appear to use.
+
+### 7.1 Authentication and request-context propagation
+
+| Source | Observed responsibility / legacy coupling |
+|---|---|
+| `core/species_auth.py` | Master and Python service tokens become `AuthIdentity(is_species=True)`; broad permission/workspace bypass |
+| `core/api_auth.py` | Serializes `is_species` into compatibility identity data |
+| `core/security/deps.py` | Converts species identity into `RequestContext.species_privileges`; exposes `require_species_privileges` |
+| `core/request_context.py` | Carries `species_privileges`; broad permission, platform-grant, principal and workspace-hint behavior |
+| `middleware/request_context_middleware.py` | Platform workspace binding and X-Workspace-ID behavior branch on `identity.is_species` |
+| `core/workspace_context.py` | Trusted workspace context and platform workspace selection branch on `is_species` |
+| `core/tenant_guard.py` | Optional cross-workspace allowance when `allow_species` is true |
+| `core/auth.py` | Propagates request-context privilege into workspace context |
+| `core/pipeline.py` | Platform pipeline permission and action behavior branch on `species_privileges` |
+
+### 7.2 Platform administration, observability, and data surfaces
+
+| Source | Observed responsibility / legacy coupling |
+|---|---|
+| `services/director/api.py` | Shared master/service bearer fallback; Director platform mutation/workspace checks use species privilege |
+| `api/routers/users.py` | Owner-role assignment/update permits platform species privilege or workspace owner |
+| `api/routers/workspaces.py` | Workspace administration/listing branches on platform privilege |
+| `api/routers/posts.py` | Platform-wide post query path is gated by `species_privileges` |
+| `api/routers/monitoring.py` | Exposes species privilege in platform monitoring context and response data |
+| `api/slo_routes.py` | Platform SLO view requires species operator |
+| `api/report_routes.py` | Platform report aggregation requires species operator |
+| `api/outbox_routes.py` | Platform outbox inspection/operations require species operator |
+| `api/e2e_routes.py` | Diagnostic route requires species operator and is disabled in production |
+| `api/timeline_routes.py` | Workspace mismatch checks allow platform species identity |
+| `api/metabolism_routes.py` | Platform plan override requires species operator |
+| `api/organism_body_routes.py` | Platform organism inspection/mutation paths branch on species identity |
+| `api/observability_routes.py` | Allows platform-level metrics without workspace only for species identity |
+| `api/content_intelligence_automation.py` | Reads request-context platform privilege |
+| `routes/autonomy_routes.py` | Elevated control-plane path treats species identity as elevated |
+| `routes/backend_contract_routes.py` | Cross-workspace contract lookup bypasses mismatch for species identity |
+| `routes/species_routes.py` | Platform workspace listing depends on `require_species_privileges` |
+| `routes/code_intel_routes.py` | Code Intelligence API is mounted behind `require_species_privileges` |
+| `routes/circulation_routes.py` | Circulation control plane uses `require_species_privileges` |
+| `routes/event_api.py` | Event control plane uses `require_species_privileges` |
+| `routes/cp_gap_routes.py` | Control-plane gap routes use `require_species_privileges` |
+| `routes/rule_routes.py` | Rule control plane uses `require_species_privileges` |
+| `routes/meta_routes.py` | Meta control plane uses `require_species_privileges` |
+| `services/command_executor.py` | Command execution checks platform privilege when no workspace is bound |
+| `services/intelligence_authorization_replay.py` | Records `species_privileges` as part of authorization replay context |
+
+**Important migration implication:** not all these routes should receive Director scopes. The migration must define purpose-specific permissions for platform administration, observability, event operations, Code Intelligence, and workspace management. A Director workload credential must not inherit these unrelated platform-operator powers.
+
+### 7.3 Other shared-secret service surfaces to reconcile
+
+Direct source inspection also found service/master-token checks outside the central SpeciesAuth path:
+
+- `council/routes.py` compares the master token directly for Council operations.
+- `routes/council_routes.py` accepts configured master and Python service tokens in its local authentication helper.
+- `core/event_api.py` has a direct master-token authentication path.
+- `core/socket_server.py` maps configured master/Python service credentials to platform-level socket identity.
+- `products/shared/auth.py` is a shared master-token decorator.
+- `services/director/api.py` independently compares master and Python service tokens.
+- `core/species_auth.py` remains the canonical validator for these shared platform credentials.
+
+These paths need a credential-consumer inventory and explicit service-principal scopes before any shared secret is rotated or retired. This focused list is not yet exhaustive.
+
+### 7.4 Tests and security contracts that must migrate together
+
+The source tree includes existing regression suites for:
+- `tests/test_director_auth_boundary.py`
+- `tests/test_authenticated_actor_context.py`
+- `tests/test_service_auth_only_workspace_bypass.py`
+- `tests/test_species_scale_workspace_hydration.py`
+- `tests/test_v83_identity_access_hardening.py`
+- `tests/test_v84_authorization_hardening.py`
+- `tests/test_v71_1_agent_identity.py`
+- `tests/test_v71_2_agent_capability_permissions.py`
+- `tests/test_advanced_agent_control_plane.py`
+- `tests/test_c11_5_runtime_authority_convergence.py`
+- `tests/security/test_control_plane_authorization.py`
+- `tests/security/test_global_surface_authorization.py`
+- `tests/security/test_platform_authority.py`
+- `tests/security/test_plugin_isolation.py`
+- `tests/tenancy/test_request_context.py`
+- `tests/tenancy/test_pipeline.py`
+
+These tests must be reviewed for assumptions about platform credentials, tenant isolation, owner roles, and engineering service access. Existing tests are not proof that the new signed-token contract is implemented.
+
+## 8. Autonomous actor and service inventory — initial discovery
+
+The platform service topology and runtime registries provide service-level ownership and health discovery, but they are not by themselves an actor-level security registry. The following is the initial actor map to validate with runtime owners:
+
+| Actor / actor family | Source evidence | Proposed owner boundary | Initial scope direction |
+|---|---|---|---|
+| Director | `services/director/core.py`, `services/director/api.py`, `services/director_bindings.py` | Platform Intelligence / Director | `director:read`, `director:dispatch` only; dispatch to governed admission |
+| Council orchestrator and decision actors | `council/orchestration/council_orchestrator.py`, `council/engine.py`, `council/routes.py` | Governance / Council | Deliberation and decision-evidence scopes; no inherited Director dispatch or publishing |
+| Content Engine | `services/content_engine.py` | Content Platform | Content generation only through brand-scoped workflows |
+| Brand scheduler actors | `scheduler/brand_scheduler.py`, `scheduler/post_scheduler.py` | Brand Operations | Brand/workspace-scoped schedule and governed publishing capabilities |
+| Guardian scanner / remediation | `services/guardian_service.py`, `guardian/engine.py`, `guardian/auto_fix.py` | Platform Security | Separate read-only scan and separately governed remediation identities |
+| Engineering planner / orchestrator | `services/kdo_engineering_agent_team.py`, `services/kdo_engineering_gateway_workflow.py`, `services/kdo_engineering_scheduler.py` | AI Software Engineering | Project/workspace/task-scoped planning and assignment; no implicit release authority |
+| Engineering specialist agents | `services/kdo_engineering_agent_registry.py`, `services/kdo_engineering_agent_team.py` | AI Software Engineering | Role-specific tools and task-scoped grants |
+| Engineering worker/runtime identities | `services/kdo_engineering_worker_authorization.py`, engineering worker runtime and task execution services | AI Software Engineering / Runtime Operations | Disposable workspace, task, lease and environment scoped; no host or production credentials |
+| Meta Engine / autonomous loop | `services/meta_engine/core.py`, `core/autonomous_loop.py` | Platform Operations | Health/observation and governed signal publication; no content publishing authority |
+| Event bus / event publishers | `core/event_bus.py`, `core/nerve.py` | Platform Infrastructure plus publisher owner | Event-type and source-scoped publish/subscribe permissions |
+
+**Caveat:** this is a source-derived candidate inventory, not proof that every listed component currently runs as a separate autonomous principal. Some are services or orchestration components rather than independently credentialed agents. The final registry must distinguish `service`, `agent`, `scheduler`, `worker`, and `human` principals and must be confirmed against runtime deployment configuration.
+
+### Registry model recommendation
+
+Keep three related but distinct records:
+1. **Service manifest:** software component, deployment/runtime, team owner, interfaces and health contract.
+2. **Agent principal:** autonomous actor identity, owner, lifecycle, allowed environments and identity issuer binding.
+3. **Capability grant:** exact tool/action, scope, risk class, expiry/version, approval policy and revocation state.
+
+Do not infer an agent's authority from the service that hosts it. Do not register every library class as an autonomous actor. Only principals that can initiate a decision, call a tool, dispatch work, or execute an autonomous workflow need an agent-principal entry.
+
+## 9. Observability and tracing inventory
+
+### Confirmed existing infrastructure
+
+- `core/event_bus.py` uses an OpenTelemetry span around `eventbus.dispatch` when tracing is installed.
+- The same event bus carries correlation IDs and trace IDs in event metadata and tracks in-process correlation chains.
+- `core/nerve.py` propagates correlation IDs and enforces event/workspace scope conventions.
+- Director model, API, core, and utility modules initialize OpenTelemetry tracers.
+
+### Remaining evidence gap
+
+A focused source search found no `start_as_current_span` call in the Director tool/capability invocation path. The event bus dispatch span does not automatically capture:
+- which Director capability/tool was invoked;
+- the validated and redacted arguments;
+- the actor and effective scopes;
+- the registry and governance authorization result;
+- the actual handler result or exception;
+- retry and timeout details.
+
+The absence of this call pattern in the inspected files is not proof that no lower-level instrumentation exists elsewhere. Before implementation, inspect all capability dispatch entry points and the installed exporter/collector configuration. Do not claim traces are end-to-end until a real staging run can be followed across Director → tool handler → downstream service.
+
+## 10. Gate 0 completion status and next evidence required
+
+**Status: PARTIALLY COMPLETE — source-level discovery only.**
+
+Completed in this pass:
+- Directly inspected canonical authentication and request-context modules.
+- Confirmed multiple platform route families depend on the legacy platform privilege boolean/dependency.
+- Identified several direct shared master/service token consumers outside canonical authentication.
+- Mapped an initial set of autonomous actor/service families.
+- Confirmed event-bus tracing and correlation infrastructure exists, while Director tool invocation tracing remains unproven.
+- Identified regression suites that must be retained and extended.
+
+Still required before Gate 0 can be marked complete:
+1. Search all tracked source and configuration on the exact staging commit for `is_species`, `species_privileges`, master/Python service token comparisons, and platform-scope bypasses; classify every match as runtime, test, migration, documentation, or historical artifact.
+2. Inspect all route dependencies and nested helper call paths for indirect authorization bypasses.
+3. Enumerate every autonomous runtime principal from actual Render service configuration, scheduled jobs, queue workers, and environment bindings; reconcile against the code-derived candidate list.
+4. Inspect all Director capability dispatch paths, handler wrappers, and downstream calls; prove where OpenTelemetry spans are created, exported, and retained.
+5. Validate Guardian scan/remediation side effects with configuration variants, without running remediation against real repositories.
+6. Produce a signed-off migration matrix mapping each legacy platform privilege use to a named new scope or human role, including workspace isolation behavior.
+7. Define test cases and rollback sequencing before any credential cutover.
+
+**No runtime change, migration, secret rotation, database change, staging deployment, or production operation is authorized by this audit.**
