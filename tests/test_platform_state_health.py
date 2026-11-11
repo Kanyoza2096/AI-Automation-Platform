@@ -40,6 +40,7 @@ def test_maps_owner_named_health_reports_and_preserves_evidence():
         reports,
         now=NOW,
         dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
     )
     service = snapshot.services[0]
     assert service.readiness is Readiness.HEALTHY
@@ -54,6 +55,7 @@ def test_missing_health_report_remains_unknown():
         {},
         now=NOW,
         dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
     )
     assert snapshot.services[0].readiness is Readiness.UNKNOWN
     assert snapshot.services[0].reason == "no_owner_observation"
@@ -64,6 +66,7 @@ def test_unhealthy_health_report_maps_to_unavailable():
         {"database": Report("database", "unhealthy")},
         now=NOW,
         dependencies={"database": ()},
+        service_ownership={"database": ("database", False)},
     )
     assert snapshot.services[0].readiness is Readiness.UNAVAILABLE
 
@@ -74,6 +77,7 @@ def test_stale_health_report_is_not_healthy():
         now=NOW,
         stale_after=timedelta(minutes=5),
         dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
     )
     assert snapshot.services[0].readiness is Readiness.STALE
 
@@ -93,6 +97,7 @@ def test_registry_reader_uses_cache_without_invoking_health_probes():
         registry=registry,
         now=NOW,
         dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
     )
     services = {item.service_id: item for item in snapshot.services}
     assert services["director"].readiness is Readiness.HEALTHY
@@ -111,6 +116,7 @@ def test_infrastructure_probe_is_attributed_to_health_monitor_owner():
             "supabase": (),
             "gemini": (),
         },
+        service_ownership={"health_monitor": ("health_monitor", False)},
     )
     services = {item.service_id: item for item in snapshot.services}
     assert services["redis"].owner == "health_monitor"
