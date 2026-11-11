@@ -806,11 +806,6 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             action=partial(_boot_content_engine, container),
         ))
         steps.append(BootStep(
-            name="TrendPublishBridge",
-            phase=BootPhase.BUSINESS,
-            action=partial(_boot_trend_publish_bridge, container),
-        ))
-        steps.append(BootStep(
             name="AutonomousContent",
             phase=BootPhase.BUSINESS,
             action=partial(_boot_autonomous_content, container),
@@ -1450,19 +1445,6 @@ async def _boot_meta_health_handlers(container: ServiceContainer) -> None:
         )
         raise
 
-
-async def _boot_trend_publish_bridge(container: ServiceContainer) -> None:
-    from core.unified_bus import UnifiedEventBus
-    from services.trend_publish_bridge import wire_trend_publish_bridge
-
-    bus = container.try_resolve(UnifiedEventBus)
-    if not bus:
-        raise RuntimeError("UnifiedEventBus unavailable for trend publish bridge")
-
-    if not await wire_trend_publish_bridge(bus):
-        raise RuntimeError("Failed to wire trend.publish.requested")
-
-    logger.info("Trend publish bridge wired")
 
 
 async def _boot_meta_engine(container: ServiceContainer) -> None:
