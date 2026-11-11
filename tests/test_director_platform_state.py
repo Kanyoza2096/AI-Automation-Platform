@@ -100,3 +100,25 @@ def test_platform_state_route_requires_authentication(monkeypatch):
     response = client.get("/platform-state")
 
     assert response.status_code == 401
+
+
+
+def test_platform_state_route_denies_unscoped_admin_without_species_privilege(monkeypatch):
+    monkeypatch.setenv("MASTER_API_TOKEN", "master-test-token")
+    app = create_app(Director(supabase_client=None))
+
+    @app.middleware("http")
+    async def non_platform_admin_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None,
+            role="admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/platform-state",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+    assert response.status_code == 403
