@@ -35,7 +35,7 @@ async def generate_stream_token(
     
     Token expires in 30 seconds — enough time to establish the EventSource connection.
     """
-    token = _secrets_mod.token_urlsafe(32)
+    token = 'KDO_STREAM_' + _secrets_mod.token_urlsafe(32)
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=STREAM_TOKEN_TTL_SECONDS)
 
     with _stream_tokens_lock:
