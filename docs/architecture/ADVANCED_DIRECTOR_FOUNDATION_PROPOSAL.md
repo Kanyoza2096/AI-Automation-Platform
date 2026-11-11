@@ -498,6 +498,62 @@ This is a candidate family list, not proof every component is an independent pri
 - Registry outage or unknown actor fails closed for activation and consequential actions; no fallback to master/Python shared credentials or is_species.
 - All lifecycle and grant changes are independently auditable; an agent cannot approve or widen its own authority.
 
+### 3.12 Existing identity infrastructure convergence and canonical ownership
+
+**Status:** Source-derived convergence assessment from the inspected staging branch. This is an architecture recommendation, not an implementation decision or claim that every runtime consumer has been inventoried.
+
+The target is one coherent workload-principal authority model that composes existing KDO components. It is not a new parallel identity stack. Existing components retain their distinct responsibilities unless a later, reviewed migration proves a specific gap.
+
+#### Existing component responsibility and reuse decision
+
+| Existing component | What the inspected implementation provides | Reuse decision and boundary |
+|---|---|---|
+| V71.1 Agent Identity Registry | Workspace-scoped agent identity, declared capabilities, lifecycle transitions, deterministic SHA-256 record fingerprint and integrity checks; identity explicitly grants no authorization or execution | Reuse as the agent/workforce identity domain model and lifecycle foundation. Extend through a reviewed adapter/schema for platform principal subject, accountable owner and runtime bindings; do not mistake its fingerprint for a signature or credential |
+| V71.2 Agent Capability Permission Registry | Workspace-scoped allow/deny capability grants, exact declared-capability check, explicit-deny precedence, fingerprint validation and scope matching | Reuse as a capability-policy input and compatibility source. Do not equate capability names or legacy scope dictionaries with signed authorization scopes; translate only through an explicit reviewed mapping |
+| V71.3–V71.11 workforce registries | Memory, planning, evaluation, budgets, takeover, coordination, bounded operations, runtime and observability built around V71.1/V71.2 | Preserve these registries and their contracts. Agent identity convergence must not replace workforce planning, evaluation, budget, takeover, coordination or execution governance |
+| V71.13 Production Runtime Convergence | Composes one workspace runtime and creates V71.1/V71.2 registries, then attaches workforce runtime/control; production path fails closed if durable hydration cannot be established | Reuse as the composition boundary. Avoid a second global runtime or independent registry initialization path |
+| V71.18 Workforce Control Plane Persistence | Rehydrates agent identities, capability permissions and workforce state from workspace-filtered Supabase tables, verifies record fingerprints, and reports restart safety | Reuse the existing durable workforce persistence and hydration path. Preserve fail-closed restart behavior. Verify write-through, transactionality, uniqueness, schema constraints, migrations and concurrent update semantics before treating it as a fully governed principal registry |
+| Advanced Agent Control Plane | Read-only composition of identity, permissions, planning, evaluation, budgets, takeover, coordination and runtime into a fingerprinted snapshot; authority and execution flags remain false | Reuse as the read-only operator/reasoning projection. It is not an identity issuer, grant authority, token verifier or execution control |
+| V83 Identity Access Hardening | Tenant/workspace-bound principal and session records, expiry/state validation and integrity fingerprints; SQLite implementation defaults to :memory: unless a path is supplied | Reuse its identity/session assurance concepts and tests where applicable. Do not create a second principal inventory. Its default storage is process-local memory; production persistence and shared verifier behavior require explicit configuration/evidence |
+| V84 Canonical Authorization Hardening | Validates a V83 session, asks the existing action pipeline for a decision with enqueue disabled and no domain executor, and persists decision evidence; SQLite also defaults to :memory: | Reuse as decision-evidence/policy integration only where its caller and durable store are proven. It is not an authorization-token issuer, workload-scope registry, Action Kernel executor or replacement for canonical API authentication |
+| Engineering Agent Registry | Static specialist role catalogue, capability-to-role selection and host-installed adapter registry; it reports unavailable roles and explicitly sets execution authorization false | Preserve as the AI Software Engineering role/adapter catalogue. Link role IDs to principal/tool bindings only through an explicit mapping. Never collapse specialist role metadata into workload identity or remove the engineering vertical |
+
+#### Source-derived findings and limitations
+
+1. **V71 is the strongest existing workforce foundation.** V71.1 and V71.2 intentionally separate identity from capability permission and both explicitly disclaim business authorization/execution authority. V71.13 composes these registries per workspace; V71.18 rehydrates them from existing Supabase tables (agent_identities, agent_capability_permissions, and related workforce tables) and verifies fingerprints before restart-safe recovery.
+2. **The V71 registry classes are in-memory objects at runtime, with existing durable table hydration around them.** The inspected V71.13/V71.18 path is the composition and restore boundary. Do not infer from hydration alone that every mutation has atomic write-through, concurrency control, complete audit history or platform-wide uniqueness; verify the write adapters, schema migrations, indexes, RLS and transaction behavior in the full Gate 0 inventory.
+3. **V71 identity is workspace-scoped, not a platform-wide workload principal directory.** The inspected identity record has agent ID, workspace ID, name, purpose, class, version, status, declared capabilities and metadata. It does not define an issuer subject, accountable human owner, service manifest/runtime attestation, allowed environment set, token key binding or platform-wide principal uniqueness.
+4. **Fingerprints are integrity checks, not authentication.** V71 and V83/V84 use deterministic SHA-256 fingerprints. A fingerprint does not prove possession of a private key, trusted issuer identity or authenticity against an attacker able to alter both record and digest.
+5. **V71.2 legacy scope semantics require careful translation.** Its scope matcher treats an empty required scope as global within that permission, still bounded by identity and governance. This must not be translated to a wildcard or unrestricted signed token claim. Migration must classify empty-scope grants, add explicit resource/workspace/environment constraints, and fail closed on ambiguous mappings.
+6. **V83/V84 are complementary, not a replacement for V71.** They provide a separate tenant/workspace principal/session assurance model and decision-evidence path. Their default SQLite stores are :memory:. Tests demonstrate file-backed SQLite persistence, but that does not establish a shared production store, deployment wiring, or integration with workload tokens.
+7. **V84 is decision-only in the inspected path.** It calls the action pipeline with enqueue disabled and no domain executor, then stores a decision record. It does not issue workload credentials or execute the action.
+8. **The engineering Agent Registry is not an identity registry.** It catalogs specialist roles and optional installed adapters. It is useful as role metadata and execution readiness input, but not as the authoritative identity, ownership or permission record.
+9. **The Advanced Agent Control Plane is an aggregation/read model.** It deliberately returns no granted authority or execution request. It can be reused for operator visibility but must not become an authorization shortcut.
+10. **The inspected V71.13 composition creates a new in-memory V71 identity/permission object per workspace runtime, then hydrates existing durable records.** Runtime convergence should preserve one controlled construction path and prevent competing instances from diverging.
+
+#### Recommended target ownership model
+
+- **Principal identity and lifecycle:** extend/reconcile V71.1 as the canonical workforce-agent identity domain, with a thin platform-principal binding for issuer sub, actor type, accountable owner, service manifest, runtime binding and environment. If non-workforce service/scheduler actors cannot be represented safely without contaminating V71's workspace semantics, create a narrowly scoped platform-principal adapter that references V71 identities rather than replacing them.
+- **Capability eligibility:** retain V71.2 for declared workforce capabilities and legacy allow/deny decisions. Add a separately versioned translation/evaluation boundary from those capability grants to the proposed authorization scope catalogue. No automatic name-based mapping and no implicit scope expansion.
+- **Workload credential issuance and verification:** new, isolated issuer/verifier adapters only after trust, key custody, proof-of-possession and Render topology decisions are approved. These adapters consume the canonical identity and policy records; they do not become another registry.
+- **Human identity and session assurance:** preserve the existing canonical human authentication/session path. Reuse V83 concepts or services only after confirming production wiring, durable storage, and correct distinction between human and workload principal types. Never issue workload tokens to human super-admin identities.
+- **Authorization decisions and consequential governance:** retain canonical authorization/policy pipeline, Council, DecisionGate, workforce admission and Action Kernel. V84 may provide decision evidence where integrated; it must not bypass or duplicate those boundaries.
+- **Engineering roles and adapters:** keep the Engineering Agent Registry and role prompt contracts intact. Map specialist role IDs to registered workload principals and exact tools at the orchestration boundary; role selection alone never grants repository, shell, workspace or deployment access.
+- **Operator visibility:** retain Advanced Agent Control Plane as a read-only projection over the existing workforce control plane, enriched with principal and token status only through safe, redacted references.
+
+#### Convergence rules
+
+1. One canonical identity record per workload principal, with stable issuer subject mapping and accountable owner; do not create duplicate records for each runtime replica.
+2. Existing V71 agent IDs and workspace ownership remain stable during migration. Any platform-level principal binding is additive and explicit.
+3. Existing V71 tables and persistence remain the first reuse candidate. No new Supabase project, paid database, or duplicate registry store is assumed.
+4. Existing service manifests remain authoritative for service ownership; they are referenced by principal runtime bindings, not copied into agent records.
+5. Capability permissions, signed authorization scopes, tool bindings and governance approvals remain separate typed layers. No one layer silently grants the next.
+6. Registry state may narrow/revoke signed authority; only a reviewed issuer can mint a new token with broadened authority.
+7. Human identities, workload principals, specialist roles, runtime services and installed adapters are distinct entity types with explicit relationships.
+8. Migration is incremental: shadow-map first, compare old/new decisions, migrate one actor family and surface at a time, then remove legacy bypasses only after evidence and rollback are reviewed.
+9. Preserve V71 persistence and restart-safety tests, V83/V84 tenant/session and tamper tests, Advanced Agent Control Plane read-only tests, and all AI Software Engineering vertical tests.
+10. No code implementation, schema migration, token issuance, permission activation or deployment is authorized by this architecture assessment.
+
 ## 4. End-to-end operating model
 
 The five strategic capabilities operate with a cross-cutting identity, agent-governance, and observability plane:
