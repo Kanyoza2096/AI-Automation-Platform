@@ -924,3 +924,24 @@ This is a source-level defect candidate with potentially consequential replay se
 - Verify provider-specific idempotency/reconciliation support. Exactly-once external side effects are not guaranteed by KDO's database ledger alone.
 
 **Status:** source-level call-chain and retry-contract issue identified. No code/tests/migrations/database/credentials/deployments changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 24. Business Automation stale-reservation reclaim is not side-effect reconciliation
+
+### Confirmed source behavior
+
+`BusinessAutomationEngine._execute_rule` calls `_reserve_execution` before invoking the registered action and calls `_persist_execution` only after the action returns or raises. `_reserve_execution` treats a returned `started` row with `_reservation_acquired: true` as permission to execute. Migrations 039 and 063 both reset a `started` row older than 15 minutes: increment attempt, refresh timestamps, clear error and restore `_reservation_acquired: true`. This converts elapsed age into permission to re-enter the action.
+
+A process may crash after the provider accepted an external side effect but before the business automation row is finalized. In that case, the row remains `started`; after 15 minutes the reservation RPC can reacquire it and `_execute_rule` invokes the registered action again. Age alone cannot prove that no side effect occurred.
+
+### Downstream protection and limits
+
+The inspected CRM, WhatsApp, customer-communication and operator-notification adapters pass the stable Business Automation idempotency key into Action Kernel. The CRM handler also emits a follow-on lifecycle event after the CRM action succeeds; that secondary event publication is not itself shown to have a durable idempotency fence tied to the original action receipt. `sales_orchestrate` receives the same key, but its complete nested action graph remains unaudited. The provider execution ledger is a second protection layer, not a reason to mark the parent reservation safe to replay. Its failed-terminal replay inconsistency is recorded in section 23.
+
+### Required recovery invariant
+
+A stale `started` business automation reservation must become `uncertain` / reconciliation-required by default, not automatically executable. A governed reconciler must inspect the Action Kernel intent and authoritative provider receipt under the same stable key. Retry is allowed only after authoritative evidence proves no external side effect was accepted, using an explicit atomic retry/attempt transition with lineage. Do not mint a fresh key to bypass uncertainty. Test crashes before Action Kernel submission, after intent persistence, after provider acceptance, after receipt persistence, and before parent-row finalization.
+
+`run_due` claims due rules, executes with a deterministic scheduled event ID, and then marks the due rule complete. The interaction between due-rule claiming/rescheduling and execution reservation needs separate crash/re-entry tests; a due-rule claim is not an execution receipt.
+
+**Evidence boundary:** this is a source/migration-path finding. Live staging/production migration state and rows were not queried. No database mutation, recovery, provider call, tests or deployment occurred. Gate 0 remains **PARTIALLY COMPLETE**.
