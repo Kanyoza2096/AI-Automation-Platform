@@ -196,7 +196,11 @@ def verify_strategic_plan(
     unknown_platform_readiness: list[str] = []
     valid_evidence_ids = _evidence_ids(context)
     for step in steps:
+        step_id = str(step.get("step_id", ""))[:100]
         name = step.get("capability")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"capability_name_invalid:{step_id}")
+            continue
         capability = capabilities.get(name)
         if capability is None:
             errors.append(f"unknown_capability:{name}")
@@ -205,6 +209,10 @@ def verify_strategic_plan(
             errors.append(f"capability_sector_mismatch:{name}")
         if not capability.get("enabled") or not capability.get("handler_bound"):
             unavailable.append(str(name))
+        for field in ("target", "verification_method"):
+            value = step.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{field}_missing:{step_id}")
 
         criteria = step.get("acceptance_criteria")
         deliverables = step.get("deliverables")
