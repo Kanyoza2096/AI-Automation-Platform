@@ -121,6 +121,7 @@ on:
       - "core/platform_state_reader.py"
       - "services/health_monitor_service.py"
       - "services/director/api.py"
+      - "services/director/core.py"
       - "migrations/166_u2_platform_state_snapshots.sql"
       - "tests/test_platform_state.py"
       - "tests/test_platform_state_health.py"
