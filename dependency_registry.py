@@ -916,7 +916,6 @@ def _register_business_services(c: ServiceContainer, bindings: list[BindingMetad
     )
 
     from core.unified_bus import UnifiedEventBus
-    from core.event_bus import EventBusBridge
     from core.multi_tenant import WorkspaceManager
     from repositories.workspace_repository import WorkspaceRepository
 
@@ -992,10 +991,7 @@ def _register_business_services(c: ServiceContainer, bindings: list[BindingMetad
     def _build_recorder():
         return EventRecorder(
             repo=c.resolve(AnalyticsRepository),
-            # EventRecorder consumes synchronous DomainEvent callbacks. The
-            # compatibility bridge adapts those callbacks onto the same
-            # lifecycle-owned UnifiedEventBus instance.
-            bus=c.resolve(EventBusBridge),
+            bus=c.resolve(UnifiedEventBus),
         )
 
     c.register(EventRecorder, _build_recorder, singleton=True)
