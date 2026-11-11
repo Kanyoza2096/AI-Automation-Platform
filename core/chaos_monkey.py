@@ -51,7 +51,6 @@ class ChaosMonkey:
         "kill_workers",
         "kill_meta_engine",
         "kill_condition_engine",
-        "kill_trend_intelligence",
         "flood_events",
         "send_fake_alerts",
         "send_conflicting_events",
@@ -177,8 +176,6 @@ class ChaosMonkey:
             self._kill_service("meta")
         elif action == "kill_condition_engine":
             self._kill_service("condition")
-        elif action == "kill_trend_intelligence":
-            self._kill_trend_intelligence()
         elif action == "flood_events":
             self._flood_events()
         elif action == "send_fake_alerts":
@@ -220,24 +217,6 @@ class ChaosMonkey:
         if self.shared_bus:
             self.shared_bus.publish("check_request", {
                 "service": service_name,
-            })
-
-    def _kill_trend_intelligence(self) -> None:
-        """Simulate TrendIntelligence failure."""
-        logger.critical("🐒 KILLING: TrendIntelligence (no internet data)")
-
-        if self.shared_bus:
-            self.shared_bus.publish("engine_alert", {
-                "engine": "trend_intelligence",
-                "status": "offline",
-                "message": "TrendIntelligence is down — no internet trends",
-            })
-
-        time.sleep(self.RECOVERY_CHECK_SECONDS)
-
-        if self.shared_bus:
-            self.shared_bus.publish("check_request", {
-                "service": "trend_intelligence",
             })
 
     def _flood_events(self) -> None:
