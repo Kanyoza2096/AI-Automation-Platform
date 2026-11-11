@@ -473,3 +473,110 @@ Remaining work includes:
 5. Complete the Guardian scan/remediation boundary and migration rollback plan.
 
 No runtime implementation, credential rotation, database change, deployment, or production action is authorized by this audit.
+
+
+## 13. Consumer-to-scope migration matrix — proposed authorization contract
+
+**Status:** design mapping for Gate 0 review; scope names below are proposed vocabulary, not claims that these scopes already exist in code or tokens. This matrix is intentionally deny-by-default. Each legacy consumer must be migrated and regression-tested before its compatibility bypass is removed.
+
+### 13.1 Principal classes and authority rules
+
+| Principal class | Intended authority source | Explicit boundary |
+|---|---|---|
+| Human workspace member | Supabase-authenticated subject + accepted workspace membership + workspace role | Workspace only; workspace owner/admin must not imply platform-wide authority |
+| Human platform operator | Server-side UUID allowlist + named platform scopes | Only the listed platform operations; no implicit wildcard |
+| Human platform super-admin | Server-side UUID allowlist + explicit break-glass platform grant | Human-only; audited, short-lived where feasible; never copied to machine identities |
+| Director workload | Signed workload token + active Agent Registry grant + tool policy | Initially `director:read`, `director:dispatch`; dispatch submits to governed admission only |
+| Council workload | Separate Council principal + Council policy grant | Deliberation/evidence/decision workflow only; approval remains a distinct governed action |
+| Guardian scanner | Separate read-only Guardian principal | Scan/report only; no remediation, PR creation, or write authority |
+| Guardian remediation | Separate higher-risk principal and capability | Explicit remediation scope, decision reference, Council/DecisionGate and human approval as policy requires |
+| Content Engine / brand scheduler | Separate content or scheduler principal, bound to brand/workspace | Content generation and publishing remain owned by the Content Engine and brand schedulers, not Director |
+| KCPG event bridge | Dedicated bridge principal with signed event envelope | Allowlisted event types and explicit workspace binding; no general platform operator authority |
+| Engineering planner / specialist / worker | Engineering vertical identity plus role/tool grants and execution policy | Project/workspace sandbox and task-specific grants; no inherited platform admin or production deployment authority |
+
+Effective machine authority is the intersection of verified signed claims, active Agent Registry grants, tool/capability policy, workspace/environment boundaries, and required governance. Registry state may revoke or narrow a grant; it must never broaden signed authority. Missing, unknown, expired, revoked, mismatched, or unverifiable identities fail closed.
+
+### 13.2 Legacy consumer mapping
+
+| Legacy consumer / surface | Current coupling observed | Proposed replacement contract | Migration owner / guard |
+|---|---|---|---|
+| `core/species_auth.py` master-token branch | `is_species=True`, broad master permissions and cross-workspace bypass | Human operator or dedicated machine principal validation; no shared boolean privilege | Identity platform; preserve human operator break-glass separately |
+| `core/species_auth.py` Python service-token branch | Same species-wide identity as master token | Replace each integration with a named service principal and minimal scopes | Identity platform + each service owner |
+| `core/api_auth.py` | Serializes `is_species` | Serialize principal type, subject, verified scopes and bounded workspace/environment claims; compatibility field read-only during migration | Auth platform |
+| `core/security/deps.py` | Builds `species_privileges`; exposes `require_species_privileges` | Scope dependencies such as `require_scope("platform:...")` and explicit human-role checks | API/security platform |
+| `core/request_context.py` | Boolean privilege bypass in permissions, workspace assertion and workspace hint selection | Typed principal + verified scope set + explicit workspace/environment boundary; no caller-controlled privilege hint | Request-context owners |
+| `middleware/request_context_middleware.py`, `core/workspace_context.py` | Species identity can select platform workspace context | Resolve workspace from verified claim or authorized human selection; platform-wide reads require a named scope | Tenancy owners |
+| `core/tenant_guard.py` | `allow_species` can bypass workspace mismatch | Replace with explicit cross-workspace scope checked against target resource and audit reason | Tenancy/security owners |
+| `core/auth.py`, `core/pipeline.py` | Species privilege influences generic write authorization and decision override | Domain action permissions and explicit decision provenance; no generic machine override | Pipeline/action-kernel owners |
+| `api/routers/users.py` | Platform privilege can affect user role assignment/update | `platform:users:read` / `platform:users:manage`; workspace owner limited to workspace membership administration | Identity administration |
+| `api/routers/workspaces.py` | Platform-wide workspace listing/admin | `platform:workspaces:read` and `platform:workspaces:manage`; separate human/operator policy | Workspace platform |
+| `api/routers/posts.py` | Platform-wide post query path | `platform:posts:read`; content mutation stays with brand-scoped workflow | Content platform |
+| `api/routers/monitoring.py`, `api/observability_routes.py` | Species privilege exposes platform monitoring/metrics | `platform:monitoring:read`, `platform:observability:read`; redact tenant-sensitive fields | SRE/observability |
+| `api/slo_routes.py`, `api/report_routes.py` | Platform SLO and report aggregation | `platform:slo:read`, `platform:reports:read`; export/download may require separate scope | SRE/reporting |
+| `api/outbox_routes.py` | Platform outbox inspection/operations | Separate `platform:outbox:read` and `platform:outbox:operate`; operation requires idempotency and audit evidence | Messaging platform |
+| `api/e2e_routes.py` | Diagnostic route uses species operator | `platform:diagnostics:run`, non-production environment guard, explicit operator authorization | QA/SRE |
+| `api/timeline_routes.py`, `routes/backend_contract_routes.py` | Workspace mismatch bypass for platform principal | Explicit `platform:timeline:read` or `platform:contracts:read` plus resource-level tenancy checks | Platform API |
+| `api/metabolism_routes.py` | Platform plan override | `platform:metabolism:override`, high-risk decision gate and human approval | Metabolism owner |
+| `api/organism_body_routes.py` | Platform organism inspection and mutation share species check | Split `platform:organism:read` from `platform:organism:operate`; mutation governed separately | Platform operations |
+| `api/content_intelligence_automation.py` | Reads request-context platform privilege | Read-only insight scopes separated from content mutation; brand/workspace-scoped actions | Content intelligence |
+| `routes/autonomy_routes.py` | Elevated control-plane path treats species as elevated | Explicit control-plane read/operate scopes per operation; autonomy changes require governance | Autonomy platform |
+| `routes/species_routes.py` | Platform workspace listing via `require_species_privileges` | `platform:workspaces:read`; do not grant to Director by default | Platform API |
+| `routes/code_intel_routes.py` | Code Intelligence API behind species privilege | Dedicated `engineering:code_intel:read` / `engineering:code_intel:analyze`; execution remains in engineering policy | AI Software Engineering Vertical |
+| `routes/circulation_routes.py` | Circulation control plane | `platform:circulation:read` / `platform:circulation:operate`, with operation-specific governance | Circulation owner |
+| `routes/event_api.py` | Event control plane uses species privilege | Split `events:read`, `events:publish`, `events:admin`; event-type and workspace allowlists | Event platform |
+| `routes/cp_gap_routes.py` | Control-plane gap operations | `platform:control_gaps:read` / `platform:control_gaps:manage` | Platform governance |
+| `routes/rule_routes.py` | Rule control plane | `platform:rules:read` / `platform:rules:manage`; changes require versioning and review | Policy/rules owner |
+| `routes/meta_routes.py` | Meta control plane | `platform:meta:read` / `platform:meta:operate`; recovery/remediation separately gated | Meta Engine owner |
+| `services/command_executor.py` | Platform privilege when no workspace is bound | Named command IDs, explicit `platform:commands:execute`, allowlisted arguments, environment boundary and approval policy | Execution platform |
+| `services/intelligence_authorization_replay.py` | Records boolean species privilege | Record principal subject/type, verified scope snapshot, policy version and decision reference; redact secrets | Audit/observability |
+| `services/director/api.py` | Direct master/Python token fallback; species privilege controls platform task/proposal visibility and mutation | Remove alternate shared-secret path; Director read endpoints require `director:read`; dispatch endpoints require `director:dispatch`; approval/execute endpoints require separate governance and must not be granted to Director | Director + identity platform |
+| `council/routes.py` | Direct master token; configurable `disable_council_auth` bypass | Dedicated Council service identity and narrow Council route scopes; configuration must never disable production auth | Council owner |
+| `routes/council_routes.py` | Direct master/Python service-token acceptance | Same Council principal contract; do not treat Gateway identity as Council identity | Council owner |
+| `core/event_api.py` | Direct master-token auth; configurable `disable_event_api_auth` bypass | Dedicated event publisher/consumer principals and route-specific event scopes; auth bypass prohibited in production | Event platform |
+| `core/socket_server.py` | Master/Python token maps to broad socket identity | Canonical principal validation plus per-channel and per-event authorization; no broad socket identity from shared secret | Realtime platform |
+| `products/shared/auth.py` | Shared master-token decorator; if master secret is unset, any non-empty token passes its conditional comparison | Replace with canonical verifier; reject if issuer/configuration unavailable; first establish whether the Flask product app is mounted/reachable | Product platform; route reachability still requires proof |
+| `services/kcpg_event_bridge.py` | Python service token plus HMAC event signature | Dedicated `kcpg-event-bridge` principal with `events:publish`, workspace/event allowlists, signature verification and replay protection; retain HMAC during staged migration | KCPG bridge owner |
+| `services/guardian_service.py` via Director binding | Scan handler reaches optional auto-fix, notifications, events and analytics | Strictly read-only `guardian:scan`; separate `guardian:remediate` tool and identity; classify permitted scan outputs | Guardian/security owner |
+
+**Scope naming note:** the proposed scope strings are a design vocabulary for migration planning. Before implementation, normalize them in one versioned scope catalogue with resource/action semantics, risk class, and owning team. Avoid introducing overlapping aliases or wildcard grants.
+
+### 13.3 Director capability boundary
+
+| Capability class | Director may do? | Required authority |
+|---|---|---|
+| Read platform health, approved observations and Director state | Yes, within configured read surface | `director:read` plus resource policy |
+| Submit a typed task/proposal to governed admission | Yes | `director:dispatch` plus schema validation and admission policy |
+| Directly invoke arbitrary capability handlers | No | Not granted |
+| Approve its own proposal or Council decision | No | Separate eligible human/Council authority |
+| Publish content or post to a brand | No | Brand scheduler / Content Engine principal |
+| Run Guardian remediation or create a fix PR | No | Separate remediation principal + governance |
+| Change platform rules, identities, scopes or credentials | No | Human platform authority and change governance |
+| Deploy to production or modify production infrastructure | No | Explicit human authorization and release controls |
+
+### 13.4 Regression-test migration matrix
+
+| Test family | Required assertions before retiring compatibility |
+|---|---|
+| `test_director_auth_boundary.py` | Director token with read cannot dispatch; dispatch cannot approve/execute; no master/Python fallback; workspace/environment mismatch denied |
+| `test_authenticated_actor_context.py` | Human, service, agent, scheduler and worker principal types remain distinct; subject and scope provenance preserved |
+| `test_service_auth_only_workspace_bypass.py`, `test_species_scale_workspace_hydration.py` | No implicit cross-workspace access; only explicit bounded scope can cross; client workspace header cannot broaden authority |
+| `test_v83_identity_access_hardening.py`, `test_v84_authorization_hardening.py` | Expired, forged, revoked, wrong-audience, wrong-issuer, wrong-key and replayed workload tokens rejected |
+| `test_v71_1_agent_identity.py`, `test_v71_2_agent_capability_permissions.py`, `test_advanced_agent_control_plane.py` | Unknown/suspended agent denied; Registry grants cannot broaden signed scopes; role delegation cannot escalate |
+| `test_c11_5_runtime_authority_convergence.py` | Actor identity remains consistent across API, event, worker and scheduler execution boundaries |
+| `tests/security/test_control_plane_authorization.py`, `test_global_surface_authorization.py`, `test_platform_authority.py`, `test_plugin_isolation.py` | Each mapped platform surface checks its specific scope; no machine principal inherits human super-admin |
+| `tests/tenancy/test_request_context.py`, `tests/tenancy/test_pipeline.py` | Request context and pipeline use typed scopes; no species boolean bypass; generic write does not imply platform operation |
+| New Council/event/socket tests | Missing credentials, disabled-auth flags, wrong principal, wrong event/channel scope and invalid signatures fail closed |
+| New Guardian contract tests | Scan cannot invoke AutoFixEngine/create PRs under any config; remediation requires its own principal and approval evidence |
+| New audit/redaction tests | No secrets in spans/logs; consequential execution fails closed if required authorization/audit evidence is absent |
+
+### 13.5 Migration sequencing and rollback gates
+
+1. Freeze the proposed scope catalogue and assign a named owner to every consumer row.
+2. Add typed principal/scope fields alongside existing compatibility fields; shadow-evaluate decisions without changing grants.
+3. Add per-route policy checks and regression tests. For each surface, compare old and new decisions and investigate every mismatch.
+4. Migrate machine integrations individually: Director, Council, KCPG bridge, Guardian, engineering actors, schedulers and socket clients. Do not rotate shared credentials until all consumers and callers are accounted for.
+5. Enable enforcement in staging first. Unknown actors, missing claims, invalid signatures, missing workspace bindings and audit failures must deny.
+6. Remove each legacy bypass only after its consumer has a verified replacement, tests pass, and rollback procedure is documented.
+7. Retire `is_species` and `species_privileges` only when repository-wide and runtime inventories show no remaining authorization consumers.
+
+Rollback must restore only the last known compatible authorization policy for the affected surface, never a global species-wide bypass. Keep production untouched; no database migration or new paid infrastructure is implied by this design phase.
