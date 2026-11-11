@@ -1439,3 +1439,105 @@ This checkpoint inspects the implementation behind the two live optional skips a
 5. Preserve the distinction between a factory being registered, an instance being constructed, an instance being running, and a capability being ready.
 
 This checkpoint is source-only. It does not change code, tests, migrations, database state, credentials, deployments or production.
+
+
+### 27.17 Lifecycle ownership and evidence-derived capability readiness — design checkpoint
+
+This checkpoint converts the source findings in §§27.14–27.16 into a bounded lifecycle/readiness contract. It is a proposal for review, not permission to start or alter services. It deliberately does not add another registry, topology graph, event broker, or health monitor.
+
+#### A. Four distinct lifecycle facts
+
+Every service/capability must distinguish these facts; none implies the next:
+
+1. **Declared** — a canonical service/capability contract exists, with an owner and process-mode expectation.
+2. **Constructed** — the owning process has resolved one instance (or an explicitly external dependency adapter).
+3. **Started** — the instance completed its owned startup protocol and is accepting its defined work.
+4. **Ready** — fresh, source-owned evidence shows that the capability can perform its declared operation under its dependency and policy constraints.
+
+A factory registered in dependency injection is only a construction recipe. A registry entry is not proof of construction in every process. Construction is not startup. Startup is not readiness. Readiness is not authorization to execute an action.
+
+#### B. Lifecycle ownership contract
+
+Each service manifest/owner record must declare:
+- stable canonical service ID and implementation identity;
+- owning subsystem and one lifecycle owner per process role;
+- expected process modes/roles and whether absence is not_expected or an ownership violation;
+- construction strategy (eager, lazy-on-first-use, or external adapter) and singleton scope (process, workspace, or request);
+- explicit start/stop contract, startup deadline, shutdown behavior and duplicate-start semantics;
+- required and optional dependencies, with dependency policy owned by the capability owner;
+- readiness probe contract, evidence source, freshness TTL and failure classification;
+- criticality, degradation policy and recovery/reconciliation owner.
+
+The manifest is a contract overlay on existing SERVICE_DEFINITIONS, CANONICAL_ENGINE_DEPENDENCIES, and boot-sequence ownership. It must reference those sources rather than copy them into a competing registry. Where the sources disagree, report a contract conflict and block readiness promotion until an owner resolves it.
+
+#### C. Process and instance semantics
+
+- A process-mode-specific component absent from a process where it is not expected is not_expected, not unavailable.
+- A component expected in the current process but not constructed is unavailable after its startup deadline; before that deadline it is starting.
+- A lazy factory may be declared while no instance exists. It must not be instantiated merely because /api/v1/topology or another diagnostic endpoint is read.
+- A process-scoped singleton must have one owner and one start/stop lifecycle within that process. Cross-process web/worker instances are separate instances and must be identified as such; process-local locks do not provide cross-process singleton guarantees.
+- Workspace-scoped components must be keyed and isolated by workspace, with concurrency-safe composition and explicit teardown/eviction. Do not use a global module singleton for workspace-specific state.
+- External dependencies (Supabase, Redis, Gemini, GitHub) are represented by owner adapters and provider/resource identity, not fabricated as local engine instances. Their readiness evidence must come from the adapter that actually uses them.
+- Topology diagnostics remain observational. A probe may only run if its contract says it is safe, bounded, side-effect-free and independently authorized; report probe duration and result rather than invoking startup or work as a side effect.
+
+#### D. Readiness state machine
+
+The proposed capability readiness vocabulary is:
+- not_expected: this process role does not own/run the component;
+- starting: expected and constructed/starting, within the declared startup deadline;
+- healthy: required dependencies are ready and fresh evidence satisfies the capability contract;
+- degraded: the capability can provide a reduced, explicitly declared service level;
+- unavailable: expected capability cannot perform its declared operation;
+- stale: last valid evidence exceeded its freshness TTL;
+- unknown: ownership, evidence, dependency policy or probe outcome is insufficient or contradictory.
+
+The state is derived, not written directly by arbitrary producers. Each source publishes a typed observation with source identity, process/instance identity, workspace/platform scope, observed-at time, optional expiry, evidence reference, correlation/causation IDs and bounded redacted details. The projection records the policy/version used to derive readiness.
+
+Required dependencies gate readiness; optional dependencies may reduce a capability only where the owning manifest explicitly declares the reduced behavior and its acceptance criteria. The canonical graph alone does not decide optionality. In particular, the current condition_engine → engagement_tracker edge must be reviewed by the Condition Engine owner: either tracker functionality is genuinely required and startup/readiness must fail closed when absent, or the edge/manifest policy must be corrected with tests proving the degraded behavior. Do not silently mark the edge optional to make topology green.
+
+Fresh conflicting observations produce unknown/conflict requiring reconciliation; do not use last-write-wins. Expiry produces stale, not healthy. A registered but unprobed component remains unknown. Provider credential/configuration presence alone is not a successful provider readiness check.
+
+#### E. Ownership resolutions required by current evidence
+
+| Component | Required owner decision before implementation |
+|---|---|
+| EngagementTracker | Assign one process-mode owner; define whether it is required by Condition Engine; define exactly-once start/stop per owning process and its periodic-loop health evidence |
+| EventRecorder | Choose eager construction by its owner or explicit lazy-on-demand lifecycle; start subscriptions only under that owner; do not resolve it from topology reads |
+| Guardian | Make Director discovery and DI resolve the same canonical GuardianService identity; keep scan separate from remediation; scans must not run as a topology probe |
+| GuardianScheduler | Find a real implementation/owner and process role, or propose removal/replacement of the stale canonical node through a separately reviewed topology change |
+| MetaEngine | Define its own supervision/self-health observation; do not require it to register itself as a child of its own registry to claim it is alive |
+| Redis/Supabase/Gemini/GitHub | Assign provider/client adapters as evidence owners; distinguish configured, connected, authenticated, and operation-ready states |
+| BrandSchedulers / EnterpriseEmitters | Confirm effective process mode and role-specific boot ownership before classifying absence |
+
+#### F. Registration and readiness reporting
+
+Keep the existing topology endpoint's structural fields, but make the semantics explicit. A future versioned diagnostic contract should separately expose:
+- canonical topology and graph validation;
+- per-process manifest expectation and boot-owner identity;
+- construction/registration outcome (registered, skipped, failed, not expected);
+- lifecycle phase (declared, constructed, started, stopped);
+- readiness status, evidence timestamp/expiry, probe identity/duration and dependency reasons;
+- manifest/schema version and projection version.
+
+Do not overload the current healthy boolean. It presently represents topology drift, while health_evaluated:false explicitly says comprehensive readiness was not evaluated. Preserve backward compatibility or version the response; never silently redefine the field.
+
+#### G. Phase 1 implementation boundary and acceptance tests
+
+After Gate 0 owner decisions are approved, Phase 1 should implement only the shared typed observation/projection boundary and adapters for existing owners. It must reuse the current event infrastructure and canonical dependency graph. No new broker, service registry, health monitor or duplicate dependency graph.
+
+Acceptance evidence must include:
+1. Web and worker processes report distinct process identities and only their expected services; mode-irrelevant services are not_expected, not false outages.
+2. Each lifecycle owner starts and stops its component once; repeated boot and concurrent first-use do not create duplicate loops/subscriptions.
+3. Lazy DI registration does not instantiate or start a component during topology reads.
+4. EngagementTracker's required/optional dependency policy is tested in both present and absent cases.
+5. EventRecorder factory, instance construction and subscription lifecycle are separately asserted.
+6. Guardian discovery, DI and Director capability bind to the same instance identity; topology reads never invoke scans or remediation.
+7. GuardianScheduler is either backed by a real owner or removed through an explicit topology change.
+8. Provider adapters distinguish configured, connected, authenticated and operation-ready states without exposing secrets.
+9. Observations are idempotent, provenance-bearing, freshness-bounded and workspace-isolated; conflicting/stale evidence cannot produce healthy.
+10. Projection updates are versioned/CAS-protected; state-change events are emitted only after durable commit; consumers tolerate duplicate/out-of-order delivery.
+11. Registration, health, readiness and authorization remain separate: a healthy capability does not gain dispatch or execution authority.
+
+**Gate 0 disposition:** source ownership findings are documented, but deployed process identity/mode and several component owners remain unverified. The current endpoint is a structural/registration snapshot, not a readiness API. Gate 0 remains PARTIALLY COMPLETE. Implementation is still blocked on owner sign-off, exact process-mode evidence, storage/event transaction boundaries, scope/retention/redaction review and the staging acceptance plan.
+
+No runtime code, tests, migrations, database writes, credentials, deployments or production state were changed by this design checkpoint.
