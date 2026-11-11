@@ -79,6 +79,29 @@ class ServiceObservation:
 
 
 @dataclass(frozen=True)
+class ObserverObservation:
+    """Independent supervisory evidence; never substitutes for owner evidence."""
+
+    service_id: str
+    observer_id: str
+    readiness: Readiness
+    observed_at: datetime
+    source_version: str
+    evidence: tuple[EvidenceRef, ...] = ()
+    correlation_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.service_id.strip() or not self.observer_id.strip() or not self.source_version.strip():
+            raise ValueError("service_id, observer_id and source_version are required")
+        if self.observed_at.tzinfo is None:
+            raise ValueError("observer observed_at must be timezone-aware")
+        if not isinstance(self.readiness, Readiness):
+            raise ValueError("observer readiness must be a Readiness value")
+        if any(item.observed_at > self.observed_at for item in self.evidence):
+            raise ValueError("observer evidence cannot be newer than its observation")
+
+
+@dataclass(frozen=True)
 class ServiceState:
     service_id: str
     owner: str
@@ -87,6 +110,7 @@ class ServiceState:
     source_version: str
     dependencies: tuple[str, ...]
     capabilities: tuple[str, ...]
+    critical: bool = False
     evidence: tuple[EvidenceRef, ...] = ()
     reason: str | None = None
 
@@ -107,10 +131,11 @@ class PlatformStateSnapshot:
     scope_type: str = "platform"
     scope_id: str = "platform"
     revision: int = 0
-    schema_version: int = 1
+    schema_version: int = 2
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     services: tuple[ServiceState, ...] = ()
     capabilities: tuple[CapabilityState, ...] = ()
+    observer_observations: tuple[ObserverObservation, ...] = ()
 
     def __post_init__(self) -> None:
         if self.scope_type not in {"platform", "workspace"}:
@@ -125,10 +150,13 @@ class PlatformStateSnapshot:
             raise ValueError("updated_at must be timezone-aware")
         service_ids = [item.service_id for item in self.services]
         capability_ids = [item.capability_id for item in self.capabilities]
+        observer_keys = [(item.service_id, item.observer_id) for item in self.observer_observations]
         if len(service_ids) != len(set(service_ids)):
             raise ValueError("snapshot service ids must be unique")
         if len(capability_ids) != len(set(capability_ids)):
             raise ValueError("snapshot capability ids must be unique")
+        if len(observer_keys) != len(set(observer_keys)):
+            raise ValueError("snapshot observer observations must be unique per service and observer")
 
 
 def build_platform_state(
@@ -211,7 +239,7 @@ def build_platform_state(
                 service_id=service_id, owner=manifest.owner, readiness=readiness,
                 observed_at=observed_at, source_version=version,
                 dependencies=manifest.dependencies, capabilities=manifest.capabilities,
-                evidence=evidence, reason=reason,
+                critical=manifest.critical, evidence=evidence, reason=reason,
             )
             pending.remove(service_id)
             progressed = True
@@ -239,7 +267,7 @@ def build_platform_state(
 
 
 __all__ = [
-    "Readiness", "EvidenceRef", "ServiceManifest", "ServiceObservation",
+    "Readiness", "EvidenceRef", "ServiceManifest", "ServiceObservation", "ObserverObservation",
     "ServiceState", "CapabilityState", "PlatformStateSnapshot",
     "build_platform_state",
 ]

@@ -61,7 +61,7 @@ class HealthMonitorService:
     daily-summary dedup, registry snapshot integration.
     """
 
-    def __init__(self, container=None, event_bus=None):
+    def __init__(self, container=None, event_bus=None, platform_state_store=None):
         self.container = container
         self._event_bus = event_bus
         self._running = False
@@ -81,6 +81,20 @@ class HealthMonitorService:
         self._last_health_check_time = 0.0
         self._last_health_snapshot: Dict[str, Any] = {}
         self._last_service_diagnostics: Dict[str, Any] = {}
+        self._platform_state_snapshot = None
+        self._platform_state_persisted_revision = None
+        self._platform_state_publisher = None
+        if platform_state_store is not None and event_bus is not None:
+            try:
+                from core.platform_state_publisher import PlatformStatePublisher
+                self._platform_state_publisher = PlatformStatePublisher(
+                    platform_state_store, event_bus
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Platform State publisher unavailable: %s",
+                    sanitize_error_message(exc),
+                )
 
         # Alert pipeline
         self._alert_queue: "asyncio.Queue[Tuple[str, str]]" = asyncio.Queue(
@@ -228,6 +242,50 @@ class HealthMonitorService:
         async with self._check_lock:
             cycle_start = asyncio.get_running_loop().time()
             services = await self._collect_service_health()
+            # Build a read-only, dependency-aware projection from the exact
+            # cached HealthReport snapshot just collected. This does not probe
+            # providers a second time and does not persist or grant authority.
+            try:
+                from lifecycle import health_registry
+                from core.platform_state_health import read_platform_state_from_health_registry
+
+                previous_revision = (
+                    self._platform_state_snapshot.revision
+                    if self._platform_state_snapshot is not None else 0
+                )
+                infrastructure_statuses = {
+                    "redis": services.get("Redis", "unknown"),
+                    "supabase": services.get("Supabase", "unknown"),
+                    "gemini": services.get("Gemini", "unknown"),
+                }
+                candidate = read_platform_state_from_health_registry(
+                    registry=health_registry,
+                    previous_revision=previous_revision,
+                    supplemental_statuses=infrastructure_statuses,
+                )
+                if self._platform_state_publisher is not None:
+                    try:
+                        self._platform_state_snapshot = await self._platform_state_publisher.publish(
+                            candidate
+                        )
+                        self._platform_state_persisted_revision = (
+                            self._platform_state_snapshot.revision
+                        )
+                    except Exception as publish_exc:
+                        # The in-process projection remains useful for diagnostics,
+                        # but it is never represented as a durable shared snapshot.
+                        self._platform_state_snapshot = candidate
+                        logger.warning(
+                            "Platform State durable publication unavailable: %s",
+                            sanitize_error_message(publish_exc),
+                        )
+                else:
+                    self._platform_state_snapshot = candidate
+            except Exception as exc:
+                logger.debug(
+                    "Platform State projection unavailable: %s",
+                    sanitize_error_message(exc),
+                )
             duration = asyncio.get_running_loop().time() - cycle_start
             self._checks_completed += 1
             self._last_health_check_time = asyncio.get_running_loop().time()
@@ -321,16 +379,27 @@ class HealthMonitorService:
         try:
             from lifecycle import health_registry
 
-            reader = getattr(health_registry, "read_snapshot", None)
-            reports = None
-            if callable(reader):
-                reports = reader()
-            if not reports:
-                # Backward-compat path
-                maybe = health_registry.check_all()
-                if asyncio.iscoroutine(maybe):
-                    maybe = await maybe
-                reports = maybe
+            cached_checker = getattr(health_registry, "check_all_cached", None)
+            if callable(cached_checker):
+                # Refresh after 60s; the monitor's cadence is slower, so each
+                # normal monitor cycle sees a current snapshot. This method
+                # publishes the reports into the registry cache as well.
+                reports = cached_checker(max_age_seconds=60.0)
+                if asyncio.iscoroutine(reports):
+                    reports = await reports
+            else:
+                reader = getattr(health_registry, "read_snapshot", None)
+                reports = reader() if callable(reader) else None
+                if not reports:
+                    maybe = health_registry.check_all()
+                    if asyncio.iscoroutine(maybe):
+                        maybe = await maybe
+                    reports = maybe
+                    publisher = getattr(health_registry, "publish_snapshot", None)
+                    if callable(publisher) and reports:
+                        published = publisher(reports)
+                        if asyncio.iscoroutine(published):
+                            await published
             self._last_service_diagnostics = {}
             for name, report in (reports or {}).items():
                 services[name] = self._classify_report(report)
@@ -674,7 +743,23 @@ class HealthMonitorService:
             "services_unknown": unknown,
             "snapshot_age_seconds": self._snapshot_age_seconds(),
             "alert_queue_depth": self._alert_queue.qsize(),
+            "platform_state_revision": self._platform_state_persisted_revision,
+            "platform_state_projection_revision": (
+                self._platform_state_snapshot.revision
+                if self._platform_state_snapshot is not None else None
+            ),
+            "platform_state_services": (
+                {
+                    item.service_id: item.readiness.value
+                    for item in self._platform_state_snapshot.services
+                }
+                if self._platform_state_snapshot is not None else {}
+            ),
         }
+
+    def get_platform_state_snapshot(self):
+        """Return the latest immutable Platform State projection, if available."""
+        return self._platform_state_snapshot
 
     def health_check(self) -> dict:
         stats = self.get_stats()

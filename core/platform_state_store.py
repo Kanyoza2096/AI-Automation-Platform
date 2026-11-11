@@ -12,6 +12,7 @@ from typing import Any, Mapping
 from core.platform_state import (
     CapabilityState,
     EvidenceRef,
+    ObserverObservation,
     PlatformStateSnapshot,
     Readiness,
     ServiceState,
@@ -45,6 +46,7 @@ def _state_payload(snapshot: PlatformStateSnapshot) -> dict[str, Any]:
                 "source_version": item.source_version,
                 "dependencies": list(item.dependencies),
                 "capabilities": list(item.capabilities),
+                "critical": item.critical,
                 "evidence": [
                     {
                         "source": evidence.source,
@@ -58,6 +60,27 @@ def _state_payload(snapshot: PlatformStateSnapshot) -> dict[str, Any]:
                 "reason": item.reason,
             }
             for item in snapshot.services
+        ],
+        "observer_observations": [
+            {
+                "service_id": item.service_id,
+                "observer_id": item.observer_id,
+                "readiness": item.readiness.value,
+                "observed_at": _iso(item.observed_at),
+                "source_version": item.source_version,
+                "correlation_id": item.correlation_id,
+                "evidence": [
+                    {
+                        "source": evidence.source,
+                        "observed_at": _iso(evidence.observed_at),
+                        "source_version": evidence.source_version,
+                        "correlation_id": evidence.correlation_id,
+                        "reference": evidence.reference,
+                    }
+                    for evidence in item.evidence
+                ],
+            }
+            for item in snapshot.observer_observations
         ],
         "capabilities": [
             {
@@ -105,9 +128,31 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> PlatformStateSnapshot:
             source_version=str(item["source_version"]),
             dependencies=tuple(item.get("dependencies", [])),
             capabilities=tuple(item.get("capabilities", [])),
+            critical=bool(item.get("critical", False)),
             evidence=evidence,
             reason=item.get("reason"),
         ))
+    observer_observations = tuple(
+        ObserverObservation(
+            service_id=str(item["service_id"]),
+            observer_id=str(item["observer_id"]),
+            readiness=Readiness(str(item["readiness"])),
+            observed_at=_datetime(item["observed_at"]),
+            source_version=str(item["source_version"]),
+            correlation_id=item.get("correlation_id"),
+            evidence=tuple(
+                EvidenceRef(
+                    source=str(e["source"]),
+                    observed_at=_datetime(e["observed_at"]),
+                    source_version=str(e["source_version"]),
+                    correlation_id=e.get("correlation_id"),
+                    reference=e.get("reference"),
+                )
+                for e in item.get("evidence", [])
+            ),
+        )
+        for item in state.get("observer_observations", [])
+    )
     capabilities = tuple(
         CapabilityState(
             capability_id=str(item["capability_id"]),
@@ -126,6 +171,7 @@ def _snapshot_from_row(row: Mapping[str, Any]) -> PlatformStateSnapshot:
         updated_at=_datetime(row.get("updated_at") or state.get("updated_at")),
         services=tuple(services),
         capabilities=capabilities,
+        observer_observations=observer_observations,
     )
 
 

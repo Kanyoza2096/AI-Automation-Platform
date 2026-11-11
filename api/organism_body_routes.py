@@ -33,6 +33,7 @@ Phase E.1 (2026-11-02) — hands/sleep event categorization fix:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -193,6 +194,125 @@ def _organism_vitals(workspace_id: str) -> Dict[str, Any]:
         return {"workspace_id": workspace_id, "error": str(exc)[:200]}
 
 
+async def _platform_state_for_species(request: Request) -> Optional[Dict[str, Any]]:
+    """Expose platform-wide state only to authenticated species operators."""
+    identity = getattr(request.state, "auth_identity", None)
+    if not identity or not getattr(identity, "is_species", False):
+        return None
+    try:
+        from services.supabase import get_service_client_from_settings
+        from core.platform_state_reader import PlatformStateReader
+
+        client = await asyncio.to_thread(get_service_client_from_settings)
+        snapshot = await PlatformStateReader(client).get_snapshot()
+        if snapshot is None:
+            return {
+                "status": "uninitialized",
+                "freshness": "unknown",
+                "revision": 0,
+                "services": [],
+                "capabilities": [],
+                "observer_observations": [],
+            }
+        updated_at = getattr(snapshot, "updated_at", None)
+        now_utc = datetime.now(timezone.utc)
+        if not isinstance(updated_at, datetime) or updated_at.tzinfo is None:
+            freshness, status = "invalid", "unknown"
+        else:
+            age = (now_utc - updated_at.astimezone(timezone.utc)).total_seconds()
+            if age < -30:
+                freshness, status = "invalid", "unknown"
+            elif age > 300:
+                freshness, status = "stale", "stale"
+            else:
+                freshness, status = "fresh", "available"
+
+        def effective_readiness(item: Any) -> str:
+            reported = getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown")))
+            return reported if freshness == "fresh" else ("stale" if freshness == "stale" else "unknown")
+
+        observer_items = list(getattr(snapshot, "observer_observations", ()) or ())
+        observer_observations = []
+        for item in observer_items[:100]:
+            observed = getattr(item, "observed_at", None)
+            reported = getattr(
+                getattr(item, "readiness", None),
+                "value",
+                str(getattr(item, "readiness", "unknown")),
+            )
+            observer_freshness = freshness
+            if freshness == "fresh":
+                if not isinstance(observed, datetime) or observed.tzinfo is None:
+                    observer_freshness = "unknown"
+                else:
+                    observer_age = (
+                        now_utc - observed.astimezone(timezone.utc)
+                    ).total_seconds()
+                    if observer_age < -30:
+                        observer_freshness = "unknown"
+                    elif observer_age > 300:
+                        observer_freshness = "stale"
+            effective = (
+                reported if observer_freshness == "fresh"
+                else ("stale" if observer_freshness == "stale" else "unknown")
+            )
+            observer_observations.append({
+                "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
+                "readiness": effective,
+                "reported_readiness": reported,
+                "freshness": observer_freshness,
+                "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
+                "source_version": str(getattr(item, "source_version", "unknown"))[:80],
+            })
+
+        return {
+            "status": status,
+            "freshness": freshness,
+            "revision": int(getattr(snapshot, "revision", 0)),
+            "schema_version": int(getattr(snapshot, "schema_version", 1)),
+            "updated_at": updated_at.isoformat() if isinstance(updated_at, datetime) else None,
+            "services": [
+                {
+                    "service_id": str(getattr(item, "service_id", "unknown"))[:120],
+                    "readiness": effective_readiness(item),
+                    "reported_readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                    "owner": str(getattr(item, "owner", "unknown"))[:120],
+                    "reason": str(getattr(item, "reason", "") or "")[:200] or None,
+                }
+                for item in list(getattr(snapshot, "services", ()) or ())[:100]
+            ],
+            "capabilities": [
+                {
+                    "capability_id": str(getattr(item, "capability_id", "unknown"))[:120],
+                    "readiness": effective_readiness(item),
+                    "reported_readiness": getattr(getattr(item, "readiness", None), "value", str(getattr(item, "readiness", "unknown"))),
+                    "owner_service": str(getattr(item, "owner_service", "unknown"))[:120],
+                }
+                for item in list(getattr(snapshot, "capabilities", ()) or ())[:100]
+            ],
+            "observer_observations": observer_observations,
+            "observer_observation_count": len(observer_items),
+            "observer_observations_truncated": len(observer_items) > len(observer_observations),
+            "policy": {
+                "platform_operator_only": True,
+                "read_only": True,
+                "grants_execution_authority": False,
+                "unknown_is_not_healthy": True,
+            },
+        }
+    except Exception:
+        logger.warning("Organism vitals Platform State projection unavailable", exc_info=True)
+        return {
+            "status": "unavailable",
+            "freshness": "unknown",
+            "revision": 0,
+            "services": [],
+            "capabilities": [],
+            "observer_observations": [],
+        }
+
+
 def _metabolism_status(workspace_id: str) -> Dict[str, Any]:
     try:
         from core.metabolism import metabolism
@@ -233,7 +353,7 @@ async def organism_vitals(
         slo = compute_workspace_slos(ws)
     except Exception:
         pass
-    return {
+    payload = {
         "section": "vitals",
         "workspace_id": ws,
         "at": datetime.now(timezone.utc).isoformat(),
@@ -244,6 +364,10 @@ async def organism_vitals(
         "slo": slo,
         "recent_events": events,
     }
+    identity = getattr(request.state, "auth_identity", None)
+    if identity and getattr(identity, "is_species", False):
+        payload["platform_state"] = await _platform_state_for_species(request)
+    return payload
 
 
 @router.get("/organism/mind")

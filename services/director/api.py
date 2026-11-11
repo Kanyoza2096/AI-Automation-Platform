@@ -1303,6 +1303,88 @@ def create_app(director: Director):
         except Exception as exc:
             return {"ok": False, "status": "error", "error": str(exc)[:300]}
 
+
+    @app.get("/platform-state")
+    async def get_platform_state(
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Read the authoritative platform snapshot; tenant scopes are denied."""
+        await _require_auth(request, credentials)
+        _require_platform_scope(request)
+        context = getattr(request.state, "request_context", None)
+        # A tenant role (including workspace owner/admin) is never sufficient
+        # for platform-wide state. Only the trusted platform/species privilege
+        # or a separately authenticated platform token may read this snapshot.
+        if context is not None and not getattr(context, "species_privileges", False):
+            raise HTTPException(
+                status_code=403,
+                detail="Platform State requires platform operator privileges",
+            )
+        try:
+            from services.supabase import get_service_client_from_settings
+            from core.platform_state_reader import PlatformStateReader
+
+            client = await asyncio.to_thread(get_service_client_from_settings)
+            snapshot = await PlatformStateReader(client).get_snapshot()
+        except Exception:
+            log.warning("Platform State read unavailable", exc_info=True)
+            raise HTTPException(
+                status_code=503,
+                detail="Platform State is temporarily unavailable",
+            )
+        if snapshot is None:
+            return {
+                "status": "uninitialized",
+                "scope_type": "platform",
+                "scope_id": "platform",
+                "revision": 0,
+                "services": [],
+                "capabilities": [],
+            }
+        return {
+            "status": "available",
+            "scope_type": snapshot.scope_type,
+            "scope_id": snapshot.scope_id,
+            "revision": snapshot.revision,
+            "schema_version": snapshot.schema_version,
+            "updated_at": snapshot.updated_at.isoformat(),
+            "services": [
+                {
+                    "service_id": item.service_id,
+                    "owner": item.owner,
+                    "readiness": item.readiness.value,
+                    "observed_at": item.observed_at.isoformat() if item.observed_at else None,
+                    "source_version": item.source_version,
+                    "dependencies": list(item.dependencies),
+                    "capabilities": list(item.capabilities),
+                    "critical": item.critical,
+                    "reason": item.reason,
+                    "evidence": [
+                        {
+                            "source": evidence.source,
+                            "observed_at": evidence.observed_at.isoformat(),
+                            "source_version": evidence.source_version,
+                            "correlation_id": evidence.correlation_id,
+                            "reference": evidence.reference,
+                        }
+                        for evidence in item.evidence
+                    ],
+                }
+                for item in snapshot.services
+            ],
+            "capabilities": [
+                {
+                    "capability_id": item.capability_id,
+                    "owner_service": item.owner_service,
+                    "readiness": item.readiness.value,
+                    "observed_at": item.observed_at.isoformat() if item.observed_at else None,
+                    "reason": item.reason,
+                }
+                for item in snapshot.capabilities
+            ],
+        }
+
     return app
 
 

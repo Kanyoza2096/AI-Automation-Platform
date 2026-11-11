@@ -522,6 +522,19 @@ def test_director_system_topology_matches_all_canonical_nodes_and_edges():
             assert name in topology.nodes[dependency].depended_by
 
 
+def test_director_topology_preserves_metadata_while_projecting_canonical_nodes():
+    from services.director.analysis import Sector, SystemTopology
+
+    topology = SystemTopology()
+
+    assert topology.get_service_sector("director") == Sector.SELF
+    assert topology.get_service_criticality("director") == 5
+    assert topology.get_service_sector("gemini") == Sector.HEALTH
+    assert topology.get_service_criticality("gemini") == 3
+    assert topology.get_service_sector("github") == Sector.SECURITY
+    assert topology.get_service_criticality("github") == 3
+
+
 def test_engine_runtime_map_covers_canonical_topology_and_is_explicitly_static():
     from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
     from scripts.audit_engine_topology import build_engine_inventory, render_markdown
