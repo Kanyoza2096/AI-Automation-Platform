@@ -1,4 +1,6 @@
 # services/prompt_cache.py — MODIFY your existing prompt cache
+from typing import Optional
+
 from core.redis_client import UpstashRedisClient
 
 class RedisPromptCache:
