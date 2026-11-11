@@ -599,3 +599,36 @@ Review requirements before Gate 0 exit:
 
 **Decision status:** pending owner/security/governance review. Gate 0 remains partially complete. This checkpoint does not authorize implementation, token issuance, permission grants, database changes, deployment, or production activity.
 
+## 15. Workload-token and Agent Registry contract review checkpoint
+
+The companion architecture proposal now defines the proposed KDO Workload Token Profile v1 and a logical Platform Agent Registry schema. Both remain design contracts only; neither is implemented, provisioned, migrated or enforced.
+
+### Required protocol decisions before implementation
+
+- Confirm the trusted workload identity issuer and its runtime attestation/authentication mechanism. Do not accept caller-supplied agent IDs, scope lists or identity headers.
+- Select and validate one proof-of-possession mechanism against the actual Render/network topology: end-to-end mTLS certificate binding or a workload-held asymmetric key with a rigorously specified per-request proof. Do not assume proxy-terminated TLS provides workload identity.
+- Confirm exact token type, allowed asymmetric algorithm, trusted issuer/key distribution, narrow service audiences, claim schema, scope catalogue version and authorization-policy version.
+- Define clock-skew limits, token maximum lifetime, replay cache/nonce behavior, session binding, revocation freshness objective and compromised-key response.
+- Define verifier behavior when the registry, issuer metadata, revocation state or audit infrastructure is unavailable; consequential actions must fail closed.
+- Validate key custody and rotation without storing private keys, signing secrets or access tokens in application configuration, registry records, logs or traces.
+
+### Required registry decisions before implementation
+
+- Reconcile V71 identity and capability permission registries, the engineering Agent Registry and current session hardening; identify the canonical owner/storage/API and avoid a competing in-memory or database source of truth.
+- Confirm which source/runtime components are independently acting principals versus passive libraries, services or orchestrators. Require a named accountable human owner for every active principal.
+- Confirm principal subject uniqueness, runtime binding, lifecycle transitions, grant/tool/resource/workspace/environment relations, delegation, approval provenance, audit retention and emergency suspension semantics.
+- Define a measurable revocation objective and prove it across API, socket, event, worker and scheduler boundaries.
+- Confirm that registry grants and caches can narrow/revoke signed authority but can never broaden it; broadening requires reviewed grant change and new token issuance.
+- Keep human identities separate from workload identities. Human super-admin, identity management, production release and critical credential operations must never be copied into workload tokens.
+- Confirm that no physical database schema or migration is selected until existing registries and persistence are assessed. No additional paid infrastructure or Supabase cost is authorized.
+
+### Acceptance evidence required
+
+- Positive and negative claim/proof-of-possession tests, including algorithm confusion, forged signature, wrong issuer/audience, expiry, replay, key rotation/revocation, proof-key mismatch and canonical request binding.
+- Agent Registry tests for uniqueness, ownership, lifecycle, missing runtime, suspended/retired actors, stale approvals, scope narrowing, delegation boundaries and immutable audit provenance.
+- Cross-surface identity convergence tests for API, socket, event, worker and scheduler execution.
+- Evidence that unknown actors, registry outage and revocation uncertainty cannot fall back to master/Python shared credentials or is_species bypasses.
+- Evidence that Director receives only director:read and director:dispatch and that dispatch cannot directly execute, approve, publish, remediate or deploy.
+
+**Decision status:** pending architecture, identity/security, runtime and governance review. Gate 0 remains partially complete. No token issuer, verifier, registry implementation, migration, grant, test run, deployment or production action is authorized by this checkpoint.
+
