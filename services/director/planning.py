@@ -146,8 +146,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         ):
             raise StrategicPlanningError("plan_dependencies_invalid")
         evidence_refs = _strings(raw.get("evidence_refs"), "step_evidence_refs", maximum=6)
-        available_evidence_refs = _evidence_reference_ids(context)
-        if len(evidence_refs) != len(set(evidence_refs)) or not set(evidence_refs).issubset(available_evidence_refs):
+        # Validate against the exact bounded snapshot supplied to the LLM;\n        # raw context may contain evidence omitted by prompt-size trimming.\n        available_evidence_refs = _evidence_reference_ids(_planner_context(context))\n        if len(evidence_refs) != len(set(evidence_refs)) or not set(evidence_refs).issubset(available_evidence_refs):
             raise StrategicPlanningError("plan_references_unknown_evidence")
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
@@ -353,6 +352,33 @@ def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
         compact["evidence"]["unknowns"] = compact["evidence"]["unknowns"][:5]
         compact["capabilities"] = compact["capabilities"][:25]
         compact["missions"]["recent_tasks"] = compact["missions"]["recent_tasks"][:5]
+
+        # Rebuild references after truncation so the prompt's evidence index
+        # cannot point at evidence that is no longer present in the snapshot.
+        evidence_index = {}
+        for collection, prefix in (
+            ("facts", "fact"),
+            ("inferences", "inference"),
+            ("unknowns", "unknown"),
+            ("conflicts", "conflict"),
+        ):
+            for index, item in enumerate(compact["evidence"][collection]):
+                evidence_index[f"{prefix}:{index}"] = (
+                    {key: item.get(key) for key in (
+                        "kind", "observer", "source", "sector", "status",
+                        "issue_type", "interpretation", "freshness",
+                        "reported_status", "age_seconds",
+                    ) if key in item}
+                    if isinstance(item, Mapping) else {"summary": short(item, 180)}
+                )
+        for index, item in enumerate(compact["evidence"]["engine_signals"]["accepted"]):
+            evidence_index[f"signal:{index}"] = {
+                key: item.get(key) for key in (
+                    "capability", "sector", "description", "confidence",
+                    "impact_score", "mission_priority", "observed_at",
+                ) if key in item
+            }
+        compact["evidence_index"] = evidence_index
     return compact
 
 
