@@ -1217,7 +1217,7 @@ async def _boot_event_recorder(container: ServiceContainer) -> None:
         recorder.stop,
         timeout_seconds=5.0,
     )
-    logger.info("EventRecorder ready (five analytics event subscriptions).")
+    logger.info("EventRecorder ready (six analytics event subscriptions).")
 
 
 async def _boot_shared_event_bus(container: ServiceContainer) -> None:
