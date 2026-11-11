@@ -235,15 +235,19 @@ def test_bounded_evidence_index_is_rebuilt_after_prompt_trimming():
 
 
 def test_plan_validation_rejects_evidence_hidden_by_prompt_trimming():
-    director = Director(supabase_client=None)
-    context = director.strategic_context()
+    context_director = Director(supabase_client=None)
+    context = context_director.strategic_context()
     context["evidence"]["facts"] = [
         {"kind": "fact", "source": f"source-{index}", "summary": "x" * 1800}
         for index in range(10)
     ]
     candidate = deepcopy(generated_plan())
     candidate["steps"][0]["evidence_refs"] = ["fact:8"]
-    director._strategic_planner = lambda **kwargs: candidate
+    director = Director(
+        supabase_client=None,
+        strategic_planner=lambda **kwargs: candidate,
+    )
+    director.strategic_context = lambda: context
 
     with pytest.raises(StrategicPlanningError, match="plan_references_unknown_evidence"):
         director.plan_objective(objective())
