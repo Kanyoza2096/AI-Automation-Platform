@@ -1,0 +1,87 @@
+import asyncio
+import json
+from types import SimpleNamespace
+
+from services.director.stores import AsyncSupabaseStore
+
+
+class FakeQuery:
+    def __init__(self, client):
+        self.client = client
+        self.operation = None
+        self.filters = {}
+
+    def upsert(self, row):
+        self.operation = "upsert"
+        self.row = row
+        return self
+
+    def select(self, *_columns):
+        self.operation = "select"
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def limit(self, _limit):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self.operation == "upsert":
+            self.client.rows[self.row["plan_id"]] = dict(self.row)
+            return SimpleNamespace(data=[dict(self.row)])
+        row = self.client.rows.get(self.filters.get("plan_id"))
+        return SimpleNamespace(data=[{"payload": row["payload"]}] if row else [])
+
+
+class FakeSupabase:
+    def __init__(self):
+        self.rows = {}
+
+    def table(self, _name):
+        return FakeQuery(self)
+
+
+def sample_plan():
+    return {
+        "schema_version": "kdo.director.strategic-plan.v1",
+        "plan_id": "dplan_test_jsonb_object",
+        "objective": {"objective_id": "objective-test"},
+        "summary": "A persisted test plan.",
+        "steps": [
+            {"step_id": "step-1", "capability": "ask_with_tools"},
+            {"step_id": "step-2", "capability": "run_health_scan"},
+        ],
+        "limitations": ["Planning only."],
+        "source_context_fingerprint": "fingerprint-test",
+    }
+
+
+def test_strategic_plan_write_uses_json_object_and_verifies_readback():
+    client = FakeSupabase()
+    store = AsyncSupabaseStore(client)
+    plan = sample_plan()
+
+    saved = asyncio.run(store.save_strategic_plan(plan))
+
+    assert saved is True
+    stored_payload = client.rows[plan["plan_id"]]["payload"]
+    assert isinstance(stored_payload, dict)
+    assert stored_payload["steps"] == plan["steps"]
+    assert stored_payload["summary"] == plan["summary"]
+    assert store.get_strategic_plan(plan["plan_id"]) == plan
+    assert store.list_strategic_plans() == [plan]
+
+
+def test_strategic_plan_reader_keeps_legacy_json_string_compatibility():
+    client = FakeSupabase()
+    plan = sample_plan()
+    client.rows[plan["plan_id"]] = {"payload": json.dumps(plan)}
+    store = AsyncSupabaseStore(client)
+
+    assert store.get_strategic_plan(plan["plan_id"]) == plan
+    assert store.list_strategic_plans() == [plan]
