@@ -991,7 +991,10 @@ def _register_business_services(c: ServiceContainer, bindings: list[BindingMetad
     def _build_recorder():
         return EventRecorder(
             repo=c.resolve(AnalyticsRepository),
-            bus=c.resolve(UnifiedEventBus),
+            # EventRecorder consumes synchronous DomainEvent callbacks. The
+            # compatibility bridge adapts those callbacks onto the same
+            # lifecycle-owned UnifiedEventBus instance.
+            bus=c.resolve(EventBusBridge),
         )
 
     c.register(EventRecorder, _build_recorder, singleton=True)
