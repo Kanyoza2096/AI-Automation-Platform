@@ -251,7 +251,7 @@ class BusinessAutomationEventBridge:
         event_id = str(envelope.get("event_id") or event.get("event_id") or "").strip()
         # Never admit an event without a durable identity; Business Automation
         # uses event_id as its replay fence. Missing identity is rejected rather
-        # than converted into a shared \`missing\` idempotency key.
+        # than converted into a shared `missing` idempotency key.
         if not event_id:
             self._errors += 1
             logger.warning("rejecting event without event_id event=%s workspace=%s", event_name, workspace_id)
