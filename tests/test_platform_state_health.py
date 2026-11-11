@@ -95,3 +95,24 @@ def test_registry_reader_uses_cache_without_invoking_health_probes():
     )
     assert snapshot.services[0].readiness is Readiness.HEALTHY
     assert registry.probe_calls == 0
+
+
+def test_infrastructure_probe_is_attributed_to_health_monitor_owner():
+    snapshot = build_platform_state_from_health_reports(
+        {},
+        now=NOW,
+        supplemental_statuses={"redis": "ok", "supabase": "down", "gemini": "unknown"},
+        supplemental_observed_at=NOW,
+        dependencies={
+            "health_monitor": (),
+            "redis": (),
+            "supabase": (),
+            "gemini": (),
+        },
+    )
+    services = {item.service_id: item for item in snapshot.services}
+    assert services["redis"].owner == "health_monitor"
+    assert services["redis"].readiness is Readiness.HEALTHY
+    assert services["supabase"].readiness is Readiness.UNAVAILABLE
+    assert services["gemini"].readiness is Readiness.UNKNOWN
+    assert services["redis"].evidence[0].source == "health_monitor_probe:redis"
