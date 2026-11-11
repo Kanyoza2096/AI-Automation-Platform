@@ -78,8 +78,8 @@ def test_strategic_plan_write_uses_json_object_and_verifies_readback():
     assert isinstance(stored_payload, dict)
     assert stored_payload["steps"] == plan["steps"]
     assert stored_payload["summary"] == plan["summary"]
-    assert store.get_strategic_plan(plan["plan_id"]) == plan
-    assert store.list_strategic_plans() == [plan]
+    assert asyncio.run(store.get_strategic_plan(plan["plan_id"])) == plan
+    assert asyncio.run(store.list_strategic_plans()) == [plan]
 
 
 def test_strategic_plan_reader_keeps_legacy_json_string_compatibility():
