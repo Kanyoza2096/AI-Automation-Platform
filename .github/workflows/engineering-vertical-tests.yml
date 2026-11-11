@@ -113,6 +113,22 @@ on:
       - "scripts/audit_route_wiring.py"
       - "tests/test_route_wiring_audit.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
+      # Advanced Director: canonical Platform State and durable CAS publication.
+      - "core/platform_state.py"
+      - "core/platform_state_store.py"
+      - "core/platform_state_health.py"
+      - "core/platform_state_publisher.py"
+      - "core/platform_state_reader.py"
+      - "services/health_monitor_service.py"
+      - "services/director/api.py"
+      - "migrations/166_u2_platform_state_snapshots.sql"
+      - "tests/test_platform_state.py"
+      - "tests/test_platform_state_health.py"
+      - "tests/test_platform_state_store.py"
+      - "tests/test_platform_state_publisher.py"
+      - "tests/test_platform_state_reader.py"
+      - "tests/test_director_platform_state.py"
+      - "tests/test_platform_state_migration_postgres.py"
   workflow_dispatch:
 
 permissions:
@@ -250,7 +266,8 @@ jobs:
               """)
               connection.execute("""
                   CREATE TABLE IF NOT EXISTS public.workspaces (
-                      id TEXT PRIMARY KEY
+                      id TEXT PRIMARY KEY,
+                      status TEXT NOT NULL DEFAULT 'active'
                   )
               """)
               connection.execute("""
@@ -405,6 +422,7 @@ jobs:
                   "migrations/156_u2_organism_runtime_snapshot_minimum_grants.sql",
                   "migrations/157_u2_organism_goal_proposals.sql",
                   "migrations/158_u2_durable_event_provenance.sql",
+                  "migrations/166_u2_platform_state_snapshots.sql",
               ):
                   migration_sql = Path(migration_path).read_text(encoding="utf-8")
                   migration_sql = "\n".join(
@@ -418,6 +436,7 @@ jobs:
                       "075_u1_shared_event_delivery_metrics.sql",
                       "155_u2_organism_runtime_snapshots.sql",
                       "157_u2_organism_goal_proposals.sql",
+                      "166_u2_platform_state_snapshots.sql",
                   )):
                       connection.execute(migration_sql, prepare=False)
                   else:
@@ -502,6 +521,13 @@ jobs:
             tests/test_facebook_connector_tenant_health.py \
             tests/test_v69_tenant_facebook_connector_factory.py \
             tests/architecture/test_vnext_connector_fabric_evidence_read_model.py
+            tests/test_platform_state.py \
+            tests/test_platform_state_health.py \
+            tests/test_platform_state_store.py \
+            tests/test_platform_state_publisher.py \
+            tests/test_platform_state_reader.py \
+            tests/test_director_platform_state.py \
+            tests/test_platform_state_migration_postgres.py
 
 # Keep U2 goal bootstrap and signed-event integration tests in the focused CI gate.
 
