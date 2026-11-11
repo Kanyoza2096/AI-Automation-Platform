@@ -878,3 +878,18 @@ If reachable from production, this alternate method could bypass durable run fen
 **Finding:** a durable governed coordinator exists, but the source also exposes an alternate local execution method. Production reachability is unresolved; this is a high-priority Gate 0 blocker before implementation or authority migration.
 
 **Status:** V71.13 → V71.17 → V71.10 canonical path traced; V71.9 alternate path identified; full caller inventory and live reachability remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No code, test, database, credential or deployment operation was performed.
+
+
+## 22. Correction: canonical V71.10 → V71.9 delegation and transition gap
+
+A deeper inspection of V71.10 lines 288–319 and V71.9 lines 293–352 corrects the preliminary alternate-path interpretation recorded in section 21.
+
+**Actual canonical call chain:** V71.17 claims a durable lease and validates the durable snapshot/manifest/objective. V71.10 `execute_claimed` reloads the durable run, assigns that snapshot into the V71.9 operations registry, and deliberately invokes `operations.execute(...)`. V71.9 performs governance admission, sets local RUNNING state, optionally reserves budget, invokes `run_catalog_workflow`, finalizes the budget reservation conservatively, and sets local terminal state. V71.10 then performs lease-bound durable COMPLETED finalization; on exception it attempts lease-bound FAILED finalization. V71.9 is therefore the governed execution delegate in the canonical path, not a proven bypass or competing executor.
+
+**Remaining convergence gap:** V71.9's intermediate and terminal registry mutations are process-local. V71.10's durable row is finalized after the delegated call. If the process dies after an external side effect but before durable finalization, the durable run may remain RUNNING until lease expiry/reconciliation, while V71.9's local state is lost. The reservation may be committed conservatively, but that alone does not prove whether the Action Kernel/outbox side effect occurred. Reconciliation must inspect durable execution receipts/outbox evidence before any retry.
+
+**Call-surface finding:** V71.9 `execute` is directly callable as a Python method, but GitHub code-search results were insufficient to establish every caller. Its use inside V71.10 is confirmed; direct production invocation elsewhere is not confirmed or ruled out. Do not remove or prohibit V71.9: preserve its governed delegate role and constrain production invocation through V71.10's lease-owned path.
+
+**Required tests:** inject process termination after lease claim, after reservation, before workflow entry, after Action Kernel/outbox acceptance, after V71.9 local completion, and before V71.10 finalization. Assert lease fencing, reservation idempotency, outbox receipt reconciliation, no blind replay, and authoritative terminal state. Also test direct-call reachability from production route/job composition.
+
+**Status:** canonical V71.17 → V71.10 → V71.9 call chain confirmed. Intermediate transition durability and all-caller reachability remain unresolved. Section 21's preliminary alternate-path characterization is superseded by this correction. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, tests, database, credentials or deployments were changed.
