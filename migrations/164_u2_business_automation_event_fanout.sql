@@ -24,8 +24,19 @@ BEGIN
         FROM public.business_automation_rules AS rule
         WHERE rule.workspace_id = NEW.workspace_id
           AND rule.enabled IS TRUE
-          AND pg_catalog.jsonb_typeof(rule.parameters -> 'trigger_events') = 'array'
-          AND (rule.parameters -> 'trigger_events') ? NEW.event_type
+          AND (
+              (
+                  pg_catalog.jsonb_typeof(rule.parameters -> 'trigger_events') = 'array'
+                  AND (
+                      (rule.parameters -> 'trigger_events') ? NEW.event_type
+                      OR (rule.parameters -> 'trigger_events') ? '*'
+                  )
+              )
+              OR (
+                  pg_catalog.jsonb_typeof(rule.parameters -> 'trigger_events') = 'string'
+                  AND (rule.parameters ->> 'trigger_events') IN (NEW.event_type, '*')
+              )
+          )
     ) THEN
         INSERT INTO public.event_deliveries (
             event_id,
