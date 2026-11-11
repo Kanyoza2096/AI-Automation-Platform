@@ -1016,3 +1016,34 @@ Correction after exact source re-read: `_ensure_delivery` does include both `eve
 A line-by-line re-read of `SharedEventBus._ensure_delivery` confirms the fallback lookup filters on both `event_id` and `consumer_group`. The earlier suspected missing consumer-group predicate is withdrawn. The broader exception catch around the insert remains a hardening opportunity, but it is not evidence of cross-consumer receipt confusion.
 
 The exact source also confirms `SharedEventBus.poll` only creates delivery rows for `self.source_service` and only for event types with registered handlers. The Business Automation bridge separately polls `consumer_group=business_automation` and is not itself registered as a SharedEventBus handler in the inspected composition; it subscribes to `UnifiedEventBus`. No migration trigger or explicit producer for the `business_automation` group was found in the inspected migration 037/040/062 and bridge paths. This strengthens the source-level concern that the durable inbox may not be fed by this topology, but remains unconfirmed without complete repository/migration and live staging inspection.
+
+
+### 26.6 Live staging verification — 2026-11-11 (read-only)
+
+Target was explicitly restricted to Supabase project `kdo-engineering-staging` (ref `kkzshurcmcptleyqjgzo`) and Render service `kdo-engineering-staging` (`srv-dbl0mn9srm7s73bcguug`). No production project/service was queried.
+
+**Database evidence:**
+- Applied migration history contains `staging_durable_event_delivery_fenced_019_037_040_062`, `kdo_event_handler_delivery_receipts_001`, `staging_events_contract_columns_sync_trigger`, `074_u1_shared_event_delivery_retry_dead_letter`, and `075_u1_shared_event_delivery_metrics`.
+- Live schema contains `events` (5,861 rows), `event_deliveries` (0 rows), and `event_handler_deliveries` (0 rows). The latter two are RLS-enabled and have the expected event foreign keys; `event_deliveries` has attempt/retry/dead-letter columns. `business_automation_executions` currently has 0 rows.
+- The 5,861 persisted events are real activity, not an empty event store: source counts include `meta_engine` 4,524, `director` 930 and `synapses` 167. Latest observed event timestamp was 2026-11-11 09:11:22 UTC.
+- Live `events` has a contract-column synchronization trigger only; no event-to-delivery fan-out trigger was present. `event_handler_deliveries` is backend-only by grants and RLS; the queried policy list returned no row policies for that table. `event_deliveries` has an authenticated workspace-member SELECT policy; mutation remains backend/service-role territory under RLS.
+- Live definitions exist for `claim_business_automation_event_deliveries`, `complete_business_automation_event_delivery`, and `complete_shared_event_delivery`. Both Business Automation RPCs are SECURITY DEFINER, owned by postgres; keep their service-role-only execute grants and inspect the full effective ACL before any security change.
+- Grouped live queries returned no delivery-group or handler-group rows at all. Thus the Business Automation group is not merely behind; there are no durable group receipts in this staging database at inspection time.
+
+**Render evidence:**
+- Staging service is active, branch `staging`, auto-deploy disabled, and remains unchanged.
+- Three observed web process boots on 2026-11-11 logged `Boot sequence mode: full`.
+- Those boots logged `BusinessAutomationEventBridge ... wired durable_inbox=True`, so the bridge's database polling loop was enabled.
+- No `SharedEventBus ready` log was found in the inspected 2026-11-11 staging app-log window.
+- Source `lifecycle.py` adds the SharedEventBus boot step only for modes `workers`, `director`, `meta`, `condition`, `monitor`, and `github`; it omits `full`. The staging web service runs `full`. Its Procfile sibling `worker` is the separate KDO engineering build-worker entrypoint, which is inert unless explicitly enabled; it is not a platform lifecycle `SERVICE_MODE=workers` process.
+
+**Confirmed staging diagnosis:** the Business Automation durable inbox is enabled and polling, but its delivery table is empty. The staging full-mode lifecycle does not boot SharedEventBus, so the expected fan-out consumer is not running in that process. Separately, even where SharedEventBus is booted, its inspected fan-out creates rows only for its configured `source_service`, while Business Automation claims the fixed group `business_automation`; no explicit producer/adapter for that group was found. The source and live evidence together confirm a real delivery-provisioning gap in staging, not a database migration absence.
+
+**Design requirements before runtime implementation:**
+1. Define one authoritative durable fan-out contract that provisions every required consumer group, including `business_automation`, from persisted events; do not depend on the API web process being a particular SERVICE_MODE.
+2. Make consumer registration explicit and startup-validated. A bridge must not report durable inbox ready unless a producer is proven to feed its consumer group.
+3. Decide whether SharedEventBus belongs in the full web lifecycle, a dedicated platform worker mode, or a separately supervised service; do not conflate it with the isolated engineering build worker.
+4. Preserve the separate at-least-once per-handler receipt/lease model and existing retry/dead-letter controls; do not replay uncertain external effects blindly.
+5. Add a staging verification that publishes a non-consequential test event, proves the expected group and handler receipts appear, restarts the consumer, and proves completed receipts are not re-executed. Keep the test isolated from production and external providers.
+
+Only read-only database/catalog queries and Render service/log reads were performed. No table rows, schemas, migrations, environment variables, code, deployments, or production resources were changed. This evidence upgrades the event-delivery finding from source-level concern to **confirmed staging operational gap**; Gate 0 overall remains **PARTIALLY COMPLETE**.
