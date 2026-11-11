@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from core.platform_state import (
     CapabilityState,
+    ObserverObservation,
     PlatformStateSnapshot,
     Readiness,
     ServiceState,
@@ -57,6 +58,15 @@ def test_reader_exposes_service_and_capability_without_write_api():
                 evidence=(),
             ),
         ),
+        observer_observations=(
+            ObserverObservation(
+                service_id="director",
+                observer_id="meta_engine",
+                readiness=Readiness.DEGRADED,
+                observed_at=NOW,
+                source_version="meta-v7.1",
+            ),
+        ),
         capabilities=(
             CapabilityState(
                 capability_id="strategic_planning",
@@ -81,6 +91,10 @@ def test_reader_exposes_service_and_capability_without_write_api():
 
     assert service is not None and service.readiness is Readiness.DEGRADED
     assert capability is not None and capability.readiness is Readiness.DEGRADED
+    restored = asyncio.run(reader.get_snapshot())
+    assert restored is not None
+    assert restored.observer_observations[0].observer_id == "meta_engine"
+    assert restored.observer_observations[0].readiness is Readiness.DEGRADED
     assert not hasattr(reader, "save")
 
 
