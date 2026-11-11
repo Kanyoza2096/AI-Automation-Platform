@@ -110,4 +110,5 @@ def test_event_fanout_migration_is_workspace_scoped_and_idempotent():
     assert "ON CONFLICT (event_id, consumer_group) DO NOTHING" in migration
     assert "'business_automation'" in migration
     assert "business_automation_event_fanout_ready" in migration
+    assert "trigger_row.tgfoid = 'public.fanout_business_automation_event_delivery()'::regprocedure" in migration
     assert "does not backfill historical events" in migration
