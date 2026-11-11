@@ -99,6 +99,9 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     allowed = {"step_id", "capability", "sector", "objective", "depends_on",
                "acceptance_criteria", "deliverables", "rationale",
                "criterion_refs", "evidence_refs"}
+    available_evidence_refs = set(
+        _planner_context(context).get("evidence", {}).get("reference_ids", [])
+    )
     steps = []
     for raw in raw_steps:
         if not isinstance(raw, Mapping) or set(raw) - allowed:
@@ -131,6 +134,10 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
             not isinstance(value, str) or not value.strip() for value in evidence_refs
         ):
             raise StrategicPlanningError("plan_evidence_refs_invalid")
+        normalized_evidence_refs = [value.strip() for value in evidence_refs]
+        if (len(normalized_evidence_refs) != len(set(normalized_evidence_refs))
+                or not set(normalized_evidence_refs).issubset(available_evidence_refs)):
+            raise StrategicPlanningError("plan_references_unknown_evidence")
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
             "sector": sector.strip(), "objective": step_objective.strip(),
@@ -138,7 +145,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
             "acceptance_criteria": _strings(raw.get("acceptance_criteria"), "step_acceptance_criteria"),
             "deliverables": _strings(raw.get("deliverables"), "step_deliverables"),
             "criterion_refs": [value.strip() for value in criterion_refs],
-            "evidence_refs": [value.strip() for value in evidence_refs],
+            "evidence_refs": normalized_evidence_refs,
             "rationale": rationale.strip(),
             "capability_readiness": {
                 "enabled": bool(capability.get("enabled")),
@@ -323,6 +330,27 @@ def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
         compact["evidence"]["unknowns"] = compact["evidence"]["unknowns"][:5]
         compact["capabilities"] = compact["capabilities"][:25]
         compact["missions"]["recent_tasks"] = compact["missions"]["recent_tasks"][:5]
+
+    # Rebuild references after trimming: the model must not cite evidence
+    # that was removed from the prompt-size-bounded context.
+    bounded_evidence = compact["evidence"]
+    reference_ids = []
+    for item in bounded_evidence["facts"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str):
+            reference_ids.append(f"fact:{item['observer']}")
+    for item in bounded_evidence["inferences"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("issue_type"), str):
+            reference_ids.append(f"inference:{item['observer']}:{item['issue_type']}")
+    for item in bounded_evidence["unknowns"]:
+        if isinstance(item, Mapping) and isinstance(item.get("kind"), str):
+            reference_ids.append(f"unknown:{item['kind']}:{item.get('observer', 'platform')}")
+    for item in bounded_evidence["conflicts"]:
+        if isinstance(item, Mapping) and isinstance(item.get("sector"), str):
+            reference_ids.append(f"conflict:{item['sector']}")
+    for item in bounded_evidence["engine_signals"]["accepted"]:
+        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("capability"), str):
+            reference_ids.append(f"signal:{item['observer']}:{item['capability']}")
+    compact["evidence"]["reference_ids"] = reference_ids
     return compact
 
 
