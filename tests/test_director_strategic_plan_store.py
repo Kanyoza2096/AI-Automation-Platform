@@ -88,5 +88,5 @@ def test_strategic_plan_reader_keeps_legacy_json_string_compatibility():
     client.rows[plan["plan_id"]] = {"payload": json.dumps(plan)}
     store = AsyncSupabaseStore(client)
 
-    assert store.get_strategic_plan(plan["plan_id"]) == plan
-    assert store.list_strategic_plans() == [plan]
+    assert asyncio.run(store.get_strategic_plan(plan["plan_id"])) == plan
+    assert asyncio.run(store.list_strategic_plans()) == [plan]
