@@ -7,7 +7,7 @@ def test_complete_structured_prefers_provider_parsed_data():
     gateway.complete = lambda *args, **kwargs: IntelligenceResult(
         ok=True,
         mode=IntelligenceMode.FULL,
-        text="not-json-but-provider-returned-validated-structured-data",
+        text="not-json-but-provider-returned-parsed-structured-data",
         data=expected,
         provider="gemini",
         finish_reason="stop",
