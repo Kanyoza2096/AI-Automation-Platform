@@ -6,12 +6,14 @@ canonical dependency graph remains the sole dependency declaration.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
 from core.platform_state import (
     EvidenceRef,
+    ObserverObservation,
     PlatformStateSnapshot,
     Readiness,
     ServiceManifest,
@@ -34,6 +36,7 @@ _STATUS_MAP = {
     "stopped": Readiness.UNAVAILABLE,
     "unknown": Readiness.UNKNOWN,
     "starting": Readiness.UNKNOWN,
+    "stale": Readiness.STALE,
 }
 
 
@@ -173,12 +176,63 @@ def build_platform_state_from_health_reports(
             evidence=(evidence,),
         ))
 
-    return build_platform_state(
+    # Meta Engine is an independent supervisor, not the owner of the services
+    # it observes. Preserve its per-engine assessments as advisory evidence;
+    # they must never promote or replace an owner's readiness observation.
+    current = now or datetime.now(timezone.utc)
+    meta_report = reports.get("meta_engine")
+    meta_metadata = _field(meta_report, "metadata", {})
+    if not isinstance(meta_metadata, Mapping):
+        meta_metadata = {}
+    observer_observations: list[ObserverObservation] = []
+    raw_meta_observations = meta_metadata.get("engine_observations", ())
+    if isinstance(raw_meta_observations, (list, tuple)):
+        for item in raw_meta_observations:
+            if not isinstance(item, Mapping):
+                continue
+            service_id = str(item.get("service_id") or "").strip()
+            if not service_id or service_id == "meta_engine" or service_id not in dependencies:
+                continue
+            observed_at = _timestamp(item.get("observed_at"))
+            if observed_at is None:
+                continue
+            raw_status = str(item.get("status") or "unknown").strip().lower()
+            readiness = _STATUS_MAP.get(raw_status, Readiness.UNKNOWN)
+            if observed_at > current + timedelta(seconds=30):
+                readiness = Readiness.UNKNOWN
+            elif current - observed_at > stale_after:
+                readiness = Readiness.STALE
+            source_version = str(item.get("source_version") or meta_metadata.get("version") or "meta-engine-observer-v1")
+            correlation_id = item.get("correlation_id") or _field(meta_report, "correlation_id")
+            evidence = EvidenceRef(
+                source="meta_engine:engine_health",
+                observed_at=observed_at,
+                source_version=source_version,
+                correlation_id=str(correlation_id) if correlation_id else None,
+            )
+            observer_observations.append(ObserverObservation(
+                service_id=service_id,
+                observer_id="meta_engine",
+                readiness=readiness,
+                observed_at=observed_at,
+                source_version=source_version,
+                evidence=(evidence,),
+                correlation_id=str(correlation_id) if correlation_id else None,
+            ))
+
+    snapshot = build_platform_state(
         manifests,
         observations,
         previous_revision=previous_revision,
-        now=now,
+        now=current,
         stale_after=stale_after,
+    )
+    return replace(
+        snapshot,
+        observer_observations=tuple(sorted(
+            observer_observations,
+            key=lambda item: (item.service_id, item.observer_id),
+        )),
     )
 
 
