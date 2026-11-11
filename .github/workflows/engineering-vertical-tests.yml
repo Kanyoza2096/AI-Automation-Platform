@@ -444,6 +444,7 @@ jobs:
         run: |
           python -m pytest -q \
             tests/test_director_plan_verifier.py \
+            tests/test_director_strategic_planning.py \
             tests/engineering_vertical/test_phase16_2_workflow.py \
             tests/engineering_vertical/test_phase16_3_worker_queue.py \
             tests/engineering_vertical/test_worker_runtime.py \
