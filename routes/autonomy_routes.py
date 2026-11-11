@@ -97,7 +97,6 @@ def _loop():
 
 
 def _resolve_mode(loop) -> str:
-    global _governance_mode
     if _governance_mode == "EMERGENCY_LOCKDOWN":
         return "EMERGENCY_LOCKDOWN"
     if loop is None:
