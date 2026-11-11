@@ -15,6 +15,9 @@ from plugins.base import Plugin
 if TYPE_CHECKING:
     from repositories.social_account_repository import SocialAccountRepository
 
+if TYPE_CHECKING:
+    from repositories.social_account_repository import SocialAccountRepository
+
 logger = logging.getLogger("kanyoza.plugins.twitter")
 
 # Twitter OAuth 2.0 endpoints
