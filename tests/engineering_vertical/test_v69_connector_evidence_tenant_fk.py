@@ -314,7 +314,7 @@ def test_resource_binding_trigger_function_has_no_direct_execute_grants():
                     'public.validate_integration_connection_resource_binding()', 'EXECUTE'),
                 EXISTS (
                     SELECT 1 FROM pg_trigger
-                    WHERE tgname = 'integration_connections_resource_binding_guard'
+                    WHERE tgname = 'trg_integration_connection_resource_binding'
                       AND NOT tgisinternal
                 )
             """
