@@ -77,8 +77,7 @@ class EventRecorder:
             except Exception:
                 logger.exception("EventRecorder: failed to remove event subscription")
 
-    @staticmethod
-    def _make_handler(event_type: EventType):
+    def _make_handler(self, event_type: EventType):
         def handle(event_data, **_metadata) -> None:
             # UnifiedEventBus invokes handlers with an envelope containing
             # event metadata and the original domain payload.
@@ -100,13 +99,13 @@ class EventRecorder:
                 **event_kwargs,
             )
             if event_type == EventType.POST_PUBLISHED:
-                EventRecorder._handle_post_published_from(event)
+                self._handle_post_published_from(event)
             elif event_type == EventType.POST_GENERATED:
-                EventRecorder._handle_post_generated_from(event)
+                self._handle_post_generated_from(event)
             elif event_type == EventType.SCAN_COMPLETED:
-                EventRecorder._handle_scan_completed_from(event)
+                self._handle_scan_completed_from(event)
             else:
-                EventRecorder._handle_message_from(event)
+                self._handle_message_from(event)
 
         return handle
 
