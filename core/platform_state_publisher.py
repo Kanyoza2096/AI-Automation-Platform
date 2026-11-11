@@ -55,8 +55,13 @@ class PlatformStatePublisher:
         current: PlatformStateSnapshot,
     ) -> tuple[list[str], list[str]]:
         if previous is None:
+            changed_services = {
+                item.service_id for item in current.services
+            } | {
+                item.service_id for item in current.observer_observations
+            }
             return (
-                sorted(item.service_id for item in current.services),
+                sorted(changed_services),
                 sorted(item.capability_id for item in current.capabilities),
             )
         old_services = {item.service_id: item for item in previous.services}
@@ -71,7 +76,20 @@ class PlatformStatePublisher:
             key for key in old_capabilities.keys() | new_capabilities.keys()
             if old_capabilities.get(key) != new_capabilities.get(key)
         )
-        return service_ids, capability_ids
+        old_observers = {
+            (item.service_id, item.observer_id): item
+            for item in previous.observer_observations
+        }
+        new_observers = {
+            (item.service_id, item.observer_id): item
+            for item in current.observer_observations
+        }
+        observer_changed_services = {
+            service_id
+            for service_id, _observer_id in old_observers.keys() | new_observers.keys()
+            if old_observers.get((service_id, _observer_id)) != new_observers.get((service_id, _observer_id))
+        }
+        return sorted(set(service_ids) | observer_changed_services), capability_ids
 
     async def publish(self, candidate: PlatformStateSnapshot) -> PlatformStateSnapshot:
         """Persist the latest facts and emit a durable revision notification.
