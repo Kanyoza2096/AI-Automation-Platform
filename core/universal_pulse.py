@@ -344,7 +344,6 @@ universal_pulse = UniversalPulseMonitor()
 
 async def init_universal_pulse(container=None, event_bus=None, supabase=None) -> UniversalPulseMonitor:
     """Initialize universal pulse monitor."""
-    global universal_pulse
     universal_pulse._container = container
     universal_pulse._event_bus = event_bus
     universal_pulse._supabase = supabase
@@ -370,7 +369,6 @@ __all__ = [
 _pulse_singleton = None
 
 def get_universal_pulse():
-    global _pulse_singleton
     if _pulse_singleton is not None:
         return _pulse_singleton
     return globals().get("universal_pulse")
