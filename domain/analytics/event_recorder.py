@@ -33,18 +33,20 @@ class EventRecorder:
             if self._started:
                 return
 
-            event_types = (
-                EventType.POST_PUBLISHED,
-                EventType.POST_GENERATED,
-                EventType.SCAN_COMPLETED,
-                EventType.MESSAGE_RECEIVED,
-                EventType.MESSAGE_SENT,
+            event_subscriptions = (
+                (EventType.POST_PUBLISHED.value, EventType.POST_PUBLISHED),
+                # The existing content pipeline still emits this legacy alias.
+                ("post_published", EventType.POST_PUBLISHED),
+                (EventType.POST_GENERATED.value, EventType.POST_GENERATED),
+                (EventType.SCAN_COMPLETED.value, EventType.SCAN_COMPLETED),
+                (EventType.MESSAGE_RECEIVED.value, EventType.MESSAGE_RECEIVED),
+                (EventType.MESSAGE_SENT.value, EventType.MESSAGE_SENT),
             )
             registered: list[Callable[[], None]] = []
             try:
-                for event_type in event_types:
+                for event_name, event_type in event_subscriptions:
                     unsubscribe = await self._bus.subscribe(
-                        event_type.value,
+                        event_name,
                         self._make_handler(event_type),
                     )
                     if not callable(unsubscribe):
