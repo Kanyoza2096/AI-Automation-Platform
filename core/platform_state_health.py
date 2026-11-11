@@ -1,0 +1,156 @@
+"""Read-only adapter from the existing health registry to Platform State.
+
+It consumes only the registry's last published HealthReport snapshot. It never
+starts probes, reads providers directly, or writes to persistence. The
+canonical dependency graph remains the sole dependency declaration.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
+
+from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
+from core.platform_state import (
+    EvidenceRef,
+    PlatformStateSnapshot,
+    Readiness,
+    ServiceManifest,
+    ServiceObservation,
+    build_platform_state,
+)
+
+
+_STATUS_MAP = {
+    "healthy": Readiness.HEALTHY,
+    "nominal": Readiness.HEALTHY,
+    "ok": Readiness.HEALTHY,
+    "ready": Readiness.HEALTHY,
+    "running": Readiness.HEALTHY,
+    "degraded": Readiness.DEGRADED,
+    "unhealthy": Readiness.UNAVAILABLE,
+    "offline": Readiness.UNAVAILABLE,
+    "failed": Readiness.UNAVAILABLE,
+    "critical": Readiness.UNAVAILABLE,
+    "stopped": Readiness.UNAVAILABLE,
+    "unknown": Readiness.UNKNOWN,
+    "starting": Readiness.UNKNOWN,
+}
+
+
+def _field(report: Any, name: str, default: Any = None) -> Any:
+    if isinstance(report, Mapping):
+        return report.get(name, default)
+    return getattr(report, name, default)
+
+
+def _timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _readiness(report: Any) -> Readiness:
+    raw = _field(report, "status")
+    value = getattr(raw, "value", raw)
+    return _STATUS_MAP.get(str(value or "unknown").strip().lower(), Readiness.UNKNOWN)
+
+
+def build_platform_state_from_health_reports(
+    reports: Mapping[str, Any],
+    *,
+    previous_revision: int = 0,
+    now: datetime | None = None,
+    stale_after: timedelta = timedelta(minutes=5),
+    dependencies: Mapping[str, tuple[str, ...]] = CANONICAL_ENGINE_DEPENDENCIES,
+) -> PlatformStateSnapshot:
+    """Build a conservative projection from owner-named health reports.
+
+    Only exact canonical service names are accepted. The health provider's
+    service_name must match its registry key, which prevents accidental
+    aliasing from attributing one provider's report to another service.
+    """
+    manifests = tuple(
+        ServiceManifest(
+            service_id=service_id,
+            owner=service_id,
+            dependencies=tuple(required),
+        )
+        for service_id, required in dependencies.items()
+    )
+    observations: list[ServiceObservation] = []
+    for service_id, report in reports.items():
+        manifest_owner = service_id if service_id in dependencies else None
+        if manifest_owner is None:
+            continue
+        reported_name = str(_field(report, "service_name", service_id) or "")
+        if reported_name != service_id:
+            continue
+        observed_at = _timestamp(_field(report, "checked_at"))
+        if observed_at is None:
+            continue
+        correlation_id = _field(report, "correlation_id")
+        metadata = _field(report, "metadata", {})
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        source_version = str(metadata.get("version") or "health-report-v1")
+        evidence = EvidenceRef(
+            source=f"health_registry:{service_id}",
+            observed_at=observed_at,
+            source_version=source_version,
+            correlation_id=str(correlation_id) if correlation_id else None,
+        )
+        observations.append(ServiceObservation(
+            service_id=service_id,
+            owner=manifest_owner,
+            readiness=_readiness(report),
+            observed_at=observed_at,
+            source_version=source_version,
+            evidence=(evidence,),
+            correlation_id=str(correlation_id) if correlation_id else None,
+        ))
+
+    return build_platform_state(
+        manifests,
+        observations,
+        previous_revision=previous_revision,
+        now=now,
+        stale_after=stale_after,
+    )
+
+
+def read_platform_state_from_health_registry(
+    *,
+    registry: Any = None,
+    previous_revision: int = 0,
+    now: datetime | None = None,
+    stale_after: timedelta = timedelta(minutes=5),
+) -> PlatformStateSnapshot:
+    """Read the cached health snapshot without triggering any health probes."""
+    if registry is None:
+        from lifecycle import health_registry as registry
+    reader = getattr(registry, "read_snapshot", None)
+    if not callable(reader):
+        raise RuntimeError("health_registry_cached_snapshot_unavailable")
+    reports = reader()
+    if not isinstance(reports, Mapping):
+        raise RuntimeError("health_registry_snapshot_invalid")
+    return build_platform_state_from_health_reports(
+        reports,
+        previous_revision=previous_revision,
+        now=now,
+        stale_after=stale_after,
+    )
+
+
+__all__ = [
+    "build_platform_state_from_health_reports",
+    "read_platform_state_from_health_registry",
+]
