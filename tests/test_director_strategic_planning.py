@@ -26,7 +26,10 @@ def generated_plan():
                 "capability": "review_content_quality",
                 "sector": "content",
                 "objective": "Review the evidence behind the quality gap.",
+                "target": "Current content quality observations and source reports",
                 "depends_on": [],
+                "evidence_refs": ["unknown:0"],
+                "verification_method": "Compare current observer reports with the stated quality criteria and record any missing baseline.",
                 "acceptance_criteria": ["A quality review is supported by current evidence."],
                 "deliverables": ["Evidence-linked quality assessment"],
                 "rationale": "A diagnosis should precede schedule changes.",
@@ -36,7 +39,10 @@ def generated_plan():
                 "capability": "optimize_content_schedule",
                 "sector": "content",
                 "objective": "Recommend a schedule optimization based on the review.",
+                "target": "Brand scheduler configuration and verified quality assessment",
                 "depends_on": ["review"],
+                "evidence_refs": ["unknown:0"],
+                "verification_method": "Trace each proposed adjustment to the completed quality assessment and identify the scheduler-owned review required before change.",
                 "acceptance_criteria": ["A recommendation is supported by the review."],
                 "deliverables": ["Schedule recommendation"],
                 "rationale": "Schedule changes are owned by the brand scheduler.",
@@ -60,6 +66,9 @@ def test_director_plans_objective_with_bounded_context_and_no_execution():
     assert plan["step_count"] == 2
     assert plan["dependency_edge_count"] == 1
     assert plan["steps"][1]["depends_on"] == ["review"]
+    assert plan["steps"][0]["evidence_refs"] == ["unknown:0"]
+    assert plan["steps"][0]["target"]
+    assert plan["steps"][0]["verification_method"]
     assert all(step["authority"] == "none" for step in plan["steps"])
     assert all(step["capability_readiness"]["disposition"] == "advisory_only_capability_not_ready" for step in plan["steps"])
     assert plan["advisory_only"] is True
@@ -95,6 +104,15 @@ def test_director_rejects_invalid_or_unsafe_planner_output(mutate, error):
     director = Director(supabase_client=None, strategic_planner=lambda **kwargs: candidate)
 
     with pytest.raises(StrategicPlanningError, match=error):
+        director.plan_objective(objective())
+
+
+def test_director_rejects_evidence_references_not_present_in_context():
+    candidate = deepcopy(generated_plan())
+    candidate["steps"][0]["evidence_refs"] = ["fact:999"]
+    director = Director(supabase_client=None, strategic_planner=lambda **kwargs: candidate)
+
+    with pytest.raises(StrategicPlanningError, match="plan_references_unknown_evidence"):
         director.plan_objective(objective())
 
 
@@ -172,9 +190,14 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert "brand scheduler" in prompt.lower()
     assert "summary (string) and steps (array)" in prompt
     assert "Do not rename steps to plan, actions" in prompt
+    assert "evidence_index" in prompt
+    assert "evidence_refs" in prompt
+    assert "read-only source inventory" in prompt
+    assert "verification_method" in prompt
     for field in (
-        "step_id", "capability", "sector", "objective", "depends_on",
-        "acceptance_criteria", "deliverables", "rationale",
+        "step_id", "capability", "sector", "objective", "target", "depends_on",
+        "evidence_refs", "verification_method", "acceptance_criteria",
+        "deliverables", "rationale",
     ):
         assert field in prompt
 
