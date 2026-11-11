@@ -1,4 +1,10 @@
 -- U2: stale Business Automation reservations require reconciliation.
+-- A reservation is unfinished while status='started'. The original schema
+-- incorrectly required finished_at for every row; allow NULL until a terminal
+-- state is persisted. Stale reservations moved to uncertain receive a finish time.
+ALTER TABLE public.business_automation_executions
+  ALTER COLUMN finished_at DROP NOT NULL;
+
 --
 -- Elapsed time is not proof that an external side effect did not occur.
 -- A worker may have completed a provider action and crashed before persisting
