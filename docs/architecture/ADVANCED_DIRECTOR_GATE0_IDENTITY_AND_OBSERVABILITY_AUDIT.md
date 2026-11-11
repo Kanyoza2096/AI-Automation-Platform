@@ -1004,7 +1004,7 @@ Correction after exact source re-read: `_ensure_delivery` does include both `eve
 - Verify web/worker process modes and confirm which process creates the Business Automation delivery rows; test restart and backfill from persisted events.
 - Verify that the live UnifiedEventBus subscriber and durable inbox can race safely via the same execution identity, and that the rule reservation's stale-reclaim defect is corrected before any retry can re-enter consequential work.
 - Verify SharedEventBus lease fencing, per-handler receipt DDL/RPCs, retry schedule, dead-letter transitions and RLS against the full migration chain and actual staging schema.
-- Fix `_ensure_delivery`'s existing-row lookup to include consumer group and fail closed on non-unique-violation errors.
+- Narrow `_ensure_delivery`'s insert exception handling so only a unique-conflict path is treated as an idempotent race; transport, schema and permission errors must remain visible.
 - Test crash points: after event persistence, before delivery row creation; after group claim, before handler; after provider side effect, before handler receipt; after handler receipt, before group completion.
 - Keep V69 business-event fabric distinct until its storage, routing, idempotency and authority adapters are explicitly integrated.
 
