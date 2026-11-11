@@ -261,7 +261,12 @@ The five strategic capabilities operate with a cross-cutting identity, agent-gov
 - Map existing state stores, event producers/consumers, manifests, capability catalog, Council, DecisionGate, workforce admission, and Action Kernel.
 - Identify the canonical owner for each data field and capability.
 - Record gaps and duplicate contracts before proposing code.
-- **Exit:** reviewed component map and no unresolved ownership conflicts.
+- Inventory every legacy `is_species` / `species_privileges` consumer, master/Python service-token path, and platform-scope bypass; classify runtime, test, migration, documentation, and historical matches.
+- Map each runtime consumer to a named workload scope, human role, or explicit removal while preserving tenant/workspace isolation and AI Software Engineering / Code Intelligence access.
+- Reconcile the source-derived actor list against actual Render services, scheduled jobs, queue workers, and environment bindings; distinguish service manifests, agent principals, and capability grants.
+- Inspect every Director dispatch path and downstream handler; verify the installed trace exporter/collector and evidence retention.
+- Produce a reviewed consumer-to-scope migration matrix and rollback plan before implementation.
+- **Exit:** reviewed component map, runtime-confirmed actor inventory, complete consumer-to-scope matrix, trace-path map, rollback plan, and no unresolved ownership conflicts.
 
 ### Gate 1 — platform_state contract
 - Define the state schema, provenance model, freshness rules, scope rules, and reconciliation contract.
