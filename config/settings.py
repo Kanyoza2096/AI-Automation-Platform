@@ -89,8 +89,8 @@ class Settings(BaseSettings):
     default_workspace_id: str = Field(default="default")
     encryption_key: str = Field(
         default="",
-        description="Fernet encryption key for credential vault — REQUIRED in production. "
-                    "Generate: python -c \"import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())\"",
+        description="KDO-prefixed Fernet encryption key for credential vault — REQUIRED in production. "
+                    "Generate with CredentialVault.generate_key() (KDO_ENCRYPTION_ prefix).",
     )
     brand_name: str = Field(default="KAAP")
 
