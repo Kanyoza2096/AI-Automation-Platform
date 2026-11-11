@@ -797,7 +797,9 @@ A focused orchestration trace across V71.13, V71.17, V71.10 and V71.9 establishe
 **Required acceptance evidence:** prove all production callers enter V71.17; prove no route/job can invoke V71.9 direct execution in production; prove lease claim precedes workflow entry; prove stale lease fencing prevents finalize; prove reservation and run state reconcile after uncertain external side effects; and prove all blocked/error paths preserve durable state and audit evidence. No implementation or retirement is authorized by this proposal.
 
 
-### 3.17 Durable execution-path convergence and alternate-path isolation
+### 3.17 Superseded preliminary execution-path interpretation
+
+> **Superseded by section 3.18.** The following was an initial hypothesis and must not be used as the current architecture decision.
 
 A focused trace across V71.13, V71.17, V71.10 and V71.9 establishes that the codebase contains a durable governed execution path alongside a separate direct registry execution method. These are not interchangeable.
 
