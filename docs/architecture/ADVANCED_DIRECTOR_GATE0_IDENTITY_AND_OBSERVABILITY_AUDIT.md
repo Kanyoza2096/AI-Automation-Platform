@@ -756,3 +756,59 @@ This is a sample inventory from targeted searches, not an exhaustive count of al
 - Add integration tests for real DB write → restart → hydration, concurrent creation, cross-workspace denial, RLS, stale-cache revocation and secure credential rotation.
 
 **Decision status:** Gate 0 remains **PARTIALLY COMPLETE**. No live DB query, migration, code edit, test execution, credential rotation, deployment or production action occurred during this audit.
+
+
+## 19. Expanded V71 workforce writer, migration and recovery audit
+
+This focused pass inspected V71.3–V71.10 and V71.17–V71.18 service implementations, migrations 088–095, 097 and 100, plus the V71.21 atomic budget-reservation migration. It extends—but does not replace—the earlier selected-file audit. The repository search is not a guaranteed exhaustive grep, and live database state remains unverified.
+
+### Mutation and persistence matrix
+
+| Domain | Observed mutation/persistence path | Current convergence assessment |
+|---|---|---|
+| V71.3 memory | `remember` and `revoke` update the process-local `_memories` dictionary | V71.18 can hydrate `agent_memories`; no matching general durable writer found in the inspected registry |
+| V71.4 planning | `create_plan`, `assess` and `cancel` update process-local `_plans` | V71.18 hydrates `agent_plans`; write-through not established |
+| V71.5 evaluation | Evaluation creation updates process-local `_evaluations` | V71.18 hydrates `agent_evaluations`; write-through not established |
+| V71.6 budgets | Create, usage recording and status changes update process-local `_budgets` | Separate durable reservation facade exists; it does not make all budget definition/status mutations durable |
+| V71.7 takeover | Create, claim, resolve and cancel update process-local `_cases` | V71.18 hydrates `agent_human_takeover_cases`; durable human transition writer not established |
+| V71.8 coordination | Create, assess, complete and cancel update process-local `_requests` | V71.18 hydrates `agent_coordination_requests`; durable transition writer not established |
+| V71.9 autonomous operations | Run creation and state replacement update process-local `_runs` | V71.10 separately persists runs; integration must ensure the in-memory registry cannot be mistaken for authoritative durable state |
+| V71.10 durable runtime | Inserts `agent_autonomous_runs`; uses RPCs for claim, lease renewal, finalization and uncertain-run fencing | Dedicated durable lifecycle path; must be reconciled with V71.18 hydration and the execution ledger |
+| V71.17 execution | Claims/reads durable run state, validates governance manifest and delegates through existing governed workflow runtime | No separate general-purpose durable executor or authorization plane should be introduced |
+| V71.18 persistence | Reads nine tables by `workspace_id`, reconstructs objects and validates fingerprints | Hydration-only; does not write ordinary mutations or include budget reservations |
+| V71.21 budget reservations | SQL RPC facade reserves/finalizes/recoveries against `agent_budget_reservations` and aggregate budget counters | Separate durable ledger; absent from V71.18.TABLES and its hydration report |
+
+### Migration findings
+
+- Migrations 090–095 create memory, planning, evaluation, budget, takeover and coordination tables with workspace columns and lookup indexes. Their inspected DDL does not define RLS policies or general-purpose mutation RPCs.
+- Migrations 090–095 generally use globally unique record IDs as primary keys while carrying `workspace_id` as a separate column. Unlike V71.1's composite identity key, those tables do not consistently enforce workspace-scoped record identity at the primary-key level. The implications for tenant-safe uniqueness and foreign-key design require explicit review.
+- The inspected 090–095 DDL does not consistently declare foreign keys from memory/plans/evaluations/budgets/takeover/coordination records to the corresponding workspace and agent records. This is a statement about these files only.
+- Migration 097 adds run attempt/lease/reconciliation fields and SQL functions for claim, renew, finalize and uncertain-run marking. The functions revoke PUBLIC execution and grant `service_role`; the claim/renew/finalize functions use `SECURITY DEFINER`. Actual deployed ownership, grants, RLS interaction and transaction behavior were not queried.
+- Migration 100 adds workspace-oriented hydration indexes; it does not create write-through adapters.
+- Migration 111 adds reserved budget counters, the `agent_budget_reservations` table, a unique `(workspace_id, budget_id, run_id)` constraint and SQL reservation/finalization/recovery functions. The reservation table references `agent_budgets` by budget ID, but the inspected migration does not declare RLS policies. Expired reservations are marked `uncertain`, not automatically released; this is a safety-preserving state that requires reconciliation.
+- Migration 111's reservation state is not part of V71.18's `TABLES` list or hydration report. Therefore a clean V71.18 report cannot, by itself, establish complete budget-reservation recovery.
+
+### Important cross-domain risks
+
+1. **Memory/planning/evaluation are advisory data, not authority.** Their fingerprints detect record modification but are not signatures, credentials or authorization grants.
+2. **Budget definition and budget reservation are separate state.** The in-memory registry's usage/status methods are not equivalent to the distributed atomic reservation ledger. Both must converge without double-counting or silently releasing uncertain reservations.
+3. **Run recovery and side-effect recovery are separate.** V71.10 correctly treats an expired RUNNING lease as uncertain/reconciliation-required rather than blindly reclaiming it. V71.17 delegates consequential work to existing governed workflow/Action Kernel paths. Keep that invariant.
+4. **Hydration readiness is currently too narrow as a platform-level claim.** V71.18 checks its nine tables, but not the separate budget reservation ledger, worker lease ownership, execution ledger/outbox outcome or cross-process cache freshness.
+5. **Workspace filters are necessary but not sufficient.** Verify actual RLS, role grants, composite tenant constraints, foreign keys and service-role boundaries against the deployed database. Do not infer isolation solely from application query filters.
+6. **Global primary keys with workspace columns need deliberate treatment.** Define whether identifiers are globally unique or workspace-scoped; enforce that decision consistently across records, idempotency keys and foreign-key references.
+7. **Atomicity spans multiple subsystems.** Where a single SQL transaction cannot include an external workflow side effect, define an auditable state machine/saga with idempotency and reconciliation rather than pretending the entire action is one transaction.
+
+### Required convergence and acceptance tests
+
+- For each of the nine V71.18 table families: create/update/revoke/transition → durable read → process restart → hydration → exact object/fingerprint equality.
+- Verify that a persistence failure is surfaced and does not leave a false success response or an authoritative-looking in-memory-only mutation.
+- Run concurrent same-ID and same-workspace creation/update tests across independent processes; verify unique constraints, optimistic concurrency and idempotent retries.
+- Verify cross-workspace reads/writes are denied by both application predicates and live RLS/DB privileges.
+- Test onboarding-created identities through canonical fingerprint validation and restart hydration; separately verify that declared capabilities never create grants implicitly.
+- Exercise V71.10 concurrent claims, lease renewal, stale worker fencing, finalization, expired lease handling and duplicate RPC calls against a real staging database.
+- Exercise V71.21 concurrent reservations, idempotent reservation retries, claim-token mismatch, commit/release, expired-to-uncertain recovery, and reconciliation against run/execution-ledger outcomes.
+- Verify that no external side effect is repeated merely because a worker lease or budget reservation expired.
+- Verify cache invalidation/revocation visibility across web and worker processes and after a restart.
+- Include the reservation ledger and execution-ledger/outbox reconciliation in the definition of restart-safe status.
+
+**Decision status:** Gate 0 remains **PARTIALLY COMPLETE**. This is source and migration inspection only. No live Supabase schema/RLS query, RPC invocation, data write, migration, code change, test execution, credential operation, deployment or production action occurred.
