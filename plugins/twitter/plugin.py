@@ -8,9 +8,12 @@ Cross-posts content to Twitter/X via OAuth 2.0 Bearer token.
 import logging
 import time
 import requests
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from plugins.base import Plugin
+
+if TYPE_CHECKING:
+    from repositories.social_account_repository import SocialAccountRepository
 
 logger = logging.getLogger("kanyoza.plugins.twitter")
 
