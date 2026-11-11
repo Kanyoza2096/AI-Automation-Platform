@@ -786,7 +786,7 @@ The inspected V71.3–V71.9 registry methods write their process-local dictionar
 
 ### 3.17 Superseded preliminary execution-path interpretation
 
-> **Superseded by section 3.18.** This preliminary hypothesis is retained only for audit history and must not be used as the current architecture decision.
+> **Superseded by section 3.18.** The preliminary hypothesis has been removed to avoid presenting an incorrect execution topology. Use section 3.18 as the authoritative source-level conclusion.
 
 
 
