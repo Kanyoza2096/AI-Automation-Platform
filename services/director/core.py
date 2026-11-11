@@ -654,9 +654,21 @@ class Director:
                 "value",
                 str(getattr(item, "readiness", "unknown")),
             )
+            observer_freshness = freshness
+            if freshness == "fresh":
+                if not isinstance(observed, datetime) or observed.tzinfo is None:
+                    observer_freshness = "unknown"
+                else:
+                    observer_age = (
+                        now_utc - observed.astimezone(timezone.utc)
+                    ).total_seconds()
+                    if observer_age < -30:
+                        observer_freshness = "unknown"
+                    elif observer_age > max_age_seconds:
+                        observer_freshness = "stale"
             effective_readiness = (
-                reported_readiness if freshness == "fresh"
-                else ("stale" if freshness == "stale" else "unknown")
+                reported_readiness if observer_freshness == "fresh"
+                else ("stale" if observer_freshness == "stale" else "unknown")
             )
             evidence = []
             for ref in list(getattr(item, "evidence", ()) or ())[:2]:
@@ -669,7 +681,7 @@ class Director:
                 "observer_id": str(getattr(item, "observer_id", "unknown"))[:80],
                 "readiness": effective_readiness,
                 "reported_readiness": reported_readiness,
-                "freshness": freshness,
+                "freshness": observer_freshness,
                 "observed_at": observed.isoformat() if isinstance(observed, datetime) else None,
                 "source_version": str(getattr(item, "source_version", "unknown"))[:80],
                 "correlation_id": getattr(item, "correlation_id", None),
