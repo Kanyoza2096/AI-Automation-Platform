@@ -945,3 +945,34 @@ A stale `started` business automation reservation must become `uncertain` / reco
 `run_due` claims due rules, executes with a deterministic scheduled event ID, and then marks the due rule complete. The interaction between due-rule claiming/rescheduling and execution reservation needs separate crash/re-entry tests; a due-rule claim is not an execution receipt.
 
 **Evidence boundary:** this is a source/migration-path finding. Live staging/production migration state and rows were not queried. No database mutation, recovery, provider call, tests or deployment occurred. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 25. Sales Orchestrator and CRM lifecycle-event identity audit
+
+### 25.1 Sales Orchestrator is a bounded single-action delegate
+
+`BusinessAutomationEngine._action_sales_orchestrate` requires workspace and the existing automation idempotency key, then calls `SalesOrchestrator.execute`. The orchestrator maps a fixed set of customer intents to one bounded action, builds constrained parameters and invokes `ActionKernel.execute` exactly once with the same idempotency key, workspace, rule ID as decision ID and correlation ID. It is not a recursive or multi-step sales action graph in the inspected source. This narrows the earlier nested-graph concern: no multi-action delegation was found in this implementation. The Action Kernel contract and downstream provider ledger remain the execution boundary.
+
+### 25.2 Lifecycle side effects have no stable event identity
+
+The inspected CRM wrappers perform the governed CRM operation first, then publish lifecycle events for contact creation, contact status changes and deal stage changes. They pass workspace, correlation ID and parent event ID, but no caller-supplied stable event ID/idempotency key. `UnifiedEventBus.publish` unconditionally creates a new random `evt_<uuid>` identifier for each call.
+
+Consequently, if the CRM provider write succeeded but lifecycle publication returned no acknowledgement or raised after an ambiguous persistence/dispatch boundary, a retry can replay the CRM wrapper (the CRM action may be deduplicated downstream) and create a new lifecycle event ID for the same underlying transition. For contact creation, `follow_up_at` is computed from current time during each wrapper invocation, so replay can also produce a different downstream scheduling timestamp. Parent and correlation IDs preserve lineage but do not enforce deduplication.
+
+### 25.3 Persistence and dispatch are separate acknowledgements
+
+`UnifiedEventBus.publish` generates the event ID, validates/normalizes, appends to its process-local event store, and—when Supabase is configured—awaits the persistence worker's durable write. It then separately puts the event on an in-memory dispatch queue and returns the event ID. If that dispatch queue is full after durable persistence, the method returns `None` even though the durable event row may already exist. A process crash between persistence acknowledgement and dispatch can similarly strand a persisted event. The inspected code does not establish durable dispatch replay or per-consumer completion state for this path. A retry that creates a new random event ID is therefore not a safe recovery mechanism.
+
+This means `publish`'s current return value combines multiple states: `None` may mean rejection before persistence, persistence failure, or dispatch-queue rejection after persistence. A returned ID means durable persistence completed when Supabase is configured and dispatch was queued in memory; it does not prove every subscriber completed its handler.
+
+### 25.4 Required corrections before autonomous recovery
+
+- Introduce a stable lifecycle event ID derived from workspace, source execution identity, event type and schema version; enforce durable uniqueness and return the existing receipt on replay.
+- Freeze lifecycle payload fields (including `follow_up_at`) in the source execution record before attempting publication.
+- Model `persisted`, `dispatch_pending`, `dispatched` and per-handler completion separately; make dispatch recoverable from durable state after process restart.
+- Make event publication outcomes unambiguous: distinguish not persisted, persisted-but-pending-dispatch, dispatched and completed.
+- Require downstream consumers to deduplicate using stable lifecycle event identity.
+- Preserve parent/correlation metadata for trace lineage only; never treat it as an idempotency key.
+- Add crash tests after CRM provider acceptance, after event persistence, before dispatch enqueue, after dispatch enqueue, and after consumer side effect before acknowledgement.
+
+**Status:** Sales single-action delegation confirmed; stable CRM lifecycle-event identity and durable dispatch recovery are not established by the inspected source. This is a source-level finding, not a live duplicate-event incident. No code, tests, migrations, database rows, provider calls or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
