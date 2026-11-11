@@ -118,3 +118,14 @@ def test_snapshot_scope_and_timestamp_are_validated():
             [manifest("director")], [], now=NOW,
             scope_type="workspace", scope_id=" ",
         )
+
+
+def test_future_observation_is_unknown_not_healthy():
+    future = NOW + timedelta(minutes=10)
+    snapshot = build_platform_state(
+        [manifest("director")],
+        [observation("director", observed_at=future)],
+        now=NOW,
+    )
+    assert snapshot.services[0].readiness is Readiness.UNKNOWN
+    assert snapshot.services[0].reason == "observation_from_future"
