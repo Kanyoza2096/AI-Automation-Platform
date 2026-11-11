@@ -435,10 +435,14 @@ class BusinessAutomationEngine:
                    "attempt": execution.attempt}
             # Reservation already inserted the execution row. Finalization must
             # UPDATE it; inserting here would collide with the idempotency fence.
-            await asyncio.to_thread(lambda: db.table("business_automation_executions").update({
+            result = await asyncio.to_thread(lambda: db.table("business_automation_executions").update({
                 "status": row["status"], "dry_run": row["dry_run"], "finished_at": row["finished_at"],
                 "output": row["output"], "error": row["error"], "attempt": row["attempt"]
-            }).eq("execution_id", execution.id).eq("workspace_id", execution.workspace_id).eq("status", "started").execute())
+            }).eq("execution_id", execution.id).eq("workspace_id", execution.workspace_id).eq("status", "started").select("execution_id").execute())
+            if not result.data:
+                raise RuntimeError(
+                    "business automation finalization rejected: reservation is no longer started"
+                )
             return
         if self._production(): raise RuntimeError("durable business automation database is required in production")
         async with self._lock:
