@@ -11,13 +11,10 @@ MONITORED ACTIVITIES:
   - Content production (posts)
   - Task execution (Director)
   - Decision making (Condition Engine)
-  - Trend fetching (Trend Intelligence)
-  - Monitor checks (Monitor Plugin)
   - Email delivery (Email Service)
   - Church activities (Church MIS)
   - School activities (School MIS)
   - Hospital activities (Hospital CRM)
-  - Backup execution (Backup Plugin)
   - Database writes (Supabase)
   - Event bus flow (UnifiedEventBus)
   - API requests (traffic)
@@ -54,9 +51,6 @@ class UniversalPulseMonitor:
         "posts": 24,                    # No posts in 24h = stagnation
         "director_tasks": 12,           # No new tasks in 12h = issue
         "director_observations": 6,     # No observations in 6h = issue
-        "trend_posts": 12,              # No trend posts in 12h = issue
-        "monitor_checks": 2,            # No monitor checks in 2h = issue
-        "backup_records": 48,           # No backups in 48h = issue
         "events": 1,                    # No events in 1h = issue
         "api_keys": 24,                 # No API activity in 24h = low traffic
         "church_members": 72,           # No new members in 72h = normal
@@ -70,9 +64,6 @@ class UniversalPulseMonitor:
         "posts": ("created_at",),
         "director_tasks": ("created_at",),
         "director_observations": ("timestamp", "created_at"),
-        "trend_posts": ("fetched_at", "created_at"),
-        "monitor_checks": ("checked_at", "created_at"),
-        "backup_records": ("started_at", "created_at"),
         "events": ("created_at",),
         "api_keys": ("created_at", "updated_at"),
         "church_members": ("created_at",),
