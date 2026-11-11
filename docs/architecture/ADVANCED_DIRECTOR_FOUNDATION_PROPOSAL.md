@@ -753,3 +753,32 @@ A second focused source pass expanded the persistence review across V71.3–V71.
 - Keep V71.17 as an execution coordinator over the existing governed workflow/Action Kernel path. It is not a new authorization source or independent provider executor.
 
 **Decision:** retain the existing V71 domain boundaries, but do not declare the workforce persistence layer complete until ordinary registry mutations, run lifecycle and budget reservations have a single tested restart/concurrency story. No implementation or migration is authorized by this proposal.
+
+
+### 3.16 V71 mutation-surface and reservation-recovery contract
+
+A method-level review of the V71.3–V71.10 implementations sharpens the previous checkpoint. The missing piece is not merely a generic persistence interface; it is a complete mutation contract for each domain state machine.
+
+**Observed mutation surfaces (source-level):**
+- V71.3 memory: `remember` and `revoke` replace entries in the workspace registry.
+- V71.4 planning: `create_plan`, `assess` and `cancel` replace plan entries.
+- V71.5 evaluation: `evaluate` inserts an evaluation record; evaluation remains evidence, not authority.
+- V71.6 budgets: `create`, `record_usage` and `set_status` mutate the in-memory budget definition/usage projection. A separate `DurableAgentBudgetReservations` facade calls SQL RPCs for reservation, finalization and expired-reservation recovery.
+- V71.7 takeover: `create`, `claim`, `resolve` and `cancel` mutate takeover cases.
+- V71.8 coordination: `create`, `assess`, `complete` and `cancel` mutate coordination requests.
+- V71.9 bounded autonomy: `create`, admission/execution transitions, takeover pause and cancellation mutate run objects. V71.10 separately provides durable run persistence, read, lease claim/renew, finalization and uncertain-run marking.
+
+The inspected V71.3–V71.9 registry methods write their process-local dictionaries; they do not call a shared persistence adapter. V71.10 is a distinct durable runtime facade and must remain the canonical owner of run lease/fencing operations. V71.6's SQL reservation facade is also distinct from the mutable budget-definition/usage registry; do not conflate reservation counters with the in-memory budget snapshot.
+
+**Required adapter contract:**
+1. Every mutation must declare its durability mode and return a result that distinguishes committed durable state from explicitly permitted test-only memory state. Production paths must fail closed when durable storage is unavailable.
+2. Use workspace-scoped compare-and-swap/version checks and stable idempotency keys for create and transition operations. Re-read the authoritative row after conflict; never resolve a conflict by silently overwriting a newer transition.
+3. Persist the canonical object and its integrity fingerprint from one normalized serialization contract. Validate the object before write and after read; fingerprints are integrity checks, not signatures or authority.
+4. Make transitions explicit and monotonic where appropriate. A takeover claim, coordination completion, plan cancellation, budget status change or run finalization must not be replayed against stale versions.
+5. Keep reservation RPCs atomic at the database boundary. Couple reservation outcomes to run/execution evidence through a recoverable saga; uncertain reservations remain uncertain until reconciled.
+6. Treat cache updates as projections of committed durable versions. Invalidate or refresh other process caches after mutation, and define bounded staleness for reads and revocation visibility.
+7. Include all durable domains in readiness: nine V71.18 tables, autonomous-run lease/lifecycle state, budget reservation rows/counters, and external side-effect execution receipts/outbox reconciliation.
+
+**SQL recovery clarification:** migration 111 defines row-locked budget reservation/finalization functions and migration 112 replaces the expired-reservation recovery function so expired reservations move to an `uncertain` state and their reserved capacity is conservatively accounted as used pending reconciliation. This is intentionally safer than silently releasing capacity, but it does not prove that the run, external side effect and reservation have been reconciled together.
+
+**Implementation gate:** first implement and test the shared persistence contract for ordinary V71 records, while preserving V71.10 and V71.21 as specialized transactional boundaries. Only then add runtime convergence/readiness claims. No code or migration is authorized by this proposal.
