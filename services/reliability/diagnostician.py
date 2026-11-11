@@ -83,7 +83,7 @@ class Diagnostician:
         if "stagnation" in symptom:
             cause = "activity_stagnation"
             confidence = max(confidence, 0.85)
-            related = list(set(related + ["universal_pulse", "trend_intelligence"]))
+            related = list(set(related + ["universal_pulse"]))
 
         if "token" in symptom or "190" in symptom or "auth" in symptom:
             cause = "connector_auth_failure"
