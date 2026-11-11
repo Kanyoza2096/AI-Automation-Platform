@@ -45,7 +45,7 @@ async def create_source(workspace_id: str, name: str, provider: str, event_types
             normalized.append(value)
     if len(normalized) > 50:
         raise ValueError('event_types must contain at most 50 values')
-    secret = 'kdo_wh_' + secrets.token_urlsafe(32)
+    secret = 'KDO_WEBHOOK_' + secrets.token_urlsafe(32)
     row = {'source_id': 'src_' + uuid.uuid4().hex[:20], 'workspace_id': ws, 'name': name,
            'provider': provider, 'event_types': normalized, 'secret_hash': _hash(secret), 'active': True}
     db = _db()

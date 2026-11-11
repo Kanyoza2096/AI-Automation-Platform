@@ -235,7 +235,7 @@ class PostgresEngineeringBuildQueue:
             selected = self._record(_row_dict(cur, cur.fetchone()))
             if selected is None:
                 return None
-            token = secrets.token_hex(24)
+            token = 'KDO_LEASE_' + secrets.token_hex(24)
             cur.execute("""UPDATE public.kdo_engineering_build_jobs
                 SET status='running',attempts=attempts+1,lease_owner=%s,lease_token=%s,
                     lease_expires_at=now()+(%s * interval '1 second'),updated_at=now()

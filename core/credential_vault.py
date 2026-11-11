@@ -46,6 +46,8 @@ class CredentialVault:
 
     # Prefix to detect already-encrypted values
     _PREFIX = "enc::"
+    # KDO-owned encryption-key marker; stripped before passing bytes to Fernet.
+    _KEY_PREFIX = "KDO_ENCRYPTION_"
 
     def __init__(self, encryption_key: Optional[str] = None) -> None:
         if encryption_key is None:
@@ -54,6 +56,8 @@ class CredentialVault:
             encryption_key = getattr(settings, "encryption_key", "")
 
         self._key = encryption_key or ""
+        if self._key.startswith(self._KEY_PREFIX):
+            self._key = self._key[len(self._KEY_PREFIX):]
         self._fernet = None
 
         Fernet = _get_fernet()
@@ -134,13 +138,13 @@ class CredentialVault:
 
     @staticmethod
     def generate_key() -> str:
-        """Generate a new Fernet encryption key (base64-encoded 32-byte key)."""
+        """Generate a KDO-prefixed Fernet key (prefix + base64 32-byte key)."""
         Fernet = _get_fernet()
         if Fernet:
-            return Fernet.generate_key().decode("utf-8")
+            return CredentialVault._KEY_PREFIX + Fernet.generate_key().decode("utf-8")
         # Fallback: 32-byte random key base64-encoded
         import base64
-        return base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8")
+        return CredentialVault._KEY_PREFIX + base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8")
 
 
 # Module-level singleton

@@ -6,7 +6,8 @@ Canonical authentication for the Kanyoza organism platform.
 ALLOWED credentials (only):
   1. MASTER_API_TOKEN       → platform operator (species-level, all workspaces)
   2. PYTHON_SERVICE_TOKEN   → KCPG Gateway service credential (species-level)
-  3. kny_ / kz_ API keys    → workspace-scoped (workspace_id from token record)
+  3. KDO_API_ API keys       → workspace-scoped (workspace_id from token record)
+     Legacy kny_ / kz_ tokens remain accepted during controlled rotation.
   4. Supabase JWT           → workspace resolved from owner_email / membership
 
 REMOVED (never accept again):
@@ -180,8 +181,8 @@ class SpeciesAuth:
                     return AuthIdentity(valid=False, error="Workspace token has no workspace scope")
                 return identity
 
-        # ── 3. Workspace API tokens (kny_ / kz_) ────────────────────────
-        if token.startswith("kny_") or token.startswith("kz_"):
+        # ── 3. Workspace API tokens ───────────────────────────────────────
+        if token.startswith(("KDO_API_", "kny_", "kz_")):
             return self._validate_workspace_token(token, key_store=key_store)
 
         # Explicitly reject known-bad legacy methods if someone passes them
@@ -288,7 +289,7 @@ class SpeciesAuth:
     ) -> AuthIdentity:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-        # Prefer APITokenManager (kny_ tokens)
+        # Prefer APITokenManager (KDO_API_ tokens; legacy prefixes remain valid)
         try:
             from core.api_tokens import api_token_manager
 
@@ -323,7 +324,7 @@ class SpeciesAuth:
         # closed with an auth response, never an UnboundLocalError.
         found = None
 
-        # Canonical DB fallback for kny_ tokens. This must run before the
+        # Canonical DB fallback for workspace API tokens. This must run before the
         # legacy-key feature gate: the gate controls only api_keys, never api_tokens.
         try:
             from services.supabase import supabase_service
@@ -370,7 +371,7 @@ class SpeciesAuth:
         # This gate must never prevent canonical api_tokens validation above.
         import os as _os_leg
         if not (_os_leg.getenv("ALLOW_LEGACY_API_KEYS") or "").strip().lower() in ("1", "true", "yes"):
-            return AuthIdentity(valid=False, error="Legacy api_keys disabled — use api_tokens (kny_)")
+            return AuthIdentity(valid=False, error="Legacy api_keys disabled — use api_tokens (KDO_API_)")
 
         found = None
         if key_store is not None:

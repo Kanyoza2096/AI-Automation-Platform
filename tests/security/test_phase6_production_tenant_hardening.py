@@ -56,6 +56,20 @@ def test_workspace_token_with_workspace_scope_is_accepted(monkeypatch):
     assert identity.workspace_id == "ws-1"
 
 
+def test_kdo_prefixed_workspace_token_is_accepted(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = {
+        "workspace_id": "ws-kdo",
+        "name": "kdo-token",
+        "permissions": ["read"],
+    }
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+    identity = auth.validate(bearer_token="KDO_API_test")
+    assert identity.valid is True
+    assert identity.workspace_id == "ws-kdo"
+
+
 def test_expired_legacy_key_is_rejected(monkeypatch):
     from datetime import datetime, timezone, timedelta
     auth = SpeciesAuth()
