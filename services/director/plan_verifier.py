@@ -48,28 +48,14 @@ def _timestamp(value: Any) -> datetime | None:
 
 
 def _evidence_ids(context: Mapping[str, Any]) -> set[str]:
-    evidence = context.get("evidence", {})
-    if not isinstance(evidence, Mapping):
+    """Return only evidence IDs actually exposed in the bounded planner context."""
+    from .planning import _planner_context
+    bounded = _planner_context(context)
+    evidence = bounded.get("evidence", {})
+    references = evidence.get("reference_ids", []) if isinstance(evidence, Mapping) else []
+    if not isinstance(references, list):
         return set()
-    ids: set[str] = set()
-    for item in evidence.get("facts", []) or []:
-        if isinstance(item, Mapping) and isinstance(item.get("observer"), str):
-            ids.add(f"fact:{item['observer']}")
-    for item in evidence.get("inferences", []) or []:
-        if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("issue_type"), str):
-            ids.add(f"inference:{item['observer']}:{item['issue_type']}")
-    for item in evidence.get("unknowns", []) or []:
-        if isinstance(item, Mapping) and isinstance(item.get("kind"), str):
-            ids.add(f"unknown:{item['kind']}:{item.get('observer', 'platform')}")
-    for item in evidence.get("conflicts", []) or []:
-        if isinstance(item, Mapping) and isinstance(item.get("sector"), str):
-            ids.add(f"conflict:{item['sector']}")
-    signals = evidence.get("engine_signals", {})
-    if isinstance(signals, Mapping):
-        for item in signals.get("accepted", []) or []:
-            if isinstance(item, Mapping) and isinstance(item.get("observer"), str) and isinstance(item.get("capability"), str):
-                ids.add(f"signal:{item['observer']}:{item['capability']}")
-    return ids
+    return {value for value in references if isinstance(value, str) and value.strip()}
 
 def _dag_errors(steps: list[Mapping[str, Any]]) -> list[str]:
     ids = [step.get("step_id") for step in steps]
