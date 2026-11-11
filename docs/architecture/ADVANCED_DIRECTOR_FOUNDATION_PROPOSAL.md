@@ -332,6 +332,172 @@ Every request must be denied unless all checks succeed, in this order:
 - Compatibility with is_species is temporary and must be computed from verified identity plus explicit named grants. It must not map to a wildcard or super-admin scope.
 - The catalogue and policy engine must be tested against positive, negative, boundary, replay, delegation, cross-workspace, cross-environment, expired-grant, revoked-key, and governance-unavailable cases before any enforcement rollout.
 
+### 3.10 Signed workload-token claim and proof-of-possession contract
+
+**Status:** Proposed protocol contract for review. This section does not implement an issuer, verifier, key store, token, or active grant.
+
+**Protocol profile:** KDO Workload Token Profile v1, using a signed JWT access token with an explicitly allowlisted asymmetric algorithm. The initial implementation should use a vetted JOSE library and platform key service; no custom cryptography, shared application signing secret, or algorithm negotiation is permitted. The exact algorithm and key-service integration are implementation decisions to be confirmed against supported platform libraries and key custody.
+
+#### Protected header
+
+| Field | Requirement |
+|---|---|
+| typ | Exact token type kdo-workload+jwt; reject other or missing types |
+| alg | One configured asymmetric signing algorithm; reject none, symmetric algorithms and algorithm substitution |
+| kid | Required key identifier resolving to an active trusted issuer key |
+| crit | Reject unsupported critical extensions; no unrecognized critical semantics |
+
+The verifier selects trusted keys from configured issuer metadata/key distribution, not from arbitrary token-supplied URLs. Key material and issuer trust configuration are provisioned out of band. A token cannot nominate its own trusted issuer or key source.
+
+#### Required claims
+
+| Claim | Contract |
+|---|---|
+| iss | Exact trusted workload-identity issuer identifier |
+| sub | Stable, immutable principal subject for this registered workload identity; never a display name |
+| aud | Exact intended API/service audience; use a narrow audience, not a generic platform-wide audience |
+| iat, nbf, exp | Issuance, not-before and expiry times; verifier applies bounded clock skew and rejects future-issued, not-yet-valid or expired tokens |
+| jti | Cryptographically random, unique token identifier for replay/revocation tracking |
+| sid | Unique workload session identifier, bound to the registered runtime session |
+| agent_id | Stable Agent Registry identifier; must map to sub and an active registry record |
+| actor_type | Controlled enum such as agent, scheduler, worker, service, or human; workload profile rejects human |
+| scp | Exact scope identifiers from the pinned catalogue version; no wildcard, prefix or implied inheritance |
+| scp_ver | Exact authorization scope catalogue version, initially kdo-authz-scopes/v1 |
+| env | Explicit environment identifier such as staging; token environment must match the receiving service and registered runtime |
+| cnf | Confirmation/key-binding claim for proof-of-possession; required, never optional for workload tokens |
+| authz_ver | Version of the authorization-policy contract used at issuance, distinct from the scope catalogue version |
+
+The issuer may include narrowly defined, versioned extensions only after review. No claim may carry secrets, raw credentials, private data, or arbitrary user-controlled authorization values. Do not use email, display name, request headers, mutable profile metadata, or client-provided actor labels as identity evidence.
+
+#### Conditional claims and bounded context
+
+- wsp (workspace binding): required for workspace-bound actors and requests. It identifies one workspace or an explicitly registered set of workspace IDs; an omitted workspace claim means no workspace access, not global access.
+- tool_allow: optional, explicit tool/capability IDs and versions for a workload session. It may narrow the registry allowlist, never expand it.
+- res (resource constraints): optional references to versioned registry constraints or exact resource IDs. It is not a wildcard expression language.
+- act (delegation actor): required only for an approved delegated token. It records the immediate delegating principal and a bounded delegation reference. The original subject and full delegation chain remain auditable. Delegation never changes the original actor's accountability.
+- budget or execution limits: if included, values can only narrow registry and policy limits; absence does not mean unlimited budget.
+
+A token for a platform-scoped observer may have no wsp claim but must carry a registry-defined platform read boundary and narrow audience. Platform scope is never inferred from an empty workspace claim.
+
+#### Proof-of-possession (cnf) and request binding
+
+The initial profile must support one reviewed binding mechanism, selected during implementation:
+- Mutual TLS certificate binding using the standardized certificate thumbprint confirmation claim; or
+- A workload-held asymmetric key bound by a confirmation JWK thumbprint, with a per-request signature protocol that binds the HTTP method, canonical target URI, token hash, body digest where applicable, timestamp, nonce and unique proof identifier.
+
+Do not accept a copied bearer token as sufficient proof for a workload identity. Do not accept a client-provided public key unless its thumbprint matches the signed cnf claim and the key is proven possessed. Canonicalization rules must be fixed and tested to prevent URI, proxy, query-string or body-hash ambiguity. Nonces and proof identifiers must be checked for replay within a bounded acceptance window.
+
+The chosen mechanism must integrate with the actual Render/network topology and trusted proxy boundary. Do not assume mTLS is end-to-end merely because an upstream proxy terminates TLS. If the selected deployment path cannot preserve verifiable workload proof, fail closed rather than silently downgrade to bearer-only authentication.
+
+#### Lifetime, renewal and revocation
+
+- Workload access tokens should be short-lived, with a proposed maximum lifetime of 10 minutes. The issuer may issue shorter tokens; longer lifetimes require a separately reviewed exception and must not be a default.
+- Workload sessions do not receive long-lived refresh tokens. The workload re-authenticates to the trusted issuer using its registered runtime identity/key binding to obtain a new access token.
+- Verifiers enforce iat, nbf, exp, bounded clock skew, audience and issuer exactly. Expiry is not extended by local clock drift or registry cache state.
+- Revocation must support token jti, session sid, principal sub/agent_id, key kid and individual grant. Emergency principal/session/key revocation must be propagated to every verifier within a defined, measured revocation objective.
+- If a verifier cannot establish current revocation state within the approved freshness bound, high-risk and consequential operations fail closed. Low-risk cached-read behavior, if any, must be separately specified and cannot be generalized to writes or dispatch.
+- Key rotation uses overlapping trusted public keys: publish/activate new key, issue with new kid, observe adoption, then retire old key after all tokens expire and rollback windows close. Compromised keys are revoked immediately; overlap is not allowed to preserve a compromised key.
+- Token and proof material must never be written to logs, traces, task records, exception messages or Director reports.
+
+#### Issuance and verification sequence
+
+1. A registered workload proves its runtime identity to the trusted issuer through the approved platform workload-identity mechanism; the issuer does not trust caller-supplied agent_id or scope lists.
+2. The issuer resolves the active Agent Registry record, runtime binding, accountable owner, environment, permitted workspace, current grant and approved tool allowlist.
+3. The issuer intersects requested scopes with registry maximum grants, approved session grants, scope-catalogue semantics and policy. It denies unknown, expired, ownerless, suspended or unreviewed principals.
+4. The issuer signs a short-lived token bound to the workload-held key/session and exact service audience. It records an issuance audit event without recording the token itself.
+5. The receiving service validates signature, trusted iss/kid, typ, aud, time claims, jti, sid, agent_id/sub binding, scp_ver, authz_ver, cnf, proof freshness and revocation.
+6. The service resolves current registry and policy state and computes effective authority as the intersection of token scopes, registry grant, tool allowlist, resource/workspace/environment constraints and governance decisions.
+7. The service authorizes the exact action and target, establishes required trace/audit evidence, then admits consequential work through the canonical Council/DecisionGate → workforce admission → Action Kernel path.
+8. The service emits a correlated authorization outcome. Denials are explicit and do not fall through to legacy shared-token or is_species bypasses.
+
+#### Required negative tests
+
+Reject wrong issuer/audience/algorithm/type; missing or unknown kid; forged signature; malformed or duplicate claims; future iat; invalid nbf; expired token; excessive lifetime; reused jti or proof nonce; missing/invalid cnf; wrong proof key; wrong HTTP method/URI/body digest; wrong sid; sub/agent_id mismatch; unsupported scp_ver/authz_ver; unknown scope; registry suspension; stale revocation state for consequential action; wrong environment/workspace; unregistered runtime; and attempted scope/resource/delegation broadening.
+
+### 3.11 Platform Agent Registry logical schema and lifecycle
+
+**Status:** Logical data contract only. It is not a database migration or a mandate to create a second registry implementation. Gate 0 must first reconcile the existing V71 identity/capability registries and engineering registry, then select the canonical storage and API owner.
+
+The Agent Registry is the source of truth for workload-principal identity, ownership, lifecycle and maximum authority. It is not the service-manifest registry, not the token issuer, not a secret store, and not the policy engine. Service manifests describe software services; Agent Registry records describe principals that can act.
+
+#### Core principal record
+
+| Field | Type / contract | Required invariant |
+|---|---|---|
+| agent_id | Stable opaque identifier, primary logical key | Immutable; never reused after retirement |
+| principal_subject | Unique issuer subject (sub) | One-to-one binding to the workload principal; uniqueness enforced |
+| display_name | Human-readable label | Non-authoritative; may change |
+| actor_type | Controlled enum: agent, scheduler, worker, service | Human identities use the separate human identity system |
+| purpose | Bounded description and approved use | Explicit, reviewable and owned |
+| identity_version | Version of principal contract | Changes are auditable |
+| lifecycle_state | proposed, active, suspended, retired | Only active principals can obtain new workload tokens |
+| owner_team_id | Canonical team reference | Required; must resolve to an active owner |
+| accountable_owner_id | Human owner reference in human identity system | Required; no self-ownership by an agent |
+| service_manifest_id | Optional owning runtime/service reference | Must resolve when a service association exists |
+| runtime_binding_id | Reference to an approved runtime binding | Required before activation |
+| allowed_environments | Explicit environment set | No implicit wildcard; production requires separate review |
+| risk_ceiling | Maximum permitted risk tier | Cannot override a tool's higher risk |
+| autonomy_class | Controlled policy enum | Must align with approval and supervision rules |
+| created_at, updated_at | UTC timestamps | System generated |
+| created_by, reviewed_by, approved_by | Human/system provenance references | High-risk grants require independent reviewer |
+| review_due_at | UTC review deadline | Active grants require periodic recertification |
+| suspension_reason, retired_at | Nullable lifecycle evidence | Required when applicable |
+
+#### Related records (logical relations)
+
+1. **Scope grants** — grant ID, agent ID, exact scope ID and catalogue version, maximum resource constraints, workspace/environment constraints, grant status, effective-from/expiry, owner approval, reviewer, reason, provenance and revocation timestamp. Grants can narrow but never exceed the scope set signed into a token.
+2. **Tool bindings** — binding ID, agent ID, exact tool/capability ID and version, allowed action set, resource constraints, maximum risk, required policy/governance route, status, expiry and approving owner. A tool absent from this list is unavailable even if the runtime can technically import or reach it.
+3. **Runtime bindings** — binding ID, agent ID, runtime/service identity, deployment/environment, workload identity provider reference, key-binding reference or attested runtime identity, session policy and lifecycle. Do not store private keys, bearer tokens or secret values.
+4. **Workspace/resource bindings** — binding ID, agent ID, exact workspace/resource IDs and resource classes, permitted actions, environment, data classification, expiry and owner approval. No workspace is inferred from a request header.
+5. **Delegation records** — delegation ID, source and target principal IDs, original subject, allowed exact scopes/tools/resources, purpose, expiry, depth limit, approval and revocation. Delegation cannot cross a boundary not held by the original principal.
+6. **Approval records** — immutable decision reference, policy version, approver identity, quorum/independence evidence, risk classification, approved scope/resource/action, validity window and revocation/supersession reference.
+7. **Credential/key bindings** — issuer, kid, public-key thumbprint/certificate reference, status, activation/retirement times and rotation/revocation events. Private signing and workload keys remain in approved key custody, never in registry rows.
+8. **Audit events** — append-only actor lifecycle, grant, tool binding, runtime binding, owner, key, suspension, delegation and approval changes with before/after digests, reason, correlation ID, actor and timestamp. No secret or token material.
+
+Relations should be normalized or otherwise enforce uniqueness and referential integrity. Exact physical tables, indexes, constraints, retention and migrations are deferred until the canonical existing registry has been assessed. Do not add a new paid database or duplicate source of truth to implement this logical contract.
+
+#### Lifecycle and governance transitions
+
+- Proposed → active: requires a resolved accountable owner, runtime binding, purpose, environment boundary, explicit tool/scope grants, review evidence, passing identity/security tests and approved activation. No default grants.
+- Active → suspended: immediately blocks new token issuance and consequential authorization; revokes or invalidates active sessions according to the revocation objective. Suspension is available to the designated emergency security authority and must record reason/evidence.
+- Suspended → active: requires remediation evidence, owner confirmation, independent review and re-approval of grants; prior tokens/sessions are not silently revived.
+- Active/suspended → retired: terminal identity state. Reuse requires a new principal ID and fresh review; historical audit remains intact.
+- Grant or tool-binding changes are separate governed events. They do not silently mutate the authority of already issued tokens. Narrowing/revocation can take effect immediately through verifier policy; broadening requires approval and new token issuance.
+- Owner changes, production-environment access, identity/key changes, R3/R4 grants and delegation are high-risk registry operations requiring independent approval and immutable audit. Identity registry management remains human-only except a separately reviewed emergency revocation mechanism.
+- Registry unavailability, referential-integrity failure, missing owner, ambiguous runtime binding or stale critical approval denies activation and consequential work.
+
+#### Initial actor registration plan
+
+| Principal family | Registration boundary | Initial grant posture |
+|---|---|---|
+| Director | Dedicated Director principal and runtime binding | Exactly director:read, director:dispatch; governed admission only |
+| Council | Distinct governance actor identities and quorum roles | Deliberation/decision scopes only; decision does not execute |
+| Guardian scanner | Read-only scan identity | guardian:scan; no remediation tool binding |
+| Guardian remediation | Separate identity and runtime/tool binding | No grant until approved remediation workflow exists |
+| Content Engine | Content generation principal | Generation only for assigned brand/workspace |
+| Brand Scheduler | Per-scheduler or explicitly isolated brand principal | Publishing only for assigned brand/channel under approval policy |
+| KCPG event bridge | Narrow bridge principal | Allowlisted event publication only; exact source/workspace/type |
+| Engineering planner/orchestrator | Separate engineering planning principal(s) | Planning and task dispatch only within approved engineering workspace |
+| Engineering specialist | Role-bound specialist identity | Explicit repository/workspace read or write tools as assigned |
+| Engineering worker | Isolated execution identity | Approved task, sandbox and command set only; no merge/deploy by implication |
+| Meta Engine/autonomous loops | Register only components proven to initiate autonomous actions | Initially unassigned; classify service vs principal before any grant |
+| Human operators/owners | Existing human identity and authorization system | Never represented as workload actor or granted workload token |
+
+This is a candidate family list, not proof every component is an independent principal. Gate 0 must confirm runtime boundaries, owner teams, deployment topology and whether each component can initiate actions. A passive library/service does not need an agent principal merely because it exists in the source tree.
+
+#### Registry invariants and operational acceptance
+
+- Exactly one canonical principal subject per active workload identity; no shared sub across unrelated actors.
+- Every active principal has one accountable owner, a known runtime binding and explicit allowed environments.
+- Every grant is exact, versioned, bounded, time-limited where appropriate and traceable to an approval.
+- Every tool binding identifies tool version, action/resource boundary, risk and governance route.
+- Registry records contain references and public metadata only, never secrets/private keys/tokens.
+- Suspension and revocation are tested across API, socket, event, worker and scheduler entry points.
+- A stale cache cannot preserve a revoked high-risk grant beyond the approved revocation objective.
+- Actor identity and effective grants remain consistent across request context, event envelopes, worker jobs and delegated calls.
+- Registry outage or unknown actor fails closed for activation and consequential actions; no fallback to master/Python shared credentials or is_species.
+- All lifecycle and grant changes are independently auditable; an agent cannot approve or widen its own authority.
+
 ## 4. End-to-end operating model
 
 The five strategic capabilities operate with a cross-cutting identity, agent-governance, and observability plane:
