@@ -1,0 +1,1543 @@
+# Advanced Director Gate 0 — Identity, Agent Registry, and Tool Observability Audit
+
+**Audit type:** Read-only source inspection  
+**Source branch:** `staging` at the time of inspection  
+**Related architecture proposal:** PR #148  
+**Runtime changes:** None  
+**Database changes:** None  
+**Deployment:** None  
+**Production access or changes:** None
+
+## Executive finding
+
+KDO already contains useful identity, agent-permission, session-integrity, and trace-correlation components. However, the inspected code does not yet demonstrate one platform-wide autonomous-actor authority system or end-to-end Director tool-call tracing.
+
+The four proposed improvements are therefore directly relevant. The correct path is to reconcile and extend existing components, not create parallel systems.
+
+## 1. Workload identity and `is_species`
+
+### Observed source behavior
+
+- `core/species_auth.py` defines `AuthIdentity.is_species`.
+- The master API token and Python service token authentication branches set `is_species=True`.
+- `AuthIdentity.has_permission()` and `assert_workspace_access()` use this boolean as a broad privilege bypass.
+- `services/director/api.py` has a fallback path that directly compares the supplied bearer token with `MASTER_API_TOKEN` and `PYTHON_SERVICE_TOKEN`.
+- Director workspace filtering and platform mutation checks consult `request_context.species_privileges`.
+- Director's authentication helper checks validity of the canonical identity when a workspace context exists, but its no-workspace fallback accepts the configured shared master/service credentials without a Director-specific scope claim.
+- `core/api_tokens.py` issues opaque random `kny_` tokens and stores token hashes plus permission metadata. This is useful for workspace credentials, but it is not a signed workload token whose scopes are cryptographically bound to the token/session.
+- The inspected Director and species-auth paths do not consume `director:read` or `director:dispatch` signed claims.
+
+### Finding
+
+**High priority:** broad species/master identity is still represented as a boolean and shared secret credential path. The Director-specific route does not yet demonstrate the proposed narrow workload principal.
+
+### Existing components to reconcile
+
+- `core/species_auth.py`
+- `core/api_tokens.py`
+- `services/v83_identity_access_hardening.py`
+- `services/v71_1_agent_identity.py`
+- `services/v71_2_agent_capability_permissions.py`
+- `services/director/api.py`
+
+The V8.3 identity/session component validates identity/session records and scope bindings, but its current implementation uses SHA-256 record fingerprints and a SQLite store defaulting to `:memory:`. A record fingerprint is not a cryptographic token signature, and this source inspection did not establish that the component is wired into the canonical Director authentication path.
+
+### Required direction
+
+1. Create a dedicated Director workload principal, separate from human accounts and Gateway identity.
+2. Issue short-lived signed tokens with explicit subject, actor type, audience, issuer, scopes, workspace/platform scope, expiry, unique token ID, and key ID.
+3. Verify signatures and claims using a trusted issuer/key-rotation contract.
+4. Calculate effective authority as the intersection of signed scopes, active Agent Registry grants, tool/capability policy, scope boundaries, and governance.
+5. Migrate all `is_species` and `species_privileges` consumers before removing compatibility fields. Do not perform a blind boolean replacement or risk a platform-wide lockout.
+6. Retain workspace-scoped `kny_` credentials for their existing purpose during a controlled migration; do not silently reinterpret them as workload identities.
+
+Initial Director scopes:
+- `director:read`
+- `director:dispatch`
+
+`director:dispatch` means submit a request to the governed dispatch/admission path. It does not authorize direct handler execution, Council approval, publishing, remediation, or deployment.
+
+## 2. Agent Registry coverage
+
+### Observed source behavior
+
+- `services/v71_1_agent_identity.py` provides an `AgentIdentityRegistry` with tenant/workspace-scoped registration, status transitions, and identity fingerprints.
+- That registry is an in-process dictionary in the inspected implementation; its fingerprint is a deterministic integrity check, not a signed credential.
+- `services/v71_2_agent_capability_permissions.py` provides a separate capability permission registry with allow/deny scope matching. It also maintains its records in process memory in the inspected implementation.
+- `services/advanced_agent_control_plane.py` composes identity, permissions, planning, evaluation, budgets, takeover, and coordination components.
+- `services/kdo_engineering_agent_registry.py` is a specialist-role/team selection registry for the AI Software Engineering Vertical. It is not a platform-wide inventory of every autonomous actor.
+- The Director service manifest/topology contracts describe software service ownership; they do not by themselves enumerate each autonomous principal and its individual tool grants.
+
+### Finding
+
+**High priority:** KDO has agent identity and capability permission building blocks, but no inspected single authoritative platform-wide registry proving that every autonomous actor is known, owned, active, and restricted to an explicit tool/scope allowlist.
+
+### Required direction
+
+Extend or compose existing identity/control-plane components into one platform Agent Registry. Do not replace the engineering role registry; integrate it as a domain-specific inventory/projection.
+
+Minimum discovery inventory:
+- Director;
+- Council actors and deliberation/decision agents;
+- Content Engine and each brand scheduler actor;
+- Guardian;
+- AI Software Engineering planner, orchestrator, specialist agents, and worker identities;
+- other scheduled, event-driven, or background autonomous actors discovered in the repository and runtime.
+
+Each entry must identify a stable principal, owner team, lifecycle state, runtime association, environment, explicit tools, scopes, data/workspace boundary, autonomy/risk class, delegation limits, and required governance. Unknown or suspended actors must fail closed.
+
+## 3. Director tool-call observability
+
+### Observed source behavior
+
+- `services/director/core.py` and `services/director/api.py` import an OpenTelemetry tracer.
+- The inspected Director core/API files contain tracer initialization, but no `start_as_current_span` or `start_span` calls around Director capability/tool invocations were found.
+- `docs/PHASE9_02_CORRELATED_METRICS_TRACE_CONTEXT.md` already defines `correlation_id`, `trace_id`, `span_id`, `causation_id`, and execution/evidence references.
+- That Phase 9.2 document explicitly limits its status to contract/integrity scope; it does not claim deployed collectors, distributed storage, or backend-wide propagation.
+- `services/director_bindings.py` defines `run_guardian_scan(params)`, calls `GuardianService.scan_all()`, and on exception returns a soft failure with a truncated message.
+- The Guardian API's background scan path returns a started response; it does not itself provide Director invocation-level trace evidence.
+
+### Finding
+
+**High priority:** the correlation contract exists, but source inspection does not prove individual Director tool calls are instrumented end to end. The current Guardian handler can reduce a detailed exception to a short soft-failure string, making root-cause diagnosis difficult.
+
+### Required direction
+
+Instrument each tool invocation with a child span and structured record linked to run, agent, tool, parent span, correlation ID, authorization result, validated/redacted arguments, result summary, duration, retry count, and sanitized error classification.
+
+Argument observability must be useful but safe:
+- Preserve validated, redacted semantic arguments and a canonical argument digest.
+- Never capture bearer tokens, API keys, passwords, private keys, authorization headers, or unrestricted sensitive payloads.
+- Restrict stack traces and sensitive diagnostic details to authorized operators.
+- Tool tracing must not grant authority or bypass policy; for consequential tools, inability to establish required audit evidence should prevent execution.
+
+## 4. Guardian capability authority mismatch
+
+### Observed source behavior
+
+- `services/director/core.py` registers `run_guardian_scan` as `Authority.AUTO` and `Risk.LOW`.
+- `services/director_bindings.py` binds that capability to `GuardianService.scan_all()`.
+- `services/guardian_service.py` includes optional auto-fix behavior gated by `GUARDIAN_AUTO_FIX` and configuration. The flow can invoke the auto-fix engine, create GitHub PRs, notify the owner, publish an event, and record analytics.
+- The Director capability's name and low-risk classification therefore do not fully describe all possible side effects of the bound service operation.
+
+### Finding
+
+**Critical design mismatch to resolve before broadening Director dispatch authority:** a capability presented as a scan may reach a workflow that can perform remediation side effects when configuration enables auto-fix.
+
+### Required direction
+
+Split the operation into separately registered and governed tools:
+- `guardian:scan` — read-only discovery/reporting, no code changes or PR creation.
+- `guardian:remediate` (or a more specific remediation tool) — separate capability, explicit higher risk, separate scope, Council/DecisionGate and human approval as policy requires.
+
+Ensure scan mode cannot invoke auto-fix even when the global Guardian auto-fix setting is enabled. The Director must not inherit Guardian's broad service credentials.
+
+## 5. Recommended implementation order
+
+1. **Gate 0 completion:** exhaustive read-only inventory of identity/privilege consumers, service credentials, autonomous actors, tool bindings, and trace propagation.
+2. **Workload identity contract:** issuer, signed claims, verification, key rotation, expiry, revocation, replay controls, and Director scopes.
+3. **Agent Registry convergence:** reconcile V7.1 identity/permissions, advanced control plane, engineering roles, service manifests, and runtime actors.
+4. **Tool invocation tracing:** integrate Phase 9.2 correlation context with Director capability dispatch and Guardian execution.
+5. **Guardian side-effect split:** make scan strictly read-only and remediation separately governed.
+6. **Compatibility retirement:** remove `is_species` authority only after call-site migration and security regression tests.
+7. **End-to-end staging proof:** forged/expired/revoked token rejection, unknown actor denial, scope escalation denial, cross-workspace denial, delegation non-escalation, secret redaction, tool failure trace completeness, and no scan-to-remediation side effect.
+
+## 6. Constraints and non-claims
+
+- This is a source-level audit of the inspected staging branch, not a live penetration test or proof of production exploitability.
+- No runtime code, credential, database, migration, deployment, or production state was changed.
+- Existing identity, session, permission, correlation, and engineering-agent components must be reused where they satisfy the contract.
+- No additional Supabase cost, paid infrastructure, or new database migration is approved by this audit.
+- Production remains protected. Staging runtime verification is a separate later gate.
+- The AI Software Engineering Vertical and its planner, orchestrator, worker runtime, Code Intelligence, and governed execution remain protected.
+- Brand schedulers remain the sole owners of content generation and publishing.
+
+
+## 7. Expanded authority-consumer inventory (staging source inspection)
+
+The following is a **confirmed, focused consumer map** from direct reads of the staging branch. It is not a claim that every dynamic, indirect, generated, or plugin-local consumer has been found. The names below are grouped by the authority contract they appear to use.
+
+### 7.1 Authentication and request-context propagation
+
+| Source | Observed responsibility / legacy coupling |
+|---|---|
+| `core/species_auth.py` | Master and Python service tokens become `AuthIdentity(is_species=True)`; broad permission/workspace bypass |
+| `core/api_auth.py` | Serializes `is_species` into compatibility identity data |
+| `core/security/deps.py` | Converts species identity into `RequestContext.species_privileges`; exposes `require_species_privileges` |
+| `core/request_context.py` | Carries `species_privileges`; broad permission, platform-grant, principal and workspace-hint behavior |
+| `middleware/request_context_middleware.py` | Platform workspace binding and X-Workspace-ID behavior branch on `identity.is_species` |
+| `core/workspace_context.py` | Trusted workspace context and platform workspace selection branch on `is_species` |
+| `core/tenant_guard.py` | Optional cross-workspace allowance when `allow_species` is true |
+| `core/auth.py` | Propagates request-context privilege into workspace context |
+| `core/pipeline.py` | Platform pipeline permission and action behavior branch on `species_privileges` |
+
+### 7.2 Platform administration, observability, and data surfaces
+
+| Source | Observed responsibility / legacy coupling |
+|---|---|
+| `services/director/api.py` | Shared master/service bearer fallback; Director platform mutation/workspace checks use species privilege |
+| `api/routers/users.py` | Owner-role assignment/update permits platform species privilege or workspace owner |
+| `api/routers/workspaces.py` | Workspace administration/listing branches on platform privilege |
+| `api/routers/posts.py` | Platform-wide post query path is gated by `species_privileges` |
+| `api/routers/monitoring.py` | Exposes species privilege in platform monitoring context and response data |
+| `api/slo_routes.py` | Platform SLO view requires species operator |
+| `api/report_routes.py` | Platform report aggregation requires species operator |
+| `api/outbox_routes.py` | Platform outbox inspection/operations require species operator |
+| `api/e2e_routes.py` | Diagnostic route requires species operator and is disabled in production |
+| `api/timeline_routes.py` | Workspace mismatch checks allow platform species identity |
+| `api/metabolism_routes.py` | Platform plan override requires species operator |
+| `api/organism_body_routes.py` | Platform organism inspection/mutation paths branch on species identity |
+| `api/observability_routes.py` | Allows platform-level metrics without workspace only for species identity |
+| `api/content_intelligence_automation.py` | Reads request-context platform privilege |
+| `routes/autonomy_routes.py` | Elevated control-plane path treats species identity as elevated |
+| `routes/backend_contract_routes.py` | Cross-workspace contract lookup bypasses mismatch for species identity |
+| `routes/species_routes.py` | Platform workspace listing depends on `require_species_privileges` |
+| `routes/code_intel_routes.py` | Code Intelligence API is mounted behind `require_species_privileges` |
+| `routes/circulation_routes.py` | Circulation control plane uses `require_species_privileges` |
+| `routes/event_api.py` | Event control plane uses `require_species_privileges` |
+| `routes/cp_gap_routes.py` | Control-plane gap routes use `require_species_privileges` |
+| `routes/rule_routes.py` | Rule control plane uses `require_species_privileges` |
+| `routes/meta_routes.py` | Meta control plane uses `require_species_privileges` |
+| `services/command_executor.py` | Command execution checks platform privilege when no workspace is bound |
+| `services/intelligence_authorization_replay.py` | Records `species_privileges` as part of authorization replay context |
+
+**Important migration implication:** not all these routes should receive Director scopes. The migration must define purpose-specific permissions for platform administration, observability, event operations, Code Intelligence, and workspace management. A Director workload credential must not inherit these unrelated platform-operator powers.
+
+### 7.3 Other shared-secret service surfaces to reconcile
+
+Direct source inspection also found service/master-token checks outside the central SpeciesAuth path:
+
+- `council/routes.py` compares the master token directly for Council operations.
+- `routes/council_routes.py` accepts configured master and Python service tokens in its local authentication helper.
+- `core/event_api.py` has a direct master-token authentication path.
+- `core/socket_server.py` maps configured master/Python service credentials to platform-level socket identity.
+- `products/shared/auth.py` is a shared master-token decorator.
+- `services/director/api.py` independently compares master and Python service tokens.
+- `core/species_auth.py` remains the canonical validator for these shared platform credentials.
+
+These paths need a credential-consumer inventory and explicit service-principal scopes before any shared secret is rotated or retired. This focused list is not yet exhaustive.
+
+### 7.4 Tests and security contracts that must migrate together
+
+The source tree includes existing regression suites for:
+- `tests/test_director_auth_boundary.py`
+- `tests/test_authenticated_actor_context.py`
+- `tests/test_service_auth_only_workspace_bypass.py`
+- `tests/test_species_scale_workspace_hydration.py`
+- `tests/test_v83_identity_access_hardening.py`
+- `tests/test_v84_authorization_hardening.py`
+- `tests/test_v71_1_agent_identity.py`
+- `tests/test_v71_2_agent_capability_permissions.py`
+- `tests/test_advanced_agent_control_plane.py`
+- `tests/test_c11_5_runtime_authority_convergence.py`
+- `tests/security/test_control_plane_authorization.py`
+- `tests/security/test_global_surface_authorization.py`
+- `tests/security/test_platform_authority.py`
+- `tests/security/test_plugin_isolation.py`
+- `tests/tenancy/test_request_context.py`
+- `tests/tenancy/test_pipeline.py`
+
+These tests must be reviewed for assumptions about platform credentials, tenant isolation, owner roles, and engineering service access. Existing tests are not proof that the new signed-token contract is implemented.
+
+## 8. Autonomous actor and service inventory — initial discovery
+
+The platform service topology and runtime registries provide service-level ownership and health discovery, but they are not by themselves an actor-level security registry. The following is the initial actor map to validate with runtime owners:
+
+| Actor / actor family | Source evidence | Proposed owner boundary | Initial scope direction |
+|---|---|---|---|
+| Director | `services/director/core.py`, `services/director/api.py`, `services/director_bindings.py` | Platform Intelligence / Director | `director:read`, `director:dispatch` only; dispatch to governed admission |
+| Council orchestrator and decision actors | `council/orchestration/council_orchestrator.py`, `council/engine.py`, `council/routes.py` | Governance / Council | Deliberation and decision-evidence scopes; no inherited Director dispatch or publishing |
+| Content Engine | `services/content_engine.py` | Content Platform | Content generation only through brand-scoped workflows |
+| Brand scheduler actors | `scheduler/brand_scheduler.py`, `scheduler/post_scheduler.py` | Brand Operations | Brand/workspace-scoped schedule and governed publishing capabilities |
+| Guardian scanner / remediation | `services/guardian_service.py`, `guardian/engine.py`, `guardian/auto_fix.py` | Platform Security | Separate read-only scan and separately governed remediation identities |
+| Engineering planner / orchestrator | `services/kdo_engineering_agent_team.py`, `services/kdo_engineering_gateway_workflow.py`, `services/kdo_engineering_scheduler.py` | AI Software Engineering | Project/workspace/task-scoped planning and assignment; no implicit release authority |
+| Engineering specialist agents | `services/kdo_engineering_agent_registry.py`, `services/kdo_engineering_agent_team.py` | AI Software Engineering | Role-specific tools and task-scoped grants |
+| Engineering worker/runtime identities | `services/kdo_engineering_worker_authorization.py`, engineering worker runtime and task execution services | AI Software Engineering / Runtime Operations | Disposable workspace, task, lease and environment scoped; no host or production credentials |
+| Meta Engine / autonomous loop | `services/meta_engine/core.py`, `core/autonomous_loop.py` | Platform Operations | Health/observation and governed signal publication; no content publishing authority |
+| Event bus / event publishers | `core/event_bus.py`, `core/nerve.py` | Platform Infrastructure plus publisher owner | Event-type and source-scoped publish/subscribe permissions |
+
+**Caveat:** this is a source-derived candidate inventory, not proof that every listed component currently runs as a separate autonomous principal. Some are services or orchestration components rather than independently credentialed agents. The final registry must distinguish `service`, `agent`, `scheduler`, `worker`, and `human` principals and must be confirmed against runtime deployment configuration.
+
+### Registry model recommendation
+
+Keep three related but distinct records:
+1. **Service manifest:** software component, deployment/runtime, team owner, interfaces and health contract.
+2. **Agent principal:** autonomous actor identity, owner, lifecycle, allowed environments and identity issuer binding.
+3. **Capability grant:** exact tool/action, scope, risk class, expiry/version, approval policy and revocation state.
+
+Do not infer an agent's authority from the service that hosts it. Do not register every library class as an autonomous actor. Only principals that can initiate a decision, call a tool, dispatch work, or execute an autonomous workflow need an agent-principal entry.
+
+## 9. Observability and tracing inventory
+
+### Confirmed existing infrastructure
+
+- `core/event_bus.py` uses an OpenTelemetry span around `eventbus.dispatch` when tracing is installed.
+- The same event bus carries correlation IDs and trace IDs in event metadata and tracks in-process correlation chains.
+- `core/nerve.py` propagates correlation IDs and enforces event/workspace scope conventions.
+- Director model, API, core, and utility modules initialize OpenTelemetry tracers.
+
+### Remaining evidence gap
+
+A focused source search found no `start_as_current_span` call in the Director tool/capability invocation path. The event bus dispatch span does not automatically capture:
+- which Director capability/tool was invoked;
+- the validated and redacted arguments;
+- the actor and effective scopes;
+- the registry and governance authorization result;
+- the actual handler result or exception;
+- retry and timeout details.
+
+The absence of this call pattern in the inspected files is not proof that no lower-level instrumentation exists elsewhere. Before implementation, inspect all capability dispatch entry points and the installed exporter/collector configuration. Do not claim traces are end-to-end until a real staging run can be followed across Director → tool handler → downstream service.
+
+## 10. Gate 0 completion status and next evidence required
+
+**Status: PARTIALLY COMPLETE — source-level discovery only.**
+
+Completed in this pass:
+- Directly inspected canonical authentication and request-context modules.
+- Confirmed multiple platform route families depend on the legacy platform privilege boolean/dependency.
+- Identified several direct shared master/service token consumers outside canonical authentication.
+- Mapped an initial set of autonomous actor/service families.
+- Confirmed event-bus tracing and correlation infrastructure exists, while Director tool invocation tracing remains unproven.
+- Identified regression suites that must be retained and extended.
+
+Still required before Gate 0 can be marked complete:
+1. Search all tracked source and configuration on the exact staging commit for `is_species`, `species_privileges`, master/Python service token comparisons, and platform-scope bypasses; classify every match as runtime, test, migration, documentation, or historical artifact.
+2. Inspect all route dependencies and nested helper call paths for indirect authorization bypasses.
+3. Enumerate every autonomous runtime principal from actual Render service configuration, scheduled jobs, queue workers, and environment bindings; reconcile against the code-derived candidate list.
+4. Inspect all Director capability dispatch paths, handler wrappers, and downstream calls; prove where OpenTelemetry spans are created, exported, and retained.
+5. Validate Guardian scan/remediation side effects with configuration variants, without running remediation against real repositories.
+6. Produce a signed-off migration matrix mapping each legacy platform privilege use to a named new scope or human role, including workspace isolation behavior.
+7. Define test cases and rollback sequencing before any credential cutover.
+
+**No runtime change, migration, secret rotation, database change, staging deployment, or production operation is authorized by this audit.**
+
+
+## 11. Render deployment inventory snapshot (read-only)
+
+**Source:** connected Render workspace `My Workspace`, queried on 2026-11-11. This is a point-in-time infrastructure inventory, not a guarantee that no other external provider or manually operated worker exists.
+
+| Render service | Type | Branch | State | Auto-deploy | Relevance |
+|---|---|---|---|---|---|
+| `kdo-engineering-staging` | Web service / Docker | `staging` | Not suspended | Off | Current staging runtime; one configured instance |
+| `Kanyoza-Digital-organism` | Web service / Docker | `main` | Suspended by user | On (configured) | Production service; left untouched |
+
+The connected Render workspace returned **two web services and no separately listed Render cron-job or worker services** in this inventory call. The staging service is a single web-service instance; its service metadata exposes no separate per-agent runtime identity or actor inventory.
+
+### Implications
+
+- The source contains internal schedulers, background loops, and agent orchestration components, but this Render snapshot does not show them as independently deployed Render services. They may execute inside the web-service process or through external providers not represented in this workspace listing.
+- The Agent Registry therefore needs to register logical workload principals and runtime bindings, even when several actors share one host process. A process or container identity is not sufficient to distinguish Director, Council, Guardian, Content Engine, or individual engineering workers.
+- Before token cutover, the staging runtime must identify each in-process actor at the call boundary and enforce actor-specific scopes; do not assume container-level isolation already exists.
+- Production remains suspended. Its auto-deploy setting is configured as enabled, but no action was taken on it. The staging service remains on `staging` with auto-deploy disabled. No deploy was triggered.
+
+### Runtime discovery still outstanding
+
+- Confirm whether any queues, scheduled tasks, or external workers run outside the connected Render workspace.
+- Inspect staging process startup and lifecycle registration to identify which schedulers/background loops actually start.
+- Reconcile service runtime environment-variable **names and bindings** with actor identities without exporting secret values into audit records.
+- Verify whether the single staging instance starts more than one scheduler/loop replica and how leases/idempotency prevent duplicate actor execution.
+- Capture actor identity, runtime instance, deployment commit, and owner team in the eventual registry binding.
+
+
+## 12. Follow-up authentication and runtime execution findings
+
+This section records additional direct reads of staging source. These are code-path findings; whether each route is externally mounted/reachable and which settings are present in the live environment must still be confirmed before describing an exploitable production vulnerability.
+
+### 12.1 Direct shared-secret authentication remains outside canonical identity
+
+| Source | Observed authentication behavior | Migration concern |
+|---|---|---|
+| `services/director/api.py` | If canonical request context is absent, compares request token directly against `MASTER_API_TOKEN` or `PYTHON_SERVICE_TOKEN` | Can bypass principal claims, registry binding, and scoped authorization; should not be an alternate Director auth path |
+| `core/event_api.py` | Accepts only the master token in its local `_require_auth`; has a `disable_event_api_auth` early allow branch | Must become a dedicated event API principal/scope contract; inspect whether the disable flag is configured or reachable |
+| `council/routes.py` | Accepts only the master token in its local `_require_auth`; has a `disable_council_auth` early allow branch | Council needs its own principal and deliberation/decision scopes, not borrowed platform-master authority |
+| `routes/council_routes.py` | Accepts either master or Python service token directly | Separate Council identity and route-specific permissions; no blanket service token |
+| `core/socket_server.py` | Maps master/Python service secrets to a socket auth method string | Socket handshake should validate a canonical principal and authorize each subscribed channel/event |
+| `products/shared/auth.py` | Decorator requires a non-empty token, but only rejects it when a master token is configured and does not match; when master configuration is empty, any non-empty token passes this decorator | **Fail-open conditional on missing configuration.** Confirm whether the decorated product route is mounted in the staging application; fix with fail-closed behavior before enabling that surface |
+| `api/routers/ai_chat.py` | Performs local token extraction and delegates to its own authentication service | Inspect the delegated service contract and ensure the resulting principal/scopes are canonical |
+| `services/kcpg_event_bridge.py` | Uses the Python service token for backend event bridge requests and also requires an event-signing secret | Preserve a narrow event-publish principal; do not retain species-wide privileges |
+
+The canonical SpeciesAuth currently turns the master and Python service secrets into `is_species=True` with `MASTER_PERMISSIONS = [read, write, admin, owner, species]`. That is the main broad-authority conversion point. The separate direct-secret paths above mean replacing only SpeciesAuth would not complete the migration.
+
+### 12.2 Director authentication is an independent legacy path
+
+The Director API:
+- first trusts a canonical request context only when an authenticated identity is also present;
+- otherwise directly compares the bearer/API-key value against master and Python service secrets;
+- uses `species_privileges` to allow platform-wide proposal/task access and platform mutations;
+- permits workspace operator/admin/owner roles for some writes.
+
+The target must be one authentication path that resolves a workload/human principal, checks the Agent Registry and capability grant, and then evaluates the exact Director action. No local master-token fallback should remain. The initial Director scopes do not authorize approval or execution of dispatched work.
+
+### 12.3 Render process topology correction
+
+The Render workspace has one staging web-service resource, but the Docker image starts **two Honcho Procfile processes**:
+
+- `web`: Gunicorn with one Uvicorn worker running `main:app`.
+- `worker`: `python -m services.kdo_engineering_worker_process`.
+
+The engineering worker is explicitly inert by default. It requires `KDO_ENGINEERING_WORKER_ENABLED`, a trusted host factory, a reachable Docker daemon, and the worker database configuration before it can poll/execute. Therefore it is a separate process slot inside the same Render service/container, not a separate Render worker service. The earlier Render inventory's statement that no separate Render worker service exists remains true, but process-level worker discovery is now partially confirmed.
+
+The main web process also composes V71 runtime convergence, runs the phased lifecycle boot, starts Meta Engine supervision, and conditionally boots schedulers according to `SERVICE_MODE`. In `full` mode, the lifecycle includes Content Engine/Autonomous Content and the autonomous loop; in `full` or `workers` mode, it includes sector reconciliation schedulers and BrandSchedulers. The Render process topology therefore does not isolate all autonomous actors into distinct OS processes.
+
+### 12.4 Worker and scheduler identity boundaries
+
+- The Engineering Worker process must receive a dedicated workload principal scoped to engineering task leases, approved workspace execution, and its trusted worker host. It must not inherit Director or general platform master authority.
+- Content Engine and BrandSchedulers must be distinct principals. Brand scheduling/publishing remains in the brand-owned lifecycle path; Director's historical publish capability remains intentionally unbound.
+- Meta Engine's service supervision identity must be observation/coordination scoped; it must not inherit content generation, remediation, or deployment authority.
+- Council API authentication is currently a shared-secret boundary rather than a distinct Council principal.
+- Event API publishers and socket subscribers require event-type/channel scopes, not a platform-wide operator flag.
+
+### 12.5 Guardian scan is not side-effect-free
+
+A direct read of `services/guardian_service.py` confirms `scan_all()` invokes a workflow that:
+1. validates GitHub access and discovers repositories;
+2. clones/pulls repositories and scans files;
+3. may invoke the auto-fix engine and create GitHub pull requests when both auto-fix configuration and `GUARDIAN_AUTO_FIX` are enabled;
+4. sends an owner notification;
+5. publishes a domain event and records analytics.
+
+The staging deployment configuration declares `GUARDIAN_ENABLED=false`, and the settings model defaults both Guardian enabled and auto-fix to false. This reduces current configured exposure but does not correct the capability contract: `run_guardian_scan` is still catalogued as `Authority.AUTO` / `Risk.LOW`. A read-only scan capability must not call the current all-in-one side-effecting workflow. Remediation must be a separate capability, principal scope, approval path, and audit record. Notifications/events/analytics should also be explicitly classified as allowed scan outputs rather than assumed to be pure observation.
+
+### 12.6 Follow-up tests and release gates
+
+Add regression coverage for:
+- all missing-secret configurations failing closed (including the shared product auth decorator);
+- disabling legacy local-auth bypasses and rejecting master/Python secrets at Director, Council, Event API, and socket entry points once migrated;
+- channel/event authorization after socket authentication;
+- workload identity and scope checks for worker, Council, event bridge, Meta Engine, and brand scheduler principals;
+- Director's `director:dispatch` never approving, directly executing, publishing, or remediating;
+- Guardian scan not invoking AutoFixEngine or creating PRs under any configuration; separately test approved remediation;
+- exactly one intended scheduler/worker leader per lease/brand/task and safe duplicate startup behavior;
+- trace correlation from Director capability invocation through handler and downstream service.
+
+**Status remains PARTIALLY COMPLETE.** The Render Procfile and lifecycle give a stronger source-derived process map, but the live environment's `SERVICE_MODE`, worker enablement, external queue/scheduler providers, and route mount/reachability still need confirmation. Do not infer those values from repository defaults.
+
+
+## 13. Live staging route and runtime verification — 2026-11-11
+
+This section adds read-only Render runtime evidence to the source inventory. It distinguishes the currently deployed commit from the current `staging` branch head.
+
+### 13.1 Deployment and source drift
+
+- Render reports staging service `kdo-engineering-staging` as not suspended, one configured instance, free plan, branch `staging`, and auto-deploy disabled.
+- The latest observed live deployment was `dep-dbq140uk1f9s73da1hc0`, status `live`, started at 2026-11-11 06:58:11 UTC and completed at 06:58:50 UTC.
+- That deployment runs commit `70ce311da34aa9fd1d74b2923b7d8913394b5377` (`Capture CI diagnostics and publish failure reports`). Render recorded the trigger as `service_updated` with `envUpdated=true`; this audit did not initiate that deployment.
+- The current `staging` branch head at inspection is `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`, whose parent is the deployed commit. Therefore staging has advanced beyond the running deployment. Auto-deploy is off, so the current branch head is not automatically live.
+- The relevant `routes/council_routes.py`, `routes/event_api.py`, and `services/director/api.py` blobs are identical between deployed commit `70ce311` and current staging head `a51d7dd`. `main.py` differs because the later staging commit includes the plugin-retirement route cleanup. This audit does not assume all application code on the branch is live.
+
+### 13.2 Live startup and process evidence
+
+Render application logs from the latest live instance confirm:
+
+- Boot environment is `staging`; runtime version log reports `14.7.5`, Python `3.12.16`, and `SERVICE_MODE=full`.
+- Director proxy is disabled because Director runs in-process. The logs confirm Director routes mounted directly at `/director/*`.
+- The Event API logs confirm routes mounted at `/api/v1/events/*`.
+- The Council control-plane router logs confirm it mounted successfully.
+- The Honcho `worker.1` process logs: `Engineering worker is disabled; waiting without polling.` Thus the worker process slot exists, but it is not polling or executing engineering jobs in this runtime snapshot.
+- Application startup completed at 2026-11-11 06:59:13 UTC.
+- The latest sampled health-monitor cycle at 07:44:28 UTC reported 20 services total, 19 OK, 0 down, and 1 unknown (`Plugin:facebook`). This is the platform health monitor's reported snapshot, not an independent probe of every service.
+- Brand scheduler logs show a brand named `KDO Semantic Evaluation Lab` being skipped because it has no AI profile. This is a configuration/eligibility observation, not evidence of a platform-wide scheduler failure.
+
+### 13.3 Route mounting versus endpoint reachability
+
+Confirmed by the deployed process's startup logs and source:
+
+| Surface | Mount evidence | Authentication evidence | Gate 0 implication |
+|---|---|---|---|
+| Director `/director/*` | Mounted directly in the live process | Director source retains a direct master/Python service-token fallback when canonical request context is absent | Remove fallback and require Director workload identity plus narrow scopes |
+| Council `/api/v1/council/*` | Council router mounted; `main.py` includes `routes.council_routes` | `routes/council_routes.py` directly accepts configured master or Python service token | Confirmed mounted shared-secret consumer; migrate to a distinct Council principal |
+| Event API `/api/v1/events/*` | Live startup log confirms mount; `main.py` registers `routes.event_api` | `routes/event_api.py` validates through canonical `SpeciesAuth`; publish/clear additionally require species privilege | Migrate publisher and reader permissions to event-type/channel scopes |
+| Legacy `core/event_api.py` | Not the module registered by the inspected `main.py` mount function; main registers `routes.event_api` | Contains a separate local master-token path and `disable_event_api_auth` bypass | Do not describe this duplicate helper as live-reachable through the confirmed Event API mount |
+| Product shared auth helper | Its own module docstring identifies it as legacy Flask auth not used by the FastAPI main app; it is not in the inspected main route-module list | Missing master configuration permits any non-empty token through this decorator | Conditional fail-open remains a code defect; no evidence here that it is mounted in the live FastAPI app |
+
+The Director, Council, and Event API mounts are confirmed from startup logs. **Authenticated endpoint behavior was not exercised.** The available request-log query returned no request records for the queried window, and direct public HTTP inspection was unavailable in this audit session. Do not equate route mounting with a successful authenticated request or with proof of external reachability through every proxy.
+
+### 13.4 Runtime configuration visibility and limits
+
+- The live startup log establishes `SERVICE_MODE=full`; it is stronger evidence than the repository default.
+- The worker's explicit disabled log establishes that it did not poll in this snapshot. The raw environment-variable values were not read or copied into this audit.
+- Render service metadata and logs do not establish the values of every Guardian, scheduler, external queue, or integration environment variable. No secret values were requested or exposed.
+- The connected Render workspace inventory still contains one staging web-service resource, not separate Render worker/cron resources. The two Procfile processes share the service/container; multiple in-process actors and lifecycle schedulers are active in `full` mode.
+- External queue providers, manually operated workers, and schedulers outside this Render workspace remain unverified.
+- No authenticated route probes, writes, remediation calls, database queries, environment-variable changes, deployments, or production operations were performed by this audit.
+
+### 13.5 Gate 0 status after runtime verification
+
+**Status remains PARTIALLY COMPLETE.** Runtime verification now confirms the active service mode, the disabled engineering worker, and successful startup mounting of Director, Council, and Event API surfaces. It also confirms a staging deployment lag: the live service runs `70ce311`, while the branch head is `a51d7dd`.
+
+Remaining work includes:
+1. Reconcile the live deployment commit with the intended staging source before treating branch-only route changes as runtime behavior. Any deployment remains a separate explicitly authorized action.
+2. Perform safe authenticated route tests in staging using dedicated test principals, once those principals and non-production credentials are approved.
+3. Finish exact-commit source/config classification and the consumer-to-scope migration matrix.
+4. Verify socket handshake/channel authorization, external workers/providers, trace exporter/collector behavior, and Director-to-tool downstream trace continuity.
+5. Complete the Guardian scan/remediation boundary and migration rollback plan.
+
+No runtime implementation, credential rotation, database change, deployment, or production action is authorized by this audit.
+
+
+## 13. Consumer-to-scope migration matrix — proposed authorization contract
+
+**Status:** design mapping for Gate 0 review; scope names below are proposed vocabulary, not claims that these scopes already exist in code or tokens. This matrix is intentionally deny-by-default. Each legacy consumer must be migrated and regression-tested before its compatibility bypass is removed.
+
+### 13.1 Principal classes and authority rules
+
+| Principal class | Intended authority source | Explicit boundary |
+|---|---|---|
+| Human workspace member | Supabase-authenticated subject + accepted workspace membership + workspace role | Workspace only; workspace owner/admin must not imply platform-wide authority |
+| Human platform operator | Server-side UUID allowlist + named platform scopes | Only the listed platform operations; no implicit wildcard |
+| Human platform super-admin | Server-side UUID allowlist + explicit break-glass platform grant | Human-only; audited, short-lived where feasible; never copied to machine identities |
+| Director workload | Signed workload token + active Agent Registry grant + tool policy | Initially `director:read`, `director:dispatch`; dispatch submits to governed admission only |
+| Council workload | Separate Council principal + Council policy grant | Deliberation/evidence/decision workflow only; approval remains a distinct governed action |
+| Guardian scanner | Separate read-only Guardian principal | Scan/report only; no remediation, PR creation, or write authority |
+| Guardian remediation | Separate higher-risk principal and capability | Explicit remediation scope, decision reference, Council/DecisionGate and human approval as policy requires |
+| Content Engine / brand scheduler | Separate content or scheduler principal, bound to brand/workspace | Content generation and publishing remain owned by the Content Engine and brand schedulers, not Director |
+| KCPG event bridge | Dedicated bridge principal with signed event envelope | Allowlisted event types and explicit workspace binding; no general platform operator authority |
+| Engineering planner / specialist / worker | Engineering vertical identity plus role/tool grants and execution policy | Project/workspace sandbox and task-specific grants; no inherited platform admin or production deployment authority |
+
+Effective machine authority is the intersection of verified signed claims, active Agent Registry grants, tool/capability policy, workspace/environment boundaries, and required governance. Registry state may revoke or narrow a grant; it must never broaden signed authority. Missing, unknown, expired, revoked, mismatched, or unverifiable identities fail closed.
+
+### 13.2 Legacy consumer mapping
+
+| Legacy consumer / surface | Current coupling observed | Proposed replacement contract | Migration owner / guard |
+|---|---|---|---|
+| `core/species_auth.py` master-token branch | `is_species=True`, broad master permissions and cross-workspace bypass | Human operator or dedicated machine principal validation; no shared boolean privilege | Identity platform; preserve human operator break-glass separately |
+| `core/species_auth.py` Python service-token branch | Same species-wide identity as master token | Replace each integration with a named service principal and minimal scopes | Identity platform + each service owner |
+| `core/api_auth.py` | Serializes `is_species` | Serialize principal type, subject, verified scopes and bounded workspace/environment claims; compatibility field read-only during migration | Auth platform |
+| `core/security/deps.py` | Builds `species_privileges`; exposes `require_species_privileges` | Scope dependencies such as `require_scope("platform:...")` and explicit human-role checks | API/security platform |
+| `core/request_context.py` | Boolean privilege bypass in permissions, workspace assertion and workspace hint selection | Typed principal + verified scope set + explicit workspace/environment boundary; no caller-controlled privilege hint | Request-context owners |
+| `middleware/request_context_middleware.py`, `core/workspace_context.py` | Species identity can select platform workspace context | Resolve workspace from verified claim or authorized human selection; platform-wide reads require a named scope | Tenancy owners |
+| `core/tenant_guard.py` | `allow_species` can bypass workspace mismatch | Replace with explicit cross-workspace scope checked against target resource and audit reason | Tenancy/security owners |
+| `core/auth.py`, `core/pipeline.py` | Species privilege influences generic write authorization and decision override | Domain action permissions and explicit decision provenance; no generic machine override | Pipeline/action-kernel owners |
+| `api/routers/users.py` | Platform privilege can affect user role assignment/update | `platform:users:read` / `platform:users:manage`; workspace owner limited to workspace membership administration | Identity administration |
+| `api/routers/workspaces.py` | Platform-wide workspace listing/admin | `platform:workspaces:read` and `platform:workspaces:manage`; separate human/operator policy | Workspace platform |
+| `api/routers/posts.py` | Platform-wide post query path | `platform:posts:read`; content mutation stays with brand-scoped workflow | Content platform |
+| `api/routers/monitoring.py`, `api/observability_routes.py` | Species privilege exposes platform monitoring/metrics | `platform:monitoring:read`, `platform:observability:read`; redact tenant-sensitive fields | SRE/observability |
+| `api/slo_routes.py`, `api/report_routes.py` | Platform SLO and report aggregation | `platform:slo:read`, `platform:reports:read`; export/download may require separate scope | SRE/reporting |
+| `api/outbox_routes.py` | Platform outbox inspection/operations | Separate `platform:outbox:read` and `platform:outbox:operate`; operation requires idempotency and audit evidence | Messaging platform |
+| `api/e2e_routes.py` | Diagnostic route uses species operator | `platform:diagnostics:run`, non-production environment guard, explicit operator authorization | QA/SRE |
+| `api/timeline_routes.py`, `routes/backend_contract_routes.py` | Workspace mismatch bypass for platform principal | Explicit `platform:timeline:read` or `platform:contracts:read` plus resource-level tenancy checks | Platform API |
+| `api/metabolism_routes.py` | Platform plan override | `platform:metabolism:override`, high-risk decision gate and human approval | Metabolism owner |
+| `api/organism_body_routes.py` | Platform organism inspection and mutation share species check | Split `platform:organism:read` from `platform:organism:operate`; mutation governed separately | Platform operations |
+| `api/content_intelligence_automation.py` | Reads request-context platform privilege | Read-only insight scopes separated from content mutation; brand/workspace-scoped actions | Content intelligence |
+| `routes/autonomy_routes.py` | Elevated control-plane path treats species as elevated | Explicit control-plane read/operate scopes per operation; autonomy changes require governance | Autonomy platform |
+| `routes/species_routes.py` | Platform workspace listing via `require_species_privileges` | `platform:workspaces:read`; do not grant to Director by default | Platform API |
+| `routes/code_intel_routes.py` | Code Intelligence API behind species privilege | Dedicated `engineering:code_intel:read` / `engineering:code_intel:analyze`; execution remains in engineering policy | AI Software Engineering Vertical |
+| `routes/circulation_routes.py` | Circulation control plane | `platform:circulation:read` / `platform:circulation:operate`, with operation-specific governance | Circulation owner |
+| `routes/event_api.py` | Event control plane uses species privilege | Split `events:read`, `events:publish`, `events:admin`; event-type and workspace allowlists | Event platform |
+| `routes/cp_gap_routes.py` | Control-plane gap operations | `platform:control_gaps:read` / `platform:control_gaps:manage` | Platform governance |
+| `routes/rule_routes.py` | Rule control plane | `platform:rules:read` / `platform:rules:manage`; changes require versioning and review | Policy/rules owner |
+| `routes/meta_routes.py` | Meta control plane | `platform:meta:read` / `platform:meta:operate`; recovery/remediation separately gated | Meta Engine owner |
+| `services/command_executor.py` | Platform privilege when no workspace is bound | Named command IDs, explicit `platform:commands:execute`, allowlisted arguments, environment boundary and approval policy | Execution platform |
+| `services/intelligence_authorization_replay.py` | Records boolean species privilege | Record principal subject/type, verified scope snapshot, policy version and decision reference; redact secrets | Audit/observability |
+| `services/director/api.py` | Direct master/Python token fallback; species privilege controls platform task/proposal visibility and mutation | Remove alternate shared-secret path; Director read endpoints require `director:read`; dispatch endpoints require `director:dispatch`; approval/execute endpoints require separate governance and must not be granted to Director | Director + identity platform |
+| `council/routes.py` | Direct master token; configurable `disable_council_auth` bypass | Dedicated Council service identity and narrow Council route scopes; configuration must never disable production auth | Council owner |
+| `routes/council_routes.py` | Direct master/Python service-token acceptance | Same Council principal contract; do not treat Gateway identity as Council identity | Council owner |
+| `core/event_api.py` | Direct master-token auth; configurable `disable_event_api_auth` bypass | Dedicated event publisher/consumer principals and route-specific event scopes; auth bypass prohibited in production | Event platform |
+| `core/socket_server.py` | Master/Python token maps to broad socket identity | Canonical principal validation plus per-channel and per-event authorization; no broad socket identity from shared secret | Realtime platform |
+| `products/shared/auth.py` | Shared master-token decorator; if master secret is unset, any non-empty token passes its conditional comparison | Replace with canonical verifier; reject if issuer/configuration unavailable; first establish whether the Flask product app is mounted/reachable | Product platform; route reachability still requires proof |
+| `services/kcpg_event_bridge.py` | Python service token plus HMAC event signature | Dedicated `kcpg-event-bridge` principal with `events:publish`, workspace/event allowlists, signature verification and replay protection; retain HMAC during staged migration | KCPG bridge owner |
+| `services/guardian_service.py` via Director binding | Scan handler reaches optional auto-fix, notifications, events and analytics | Strictly read-only `guardian:scan`; separate `guardian:remediate` tool and identity; classify permitted scan outputs | Guardian/security owner |
+
+**Scope naming note:** the proposed scope strings are a design vocabulary for migration planning. Before implementation, normalize them in one versioned scope catalogue with resource/action semantics, risk class, and owning team. Avoid introducing overlapping aliases or wildcard grants.
+
+### 13.3 Director capability boundary
+
+| Capability class | Director may do? | Required authority |
+|---|---|---|
+| Read platform health, approved observations and Director state | Yes, within configured read surface | `director:read` plus resource policy |
+| Submit a typed task/proposal to governed admission | Yes | `director:dispatch` plus schema validation and admission policy |
+| Directly invoke arbitrary capability handlers | No | Not granted |
+| Approve its own proposal or Council decision | No | Separate eligible human/Council authority |
+| Publish content or post to a brand | No | Brand scheduler / Content Engine principal |
+| Run Guardian remediation or create a fix PR | No | Separate remediation principal + governance |
+| Change platform rules, identities, scopes or credentials | No | Human platform authority and change governance |
+| Deploy to production or modify production infrastructure | No | Explicit human authorization and release controls |
+
+### 13.4 Regression-test migration matrix
+
+| Test family | Required assertions before retiring compatibility |
+|---|---|
+| `test_director_auth_boundary.py` | Director token with read cannot dispatch; dispatch cannot approve/execute; no master/Python fallback; workspace/environment mismatch denied |
+| `test_authenticated_actor_context.py` | Human, service, agent, scheduler and worker principal types remain distinct; subject and scope provenance preserved |
+| `test_service_auth_only_workspace_bypass.py`, `test_species_scale_workspace_hydration.py` | No implicit cross-workspace access; only explicit bounded scope can cross; client workspace header cannot broaden authority |
+| `test_v83_identity_access_hardening.py`, `test_v84_authorization_hardening.py` | Expired, forged, revoked, wrong-audience, wrong-issuer, wrong-key and replayed workload tokens rejected |
+| `test_v71_1_agent_identity.py`, `test_v71_2_agent_capability_permissions.py`, `test_advanced_agent_control_plane.py` | Unknown/suspended agent denied; Registry grants cannot broaden signed scopes; role delegation cannot escalate |
+| `test_c11_5_runtime_authority_convergence.py` | Actor identity remains consistent across API, event, worker and scheduler execution boundaries |
+| `tests/security/test_control_plane_authorization.py`, `test_global_surface_authorization.py`, `test_platform_authority.py`, `test_plugin_isolation.py` | Each mapped platform surface checks its specific scope; no machine principal inherits human super-admin |
+| `tests/tenancy/test_request_context.py`, `tests/tenancy/test_pipeline.py` | Request context and pipeline use typed scopes; no species boolean bypass; generic write does not imply platform operation |
+| New Council/event/socket tests | Missing credentials, disabled-auth flags, wrong principal, wrong event/channel scope and invalid signatures fail closed |
+| New Guardian contract tests | Scan cannot invoke AutoFixEngine/create PRs under any config; remediation requires its own principal and approval evidence |
+| New audit/redaction tests | No secrets in spans/logs; consequential execution fails closed if required authorization/audit evidence is absent |
+
+### 13.5 Migration sequencing and rollback gates
+
+1. Freeze the proposed scope catalogue and assign a named owner to every consumer row.
+2. Add typed principal/scope fields alongside existing compatibility fields; shadow-evaluate decisions without changing grants.
+3. Add per-route policy checks and regression tests. For each surface, compare old and new decisions and investigate every mismatch.
+4. Migrate machine integrations individually: Director, Council, KCPG bridge, Guardian, engineering actors, schedulers and socket clients. Do not rotate shared credentials until all consumers and callers are accounted for.
+5. Enable enforcement in staging first. Unknown actors, missing claims, invalid signatures, missing workspace bindings and audit failures must deny.
+6. Remove each legacy bypass only after its consumer has a verified replacement, tests pass, and rollback procedure is documented.
+7. Retire `is_species` and `species_privileges` only when repository-wide and runtime inventories show no remaining authorization consumers.
+
+Rollback must restore only the last known compatible authorization policy for the affected surface, never a global species-wide bypass. Keep production untouched; no database migration or new paid infrastructure is implied by this design phase.
+
+## 14. Authorization scope catalogue — design review checkpoint
+
+The companion architecture proposal now defines the proposed catalogue kdo-authz-scopes/v1. This is a design vocabulary only: no scope is active, assigned, issued in a token, or enforced by this documentation change.
+
+Review requirements before Gate 0 exit:
+
+- Confirm the owning team for every scope and identify a named accountable human owner; unresolved ownership blocks activation.
+- Reconcile each scope to exact route, capability, tool, event type/channel, resource class, workspace, environment and runtime consumer. The catalogue is not a substitute for that exhaustive mapping.
+- Validate that the Director's initial authority is exactly director:read and director:dispatch, with dispatch limited to governed admission.
+- Validate human-only critical authority boundaries, especially identity:registry:manage, production deployment, merge authority and credential/key operations.
+- Confirm Guardian scan/remediation, Content Engine generation/Brand Scheduler publication, Council deliberation/decision, and engineering planning/write/execute/merge/deploy are separate permissions and principals.
+- Confirm KCPG event publishing and socket subscriptions are constrained by event type, channel, direction, source identity and workspace.
+- Confirm the risk tier is calculated from the concrete operation and target; actor labels or tool metadata cannot lower it.
+- Specify issuer, audience, proof-of-possession, key rotation/revocation and catalogue-version pinning in the token implementation contract before any runtime rollout.
+- Review the catalogue for over-broad resource labels, missing owner teams, duplicate semantics and scope/action mismatch; add only scopes backed by an identified consumer.
+
+**Decision status:** pending owner/security/governance review. Gate 0 remains partially complete. This checkpoint does not authorize implementation, token issuance, permission grants, database changes, deployment, or production activity.
+
+## 15. Workload-token and Agent Registry contract review checkpoint
+
+The companion architecture proposal now defines the proposed KDO Workload Token Profile v1 and a logical Platform Agent Registry schema. Both remain design contracts only; neither is implemented, provisioned, migrated or enforced.
+
+### Required protocol decisions before implementation
+
+- Confirm the trusted workload identity issuer and its runtime attestation/authentication mechanism. Do not accept caller-supplied agent IDs, scope lists or identity headers.
+- Select and validate one proof-of-possession mechanism against the actual Render/network topology: end-to-end mTLS certificate binding or a workload-held asymmetric key with a rigorously specified per-request proof. Do not assume proxy-terminated TLS provides workload identity.
+- Confirm exact token type, allowed asymmetric algorithm, trusted issuer/key distribution, narrow service audiences, claim schema, scope catalogue version and authorization-policy version.
+- Define clock-skew limits, token maximum lifetime, replay cache/nonce behavior, session binding, revocation freshness objective and compromised-key response.
+- Define verifier behavior when the registry, issuer metadata, revocation state or audit infrastructure is unavailable; consequential actions must fail closed.
+- Validate key custody and rotation without storing private keys, signing secrets or access tokens in application configuration, registry records, logs or traces.
+
+### Required registry decisions before implementation
+
+- Reconcile V71 identity and capability permission registries, the engineering Agent Registry and current session hardening; identify the canonical owner/storage/API and avoid a competing in-memory or database source of truth.
+- Confirm which source/runtime components are independently acting principals versus passive libraries, services or orchestrators. Require a named accountable human owner for every active principal.
+- Confirm principal subject uniqueness, runtime binding, lifecycle transitions, grant/tool/resource/workspace/environment relations, delegation, approval provenance, audit retention and emergency suspension semantics.
+- Define a measurable revocation objective and prove it across API, socket, event, worker and scheduler boundaries.
+- Confirm that registry grants and caches can narrow/revoke signed authority but can never broaden it; broadening requires reviewed grant change and new token issuance.
+- Keep human identities separate from workload identities. Human super-admin, identity management, production release and critical credential operations must never be copied into workload tokens.
+- Confirm that no physical database schema or migration is selected until existing registries and persistence are assessed. No additional paid infrastructure or Supabase cost is authorized.
+
+### Acceptance evidence required
+
+- Positive and negative claim/proof-of-possession tests, including algorithm confusion, forged signature, wrong issuer/audience, expiry, replay, key rotation/revocation, proof-key mismatch and canonical request binding.
+- Agent Registry tests for uniqueness, ownership, lifecycle, missing runtime, suspended/retired actors, stale approvals, scope narrowing, delegation boundaries and immutable audit provenance.
+- Cross-surface identity convergence tests for API, socket, event, worker and scheduler execution.
+- Evidence that unknown actors, registry outage and revocation uncertainty cannot fall back to master/Python shared credentials or is_species bypasses.
+- Evidence that Director receives only director:read and director:dispatch and that dispatch cannot directly execute, approve, publish, remediate or deploy.
+
+**Decision status:** pending architecture, identity/security, runtime and governance review. Gate 0 remains partially complete. No token issuer, verifier, registry implementation, migration, grant, test run, deployment or production action is authorized by this checkpoint.
+
+## 16. Existing identity infrastructure convergence checkpoint
+
+A focused source inspection of the staging branch was completed for V71.1, V71.2, V71.13, V71.18, the Advanced Agent Control Plane, V83, V84, the engineering role registry and their directly relevant tests. This is not a repository-wide persistence, migration, RLS, route-reachability or production-wiring audit.
+
+### Confirmed source-level findings
+
+| Component | Evidence-based finding | Gate 0 implication |
+|---|---|---|
+| V71.1 | Workspace-scoped agent identity/lifecycle and declared capabilities; SHA-256 fingerprint; explicit no-authority/no-execution methods | Strong reusable identity domain model, but lacks platform subject, accountable owner, runtime attestation, environment and key binding |
+| V71.2 | Workspace-scoped capability allow/deny grants; declared-capability validation; explicit deny wins; empty permission scope matches globally within that permission subject to identity/governance | Reuse as a capability-policy input, but empty scopes and legacy capability names require explicit migration classification; never translate to wildcard token scopes |
+| V71.13 | Creates V71.1/V71.2 in-memory registries per workspace runtime, then composes workforce services; fail-closed on durable hydration failure | Preserve as the single runtime composition path; prevent duplicate registry instances |
+| V71.18 | Hydrates identities, capability permissions and workforce records from workspace-filtered Supabase tables, verifies record fingerprints, and reports restart safety | Existing durable workforce tables are the first persistence reuse candidate; hydration alone does not prove all write, transaction, uniqueness, RLS or audit semantics |
+| Advanced Agent Control Plane | Read-only, fingerprinted snapshot over existing registries; authority_granted and execution_requested remain false | Reuse as an operator/read-model projection, never as an authorization service |
+| V83 | Tenant/workspace-bound identity and access sessions, expiry/state checks and integrity fingerprints; SQLite defaults to :memory: | Reuse assurance concepts/tests only after confirming production configuration and durable shared storage |
+| V84 | Validates V83 sessions and asks the action pipeline for a decision with enqueue disabled and no domain executor; records decision evidence; SQLite defaults to :memory: | Decision-evidence component only; not token issuance, workload scope registry or action execution |
+| Engineering Agent Registry | Static role catalogue and host-installed adapter registry; selected role readiness is distinct from execution authorization | Preserve as specialist role metadata; map roles to workload principals/tools explicitly without replacing the engineering vertical |
+
+### Convergence decision
+
+**Recommended:** keep V71 as the canonical workforce-agent identity/capability foundation and extend it through a narrow platform-principal binding. Retain V71.13/V71.18 as the runtime composition and durable hydration path. Reuse V83/V84 only for their distinct identity/session assurance and authorization-decision evidence responsibilities after wiring/storage verification. Retain the Engineering Agent Registry as role/adapter metadata. Add workload-token issuer/verifier adapters only after proof-of-possession and key custody decisions; do not create a parallel registry database.
+
+### Unresolved verification items before Gate 0 exit
+
+- Trace every V71 registry mutation to its durable write adapter and confirm transaction boundaries, optimistic/concurrent update behavior, uniqueness/indexes, foreign keys, schema migration history and Supabase RLS.
+- Confirm V71.18 hydration and all write paths behave consistently across multiple web/worker processes and runtime restarts; inspect stale cache and duplicate-runtime behavior.
+- Determine whether V83/V84 are wired into live API authentication or remain separately callable components; inspect production storage configuration without reading secret values.
+- Reconcile V71 workforce agent IDs to actual engineering worker/planner/specialist runtime actors and determine whether they are independent principals or role metadata.
+- Establish canonical mapping between human identity, workspace API-token identities, non-human service credentials and future workload principal subjects without reusing human super-admin or shared master/Python service credentials.
+- Confirm exact accountable owner and runtime binding for each actor family; source labels alone are not evidence of an independently authenticated principal.
+- Review all relevant table migrations and RLS policies, not just Python hydration code. No live database queries or mutations were performed in this focused source review.
+
+### Required migration safety
+
+- Preserve existing V71 agent IDs, workspace boundaries, capability declarations, planning, memory, budgets, takeover, coordination, durable runtime and worker governance.
+- Shadow-map V71 capability grants to the new scope catalogue; explicit-deny precedence remains. Empty-scope grants are quarantined for review until resource boundaries are made explicit.
+- Keep signed scopes, capability eligibility, tool bindings, registry constraints and governance approval as distinct layers.
+- Never treat SHA-256 record fingerprints as signatures, issuer authentication or proof-of-possession.
+- Preserve V83/V84 tenant/session and tamper tests, V71 persistence/restart tests, Advanced Agent Control Plane read-only tests and the entire AI Software Engineering / Code Intelligence suite.
+- No new Supabase project, paid database, migration, token issuance, grant activation, runtime code, test run, deployment or production operation is authorized by this checkpoint.
+
+**Decision status:** architecture recommendation documented; owner/security/runtime review pending. Gate 0 remains partially complete because persistence write paths, migrations/RLS, complete actor mappings and live wiring are not yet exhaustively verified.
+
+
+
+## 17. KDO namespace and generated-identifier standard checkpoint
+
+A cross-platform naming requirement has been added to the Advanced Director proposal: KDO-generated credentials and internal resource identifiers must be visibly attributable to KDO through a reserved, typed namespace. This is a design checkpoint only; no identifiers or credentials were changed.
+
+### Proposed convention
+
+- KDO-issued API keys and tokens use a reserved `kdo_` root with centrally defined typed variants (illustrative: `kdo_live_`, `kdo_test_`, `kdo_workload_`, `kdo_wskey_`). Credential handles/key IDs are prefixed; cryptographic key bytes and private material are not modified or exposed to satisfy naming.
+- KDO-owned workspace machine IDs and slugs use reserved KDO forms (illustrative: `kdo-ws-<opaque-id>` and `kdo-<slug>`). Immutable IDs remain distinct from display names.
+- KDO-generated agent, service, session, job, event, webhook-key and storage identifiers use centrally registered typed namespaces where supported.
+- Identifiers use a bounded lowercase ASCII grammar, safe opaque suffixes and no embedded secrets, personal data or authorization claims. Tenant ownership is a structured relation/claim, never inferred from a prefix.
+- Prefixes are not credentials and confer no trust or authority. Cryptographic verification, issuer/audience/environment checks, scopes, revocation, workspace isolation and governance remain mandatory.
+- Externally issued/provider-owned identifiers are mapped, not rewritten. Provider naming constraints must be respected.
+
+### Migration and verification gates
+
+- Inventory all KDO-issued credentials and KDO-owned workspace/resource identifiers; classify external and legacy identifiers separately.
+- Approve one central prefix catalogue, generator and validator before enforcing issuance.
+- New KDO-generated identifiers adopt the standard after shared implementation is reviewed.
+- Preserve existing immutable IDs and integrations using explicit aliases/mappings where needed. Credential changes require secure reissuance, verified cutover, overlap/revocation planning and audit; never prefix an existing secret in place.
+- Workspace renames require separate review of foreign keys, membership, RLS and tenant isolation. No bulk rename or schema migration is authorized here.
+- Add tests for type grammar, uniqueness/collisions, environment separation, malformed identifiers, cross-workspace isolation, legacy compatibility, revocation and secret redaction.
+
+### Scope and status
+
+This standard is intended to be cross-platform, including the API-key/workload-token contract, Platform Agent Registry, workspace model and engineering vertical. The examples are illustrative until a versioned catalogue is approved. It does not authorize implementation, key rotation, credential issuance, database changes or deployment. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 18. V71 persistence, workspace and credential-generator convergence audit
+
+This checkpoint records a focused read-only source inspection of V71.1/V71.2, V71.13/V71.18, V71.10, the direct onboarding writer, workspace creation/model/migration and API-token generation. It is not a complete repository-wide writer inventory or live database/RLS audit.
+
+### Confirmed persistence/runtime behavior
+
+- V71.13 creates workspace-scoped registries and caches each composed runtime in a process-local dictionary keyed by workspace ID. There is no visible lock around cache miss → composition → cache insertion.
+- V71.18 reads the nine workforce tables with an explicit workspace filter, reconstructs the in-memory objects and validates their record fingerprints. It is hydration-only; it does not implement durable mutation methods.
+- V71.18's installer marks whether a table-capable DB client is present. Actual per-workspace hydration is lazy, inside V71.13 runtime composition.
+- V71.10 persists autonomous runs and uses RPCs for durable lease operations when the DB client is available. This is a separate run-lifecycle persistence path, not general V71 identity/permission write-through.
+- Existing V71.18 tests use fake query/database classes. They cover empty hydration, fingerprint rejection and non-empty reconstruction, but do not prove real transaction, RLS, concurrent mutation or multi-process semantics.
+
+### Migration and schema findings
+
+| Source | Confirmed definition | Gap / implication |
+|---|---|---|
+| Migration 088 | `agent_identities`; composite primary key `(workspace_id, agent_id)`; workspace/status index | No RLS policy in this migration |
+| Migration 089 | `agent_capability_permissions`; global `permission_id` primary key; unique workspace/agent/capability/permission tuple | No declared FK to identity and no RLS policy in this migration |
+| Migration 100 | Adds workspace-oriented indexes for hydration/restart inspection | Does not supply mutation persistence or transaction guarantees |
+| Migration 003 | Workspace ID primary key; slug non-null; workspace member FK; comment explicitly says RLS policies omitted at that stage | Slug is not unique in this DDL; application preflight is not concurrency-safe |
+| Migration 006 | API token record ID primary key; workspace FK with cascade; token hash unique | Raw token is not stored; ID and credential secret have separate naming formats |
+
+These are observations about the inspected migration files only. Later migrations or Supabase dashboard policies may add controls; those have not been exhaustively inspected or queried live.
+
+### Direct writer and runtime risks
+
+1. **Onboarding fingerprint incompatibility:** `services/business_onboarding.py` directly upserts `agent_identities` and writes the literal fingerprint `onboarding-provisioned`. V71.1 and V71.18 expect a canonical SHA-256 fingerprint over the identity payload. Therefore this row will fail V71.18 integrity validation on hydration unless another process rewrites it first. The inspected path does not establish such a rewrite.
+2. **Permission convergence:** the onboarding path declares worker capabilities but the inspected code does not write corresponding V71.2 permission records. Declared capability is not a grant; this separation must be preserved and explicit grants must be governed.
+3. **Runtime multiplicity:** V71.13 cache is process-local. Separate web and worker processes create separate runtime/registry instances and independently hydrate. First-use construction is not visibly synchronized inside a process. A distributed registry cannot be inferred from this cache.
+4. **Persistence gap:** V71.1/V71.2 registries mutate in-memory dictionaries. V71.18 restores them from durable tables but does not provide a matching general write-through adapter. The canonical owner of all mutations remains unresolved.
+5. **Database controls:** the inspected V71 migrations do not define RLS or an identity FK for permissions. Migration 003 explicitly records that RLS was omitted at that stage. Full later migration and live-policy verification remains outstanding.
+
+### Existing KDO naming inventory (partial)
+
+- Workspace API: default ID `ws-<random>`; caller-supplied IDs are accepted; generated slug is sanitized but no KDO prefix is enforced. The model retains a `default` compatibility workspace and does not require a namespace prefix.
+- API credentials: `core/api_tokens.py` issues `kny_<random>` plaintext credentials, stores only SHA-256 hashes, and assigns `tok-<random>` record IDs.
+- Onboarding: brand IDs use `onboard_`; plan IDs use `plan_`; workforce IDs use a role/workspace concatenation.
+- Event sources: an existing KDO-owned webhook secret uses `kdo_wh_`, while its source ID uses `src_`.
+- Brand scheduler: publishing job IDs use `pub_`.
+
+This is a sample inventory from targeted searches, not an exhaustive count of all generated identifiers. It demonstrates that KDO already has a few KDO-prefixed formats alongside legacy prefixes. The namespace standard must preserve typed distinctions, identify externally/provider-issued values, and migrate credentials by secure reissuance rather than editing secrets in place.
+
+### Required next gates
+
+- Complete a writer/reader inventory for V71 identity, permission, memory, plan, evaluation, budget, takeover, coordination and autonomous-run records.
+- Correct onboarding to use canonical identity construction and fingerprinting; test restart hydration against onboarding-created rows.
+- Establish a single versioned persistence adapter with transaction, idempotency, uniqueness, concurrency and audit contracts.
+- Review full migration history and live Supabase RLS/constraints with read-only schema inspection; do not assume migration snippets describe current live policy.
+- Define cache invalidation and cross-process convergence for web, worker and any external runtime.
+- Inventory all credential and identifier generators before selecting final KDO prefix variants; preserve legacy aliases and existing immutable IDs.
+- Add integration tests for real DB write → restart → hydration, concurrent creation, cross-workspace denial, RLS, stale-cache revocation and secure credential rotation.
+
+**Decision status:** Gate 0 remains **PARTIALLY COMPLETE**. No live DB query, migration, code edit, test execution, credential rotation, deployment or production action occurred during this audit.
+
+
+## 19. Expanded V71 workforce writer, migration and recovery audit
+
+This focused pass inspected V71.3–V71.10 and V71.17–V71.18 service implementations, migrations 088–095, 097 and 100, plus the V71.21 atomic budget-reservation migration. It extends—but does not replace—the earlier selected-file audit. The repository search is not a guaranteed exhaustive grep, and live database state remains unverified.
+
+### Mutation and persistence matrix
+
+| Domain | Observed mutation/persistence path | Current convergence assessment |
+|---|---|---|
+| V71.3 memory | `remember` and `revoke` update the process-local `_memories` dictionary | V71.18 can hydrate `agent_memories`; no matching general durable writer found in the inspected registry |
+| V71.4 planning | `create_plan`, `assess` and `cancel` update process-local `_plans` | V71.18 hydrates `agent_plans`; write-through not established |
+| V71.5 evaluation | Evaluation creation updates process-local `_evaluations` | V71.18 hydrates `agent_evaluations`; write-through not established |
+| V71.6 budgets | Create, usage recording and status changes update process-local `_budgets` | Separate durable reservation facade exists; it does not make all budget definition/status mutations durable |
+| V71.7 takeover | Create, claim, resolve and cancel update process-local `_cases` | V71.18 hydrates `agent_human_takeover_cases`; durable human transition writer not established |
+| V71.8 coordination | Create, assess, complete and cancel update process-local `_requests` | V71.18 hydrates `agent_coordination_requests`; durable transition writer not established |
+| V71.9 autonomous operations | Run creation and state replacement update process-local `_runs` | V71.10 separately persists runs; integration must ensure the in-memory registry cannot be mistaken for authoritative durable state |
+| V71.10 durable runtime | Inserts `agent_autonomous_runs`; uses RPCs for claim, lease renewal, finalization and uncertain-run fencing | Dedicated durable lifecycle path; must be reconciled with V71.18 hydration and the execution ledger |
+| V71.17 execution | Claims/reads durable run state, validates governance manifest and delegates through existing governed workflow runtime | No separate general-purpose durable executor or authorization plane should be introduced |
+| V71.18 persistence | Reads nine tables by `workspace_id`, reconstructs objects and validates fingerprints | Hydration-only; does not write ordinary mutations or include budget reservations |
+| V71.21 budget reservations | SQL RPC facade reserves/finalizes/recoveries against `agent_budget_reservations` and aggregate budget counters | Separate durable ledger; absent from V71.18.TABLES and its hydration report |
+
+### Migration findings
+
+- Migrations 090–095 create memory, planning, evaluation, budget, takeover and coordination tables with workspace columns and lookup indexes. Their inspected DDL does not define RLS policies or general-purpose mutation RPCs.
+- Migrations 090–095 generally use globally unique record IDs as primary keys while carrying `workspace_id` as a separate column. Unlike V71.1's composite identity key, those tables do not consistently enforce workspace-scoped record identity at the primary-key level. The implications for tenant-safe uniqueness and foreign-key design require explicit review.
+- The inspected 090–095 DDL does not consistently declare foreign keys from memory/plans/evaluations/budgets/takeover/coordination records to the corresponding workspace and agent records. This is a statement about these files only.
+- Migration 097 adds run attempt/lease/reconciliation fields and SQL functions for claim, renew, finalize and uncertain-run marking. The functions revoke PUBLIC execution and grant `service_role`; the claim/renew/finalize functions use `SECURITY DEFINER`. Actual deployed ownership, grants, RLS interaction and transaction behavior were not queried.
+- Migration 100 adds workspace-oriented hydration indexes; it does not create write-through adapters.
+- Migration 111 adds reserved budget counters, the `agent_budget_reservations` table, a unique `(workspace_id, budget_id, run_id)` constraint and SQL reservation/finalization/recovery functions. The reservation table references `agent_budgets` by budget ID, but the inspected migration does not declare RLS policies. Expired reservations are marked `uncertain`, not automatically released; this is a safety-preserving state that requires reconciliation.
+- Migration 111's reservation state is not part of V71.18's `TABLES` list or hydration report. Therefore a clean V71.18 report cannot, by itself, establish complete budget-reservation recovery.
+
+### Important cross-domain risks
+
+1. **Memory/planning/evaluation are advisory data, not authority.** Their fingerprints detect record modification but are not signatures, credentials or authorization grants.
+2. **Budget definition and budget reservation are separate state.** The in-memory registry's usage/status methods are not equivalent to the distributed atomic reservation ledger. Both must converge without double-counting or silently releasing uncertain reservations.
+3. **Run recovery and side-effect recovery are separate.** V71.10 correctly treats an expired RUNNING lease as uncertain/reconciliation-required rather than blindly reclaiming it. V71.17 delegates consequential work to existing governed workflow/Action Kernel paths. Keep that invariant.
+4. **Hydration readiness is currently too narrow as a platform-level claim.** V71.18 checks its nine tables, but not the separate budget reservation ledger, worker lease ownership, execution ledger/outbox outcome or cross-process cache freshness.
+5. **Workspace filters are necessary but not sufficient.** Verify actual RLS, role grants, composite tenant constraints, foreign keys and service-role boundaries against the deployed database. Do not infer isolation solely from application query filters.
+6. **Global primary keys with workspace columns need deliberate treatment.** Define whether identifiers are globally unique or workspace-scoped; enforce that decision consistently across records, idempotency keys and foreign-key references.
+7. **Atomicity spans multiple subsystems.** Where a single SQL transaction cannot include an external workflow side effect, define an auditable state machine/saga with idempotency and reconciliation rather than pretending the entire action is one transaction.
+
+### Required convergence and acceptance tests
+
+- For each of the nine V71.18 table families: create/update/revoke/transition → durable read → process restart → hydration → exact object/fingerprint equality.
+- Verify that a persistence failure is surfaced and does not leave a false success response or an authoritative-looking in-memory-only mutation.
+- Run concurrent same-ID and same-workspace creation/update tests across independent processes; verify unique constraints, optimistic concurrency and idempotent retries.
+- Verify cross-workspace reads/writes are denied by both application predicates and live RLS/DB privileges.
+- Test onboarding-created identities through canonical fingerprint validation and restart hydration; separately verify that declared capabilities never create grants implicitly.
+- Exercise V71.10 concurrent claims, lease renewal, stale worker fencing, finalization, expired lease handling and duplicate RPC calls against a real staging database.
+- Exercise V71.21 concurrent reservations, idempotent reservation retries, claim-token mismatch, commit/release, expired-to-uncertain recovery, and reconciliation against run/execution-ledger outcomes.
+- Verify that no external side effect is repeated merely because a worker lease or budget reservation expired.
+- Verify cache invalidation/revocation visibility across web and worker processes and after a restart.
+- Include the reservation ledger and execution-ledger/outbox reconciliation in the definition of restart-safe status.
+
+**Decision status:** Gate 0 remains **PARTIALLY COMPLETE**. This is source and migration inspection only. No live Supabase schema/RLS query, RPC invocation, data write, migration, code change, test execution, credential operation, deployment or production action occurred.
+
+
+## 20. V71 method-level mutation and durable-boundary inventory
+
+### Mutation inventory from the proposal branch
+
+| Domain | In-memory mutation entry points observed | Separate durable path observed | Audit interpretation |
+|---|---|---|---|
+| V71.3 memory | `remember`, `revoke` | V71.18 hydration only | No general write-through in the inspected registry |
+| V71.4 planning | `create_plan`, `assess`, `cancel` | V71.18 hydration only | Plan lifecycle remains process-local at the registry boundary |
+| V71.5 evaluation | `evaluate` | V71.18 hydration only | Evidence record; never authority |
+| V71.6 budget definition/usage | `create`, `record_usage`, `set_status` | Separate V71.21 reservation RPC facade | Definition/usage projection and reservation ledger are distinct |
+| V71.7 takeover | `create`, `claim`, `resolve`, `cancel` | V71.18 hydration only | Human control transitions need durable CAS/version semantics |
+| V71.8 coordination | `create`, `assess`, `complete`, `cancel` | V71.18 hydration only | Coordination lifecycle remains process-local at registry boundary |
+| V71.9 autonomous operations | `create`, admission/execution, pause-for-takeover, `cancel` | V71.10 durable runtime facade | Preserve V71.10 as owner of durable run/lease fencing |
+
+The inventory is based on the inspected registry source and method bodies. It is not a repository-wide proof that no other caller or writer exists. The next implementation-readiness pass must trace all callers, direct database writes, RPC invocations and migration consumers for these entities.
+
+### Durable boundary details
+
+- V71.10 exposes durable `persist`, `get`, `claim`, `renew`, `finalize` and uncertain-run marking. Its durable path uses direct table insert/select for run creation/read and database RPCs for lease and terminal transitions. Its no-database test path mutates the in-memory operations registry and is explicitly non-authoritative.
+- V71.6's `DurableAgentBudgetReservations` calls `reserve_agent_budget`, `finalize_agent_budget_reservation` and `recover_agent_budget_reservations` RPCs. These are not equivalent to the V71.6 registry's `record_usage` method.
+- Migration 111 defines `agent_budget_reservations`, a primary key on `reservation_id`, a unique workspace/budget/run tuple, and a foreign key from `budget_id` to `agent_budgets(budget_id)`. The reservation and finalization functions lock relevant rows while changing reserved/used counters.
+- Migration 112 updates expired-reservation recovery: expired reservations become `uncertain`; capacity is conservatively transferred from reserved to used pending reconciliation. Do not automatically release uncertain capacity or retry the associated external action.
+- These migration observations are source-only. Actual deployed function ownership, grants, RLS, policy interaction, locks under contention and transactional behavior remain unverified.
+
+### Required next trace
+
+1. Trace every caller of each mutation method above and classify whether it is request-path, worker-path, startup/hydration, test-only or administrative.
+2. Find every direct writer to the nine V71.18 tables and to `agent_budget_reservations`; identify bypasses around registry validation/fingerprinting.
+3. Trace the exact orchestration sequence linking V71.9 run creation/admission, V71.10 durable persistence/lease, V71.6 reservation, Action Kernel/outbox execution receipt, and V71.21 finalization/recovery.
+4. Verify the run and reservation state machines against the same workspace, run ID, idempotency key and execution evidence without creating an unsafe cross-system transaction assumption.
+5. Add independent-process tests for stale cache, concurrent transitions, duplicate requests, lease expiry, reservation uncertainty and recovery after external side effects.
+
+**Finding:** the architecture needs a shared durable mutation contract plus specialized run-lease and budget-reservation transactions. A single generic CRUD wrapper would be unsafe because it could bypass V71.10 fencing or V71.21 atomic accounting.
+
+**Status:** source-level mutation inventory expanded; caller/writer trace and live database verification remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, migration, test execution, live database operation, credential change, deployment or production action occurred.
+
+
+## 21. Durable execution orchestration trace and alternate-path finding
+
+### Observed runtime wiring
+
+- V71.13 composes V71.1–V71.9 registries plus V71.10 durable runtime and V71.11 observability control. It configures V71.9 with a DB client, configures V71.10 with `allow_in_memory=False`, then invokes V71.18 hydration before returning the workspace runtime.
+- V71.17 `execute_run` obtains the durable runtime and claims a run lease before delegating to `execute_claimed`.
+- V71.17 `execute_claimed` reloads the durable snapshot, rejects reconciliation-required or non-RUNNING runs, validates the workflow manifest and objective binding, derives the autonomy envelope, resolves the workflow and calls V71.10 `execute_claimed` with `approved=False`.
+- V71.17's blocked path attempts durable finalization as BLOCKED; stale-run reconciliation delegates to V71.10.
+
+### Critical alternate-path discrepancy
+
+V71.9 also exposes `BoundedAutonomousOperationsRegistry.execute`. The inspected method performs local admission, changes the in-memory run to RUNNING, optionally calls the V71.21 budget reservation facade, and invokes `run_catalog_workflow` directly. It does not visibly claim a V71.10 lease or persist run transitions through V71.10. On exceptions after reservation it attempts to finalize the reservation as committed, then changes the in-memory run to FAILED. This may be a legacy or test path; a complete caller/reachability inventory is required before classifying it as production-reachable.
+
+If reachable from production, this alternate method could bypass durable run fencing and recovery even though the canonical V71.17 path is lease-gated. Do not assume V71.13's construction of V71.10 means every V71.9 execution call uses it.
+
+### Required caller trace and containment
+
+1. Find every import, instantiation and invocation of V71.9 `execute`, V71.17 `execute_run`/`execute_claimed`, and V71.10 `execute_claimed` across routes, schedulers, workers, tests and compatibility wrappers.
+2. Identify production route and background-job reachability for each path, including feature flags and service-mode conditions.
+3. Establish V71.17 as the sole production workforce execution entry point; if V71.9 `execute` remains for tests, make its non-production/test-only status explicit and enforce it.
+4. Verify run transitions are persisted with workspace, version and lease fencing before/after workflow entry, and external side-effect receipts/outbox records are reconciled before retry.
+5. Verify budget reservation outcomes against actual workflow outcome. A failed Python call does not prove no external side effect occurred.
+6. Add negative tests proving production composition cannot invoke the alternate path and no self-approval capability exists.
+
+**Finding:** a durable governed coordinator exists, but the source also exposes an alternate local execution method. Production reachability is unresolved; this is a high-priority Gate 0 blocker before implementation or authority migration.
+
+**Status:** V71.13 → V71.17 → V71.10 canonical path traced; V71.9 alternate path identified; full caller inventory and live reachability remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No code, test, database, credential or deployment operation was performed.
+
+
+## 22. Correction: canonical V71.10 → V71.9 delegation and transition gap
+
+A deeper inspection of V71.10 lines 288–319 and V71.9 lines 293–352 corrects the preliminary alternate-path interpretation recorded in section 21.
+
+**Actual canonical call chain:** V71.17 claims a durable lease and validates the durable snapshot/manifest/objective. V71.10 `execute_claimed` reloads the durable run, assigns that snapshot into the V71.9 operations registry, and deliberately invokes `operations.execute(...)`. V71.9 performs governance admission, sets local RUNNING state, optionally reserves budget, invokes `run_catalog_workflow`, finalizes the budget reservation conservatively, and sets local terminal state. V71.10 then performs lease-bound durable COMPLETED finalization; on exception it attempts lease-bound FAILED finalization. V71.9 is therefore the governed execution delegate in the canonical path, not a proven bypass or competing executor.
+
+**Remaining convergence gap:** V71.9's intermediate and terminal registry mutations are process-local. V71.10's durable row is finalized after the delegated call. If the process dies after an external side effect but before durable finalization, the durable run may remain RUNNING until lease expiry/reconciliation, while V71.9's local state is lost. The reservation may be committed conservatively, but that alone does not prove whether the Action Kernel/outbox side effect occurred. Reconciliation must inspect durable execution receipts/outbox evidence before any retry.
+
+**Call-surface finding:** V71.9 `execute` is directly callable as a Python method, but GitHub code-search results were insufficient to establish every caller. Its use inside V71.10 is confirmed; direct production invocation elsewhere is not confirmed or ruled out. Do not remove or prohibit V71.9: preserve its governed delegate role and constrain production invocation through V71.10's lease-owned path.
+
+**Required tests:** inject process termination after lease claim, after reservation, before workflow entry, after Action Kernel/outbox acceptance, after V71.9 local completion, and before V71.10 finalization. Assert lease fencing, reservation idempotency, outbox receipt reconciliation, no blind replay, and authoritative terminal state. Also test direct-call reachability from production route/job composition.
+
+**Status:** canonical V71.17 → V71.10 → V71.9 call chain confirmed. Intermediate transition durability and all-caller reachability remain unresolved. Section 21's preliminary alternate-path characterization is superseded by this correction. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, tests, database, credentials or deployments were changed.
+
+
+## 23. Action Kernel / outbox / execution-ledger call-chain findings
+
+### 23.1 Two supported Action Kernel execution modes
+
+The inspected V71 path resolves through `run_catalog_workflow` into `BusinessAutomationEngine.run_event`. `run_event` requires a stable event ID and builds a rule-version-scoped key. `_execute_rule` calls the durable `reserve_business_automation_execution` RPC before action invocation; a pre-existing reservation is returned rather than executed again. The inspected governed CRM handlers call `ActionKernel.execute()` inline with that stable key. Inline mode persists an Action Kernel intent projection, then delegates provider work to `ExternalActionExecutor` and `ExecutionLedger`. It is not necessarily processed by `ActionOutboxWorker`.
+
+The separate asynchronous mode is `ActionKernel.enqueue()` → approval when required → `ActionOutboxWorker.claim_action_outbox()` → `ActionKernel.process_outbox_row()` → `ExternalActionExecutor` / `ExecutionLedger`. Migration 047 claims rows using `FOR UPDATE SKIP LOCKED`, stores a lease owner/token/expiry, and requires the lease token for outbox finalization. The worker renews its lease and routes uncertain/failure outcomes to V67 recovery. The two modes share the provider execution ledger but have different intent/outbox lifecycle entry points.
+
+### 23.2 Stable idempotency and receipt layers
+
+The source shows three distinct durable records in the inspected CRM workflow: business automation execution reservation, Action Kernel `action_outbox` intent projection, and `external_execution_ledger` provider-execution record. The stable event/rule key is propagated to the Action Kernel and provider execution ledger. Do not conflate acceptance/intent identity with a provider receipt. `ExternalActionExecutor` requires a provider object ID for `succeeded`; timeouts, transport exceptions, missing object IDs and receipt persistence failures become `uncertain` / reconciliation-required. The ledger uses workspace-scoped idempotency uniqueness and lease-fenced claim/renew/complete RPCs.
+
+### 23.3 High-priority failed-terminal replay inconsistency
+
+**Confirmed from source and migrations; not live-exercised.** `migrations/031_execution_rpc_hardening.sql` makes `claim_external_execution` return terminal rows for `succeeded`, `failed`, `cancelled` and `uncertain` without granting a fresh lease. `ExecutionLedger.claim` returns that row. But `ExternalActionExecutor.execute` only short-circuits `succeeded`, `uncertain` and `cancelled`; it omits `failed`, then proceeds if the returned record has no `locked_by` (as terminal failed rows do). It may invoke the provider operation without a newly acquired lease. On completion, migration 035 returns an existing terminal row without changing it. `ExecutionLedger.complete` only checks that RPC data is non-empty and returns its locally constructed `updated` object, which can diverge from the durable terminal row. Thus same-key retry after terminal failure may repeat a provider operation while durable status remains `failed` and the caller sees a locally reported later result.
+
+This is a source-level defect candidate with potentially consequential replay semantics. It does not establish that the deployed database has these exact migrations/functions or that a live duplicate occurred. Before Director/worker autonomy is widened, inspect the deployed migration state and resolve this lifecycle contract.
+
+**Required fix design (not implemented):** decide whether failed is terminal or retryable. If terminal, `ExternalActionExecutor` must return the durable failed receipt without invoking the provider. If retryable, use an explicit atomic retry/reopen RPC requiring policy eligibility, current attempt, and a fresh lease, with linked attempt lineage. In both cases require the executor to verify the exact worker owns a live lease before provider invocation, and require completion to validate the authoritative returned status/ownership/attempt. Do not use a new idempotency key as a workaround for uncertain state.
+
+### 23.4 Verification gaps and next checks
+
+- Determine the full registered action family used by workforce catalog workflows; the CRM inline handler is confirmed but not every action handler.
+- Trace all inline `ActionKernel.execute` callers and asynchronous `enqueue` callers, including their idempotency-key stability and governance decision provenance.
+- Inspect the complete action-outbox base-table migration and all later alterations, plus the deployed migration ledger/RLS/grants, without mutating data.
+- Add deterministic tests for same-key terminal-failed replay, two concurrent retries, lease rejection, receipt persistence failure, outbox lease expiry, worker death after provider acceptance, and reconciliation before replay.
+- Verify provider-specific idempotency/reconciliation support. Exactly-once external side effects are not guaranteed by KDO's database ledger alone.
+
+**Status:** source-level call-chain and retry-contract issue identified. No code/tests/migrations/database/credentials/deployments changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 24. Business Automation stale-reservation reclaim is not side-effect reconciliation
+
+### Confirmed source behavior
+
+`BusinessAutomationEngine._execute_rule` calls `_reserve_execution` before invoking the registered action and calls `_persist_execution` only after the action returns or raises. `_reserve_execution` treats a returned `started` row with `_reservation_acquired: true` as permission to execute. Migrations 039 and 063 both reset a `started` row older than 15 minutes: increment attempt, refresh timestamps, clear error and restore `_reservation_acquired: true`. This converts elapsed age into permission to re-enter the action.
+
+A process may crash after the provider accepted an external side effect but before the business automation row is finalized. In that case, the row remains `started`; after 15 minutes the reservation RPC can reacquire it and `_execute_rule` invokes the registered action again. Age alone cannot prove that no side effect occurred.
+
+### Downstream protection and limits
+
+The inspected CRM, WhatsApp, customer-communication and operator-notification adapters pass the stable Business Automation idempotency key into Action Kernel. The CRM handler also emits a follow-on lifecycle event after the CRM action succeeds; that secondary event publication is not itself shown to have a durable idempotency fence tied to the original action receipt. `sales_orchestrate` receives the same key, but its complete nested action graph remains unaudited. The provider execution ledger is a second protection layer, not a reason to mark the parent reservation safe to replay. Its failed-terminal replay inconsistency is recorded in section 23.
+
+### Required recovery invariant
+
+A stale `started` business automation reservation must become `uncertain` / reconciliation-required by default, not automatically executable. A governed reconciler must inspect the Action Kernel intent and authoritative provider receipt under the same stable key. Retry is allowed only after authoritative evidence proves no external side effect was accepted, using an explicit atomic retry/attempt transition with lineage. Do not mint a fresh key to bypass uncertainty. Test crashes before Action Kernel submission, after intent persistence, after provider acceptance, after receipt persistence, and before parent-row finalization.
+
+`run_due` claims due rules, executes with a deterministic scheduled event ID, and then marks the due rule complete. The interaction between due-rule claiming/rescheduling and execution reservation needs separate crash/re-entry tests; a due-rule claim is not an execution receipt.
+
+**Evidence boundary:** this is a source/migration-path finding. Live staging/production migration state and rows were not queried. No database mutation, recovery, provider call, tests or deployment occurred. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 25. Sales Orchestrator and CRM lifecycle-event identity audit
+
+### 25.1 Sales Orchestrator is a bounded single-action delegate
+
+`BusinessAutomationEngine._action_sales_orchestrate` requires workspace and the existing automation idempotency key, then calls `SalesOrchestrator.execute`. The orchestrator maps a fixed set of customer intents to one bounded action, builds constrained parameters and invokes `ActionKernel.execute` exactly once with the same idempotency key, workspace, rule ID as decision ID and correlation ID. It is not a recursive or multi-step sales action graph in the inspected source. This narrows the earlier nested-graph concern: no multi-action delegation was found in this implementation. The Action Kernel contract and downstream provider ledger remain the execution boundary.
+
+### 25.2 Lifecycle side effects have no stable event identity
+
+The inspected CRM wrappers perform the governed CRM operation first, then publish lifecycle events for contact creation, contact status changes and deal stage changes. They pass workspace, correlation ID and parent event ID, but no caller-supplied stable event ID/idempotency key. `UnifiedEventBus.publish` unconditionally creates a new random `evt_<uuid>` identifier for each call.
+
+Consequently, if the CRM provider write succeeded but lifecycle publication returned no acknowledgement or raised after an ambiguous persistence/dispatch boundary, a retry can replay the CRM wrapper (the CRM action may be deduplicated downstream) and create a new lifecycle event ID for the same underlying transition. For contact creation, `follow_up_at` is computed from current time during each wrapper invocation, so replay can also produce a different downstream scheduling timestamp. Parent and correlation IDs preserve lineage but do not enforce deduplication.
+
+### 25.3 Persistence and dispatch are separate acknowledgements
+
+`UnifiedEventBus.publish` generates the event ID, validates/normalizes, appends to its process-local event store, and—when Supabase is configured—awaits the persistence worker's durable write. It then separately puts the event on an in-memory dispatch queue and returns the event ID. If that dispatch queue is full after durable persistence, the method returns `None` even though the durable event row may already exist. A process crash between persistence acknowledgement and dispatch can similarly strand a persisted event. The inspected code does not establish durable dispatch replay or per-consumer completion state for this path. A retry that creates a new random event ID is therefore not a safe recovery mechanism.
+
+This means `publish`'s current return value combines multiple states: `None` may mean rejection before persistence, persistence failure, or dispatch-queue rejection after persistence. A returned ID means durable persistence completed when Supabase is configured and dispatch was queued in memory; it does not prove every subscriber completed its handler.
+
+### 25.4 Required corrections before autonomous recovery
+
+- Introduce a stable lifecycle event ID derived from workspace, source execution identity, event type and schema version; enforce durable uniqueness and return the existing receipt on replay.
+- Freeze lifecycle payload fields (including `follow_up_at`) in the source execution record before attempting publication.
+- Model `persisted`, `dispatch_pending`, `dispatched` and per-handler completion separately; make dispatch recoverable from durable state after process restart.
+- Make event publication outcomes unambiguous: distinguish not persisted, persisted-but-pending-dispatch, dispatched and completed.
+- Require downstream consumers to deduplicate using stable lifecycle event identity.
+- Preserve parent/correlation metadata for trace lineage only; never treat it as an idempotency key.
+- Add crash tests after CRM provider acceptance, after event persistence, before dispatch enqueue, after dispatch enqueue, and after consumer side effect before acknowledgement.
+
+**Status:** Sales single-action delegation confirmed; stable CRM lifecycle-event identity and durable dispatch recovery are not established by the inspected source. This is a source-level finding, not a live duplicate-event incident. No code, tests, migrations, database rows, provider calls or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+## 26. Durable event transport, consumer fan-out and Business Automation inbox audit
+
+### 26.1 Two different buses and delivery contracts exist
+
+`UnifiedEventBus` is the async in-process event path. It persists to `events` through a process-local `_persistence_queue`/worker and dispatches live subscribers through a separate process-local `_dispatch_queue`. It awaits durable persistence before returning a successful ID when Supabase is configured, but subscriber dispatch is not durable in this bus itself. A crash after persistence and before dispatch loses the live dispatch attempt; its local dead-letter queue and replay are also process-local.
+
+`SharedEventBus` is the cross-process worker transport. It polls persisted `events`, creates `event_deliveries` for its configured `source_service`, claims a group delivery with a token/lease, and records durable per-handler receipts. Its implementation explicitly states at-least-once semantics and that a crash after an external side effect but before handler receipt commit can duplicate the effect. Completed handler receipts are skipped on a group retry. This is meaningful existing recovery infrastructure, not an exactly-once guarantee.
+
+### 26.2 Business Automation has a durable inbox consumer but its row producer is unresolved
+
+`BusinessAutomationEventBridge.wire` subscribes to live `UnifiedEventBus` events and, when a DB client exists, starts a durable polling loop. That loop always claims consumer group `business_automation` via `claim_business_automation_event_deliveries`; completion is fenced by the claim token in migration 062. The live handler and durable loop both call the same canonical event admission path (or engine fallback), so event-driven rule execution may be attempted by both paths. The downstream Business Automation execution reservation/idempotency key is the intended duplicate fence.
+
+However, the inspected row-provisioning path does not establish that `event_deliveries` rows are created for the `business_automation` group. `SharedEventBus._ensure_delivery` creates rows only for `self.source_service`. `lifecycle._boot_shared_event_bus` derives that service from `SERVICE_MODE` or settings (the web/worker/full process role), while the Business Automation bridge independently hardcodes `CONSUMER_GROUP = "business_automation"`. No dedicated producer, fan-out trigger, or backfill path for this group was identified in the inspected code/migrations. Thus the durable loop can be enabled yet remain empty unless another producer/trigger exists outside this focused review. This is a high-priority verification item, not a confirmed live outage.
+
+### 26.3 SharedEventBus implementation/schema contract needs reconciliation
+
+The reviewed base migrations 037, 040 and 062 establish `event_deliveries`, Business Automation claim/complete RPCs and claim-token fencing. The current `SharedEventBus` source also references `dead_lettered_at`, `next_attempt_at`, `event_handler_deliveries`, and `complete_shared_event_delivery`; those definitions were not found in the migration files examined in this pass. The migration inventory/search was not exhaustive, so do not conclude they are absent from the complete repository or deployed database. Verify exact DDL/RPCs, indexes, RLS and grants against the full migration chain and live staging schema.
+
+Correction after exact source re-read: `_ensure_delivery` does include both `event_id` and `consumer_group` in its fallback lookup. The earlier suspected missing-consumer-group filter was incorrect and is withdrawn. A separate hardening opportunity remains: the broad insert exception handler treats any insert error as a possible uniqueness race, then checks for an existing row; the method should distinguish unique-conflict from transport/schema/permission failures so operational faults are not silently collapsed into an ordinary duplicate.
+
+### 26.4 Required verification and design
+
+- Prove the event fan-out producer creates one delivery per configured durable consumer group, including `business_automation`, with a unique `(event_id, consumer_group)` fence.
+- Verify web/worker process modes and confirm which process creates the Business Automation delivery rows; test restart and backfill from persisted events.
+- Verify that the live UnifiedEventBus subscriber and durable inbox can race safely via the same execution identity, and that the rule reservation's stale-reclaim defect is corrected before any retry can re-enter consequential work.
+- Verify SharedEventBus lease fencing, per-handler receipt DDL/RPCs, retry schedule, dead-letter transitions and RLS against the full migration chain and actual staging schema.
+- Narrow `_ensure_delivery`'s insert exception handling so only a unique-conflict path is treated as an idempotent race; transport, schema and permission errors must remain visible.
+- Test crash points: after event persistence, before delivery row creation; after group claim, before handler; after provider side effect, before handler receipt; after handler receipt, before group completion.
+- Keep V69 business-event fabric distinct until its storage, routing, idempotency and authority adapters are explicitly integrated.
+
+**Status:** Durable event-delivery infrastructure exists and has at-least-once/lease/receipt mechanisms. The Business Automation durable inbox's delivery-row provisioning is unresolved in the inspected topology; schema compatibility and live staging operation remain unverified. No runtime code, migrations, database rows, tests or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+### 26.5 Source re-read correction
+
+A line-by-line re-read of `SharedEventBus._ensure_delivery` confirms the fallback lookup filters on both `event_id` and `consumer_group`. The earlier suspected missing consumer-group predicate is withdrawn. The broader exception catch around the insert remains a hardening opportunity, but it is not evidence of cross-consumer receipt confusion.
+
+The exact source also confirms `SharedEventBus.poll` only creates delivery rows for `self.source_service` and only for event types with registered handlers. The Business Automation bridge separately polls `consumer_group=business_automation` and is not itself registered as a SharedEventBus handler in the inspected composition; it subscribes to `UnifiedEventBus`. No migration trigger or explicit producer for the `business_automation` group was found in the inspected migration 037/040/062 and bridge paths. This strengthens the source-level concern that the durable inbox may not be fed by this topology, but remains unconfirmed without complete repository/migration and live staging inspection.
+
+
+### 26.6 Live staging verification — 2026-11-11 (read-only)
+
+Target was explicitly restricted to Supabase project `kdo-engineering-staging` (ref `kkzshurcmcptleyqjgzo`) and Render service `kdo-engineering-staging` (`srv-dbl0mn9srm7s73bcguug`). No production project/service was queried.
+
+**Database evidence:**
+- Applied migration history contains `staging_durable_event_delivery_fenced_019_037_040_062`, `kdo_event_handler_delivery_receipts_001`, `staging_events_contract_columns_sync_trigger`, `074_u1_shared_event_delivery_retry_dead_letter`, and `075_u1_shared_event_delivery_metrics`.
+- Live schema contains `events` (5,861 rows), `event_deliveries` (0 rows), and `event_handler_deliveries` (0 rows). The latter two are RLS-enabled and have the expected event foreign keys; `event_deliveries` has attempt/retry/dead-letter columns. `business_automation_executions` currently has 0 rows.
+- The 5,861 persisted events are real activity, not an empty event store: source counts include `meta_engine` 4,524, `director` 930 and `synapses` 167. Latest observed event timestamp was 2026-11-11 09:11:22 UTC.
+- Live `events` has a contract-column synchronization trigger only; no event-to-delivery fan-out trigger was present. `event_handler_deliveries` is backend-only by grants and RLS; the queried policy list returned no row policies for that table. `event_deliveries` has an authenticated workspace-member SELECT policy; mutation remains backend/service-role territory under RLS.
+- Live definitions exist for `claim_business_automation_event_deliveries`, `complete_business_automation_event_delivery`, and `complete_shared_event_delivery`. Both Business Automation RPCs are SECURITY DEFINER, owned by postgres; keep their service-role-only execute grants and inspect the full effective ACL before any security change.
+- Grouped live queries returned no delivery-group or handler-group rows at all. Thus the Business Automation group is not merely behind; there are no durable group receipts in this staging database at inspection time.
+
+**Render evidence:**
+- Staging service is active, branch `staging`, auto-deploy disabled, and remains unchanged.
+- Three observed web process boots on 2026-11-11 logged `Boot sequence mode: full`.
+- Those boots logged `BusinessAutomationEventBridge ... wired durable_inbox=True`, so the bridge's database polling loop was enabled.
+- No `SharedEventBus ready` log was found in the inspected 2026-11-11 staging app-log window.
+- Source `lifecycle.py` adds the SharedEventBus boot step only for modes `workers`, `director`, `meta`, `condition`, `monitor`, and `github`; it omits `full`. The staging web service runs `full`. Its Procfile sibling `worker` is the separate KDO engineering build-worker entrypoint, which is inert unless explicitly enabled; it is not a platform lifecycle `SERVICE_MODE=workers` process.
+
+**Confirmed staging diagnosis:** the Business Automation durable inbox is enabled and polling, but its delivery table is empty. The staging full-mode lifecycle does not boot SharedEventBus, so the expected fan-out consumer is not running in that process. Separately, even where SharedEventBus is booted, its inspected fan-out creates rows only for its configured `source_service`, while Business Automation claims the fixed group `business_automation`; no explicit producer/adapter for that group was found. The source and live evidence together confirm a real delivery-provisioning gap in staging, not a database migration absence.
+
+**Design requirements before runtime implementation:**
+1. Define one authoritative durable fan-out contract that provisions every required consumer group, including `business_automation`, from persisted events; do not depend on the API web process being a particular SERVICE_MODE.
+2. Make consumer registration explicit and startup-validated. A bridge must not report durable inbox ready unless a producer is proven to feed its consumer group.
+3. Decide whether SharedEventBus belongs in the full web lifecycle, a dedicated platform worker mode, or a separately supervised service; do not conflate it with the isolated engineering build worker.
+4. Preserve the separate at-least-once per-handler receipt/lease model and existing retry/dead-letter controls; do not replay uncertain external effects blindly.
+5. Add a staging verification that publishes a non-consequential test event, proves the expected group and handler receipts appear, restarts the consumer, and proves completed receipts are not re-executed. Keep the test isolated from production and external providers.
+
+Only read-only database/catalog queries and Render service/log reads were performed. No table rows, schemas, migrations, environment variables, code, deployments, or production resources were changed. This evidence upgrades the event-delivery finding from source-level concern to **confirmed staging operational gap**; Gate 0 overall remains **PARTIALLY COMPLETE**.
+
+## 27. Shared-state coordination source checkpoint — 2026-11-11
+
+**Scope:** Read-only inspection of the current `staging` source for service topology, Director dependency reasoning, Condition Engine state/events, and Organism vitals. No runtime probes, database access, migrations, tests, or deployments were performed in this checkpoint.
+
+### 27.1 Existing service registry and dependency topology
+
+- `core/service_registry.py` is a live-instance registry that registers services with Meta Engine, exposes registration/topology reports, and explicitly distinguishes topology completeness from health (`health_evaluated: false`).
+- `core/engine_topology.py` contains `CANONICAL_ENGINE_DEPENDENCIES` and validates missing/undeclared nodes, invalid dependency edges, and cycles.
+- Director's `services/director/analysis.py` also defines a separate `SystemTopology` with its own initialized dependency nodes and dependency edges. Its `RootCauseAnalyzer` uses this local topology.
+- The source therefore has useful dependency models, but the inspected Director analysis path does not establish that it consumes the same canonical graph used by `core/service_registry.py`.
+
+**Finding:** dependency ownership is duplicated at the model level. Gate 1/2 must define one canonical manifest/dependency contract and adapt existing consumers to it; do not add a third topology registry or silently change existing graph semantics.
+
+### 27.2 Condition Engine state and event semantics
+
+- `services/condition_engine/core.py` implements `AutonomousConditionEngine`; its observations, decisions, state, plans, goals and related collections are maintained in engine-owned in-process structures protected by its lock.
+- The observed `Observation` model is brand-scoped (including `brand_id`), and `get_status(brand_id)` reports that brand's decision state and observation counts.
+- Condition Engine publishes through `UnifiedEventBus`; this is useful transport integration, but it does not by itself establish a durable, platform-wide condition-state authority.
+- `core/autonomous_loop.py` routes `condition.changed` to `_handle_brand_health`. This is a brand-health handler, not evidence of a general platform condition transition consumer.
+
+**Finding:** preserve the Condition Engine's domain-specific decision model. Introduce a separately typed platform-condition projection/contract and an explicit adapter from verified platform observations; do not reinterpret brand decision states as service-health or organism-condition states.
+
+### 27.3 Organism vitals and current projection
+
+- `core/organism.py` explicitly documents that `Organism.vitals()` reports process-local organism lifecycle state and is not a claim that every dependency or provider is healthy.
+- `api/organism_body_routes.py` exposes `GET /api/v1/organism/vitals`, combining organism lifecycle vitals, metabolism, UnifiedEventBus health, synapse statistics, workspace SLOs, and recent events.
+- The route filters recent events by workspace/platform scope, but the inspected implementation does not read a canonical, versioned `platform_state` projection.
+- `core/species_scale.py` persists organism census snapshots to the existing `organism_state` table. This is an existing organism persistence boundary, not proof of a reconciled cross-engine truth plane.
+
+**Finding:** the current endpoint is a useful read-only dashboard projection. It must not be described as the completed shared-state layer. Preserve its existing semantics while incrementally adding an evidence-backed platform-state projection.
+
+### 27.4 Architecture invariant confirmed
+
+`ORGANISM_ARCHITECTURE_2_0.md` states that Organism State is a derived truth-plane snapshot, not a second database of subsystem records, and that existing subsystems remain authoritative for their own data.
+
+This is consistent with the Advanced Director proposal and is the governing implementation constraint:
+- subsystem owners remain authoritative for their records;
+- platform state stores bounded, provenance-bearing observations and derived projections;
+- missing, stale, conflicting and unknown evidence remains explicit;
+- service manifests describe ownership/contracts and do not grant permissions;
+- the existing UnifiedEventBus remains the transport; no second broker is introduced.
+
+### 27.5 Gate 0 status
+
+This checkpoint improves the source-level component map but does not close Gate 0. Remaining items include exhaustive exact-commit producer/consumer inventory, reconciliation of the two dependency models, complete Condition Engine event/transition mapping, live runtime actor/process reconciliation, and the final ownership/rollback review.
+
+No application code, schema, database, credential, runtime configuration, test result, deployment, or production state changed.
+
+### 27.6 Meta → Director → Condition → Organism event-chain boundary
+
+A focused re-read of the current staging source confirms:
+
+- Meta Engine's monitor cycle emits a `service_heartbeat` event for its own aggregate snapshot. Its diagnosis path emits `engine_alert` events containing the diagnosed engine, severity, symptom and root-cause summary.
+- Director's health-observation path updates its own `observations` and local `SystemTopology`, then runs root-cause analysis. The inspected path creates Director health tasks and sends a diagnostic alert; it does not establish a durable write to a shared platform-state projection.
+- The Autonomous Loop has handlers for `service_heartbeat` and `engine_alert`, but the `condition.changed` handler specifically records brand health using `brand_id` and `health_score`.
+- The Meta Engine module also defines an async UnifiedEventBus publisher helper, but the focused source search found no call site for that helper in the inspected file. The active observed emissions use the existing synchronous event helper.
+
+**Finding:** the components already exchange useful health and alert signals, but the exact end-to-end chain in the agreed example is not implemented as one authoritative state transition. We must not treat the existence of similarly named events as proof of a complete coordination contract.
+
+**Required Phase 1 adapter contract:** normalize Meta observations and Director diagnosis evidence into typed, provenance-bearing platform observations; retain the original source identity and timestamp; derive affected capabilities from the canonical dependency/manifest graph; and publish a versioned state-change event through the existing event infrastructure. Condition Engine and Organism should consume that contract through explicit adapters, not by overloading the brand-health handler.
+
+### 27.7 Canonical dependency graph parity correction
+
+A focused read of current staging source and the existing `KANYOZA_P11_DIRECTOR_TOPOLOGY_PARITY_REPORT.md` corrects the preliminary concern in §27.1:
+
+- `core/engine_topology.py` owns `CANONICAL_ENGINE_DEPENDENCIES`.
+- `services/director/analysis.py` now adds missing canonical nodes and rebuilds both forward and reverse dependency edges from that declaration, while preserving existing domain metadata.
+- The P11 report records a parity test requiring exact node-set and edge agreement; it reports 117 focused tests passed at the time of that change.
+- Therefore the two source representations are not currently independent authorities for dependency edges. Director retains a derived in-memory graph for analysis, sourced from the canonical declaration.
+
+**Corrected finding:** the canonical dependency graph has an established structural-parity integration. The remaining gap is operational semantics: canonical dependency edges are not yet a complete service-manifest contract, and the inspected Director decision path has not demonstrated a fresh, evidence-backed dependency-readiness admission check for every capability.
+
+Do not create another dependency graph or repeat P11. Extend the canonical declaration with versioned ownership/capability metadata only if the inventory proves it is missing, and derive runtime readiness from authoritative observations with explicit unknown/stale handling.
+
+### 27.8 Existing inventory tooling
+
+- `scripts/audit_engine_topology.py` already builds a source-level inventory from `CANONICAL_ENGINE_DEPENDENCIES`, `SERVICE_DEFINITIONS`, Director's `ENGINE_REGISTRY`, canonical aliases and boot-owner/service-mode declarations.
+- Its generated report explicitly distinguishes source ownership from live health and directs operators to runtime topology and system-health endpoints for live verification.
+
+**Decision:** reuse and extend this inventory/reporting path for Gate 0. Do not introduce a parallel manifest generator or claim the static report proves runtime presence, readiness, or health.
+
+### 27.9 Service ownership and capability-readiness inventory
+
+Focused source inventory of `core/service_definitions.py`, `core/engine_topology.py`, `core/service_registry.py`, and Director strategic-context construction:
+
+**Service definitions (22 named resolvers):**
+
+- Marked critical: `event_bus`, `job_service`, `prompt_builder`, `content_engine`, `director`, `condition_engine`, `meta_engine`.
+- Marked optional: `job_stats_service`, `render_queue`, `task_queue`, `ai_orchestrator`, `plugin_registry`, `scheduler`, `event_recorder`, `health_monitor`, `email_service`, `engagement_tracker`, `autonomous_loop`, `autonomous_content`, `card_renderer`, `image_engine`, `topic_selector`.
+
+These critical/optional flags are service-definition metadata, not a complete capability risk or runtime admission policy.
+
+**Canonical dependency graph:**
+
+- `core/engine_topology.py` declares 30 nodes, including infrastructure/provider nodes and application engines.
+- It records consumer-to-provider edges and validates graph shape, missing/undeclared runtime nodes, invalid edges and cycles.
+- It does not itself declare capability-level ownership, freshness requirements, degradation policy or an authorization grant.
+
+**Current runtime registry contract:**
+
+- `ServiceRegistry.register` accepts live instances and may register the same instance with Meta Engine.
+- `get_topology_report` compares registered names to the canonical graph and reports topology completeness, identity mismatches and Meta registration gaps.
+- The report explicitly sets `health_evaluated: false`; topology completeness is not a health/readiness verdict.
+- `health_check_all` and `get_service_status` separately call service health/status methods. The inspected registry code does not normalize observation provenance, freshness, dependency propagation or a versioned readiness snapshot.
+
+**Director capability contract:**
+
+- Strategic context exports capability name, sector, description, authority, risk, enabled, proposal-capable and handler-bound fields.
+- Runtime readiness exports engine-registry/discovery counts, missing/unsupported export counts, capability count, bound capability names and binding-report availability.
+- Strategic plan validation ensures a named capability exists in the catalogue and records whether it is enabled and handler-bound.
+- It does not establish that the capability's declared dependencies are currently healthy, fresh and usable. The plan explicitly states capability readiness is descriptive and grants no runtime permission.
+
+**Ownership/readiness matrix (source-level, not live runtime status):**
+
+| Domain | Current source of declaration/observation | Authority established | Gate 0 gap |
+|---|---|---|---|
+| Dependency edges | `CANONICAL_ENGINE_DEPENDENCIES` | Canonical graph structure | Add manifest semantics only where proven absent; preserve P11 parity |
+| Service resolver/criticality | `SERVICE_DEFINITIONS` | Resolver and critical flag | Explicit owner, service mode, lifecycle and capability mapping |
+| Live instance presence | `ServiceRegistry` | Registered instance names | Process/instance identity, freshness and cross-process reconciliation |
+| Health observations | Meta Engine and service health methods | Component-specific health evidence | Normalize status, source, observed_at, expiry and evidence reference |
+| Director capabilities | Director capability catalogue and binding report | Enabled/handler-bound metadata | Dependency-aware runtime admission; no authority inferred from binding |
+| Condition decisions | Condition Engine | Brand-scoped decision model | Separate platform-condition projection and explicit adapter |
+| Organism vitals | Organism lifecycle + API projection | Process lifecycle and existing metrics | Versioned shared-state projection with unknown/stale/conflict preserved |
+
+**Phase 1 design constraint:** do not add another service registry, dependency graph, event broker or permission system. Extend the canonical graph/service definitions through backward-compatible adapters and derive capability readiness from authoritative, fresh observations. Readiness is descriptive input to admission; existing Council, DecisionGate, Action Kernel and workspace authorization remain authoritative for permission.
+
+**Unverified:** this is a source inventory on the staging branch. It does not establish which optional services are instantiated in each deployed process, whether health checks are fresh, or whether multiple Render processes agree. No runtime endpoint was queried in this checkpoint.
+
+### 27.10 Read-only staging runtime reconciliation — 2026-11-11
+
+Read-only Render inspection of staging service `kdo-engineering-staging` (`srv-dbl0mn9srm7s73bcguug`) confirmed:
+
+- Service is on branch `staging`, free plan, one configured instance, active/not suspended, with auto-deploy disabled. No service configuration was changed.
+- Recent logs identify a web process instance and a separate `worker.1` process role. The engineering worker repeatedly logs: `Engineering worker is disabled; waiting without polling.` Therefore a worker process existing in the service does not mean engineering execution is enabled.
+- Boot logs repeatedly report `Registered 20/22 services with Meta Engine`. This is not proof that the two remaining service definitions failed; the exact skip reasons were not established by this filtered log query and must be reconciled from the lifecycle registration report.
+- Health Monitor cycles on 2026-11-11 at 11:55–12:15 UTC reported 19 services total, 18 OK, 0 down, 1 unknown (`Plugin:facebook`). Meta Engine's nested snapshot was nominal with 19 engine states and no unknown/degraded/offline engines.
+- Earlier cycle samples included transient unknown states for Meta Engine and Health Monitor before returning to nominal. This reinforces that readiness must be timestamped and freshness-aware rather than inferred from a single aggregate status.
+- The observed Health Monitor inventory (19) and Meta Engine engine inventory (19) are different from the service-definition count (22) and the registration log (20/22). These counts are not interchangeable and need an explicit reconciliation map.
+- Recent logs are from a single configured Render instance, but show separate web and worker process roles. This observation does not establish all KDO execution topologies or other environments.
+
+**Runtime reconciliation finding:** the platform has live health observations and process-role evidence, but no single verified mapping currently joins (a) declared service definitions, (b) per-mode boot ownership, (c) registered live instances, (d) Meta Engine monitored engines, (e) Health Monitor targets and (f) Director capabilities.
+
+**Required next Gate 0 artifact:** a deterministic reconciliation matrix keyed by canonical service ID, with source owner, expected process modes, service-definition resolver/criticality, canonical dependencies, observed process/instance identity, Meta registration, Health Monitor coverage, Director capability bindings, last observation time and discrepancy reason. Missing/unknown evidence must remain unknown; it must not be coerced to healthy.
+
+No runtime state was changed. This checkpoint used read-only Render service metadata and logs only; no deploy, restart, environment edit, database query/write or production access occurred.
+
+### 27.11 Registration-count semantics and branch review drift
+
+A direct re-read of `core/service_definitions.py` and `core/service_registry.py` clarifies the registration count:
+
+- `SERVICE_DEFINITIONS` is a list of `(name, resolver, critical)` tuples. The registration loop invokes each resolver and records one of three outcomes: registered, skipped (optional resolver returned None or raised), or failed (critical resolver returned None or raised).
+- The log line `Registered N/M services with Meta Engine` reports the number successfully registered against the number of definitions. It does not expose the names/reasons for skipped/failed entries.
+- The exact reason and criticality for each non-registered definition are retained in `ServiceRegistry.get_registration_report()` as `skipped` and `failed`. The report also retains Meta registration failures.
+- The topology report is separate: it compares registry instances, Meta Engine instances and canonical graph nodes, and explicitly reports `health_evaluated: false`.
+- `health_check_all()` is another separate observation path. It invokes service methods and returns raw result objects; it does not by itself attach a uniform observation timestamp, freshness expiry, source identity or dependency-derived capability readiness.
+
+**Interpretation:** neither 20/22 registration nor 18/19 Health Monitor health is a sufficient platform readiness verdict. Exact registration report entries and a common canonical service identity map are required. The Render filtered log inspection did not retrieve the registration report or exact skip/failure entries; those remain unknown, not presumed optional or healthy.
+
+**PR review drift:** GitHub compare at this checkpoint reports the proposal branch has 53 commits ahead and 16 commits behind `staging`, with a diverged history and merge base `a51d7dddc6a4ab0f229e28af8c3c17c449697e4f`. PR metadata currently reports mergeable true, but the base has advanced since that merge base. Before any future merge, re-review the complete two-document diff against current staging and reconcile the 16 commits of base drift. Do not treat the current mergeable flag as evidence that the proposal is current or safe to merge.
+
+No branch rebase, merge, tests, runtime changes, database changes or deployment occurred in this checkpoint.
+
+### 27.12 Phase 1 shared-state contract — proposed v1 (design checkpoint)
+
+This is a contract proposal, not an implementation or authorization to mutate runtime state.
+
+**A. Separate append-only observations from the derived state projection**
+
+1. An observation is immutable evidence emitted by an identified, registered source.
+2. A platform-state projection is a versioned, derived view over accepted observations and canonical dependency declarations.
+3. A Director decision references the exact projection version and evidence IDs it evaluated. It must not rewrite the underlying source observation.
+4. Subsystem-owned records remain in their existing authoritative stores. The projection stores references and bounded normalized summaries, not duplicate task, job, brand, provider or workforce records.
+
+**B. Proposed observation envelope**
+
+Required fields:
+- `schema_version` — versioned contract identifier.
+- `observation_id` — stable, unique ID; producer retries reuse it.
+- `subject_type` and `subject_id` — canonical service/engine/provider/capability identity.
+- `source_id` and `source_instance_id` — registered producer and process/instance identity.
+- `scope` — platform or workspace; platform-wide observations require an authorized platform-scoped producer.
+- `status` — normalized observation (`healthy`, `degraded`, `unavailable`, `unknown`); `stale` is derived from freshness, not asserted as a source health fact.
+- `observed_at` and `expires_at` — source observation time and freshness deadline.
+- `evidence_refs` — bounded references to the authoritative source evidence.
+- `correlation_id` and `causation_id` — optional trace lineage, not identity or authorization.
+- `details` — bounded, schema-specific, redacted diagnostic fields; never secrets or raw credentials.
+
+**C. Derived readiness rules**
+
+- Registration is presence evidence only; it never implies healthy.
+- A missing expected instance is `unavailable` only when the source owner confirms it should be present in that process mode; otherwise it is `unknown`.
+- A source observation past `expires_at` derives to `stale`, preserving the last reported status as historical evidence.
+- Conflicting fresh observations remain `unknown`/conflicted until source ownership or an explicit reconciliation rule resolves them; last-write-wins is prohibited as a silent conflict policy.
+- Dependency propagation is computed from the existing canonical consumer-to-provider graph. A capability is not ready when a required dependency is unavailable, stale or conflicted.
+- Optional dependencies may degrade a capability only where a capability-specific manifest explicitly declares that policy.
+- Readiness is an admission input, never an authorization grant. Council, DecisionGate, Action Kernel and workspace access controls continue to govern permission.
+
+**D. Versioning, idempotency and write ownership**
+
+- Producers submit typed observations through a single validated write boundary; no engine gets arbitrary table or projection write access.
+- The observation ID is the idempotency key. Replaying the same ID and same payload returns the original receipt; same ID with a different payload is rejected as an identity conflict.
+- Projection updates use a monotonic version and compare-and-swap/expected-version check. Concurrent writers cannot silently overwrite a newer projection.
+- Every accepted or rejected write returns a durable receipt with producer identity, observation ID, accepted/rejected reason and resulting projection version where applicable.
+- A state-change event is emitted only after the authoritative observation/projection transaction commits. The existing event infrastructure is adapted; no second broker is introduced.
+- Consumers track event identity and projection version, tolerate duplicate/out-of-order delivery, and fetch the latest projection when a gap is detected.
+
+**E. Event types (proposed names; catalogue registration still required)**
+
+- `platform.observation.recorded.v1` — immutable accepted observation receipt.
+- `platform.state.changed.v1` — projection version advanced.
+- `platform.capability.readiness.changed.v1` — derived readiness changed for a capability.
+- `platform.state.reconciliation.required.v1` — conflict, missing evidence, version gap or uncertain transition requires reconciliation.
+
+Events carry IDs, subject, scope, projection version, source/evidence references, occurred_at and correlation/causation lineage. They do not carry credentials or grant authority.
+
+**F. Existing components and adapters**
+
+- Meta Engine heartbeat/diagnosis and Health Monitor outputs become source observations with explicit source identity and timestamps.
+- Director health analysis contributes diagnostic observations/inferences with evidence references; it does not become a competing health authority.
+- Existing canonical dependency graph and service definitions remain the topology/ownership inputs; no duplicate registry or graph.
+- Condition Engine receives a platform-condition adapter distinct from its current brand-scoped condition path.
+- Organism vitals becomes a read projection over lifecycle metrics and the versioned platform-state snapshot; subsystem-owned state is not copied into a new database.
+- Capability statistics derive from manifest ownership, dependency closure, fresh observations and capability-specific requirements.
+
+**G. Gate 0 blockers before implementation**
+
+1. Retrieve the live authenticated `GET /api/v1/topology` response, including `registry_registration` and `registry_topology`, from the current staging deployment. The route is protected by `require_auth`; source inspection alone cannot supply live registration skip reasons.
+2. Reconcile all service-definition IDs against process-mode boot owners, live registry instances, Meta registrations and Health Monitor targets.
+3. Confirm deployed schema and existing event persistence/transaction boundaries before selecting the durable observation/outbox storage adapter.
+4. Define service-manifest owner and capability dependency requirements without duplicating `SERVICE_DEFINITIONS` or `CANONICAL_ENGINE_DEPENDENCIES`.
+5. Specify retention, redaction, workspace isolation, platform-scope authorization and reconciliation SLOs.
+
+No migration, runtime implementation, database operation, test execution, deployment or production change is included. Phase 1 implementation remains blocked on the Gate 0 evidence and storage-boundary checks above.
+
+
+### 27.13 Topology endpoint contract and evidence interpretation (staging source audit)
+
+The current staging source for `routes/backend_contract_routes.py` defines authenticated `GET /api/v1/topology` and returns:
+- canonical topology nodes and dependency edges;
+- `runtime_nodes`, derived from registered service instances plus a small explicit singleton-probe set;
+- canonical graph drift and a topology-level `healthy` boolean;
+- `registry_topology`, from `ServiceRegistry.get_topology_report()`;
+- `registry_registration`, from `ServiceRegistry.get_registration_report()`.
+
+The registration report has four distinct arrays:
+- `registered`: successfully resolved and registered service names;
+- `skipped`: optional resolver failures/None results, with service, reason and `critical: false`;
+- `failed`: critical resolver failures/None results, with service, reason and `critical: true`;
+- `meta_registration_failures`: services whose instance entered the service registry but whose Meta Engine registration raised an exception.
+
+The lifecycle registration implementation records `resolved_none` when a resolver returns None and the exception class name when a resolver raises. Its log `Registered N/M services with Meta Engine` reports only the successful registration count; it does not identify the skipped or failed services.
+
+The registry topology report separately exposes:
+- registry runtime nodes and Meta Engine nodes;
+- names missing from Meta Engine;
+- instance-identity mismatches;
+- missing/undeclared canonical runtime nodes;
+- invalid dependencies and cycles;
+- `topology_complete` and the explicit `health_evaluated: false` marker.
+
+**Important evidence limitation:** the topology route itself calls each registered service's `health_check` or `get_status` method and awaits async results. It also probes selected process singletons not present in the registry. These are diagnostic probes and may perform service-defined work; this is not a pure registry read. The route normalizes returned status strings but does not attach a uniform source timestamp, expiry, probe duration, or evidence reference. The top-level `healthy` value is derived from canonical topology drift, not a comprehensive health/readiness verdict.
+
+**Interpretation rules for the pending live response:**
+1. Do not treat `registered` as healthy or ready.
+2. Do not treat a missing runtime node as unavailable until the owning process mode says that service is expected there.
+3. Treat `skipped` and `failed` as different lifecycle outcomes; a critical failure is a Gate 0 escalation, while an optional skip still needs owner/dependency impact analysis.
+4. Treat `meta_registration_failures` as a split-brain supervision gap: the service may exist in the service registry but not be supervised by Meta Engine.
+5. Compare `registry_topology.runtime_nodes` with `registry_topology.meta_engine_nodes`, canonical topology nodes, and the process-mode owner inventory. Do not infer equivalence from equal counts.
+6. Record returned health statuses as point-in-time probe results only; they are not freshness-governed platform observations.
+
+**Next live evidence:** retrieve the authenticated response from the current staging deployment and redact any unrelated sensitive diagnostic detail before sharing. The token must remain local and must never be pasted into chat. This endpoint's response should include both `registry_registration` and `registry_topology`; if either is null, capture the response status/body and investigate the route's registry initialization path rather than inferring an empty report.
+
+This section is source-derived from staging branch files `routes/backend_contract_routes.py`, `core/service_registry.py`, and `core/service_definitions.py`. No route was invoked by this source audit, and no runtime, database, migration, test, deployment, credential or production state was changed.
+
+
+### 27.14 Authenticated staging topology response — live evidence (2026-11-11)
+
+The user retrieved the authenticated staging `GET /api/v1/topology` response from `kdo-engineering-staging`. This closes the live-response evidence request in §27.13. The response contained both `registry_registration` and `registry_topology`.
+
+**Observed canonical topology and runtime inventory**
+- Canonical topology contains 30 nodes and 43 dependency edges.
+- `runtime_nodes` contains 20 registered runtime names: `ai_orchestrator`, `autonomous_content`, `autonomous_loop`, `card_renderer`, `condition_engine`, `content_engine`, `director`, `email_service`, `event_bus`, `health_monitor`, `image_engine`, `job_service`, `job_stats_service`, `meta_engine`, `plugin_registry`, `prompt_builder`, `render_queue`, `scheduler`, `task_queue`, and `topic_selector`.
+- The registry reports 19 names in `meta_engine_nodes`; `meta_engine` itself is absent from that list. `missing_from_meta_engine` contains only `meta_engine`.
+- `identity_mismatches`, `undeclared_runtime_nodes`, `invalid_dependencies`, and `cycles` are empty.
+- Both canonical drift and registry topology report the same ten missing runtime nodes: `brand_scheduler`, `engagement_tracker`, `enterprise_emitters`, `event_recorder`, `gemini`, `github`, `guardian`, `guardian_scheduler`, `redis`, and `supabase`.
+- Top-level `healthy` is false and `registry_topology.topology_complete` is false. `health_evaluated` remains false.
+
+**Exact registration outcomes**
+- `registered` contains 20 services, matching the 20 runtime names above.
+- `skipped` contains exactly two optional resolver outcomes: `event_recorder` and `engagement_tracker`, both `reason: resolved_none`, `critical: false`.
+- `failed` is empty.
+- `meta_registration_failures` is empty.
+
+**Evidence-grounded interpretation**
+1. This response establishes no critical service-resolver failures and no Meta registration exceptions in the reported registration snapshot. It does not establish that all 20 registered services are healthy.
+2. The two optional skips are now explained at the resolver level (`resolved_none`), but their owning process-mode expectations and downstream capability impact remain unverified.
+3. The ten missing canonical runtime nodes cannot yet be classified as failures. The response does not identify whether each is an external provider, optional integration, intentionally absent process-role service, or expected local runtime service. In particular, `redis` and `supabase` appear as canonical dependencies but are not represented as runtime nodes; that alone does not prove either backing service is unavailable.
+4. `meta_engine` is present in the runtime registry but absent from Meta Engine's own node list. This is a self-registration/supervision representation gap in this report, not evidence that the Meta Engine process is down.
+5. Empty identity mismatch, invalid-dependency and cycle arrays are positive structural evidence. They do not resolve the ten missing runtime nodes or the separate readiness/freshness question.
+6. Status values on individual nodes include `healthy`, `idle`, and `unknown`. Because the endpoint marks `health_evaluated: false` and does not provide uniform observation timestamps/expiry, these values must not be promoted directly into authoritative platform capability readiness.
+
+**Gate 0 consequence / next required evidence**
+- The live endpoint response requirement in §27.13 is satisfied.
+- Remaining reconciliation is owner/process-mode mapping for the ten missing canonical nodes and the two optional skips, plus explanation of the Meta Engine self-entry.
+- Retrieve or produce a read-only owner inventory joining each canonical node to its service-definition entry, boot resolver, process-mode expectation, external-vs-local classification, criticality, and required/optional dependency policy. Reuse the existing source inventory tooling; do not create another topology graph.
+- Obtain source-owned, timestamped health/readiness evidence for capabilities and their required dependencies before defining any authoritative readiness projection.
+- No critical resolver failure is shown by this response, but Gate 0 is not complete: ownership expectations, freshness, durable observation/event transaction boundaries, manifest authority, retention/redaction and scope controls remain open.
+
+The live response was supplied by the user. It is evidence from the staging endpoint at the time of retrieval, not a claim about current state beyond that observation. No token or credential was included in the shared response. This documentation update does not invoke the endpoint again or change runtime, database, migration, test, deployment, credential or production state.
+
+
+### 27.15 Canonical-node owner and process-mode reconciliation — source checkpoint
+
+This checkpoint cross-references the live missing-node/skip list from §27.14 against `lifecycle.py`, `core/service_definitions.py`, and the existing `scripts/audit_engine_topology.py`. It is a source-level classification; it does not infer the deployed Render `SERVICE_MODE` value.
+
+| Canonical node / outcome | Source owner or boot condition | Evidence-based classification | Remaining question |
+|---|---|---|---|
+| `brand_scheduler` | `BrandSchedulers` boot step in `full` or `workers`; canonical alias in the existing inventory maps it to the brand scheduler manager family | Process-mode-specific worker/business scheduler, not expected in every process | Confirm which staging process runs the scheduler boot step and whether it should register under this canonical name |
+| `engagement_tracker` (skipped) | Optional service definition; resolver imports `services.engagement_tracker.engagement_tracker`; no corresponding named boot step was found in the inspected `_build_boot_sequence` | Explicit optional resolver returned None in the live snapshot; no source evidence yet identifies its initializer/owner | Find its initializer and determine whether any active capability requires it |
+| `event_recorder` (skipped) | Optional service definition; resolver looks up an existing `EventRecorder` instance through the container; no matching named boot step was found in the inspected boot sequence | Explicit optional resolver returned None; resolver does not construct it | Determine whether another subsystem owns initialization or whether this is a dormant optional component |
+| `enterprise_emitters` | `EnterpriseEmitters` boot step only in `full` or `api` | Process-mode-specific observability component | Confirm actual web process mode and whether emitter registration is included in the topology registry |
+| `github` | Infrastructure node in canonical graph; `GitHubConnector` boot step in `full` or `github` | External integration plus process-mode-specific connector; not a normal service-definition entry | Confirm connector process mode and configured integration readiness independently |
+| `gemini` | Canonical infrastructure/provider node; no direct service resolver in `SERVICE_DEFINITIONS` or named boot step in inspected sequence | External LLM provider dependency, not expected to appear as a local registry instance solely because it is configured | Need provider-specific health/credential/configuration evidence from its owning gateway |
+| `redis` | Infrastructure node; `RedisClient` boot step is added in all modes | External backing infrastructure initialized by a boot step, but not registered as a canonical service instance by the service definitions | Distinguish successful client initialization from a topology registry node; obtain Redis client health evidence |
+| `supabase` | Infrastructure node; `SupabaseClient` boot step is added in all modes | External backing infrastructure initialized by a boot step, but not registered as a canonical service instance by the service definitions | Distinguish client initialization/database reachability from a topology registry node; obtain scoped database health evidence |
+| `guardian` | No direct service definition or named boot step found in the inspected lifecycle sequence; canonical graph declares dependency on `supabase` and `github` | Ownership unresolved by this source checkpoint | Locate actual guardian implementation/initializer and identify whether it is a separate process or dormant component |
+| `guardian_scheduler` | No direct service definition or named boot step found in the inspected lifecycle sequence; canonical graph declares dependency on `guardian` | Ownership unresolved by this source checkpoint | Locate actual scheduler implementation/initializer and identify its owning process |
+
+**Process-mode facts from source**
+- `_build_boot_sequence` resolves mode from `SERVICE_MODE`, falling back to `settings.service_mode` and then `full`.
+- `SupabaseClient`, `EventBus`, `KCPGEventBridge`, and `RedisClient` boot steps are included unconditionally in the inspected sequence.
+- `BrandSchedulers` is included only for `full`/`workers`; `EnterpriseEmitters` and `HealthMonitor` only for `full`/`api`; `GitHubConnector` only for `full`/`github`.
+- `MetaEngine`, `Director`, and `ConditionEngine` have distinct mode gates. The presence of a canonical node does not prove that the current process should instantiate it.
+- The existing inventory script has a partial `BOOT_OWNERS` map and already joins the canonical graph, service definitions and Director discovery. Its map should be enriched in place if a generated report is needed; no second graph or registry is warranted.
+
+**Important unresolved deployment evidence**
+The live topology JSON does not expose the effective `SERVICE_MODE`, the Render service/process identity, or the complete boot-step execution report. Earlier staging log inspection established that web and worker process roles exist, but did not establish the effective mode value for the process that returned this topology response. Therefore the table intentionally leaves deployment-specific expectations unresolved.
+
+**Capability impact**
+- The graph declares `brand_scheduler` dependent on `job_service`, `content_engine`, and `supabase`; its absence matters only to capabilities that require brand scheduling in the relevant process/worker deployment.
+- `engagement_tracker` is a dependency of `condition_engine` in the canonical graph. Its optional resolver skip therefore needs explicit capability impact analysis; optional registration does not make a required graph dependency optional.
+- `event_recorder` is a dependency of no other node in the supplied canonical edge list, so its absence does not propagate through this graph, though event audit/analytics requirements may still depend on it outside the graph.
+- `enterprise_emitters` and `github` are not dependencies of other nodes in the supplied canonical graph; their absence should be evaluated against their own functions, not used to degrade unrelated capabilities.
+- `redis` and `supabase` are shared infrastructure dependencies with multiple consumers. Their absence from `runtime_nodes` is a registry representation gap, not evidence of service outage; readiness must come from their owning clients and source-specific probes.
+- `gemini` is a declared dependency of `ai_orchestrator`; provider readiness must be supplied by the LLM gateway/provider adapter, not inferred from the absence of a local registry instance.
+- `guardian` and `guardian_scheduler` ownership remains unresolved, so no capability readiness conclusion should be drawn for their graph edges until their implementation and process owner are found.
+
+**Gate 0 status**
+The exact live registration outcomes are reconciled with source definitions. Two skips are understood as optional resolver returns, but their initializer/impact is not fully established. Several missing nodes are explained as external infrastructure or mode-gated components by source; the deployed mode and health of those components remain unverified. Guardian ownership remains an explicit source gap. Gate 0 therefore remains open pending: (a) effective mode and process identity for each staging process, (b) initializer/owner mapping for engagement tracker, event recorder, guardian and guardian scheduler, and (c) source-owned timestamped health evidence for Redis, Supabase, Gemini and GitHub where those integrations are expected.
+
+No runtime code, tests, migrations, database writes, deployments, credentials or production state were changed by this source checkpoint.
+
+
+### 27.16 Initializer ownership findings — engagement tracker, event recorder and Guardian
+
+This checkpoint inspects the implementation behind the two live optional skips and the remaining Guardian topology nodes. These are source findings on the proposal branch; they do not prove which boot path was active in the deployed staging process.
+
+**Engagement tracker — missing lifecycle startup path**
+- `services/engagement_tracker.py` declares module-level `engagement_tracker: Optional[EngagementTracker] = None`.
+- The module's `start_engagement_tracking(container, interval_minutes=30)` function constructs the instance, resolves its Supabase client, Condition Engine and UnifiedEventBus dependencies, starts its periodic loop, and assigns the module global.
+- `core/service_definitions.py::_resolve_engagement_tracker` only imports and returns that module global; it does not construct or start the tracker.
+- The inspected `lifecycle.py::_build_boot_sequence` has no named EngagementTracker boot step or call to `start_engagement_tracking`.
+- Therefore the live `resolved_none` is consistent with a real initialization/ownership gap in this lifecycle path. Before adding a boot step, identify the intended owner/process mode and ensure the tracker is started exactly once, with clean shutdown and no duplicate polling across web/worker processes. Its canonical dependency from Condition Engine means this must be addressed in capability readiness, not silently waived.
+
+**Event recorder — lazy-factory versus instance-only registry mismatch**
+- `dependency_registry.py::_register_workflows` registers `EventRecorder` with `c.register(EventRecorder, _build_recorder, singleton=True)`; this is a lazy factory, not an eagerly created instance.
+- `core/service_definitions.py::_resolve_event_recorder` calls `_resolve_existing(container, EventRecorder)`, which uses `try_get_instance` and intentionally does not invoke lazy resolution.
+- Consequently, if no earlier boot path resolves the factory, the Meta service-registration pass reports `event_recorder: resolved_none` even though its factory is registered. This is not evidence that the factory or class is absent.
+- `EventRecorder.start()` installs subscriptions for published/generated posts, scan completions and message events. The inspected lifecycle boot sequence contains no explicit EventRecorder start/stop step.
+- There are two separate lifecycle obligations: make the instance available to the registry in the owning process, and start/stop its subscriptions exactly once. Merely changing the topology resolver to call `try_resolve` would instantiate it as a side effect of reporting and would not by itself establish subscription lifecycle correctness. Do not make that change without assigning a lifecycle owner.
+
+**Guardian — conditional DI registration, not a separate boot-owned canonical service**
+- `dependency_registry.py` invokes `_register_guardian` only when `settings.guardian_configured` is true; otherwise it records an optional not-configured binding.
+- When configured, `_register_guardian` registers a lazy `GuardianService` factory. The factory composes `GitHubClient`, `CodeGuardianScanner`, `AutoFixEngine`, the UnifiedEventBus and Facebook notification service.
+- `services/guardian_service.py::GuardianService` is the concrete scan orchestrator. Its status includes configured state, scan count and last scan. Auto-fix is separately gated by `GUARDIAN_AUTO_FIX`.
+- Director discovery exports `services.guardian_service.guardian_service` in the security sector, but the inspected `services/guardian_service.py` defines the class and does not define a module-level `guardian_service` singleton. The DI factory is keyed by the `GuardianService` class. This indicates a likely discovery/export-vs-DI identity mismatch that needs direct reconciliation; it does not justify inventing a second singleton.
+- The canonical topology's `guardian` node has dependencies `supabase` and `github`, but the GuardianService constructor shown above does not accept a Supabase client. Its direct operational dependencies in this factory are GitHub credentials/client, scanner, auto-fix engine, event bus and Facebook notifier. The graph may represent broader platform/security ownership, but its edge semantics need review against actual code.
+
+**Guardian scheduler — no implementation owner established**
+- Searches of the repository source and the inspected lifecycle/dependency registration paths found no `guardian_scheduler` implementation, service definition, or named boot step.
+- The canonical graph declares `guardian_scheduler -> guardian`, and Meta Engine's external-service exemption lists both names, but those declarations do not create an implementation or runtime owner.
+- Treat `guardian_scheduler` as an unresolved/stale topology declaration until a concrete scheduler implementation and owning process are found. Do not report it as an operational outage solely because it is absent.
+
+**Implications / recommended correction boundary**
+1. Add explicit owner/process-mode lifecycle contracts for EngagementTracker and EventRecorder, including startup, duplicate-instance prevention, shutdown and health evidence. Do not instantiate services as a side effect of topology reads.
+2. Reconcile Guardian's Director export with the DI-registered `GuardianService` class using one canonical instance identity. Keep scan execution and auto-fix governed; topology registration must not start scans or enable auto-fix.
+3. Either locate and document a real GuardianScheduler owner or remove/replace that canonical node through a separately reviewed topology change. Do not silently retain a phantom dependency.
+4. Revisit the Guardian dependency edges based on concrete injected dependencies and intended capability semantics. Do not infer a Supabase dependency from a generic platform association.
+5. Preserve the distinction between a factory being registered, an instance being constructed, an instance being running, and a capability being ready.
+
+This checkpoint is source-only. It does not change code, tests, migrations, database state, credentials, deployments or production.
+
+
+### 27.17 Lifecycle ownership and evidence-derived capability readiness — design checkpoint
+
+This checkpoint converts the source findings in §§27.14–27.16 into a bounded lifecycle/readiness contract. It is a proposal for review, not permission to start or alter services. It deliberately does not add another registry, topology graph, event broker, or health monitor.
+
+#### A. Four distinct lifecycle facts
+
+Every service/capability must distinguish these facts; none implies the next:
+
+1. **Declared** — a canonical service/capability contract exists, with an owner and process-mode expectation.
+2. **Constructed** — the owning process has resolved one instance (or an explicitly external dependency adapter).
+3. **Started** — the instance completed its owned startup protocol and is accepting its defined work.
+4. **Ready** — fresh, source-owned evidence shows that the capability can perform its declared operation under its dependency and policy constraints.
+
+A factory registered in dependency injection is only a construction recipe. A registry entry is not proof of construction in every process. Construction is not startup. Startup is not readiness. Readiness is not authorization to execute an action.
+
+#### B. Lifecycle ownership contract
+
+Each service manifest/owner record must declare:
+- stable canonical service ID and implementation identity;
+- owning subsystem and one lifecycle owner per process role;
+- expected process modes/roles and whether absence is not_expected or an ownership violation;
+- construction strategy (eager, lazy-on-first-use, or external adapter) and singleton scope (process, workspace, or request);
+- explicit start/stop contract, startup deadline, shutdown behavior and duplicate-start semantics;
+- required and optional dependencies, with dependency policy owned by the capability owner;
+- readiness probe contract, evidence source, freshness TTL and failure classification;
+- criticality, degradation policy and recovery/reconciliation owner.
+
+The manifest is a contract overlay on existing SERVICE_DEFINITIONS, CANONICAL_ENGINE_DEPENDENCIES, and boot-sequence ownership. It must reference those sources rather than copy them into a competing registry. Where the sources disagree, report a contract conflict and block readiness promotion until an owner resolves it.
+
+#### C. Process and instance semantics
+
+- A process-mode-specific component absent from a process where it is not expected is not_expected, not unavailable.
+- A component expected in the current process but not constructed is unavailable after its startup deadline; before that deadline it is starting.
+- A lazy factory may be declared while no instance exists. It must not be instantiated merely because /api/v1/topology or another diagnostic endpoint is read.
+- A process-scoped singleton must have one owner and one start/stop lifecycle within that process. Cross-process web/worker instances are separate instances and must be identified as such; process-local locks do not provide cross-process singleton guarantees.
+- Workspace-scoped components must be keyed and isolated by workspace, with concurrency-safe composition and explicit teardown/eviction. Do not use a global module singleton for workspace-specific state.
+- External dependencies (Supabase, Redis, Gemini, GitHub) are represented by owner adapters and provider/resource identity, not fabricated as local engine instances. Their readiness evidence must come from the adapter that actually uses them.
+- Topology diagnostics remain observational. A probe may only run if its contract says it is safe, bounded, side-effect-free and independently authorized; report probe duration and result rather than invoking startup or work as a side effect.
+
+#### D. Readiness state machine
+
+The proposed capability readiness vocabulary is:
+- not_expected: this process role does not own/run the component;
+- starting: expected and constructed/starting, within the declared startup deadline;
+- healthy: required dependencies are ready and fresh evidence satisfies the capability contract;
+- degraded: the capability can provide a reduced, explicitly declared service level;
+- unavailable: expected capability cannot perform its declared operation;
+- stale: last valid evidence exceeded its freshness TTL;
+- unknown: ownership, evidence, dependency policy or probe outcome is insufficient or contradictory.
+
+The state is derived, not written directly by arbitrary producers. Each source publishes a typed observation with source identity, process/instance identity, workspace/platform scope, observed-at time, optional expiry, evidence reference, correlation/causation IDs and bounded redacted details. The projection records the policy/version used to derive readiness.
+
+Required dependencies gate readiness; optional dependencies may reduce a capability only where the owning manifest explicitly declares the reduced behavior and its acceptance criteria. The canonical graph alone does not decide optionality. In particular, the current condition_engine → engagement_tracker edge must be reviewed by the Condition Engine owner: either tracker functionality is genuinely required and startup/readiness must fail closed when absent, or the edge/manifest policy must be corrected with tests proving the degraded behavior. Do not silently mark the edge optional to make topology green.
+
+Fresh conflicting observations produce unknown/conflict requiring reconciliation; do not use last-write-wins. Expiry produces stale, not healthy. A registered but unprobed component remains unknown. Provider credential/configuration presence alone is not a successful provider readiness check.
+
+#### E. Ownership resolutions required by current evidence
+
+| Component | Required owner decision before implementation |
+|---|---|
+| EngagementTracker | Assign one process-mode owner; define whether it is required by Condition Engine; define exactly-once start/stop per owning process and its periodic-loop health evidence |
+| EventRecorder | Choose eager construction by its owner or explicit lazy-on-demand lifecycle; start subscriptions only under that owner; do not resolve it from topology reads |
+| Guardian | Make Director discovery and DI resolve the same canonical GuardianService identity; keep scan separate from remediation; scans must not run as a topology probe |
+| GuardianScheduler | Find a real implementation/owner and process role, or propose removal/replacement of the stale canonical node through a separately reviewed topology change |
+| MetaEngine | Define its own supervision/self-health observation; do not require it to register itself as a child of its own registry to claim it is alive |
+| Redis/Supabase/Gemini/GitHub | Assign provider/client adapters as evidence owners; distinguish configured, connected, authenticated, and operation-ready states |
+| BrandSchedulers / EnterpriseEmitters | Confirm effective process mode and role-specific boot ownership before classifying absence |
+
+#### F. Registration and readiness reporting
+
+Keep the existing topology endpoint's structural fields, but make the semantics explicit. A future versioned diagnostic contract should separately expose:
+- canonical topology and graph validation;
+- per-process manifest expectation and boot-owner identity;
+- construction/registration outcome (registered, skipped, failed, not expected);
+- lifecycle phase (declared, constructed, started, stopped);
+- readiness status, evidence timestamp/expiry, probe identity/duration and dependency reasons;
+- manifest/schema version and projection version.
+
+Do not overload the current healthy boolean. It presently represents topology drift, while health_evaluated:false explicitly says comprehensive readiness was not evaluated. Preserve backward compatibility or version the response; never silently redefine the field.
+
+#### G. Phase 1 implementation boundary and acceptance tests
+
+After Gate 0 owner decisions are approved, Phase 1 should implement only the shared typed observation/projection boundary and adapters for existing owners. It must reuse the current event infrastructure and canonical dependency graph. No new broker, service registry, health monitor or duplicate dependency graph.
+
+Acceptance evidence must include:
+1. Web and worker processes report distinct process identities and only their expected services; mode-irrelevant services are not_expected, not false outages.
+2. Each lifecycle owner starts and stops its component once; repeated boot and concurrent first-use do not create duplicate loops/subscriptions.
+3. Lazy DI registration does not instantiate or start a component during topology reads.
+4. EngagementTracker's required/optional dependency policy is tested in both present and absent cases.
+5. EventRecorder factory, instance construction and subscription lifecycle are separately asserted.
+6. Guardian discovery, DI and Director capability bind to the same instance identity; topology reads never invoke scans or remediation.
+7. GuardianScheduler is either backed by a real owner or removed through an explicit topology change.
+8. Provider adapters distinguish configured, connected, authenticated and operation-ready states without exposing secrets.
+9. Observations are idempotent, provenance-bearing, freshness-bounded and workspace-isolated; conflicting/stale evidence cannot produce healthy.
+10. Projection updates are versioned/CAS-protected; state-change events are emitted only after durable commit; consumers tolerate duplicate/out-of-order delivery.
+11. Registration, health, readiness and authorization remain separate: a healthy capability does not gain dispatch or execution authority.
+
+**Gate 0 disposition:** source ownership findings are documented, but deployed process identity/mode and several component owners remain unverified. The current endpoint is a structural/registration snapshot, not a readiness API. Gate 0 remains PARTIALLY COMPLETE. Implementation is still blocked on owner sign-off, exact process-mode evidence, storage/event transaction boundaries, scope/retention/redaction review and the staging acceptance plan.
+
+No runtime code, tests, migrations, database writes, credentials, deployments or production state were changed by this design checkpoint.
