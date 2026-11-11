@@ -200,7 +200,6 @@ class AutonomyModeBody(BaseModel):
 @router.post("/owner/autonomy", dependencies=[Depends(_owner_dep())])
 @router.put("/owner/autonomy", dependencies=[Depends(_owner_dep())])
 async def set_autonomy_mode(body: AutonomyModeBody, request: Request):
-    global _governance_mode
     mode = str(body.mode or "").upper().strip()
     if mode not in ALLOWED_MODES:
         raise HTTPException(400, detail=f"Unsupported mode. Allowed: {sorted(ALLOWED_MODES)}")
