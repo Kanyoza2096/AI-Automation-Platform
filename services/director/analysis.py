@@ -91,113 +91,54 @@ class SystemTopology:
         self._initialize_known_topology()
 
     def _initialize_known_topology(self) -> None:
-        self.add_node("supabase", Sector.INFRA, criticality=5)
-        self.add_node("redis", Sector.INFRA, criticality=5)
-        self.add_node("event_bus", Sector.INFRA, criticality=5)
+        """Project the canonical dependency graph with Director domain metadata.
 
-        self.add_node("task_queue", Sector.INFRA, criticality=4)
-        self.add_dependency("task_queue", "redis")
-        self.add_dependency("task_queue", "supabase")
+        Dependency edges are never declared here. The canonical topology module
+        is the only source of truth; this class adds only analysis metadata used
+        by Director's impact and root-cause projections.
+        """
+        from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
 
-        self.add_node("job_service", Sector.INFRA, criticality=4)
-        self.add_dependency("job_service", "supabase")
-        self.add_dependency("job_service", "event_bus")
+        metadata = {
+            "supabase": (Sector.INFRA, 5),
+            "redis": (Sector.INFRA, 5),
+            "event_bus": (Sector.INFRA, 5),
+            "task_queue": (Sector.INFRA, 4),
+            "job_service": (Sector.INFRA, 4),
+            "plugin_registry": (Sector.INFRA, 3),
+            "render_queue": (Sector.CONTENT, 3),
+            "event_recorder": (Sector.INFRA, 2),
+            "ai_orchestrator": (Sector.HEALTH, 4),
+            "content_engine": (Sector.CONTENT, 4),
+            "card_renderer": (Sector.CONTENT, 3),
+            "meta_engine": (Sector.HEALTH, 4),
+            "condition_engine": (Sector.LEARNING, 4),
+            "director": (Sector.SELF, 5),
+            "brand_scheduler": (Sector.CONTENT, 3),
+            "email_service": (Sector.CLIENTS, 3),
+            "engagement_tracker": (Sector.GROWTH, 3),
+            "guardian": (Sector.SECURITY, 4),
+            "guardian_scheduler": (Sector.SECURITY, 3),
+            "image_engine": (Sector.CONTENT, 3),
+            "topic_selector": (Sector.CONTENT, 2),
+            "prompt_builder": (Sector.CONTENT, 2),
+            "health_monitor": (Sector.HEALTH, 3),
+            "enterprise_emitters": (Sector.HEALTH, 2),
+            "gemini": (Sector.HEALTH, 3),
+            "github": (Sector.SECURITY, 3),
+            "job_stats_service": (Sector.INFRA, 2),
+            "autonomous_content": (Sector.CONTENT, 3),
+            "autonomous_loop": (Sector.SELF, 4),
+            "scheduler": (Sector.CONTENT, 3),
+        }
 
-        self.add_node("plugin_registry", Sector.INFRA, criticality=3)
-        self.add_dependency("plugin_registry", "event_bus")
+        for name in CANONICAL_ENGINE_DEPENDENCIES:
+            sector, criticality = metadata.get(name, (Sector.INFRA, 2))
+            self.add_node(name, sector, criticality=criticality)
 
-        self.add_node("render_queue", Sector.CONTENT, criticality=3)
-        self.add_dependency("render_queue", "redis")
-
-        self.add_node("event_recorder", Sector.INFRA, criticality=2)
-        self.add_dependency("event_recorder", "event_bus")
-        self.add_dependency("event_recorder", "supabase")
-
-        self.add_node("ai_orchestrator", Sector.HEALTH, criticality=4)
-        self.add_dependency("ai_orchestrator", "supabase")
-
-        self.add_node("content_engine", Sector.CONTENT, criticality=4)
-        self.add_dependency("content_engine", "ai_orchestrator")
-        self.add_dependency("content_engine", "event_bus")
-        self.add_dependency("content_engine", "supabase")
-
-        self.add_node("card_renderer", Sector.CONTENT, criticality=3)
-        self.add_dependency("card_renderer", "render_queue")
-        self.add_dependency("card_renderer", "content_engine")
-
-        self.add_node("meta_engine", Sector.HEALTH, criticality=4)
-        self.add_dependency("meta_engine", "event_bus")
-        self.add_dependency("meta_engine", "supabase")
-
-        self.add_node("condition_engine", Sector.LEARNING, criticality=4)
-        self.add_dependency("condition_engine", "event_bus")
-        self.add_dependency("condition_engine", "supabase")
-        self.add_dependency("condition_engine", "content_engine")
-
-        self.add_node("director", Sector.SELF, criticality=5)
-        self.add_dependency("director", "event_bus")
-        self.add_dependency("director", "supabase")
-
-        self.add_node("brand_scheduler", Sector.CONTENT, criticality=3)
-        self.add_dependency("brand_scheduler", "content_engine")
-        self.add_dependency("brand_scheduler", "supabase")
-
-        self.add_node("email_service", Sector.CLIENTS, criticality=3)
-        self.add_dependency("email_service", "event_bus")
-
-        self.add_node("engagement_tracker", Sector.GROWTH, criticality=3)
-        self.add_dependency("engagement_tracker", "supabase")
-
-        self.add_node("guardian", Sector.SECURITY, criticality=4)
-        self.add_dependency("guardian", "supabase")
-
-        self.add_node("guardian_scheduler", Sector.SECURITY, criticality=3)
-        self.add_dependency("guardian_scheduler", "guardian")
-
-        self.add_node("image_engine", Sector.CONTENT, criticality=3)
-        self.add_dependency("image_engine", "render_queue")
-        self.add_dependency("image_engine", "content_engine")
-
-        self.add_node("topic_selector", Sector.CONTENT, criticality=2)
-        self.add_dependency("topic_selector", "content_engine")
-
-        self.add_node("prompt_builder", Sector.CONTENT, criticality=2)
-        self.add_dependency("prompt_builder", "content_engine")
-
-        self.add_node("health_monitor", Sector.HEALTH, criticality=3)
-        self.add_dependency("health_monitor", "event_bus")
-
-        self.add_node("enterprise_emitters", Sector.HEALTH, criticality=2)
-        self.add_dependency("enterprise_emitters", "event_bus")
-
-        try:
-            from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
-            # Preserve domain metadata where it is already defined above, but
-            # ensure every canonical node exists in Director's graph as well.
-            # Missing nodes get conservative sector/criticality metadata; the
-            # canonical module remains the sole source of dependency edges.
-            default_metadata = {
-                "gemini": (Sector.HEALTH, 3),
-                "github": (Sector.SECURITY, 3),
-                "job_stats_service": (Sector.INFRA, 2),
-                "autonomous_content": (Sector.CONTENT, 3),
-                "autonomous_loop": (Sector.SELF, 4),
-                "scheduler": (Sector.CONTENT, 3),
-            }
-            for name in CANONICAL_ENGINE_DEPENDENCIES:
-                if name not in self.nodes:
-                    sector, criticality = default_metadata.get(name, (Sector.INFRA, 2))
-                    self.add_node(name, sector, criticality=criticality)
-
-            for node in self.nodes.values():
-                node.depends_on.clear()
-                node.depended_by.clear()
-            for dependent, dependencies in CANONICAL_ENGINE_DEPENDENCIES.items():
-                for dependency in dependencies:
-                    self.nodes[dependent].depends_on.add(dependency)
-                    self.nodes[dependency].depended_by.add(dependent)
-        except ImportError:
-            pass
+        for dependent, dependencies in CANONICAL_ENGINE_DEPENDENCIES.items():
+            for dependency in dependencies:
+                self.add_dependency(dependent, dependency)
 
     def add_node(self, name: str, sector: Sector, criticality: int = 1) -> None:
         if name not in self.nodes:
