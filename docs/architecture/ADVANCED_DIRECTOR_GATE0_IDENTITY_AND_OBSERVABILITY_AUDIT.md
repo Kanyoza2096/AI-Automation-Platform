@@ -996,7 +996,7 @@ However, the inspected row-provisioning path does not establish that `event_deli
 
 The reviewed base migrations 037, 040 and 062 establish `event_deliveries`, Business Automation claim/complete RPCs and claim-token fencing. The current `SharedEventBus` source also references `dead_lettered_at`, `next_attempt_at`, `event_handler_deliveries`, and `complete_shared_event_delivery`; those definitions were not found in the migration files examined in this pass. The migration inventory/search was not exhaustive, so do not conclude they are absent from the complete repository or deployed database. Verify exact DDL/RPCs, indexes, RLS and grants against the full migration chain and live staging schema.
 
-A source-level query defect candidate also exists in `_ensure_delivery`: after insert failure it checks for an existing row by `event_id` but omits `consumer_group` from the lookup. An unrelated consumer group's delivery could therefore make the method return true even when this group's row does not exist; the subsequent group-scoped claim then finds nothing. Correct lookup must include both event ID and consumer group, and insertion conflicts must be distinguished from other database errors.
+Correction after exact source re-read: `_ensure_delivery` does include both `event_id` and `consumer_group` in its fallback lookup. The earlier suspected missing-consumer-group filter was incorrect and is withdrawn. A separate hardening opportunity remains: the broad insert exception handler treats any insert error as a possible uniqueness race, then checks for an existing row; the method should distinguish unique-conflict from transport/schema/permission failures so operational faults are not silently collapsed into an ordinary duplicate.
 
 ### 26.4 Required verification and design
 
@@ -1009,3 +1009,10 @@ A source-level query defect candidate also exists in `_ensure_delivery`: after i
 - Keep V69 business-event fabric distinct until its storage, routing, idempotency and authority adapters are explicitly integrated.
 
 **Status:** Durable event-delivery infrastructure exists and has at-least-once/lease/receipt mechanisms. The Business Automation durable inbox's delivery-row provisioning is unresolved in the inspected topology; schema compatibility and live staging operation remain unverified. No runtime code, migrations, database rows, tests or deployments were changed. Gate 0 remains **PARTIALLY COMPLETE**.
+
+
+### 26.5 Source re-read correction
+
+A line-by-line re-read of `SharedEventBus._ensure_delivery` confirms the fallback lookup filters on both `event_id` and `consumer_group`. The earlier suspected missing consumer-group predicate is withdrawn. The broader exception catch around the insert remains a hardening opportunity, but it is not evidence of cross-consumer receipt confusion.
+
+The exact source also confirms `SharedEventBus.poll` only creates delivery rows for `self.source_service` and only for event types with registered handlers. The Business Automation bridge separately polls `consumer_group=business_automation` and is not itself registered as a SharedEventBus handler in the inspected composition; it subscribes to `UnifiedEventBus`. No migration trigger or explicit producer for the `business_automation` group was found in the inspected migration 037/040/062 and bridge paths. This strengthens the source-level concern that the durable inbox may not be fed by this topology, but remains unconfirmed without complete repository/migration and live staging inspection.
