@@ -849,7 +849,6 @@ dfmo = DataFlowMicroOrganism()
 
 
 async def init_circulation_monitor(container=None, event_bus=None, supabase=None) -> DataFlowMicroOrganism:
-    global dfmo
     dfmo._container = container
     dfmo._event_bus = event_bus
     dfmo._supabase = supabase
