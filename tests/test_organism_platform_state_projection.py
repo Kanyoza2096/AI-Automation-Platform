@@ -14,7 +14,7 @@ def _request(is_species):
     )
 
 
-def _snapshot(updated_at=None):
+def _snapshot(updated_at=None, observer_observed_at=None):
     updated_at = updated_at or datetime.now(timezone.utc)
     return SimpleNamespace(
         revision=21,
@@ -33,7 +33,7 @@ def _snapshot(updated_at=None):
                 service_id="director",
                 observer_id="meta_engine",
                 readiness=Readiness.DEGRADED,
-                observed_at=updated_at,
+                observed_at=observer_observed_at or updated_at,
                 source_version="meta-v7.1",
             ),
         ),
@@ -127,3 +127,21 @@ def test_species_vitals_fails_closed_when_shared_state_read_fails(monkeypatch):
     assert result["status"] == "unavailable"
     assert result["freshness"] == "unknown"
     assert result["services"] == []
+
+
+def test_species_vitals_downgrades_old_meta_observation_even_when_snapshot_is_fresh(monkeypatch):
+    now = datetime.now(timezone.utc)
+    FakeStore.snapshot = _snapshot(
+        now, observer_observed_at=now - timedelta(minutes=10)
+    )
+    monkeypatch.setattr(
+        "services.supabase.get_service_client_from_settings",
+        lambda: object(),
+    )
+    monkeypatch.setattr("core.platform_state_reader.PlatformStateStore", FakeStore)
+
+    result = asyncio.run(_platform_state_for_species(_request(True)))
+
+    assert result["freshness"] == "fresh"
+    assert result["observer_observations"][0]["freshness"] == "stale"
+    assert result["observer_observations"][0]["readiness"] == "stale"
