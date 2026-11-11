@@ -1108,3 +1108,23 @@ A focused re-read of the current staging source confirms:
 **Finding:** the components already exchange useful health and alert signals, but the exact end-to-end chain in the agreed example is not implemented as one authoritative state transition. We must not treat the existence of similarly named events as proof of a complete coordination contract.
 
 **Required Phase 1 adapter contract:** normalize Meta observations and Director diagnosis evidence into typed, provenance-bearing platform observations; retain the original source identity and timestamp; derive affected capabilities from the canonical dependency/manifest graph; and publish a versioned state-change event through the existing event infrastructure. Condition Engine and Organism should consume that contract through explicit adapters, not by overloading the brand-health handler.
+
+### 27.7 Canonical dependency graph parity correction
+
+A focused read of current staging source and the existing `KANYOZA_P11_DIRECTOR_TOPOLOGY_PARITY_REPORT.md` corrects the preliminary concern in §27.1:
+
+- `core/engine_topology.py` owns `CANONICAL_ENGINE_DEPENDENCIES`.
+- `services/director/analysis.py` now adds missing canonical nodes and rebuilds both forward and reverse dependency edges from that declaration, while preserving existing domain metadata.
+- The P11 report records a parity test requiring exact node-set and edge agreement; it reports 117 focused tests passed at the time of that change.
+- Therefore the two source representations are not currently independent authorities for dependency edges. Director retains a derived in-memory graph for analysis, sourced from the canonical declaration.
+
+**Corrected finding:** the canonical dependency graph has an established structural-parity integration. The remaining gap is operational semantics: canonical dependency edges are not yet a complete service-manifest contract, and the inspected Director decision path has not demonstrated a fresh, evidence-backed dependency-readiness admission check for every capability.
+
+Do not create another dependency graph or repeat P11. Extend the canonical declaration with versioned ownership/capability metadata only if the inventory proves it is missing, and derive runtime readiness from authoritative observations with explicit unknown/stale handling.
+
+### 27.8 Existing inventory tooling
+
+- `scripts/audit_engine_topology.py` already builds a source-level inventory from `CANONICAL_ENGINE_DEPENDENCIES`, `SERVICE_DEFINITIONS`, Director's `ENGINE_REGISTRY`, canonical aliases and boot-owner/service-mode declarations.
+- Its generated report explicitly distinguishes source ownership from live health and directs operators to runtime topology and system-health endpoints for live verification.
+
+**Decision:** reuse and extend this inventory/reporting path for Gate 0. Do not introduce a parallel manifest generator or claim the static report proves runtime presence, readiness, or health.
