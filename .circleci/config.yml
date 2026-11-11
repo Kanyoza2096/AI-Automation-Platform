@@ -1,4 +1,3 @@
-
 version: 2.1
 
 executors:
@@ -54,12 +53,18 @@ jobs:
       - run:
           name: Critical lint checks
           command: |
+            mkdir -p ci-diagnostics
+            set +e
             flake8 . \
               --count \
               --select=E9,F63,F7,F82 \
               --show-source \
               --statistics \
-              --exclude=.git,__pycache__,venv,.venv,node_modules,test-results
+              --exclude=.git,__pycache__,venv,.venv,node_modules,test-results \
+              2>&1 | tee ci-diagnostics/critical-lint.log
+            status=${PIPESTATUS[0]}
+            echo "$status" > ci-diagnostics/critical-lint.status
+            exit 0
 
       - run:
           name: Advisory style analysis
@@ -75,29 +80,44 @@ jobs:
       - run:
           name: Run unit and architecture tests
           command: |
-            mkdir -p test-results
+            mkdir -p ci-diagnostics test-results
             set +e
             pytest -q \
               --ignore=tests/integration \
               --ignore=tests/chaos \
               --ignore=tests/load \
               --junitxml=test-results/unit.xml \
-              --tb=short
-            status=$?
-            echo "$status" > /tmp/kdo-pytest-status
+              --tb=short 2>&1 | tee ci-diagnostics/unit-tests.log
+            status=${PIPESTATUS[0]}
+            echo "$status" > ci-diagnostics/unit-tests.status
             exit 0
 
       - store_test_results:
           path: test-results
 
-      - store_artifacts:
-          path: test-results
+      - when: always
+        steps:
+          - store_artifacts:
+              path: ci-diagnostics
+              destination: ci-diagnostics
+          - store_artifacts:
+              path: test-results
+              destination: test-results
 
       - run:
-          name: Enforce unit test result
+          name: Enforce lint and unit-test results
           command: |
-            status="$(cat /tmp/kdo-pytest-status)"
-            exit "$status"
+            lint_status="$(cat ci-diagnostics/critical-lint.status)"
+            test_status="$(cat ci-diagnostics/unit-tests.status)"
+            if [ "$lint_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+              echo "CI checks failed: critical_lint=$lint_status unit_tests=$test_status"
+              exit 1
+            fi
+
+      - run:
+          name: Publish failure report to GitHub
+          when: on_fail
+          command: python .circleci/report_failure.py
 
   mock_integration_tests:
     executor: kdo-python
@@ -108,26 +128,37 @@ jobs:
       - run:
           name: Run mock-backed integration tests
           command: |
-            mkdir -p test-results
+            mkdir -p ci-diagnostics test-results
             set +e
             pytest -q tests/integration \
               --junitxml=test-results/integration.xml \
-              --tb=short
-            status=$?
-            echo "$status" > /tmp/kdo-integration-status
+              --tb=short 2>&1 | tee ci-diagnostics/integration-tests.log
+            status=${PIPESTATUS[0]}
+            echo "$status" > ci-diagnostics/integration-tests.status
             exit 0
 
       - store_test_results:
           path: test-results
 
-      - store_artifacts:
-          path: test-results
+      - when: always
+        steps:
+          - store_artifacts:
+              path: ci-diagnostics
+              destination: ci-diagnostics
+          - store_artifacts:
+              path: test-results
+              destination: test-results
 
       - run:
           name: Enforce integration test result
           command: |
-            status="$(cat /tmp/kdo-integration-status)"
+            status="$(cat ci-diagnostics/integration-tests.status)"
             exit "$status"
+
+      - run:
+          name: Publish failure report to GitHub
+          when: on_fail
+          command: python .circleci/report_failure.py
 
 workflows:
   kdo_ci:
