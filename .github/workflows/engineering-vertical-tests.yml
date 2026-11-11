@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - "services/kdo_engineering_*.py"
+      - "services/director/plan_verifier.py"
+      - "tests/test_director_plan_verifier.py"
       - "tests/engineering_vertical/**"
       - "migrations/*engineering*"
       - "requirements.txt"
@@ -438,6 +440,7 @@ jobs:
       - name: Run focused engineering vertical tests
         run: |
           python -m pytest -q \
+            tests/test_director_plan_verifier.py \
             tests/engineering_vertical/test_phase16_2_workflow.py \
             tests/engineering_vertical/test_phase16_3_worker_queue.py \
             tests/engineering_vertical/test_worker_runtime.py \
