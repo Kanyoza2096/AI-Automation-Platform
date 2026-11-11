@@ -97,7 +97,8 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         raise StrategicPlanningError("plan_step_count_invalid")
 
     allowed = {"step_id", "capability", "sector", "objective", "depends_on",
-               "acceptance_criteria", "deliverables", "rationale"}
+               "acceptance_criteria", "deliverables", "rationale",
+               "criterion_refs", "evidence_refs"}
     steps = []
     for raw in raw_steps:
         if not isinstance(raw, Mapping) or set(raw) - allowed:
@@ -120,12 +121,24 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
             not isinstance(v, str) or not v.strip() for v in dependencies
         ):
             raise StrategicPlanningError("plan_dependencies_invalid")
+        criterion_refs = raw.get("criterion_refs", [])
+        evidence_refs = raw.get("evidence_refs", [])
+        if not isinstance(criterion_refs, (list, tuple)) or any(
+            not isinstance(value, str) or not value.strip() for value in criterion_refs
+        ):
+            raise StrategicPlanningError("plan_criterion_refs_invalid")
+        if not isinstance(evidence_refs, (list, tuple)) or any(
+            not isinstance(value, str) or not value.strip() for value in evidence_refs
+        ):
+            raise StrategicPlanningError("plan_evidence_refs_invalid")
         steps.append({
             "step_id": step_id.strip(), "capability": cap_name.strip(),
             "sector": sector.strip(), "objective": step_objective.strip(),
             "depends_on": [v.strip() for v in dependencies],
             "acceptance_criteria": _strings(raw.get("acceptance_criteria"), "step_acceptance_criteria"),
             "deliverables": _strings(raw.get("deliverables"), "step_deliverables"),
+            "criterion_refs": [value.strip() for value in criterion_refs],
+            "evidence_refs": [value.strip() for value in evidence_refs],
             "rationale": rationale.strip(),
             "capability_readiness": {
                 "enabled": bool(capability.get("enabled")),
@@ -142,7 +155,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     context_fingerprint = _fingerprint({
         key: context.get(key) for key in (
             "schema_version", "generated_at", "health_summary", "evidence",
-            "objectives", "capabilities", "missions", "learning"
+            "objectives", "capabilities", "missions", "learning", "platform_state"
         )
     })
     return {
@@ -244,6 +257,20 @@ def _planner_context(context: Mapping[str, Any]) -> dict[str, Any]:
             },
         },
         "evidence": {
+            "reference_ids": (
+                [f"fact:{item['observer']}" for item in (evidence.get("facts") or [])[:10]
+                 if isinstance(item, Mapping) and isinstance(item.get("observer"), str)]
+                + [f"inference:{item['observer']}:{item['issue_type']}" for item in (evidence.get("inferences") or [])[:10]
+                   if isinstance(item, Mapping) and isinstance(item.get("observer"), str)
+                   and isinstance(item.get("issue_type"), str)]
+                + [f"unknown:{item['kind']}:{item.get('observer', 'platform')}" for item in (evidence.get("unknowns") or [])[:10]
+                   if isinstance(item, Mapping) and isinstance(item.get("kind"), str)]
+                + [f"conflict:{item['sector']}" for item in (evidence.get("conflicts") or [])[:8]
+                   if isinstance(item, Mapping) and isinstance(item.get("sector"), str)]
+                + [f"signal:{item['observer']}:{item['capability']}" for item in (evidence.get("engine_signals", {}).get("accepted") or [])[:8]
+                   if isinstance(item, Mapping) and isinstance(item.get("observer"), str)
+                   and isinstance(item.get("capability"), str)]
+            ),
             "facts": (evidence.get("facts") or [])[:10],
             "inferences": (evidence.get("inferences") or [])[:10],
             "unknowns": (evidence.get("unknowns") or [])[:10],
@@ -317,6 +344,7 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
                     "required": [
                         "step_id", "capability", "sector", "objective",
                         "depends_on", "acceptance_criteria", "deliverables", "rationale",
+                        "criterion_refs", "evidence_refs",
                     ],
                     "properties": {
                         "step_id": {"type": "string"},
@@ -327,6 +355,8 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
                         "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
                         "deliverables": {"type": "array", "items": {"type": "string"}},
                         "rationale": {"type": "string"},
+                        "criterion_refs": {"type": "array", "items": {"type": "string"}},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
                     },
                 },
             },
@@ -349,8 +379,11 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
             "fields: step_id (string), capability (string copied from the catalogue), sector "
             "(string matching that capability), objective (string), depends_on (array of step_id "
             "strings, or []), acceptance_criteria (array of strings), deliverables (array of "
-            "strings), and rationale (string). Do not omit any field, including empty "
-            "depends_on. Keep every field concise: one short sentence per objective, rationale, "
+            "strings), criterion_refs (array using criterion:0, criterion:1, etc. to map "
+            "objective success criteria), evidence_refs (array copied exactly from the "
+            "platform_context evidence.reference_ids), and rationale (string). Do not omit "
+            "any field, including empty depends_on, criterion_refs, or evidence_refs. "
+            "Keep every field concise: one short sentence per objective, rationale, "
             "acceptance criterion, and deliverable. Prefer the smallest useful plan over "
             "exhaustive coverage. "
             "Use evidence to distinguish observed facts, inferences, and unknowns. Do not "
