@@ -812,3 +812,40 @@ This focused pass inspected V71.3–V71.10 and V71.17–V71.18 service implement
 - Include the reservation ledger and execution-ledger/outbox reconciliation in the definition of restart-safe status.
 
 **Decision status:** Gate 0 remains **PARTIALLY COMPLETE**. This is source and migration inspection only. No live Supabase schema/RLS query, RPC invocation, data write, migration, code change, test execution, credential operation, deployment or production action occurred.
+
+
+## 20. V71 method-level mutation and durable-boundary inventory
+
+### Mutation inventory from the proposal branch
+
+| Domain | In-memory mutation entry points observed | Separate durable path observed | Audit interpretation |
+|---|---|---|---|
+| V71.3 memory | `remember`, `revoke` | V71.18 hydration only | No general write-through in the inspected registry |
+| V71.4 planning | `create_plan`, `assess`, `cancel` | V71.18 hydration only | Plan lifecycle remains process-local at the registry boundary |
+| V71.5 evaluation | `evaluate` | V71.18 hydration only | Evidence record; never authority |
+| V71.6 budget definition/usage | `create`, `record_usage`, `set_status` | Separate V71.21 reservation RPC facade | Definition/usage projection and reservation ledger are distinct |
+| V71.7 takeover | `create`, `claim`, `resolve`, `cancel` | V71.18 hydration only | Human control transitions need durable CAS/version semantics |
+| V71.8 coordination | `create`, `assess`, `complete`, `cancel` | V71.18 hydration only | Coordination lifecycle remains process-local at registry boundary |
+| V71.9 autonomous operations | `create`, admission/execution, pause-for-takeover, `cancel` | V71.10 durable runtime facade | Preserve V71.10 as owner of durable run/lease fencing |
+
+The inventory is based on the inspected registry source and method bodies. It is not a repository-wide proof that no other caller or writer exists. The next implementation-readiness pass must trace all callers, direct database writes, RPC invocations and migration consumers for these entities.
+
+### Durable boundary details
+
+- V71.10 exposes durable `persist`, `get`, `claim`, `renew`, `finalize` and uncertain-run marking. Its durable path uses direct table insert/select for run creation/read and database RPCs for lease and terminal transitions. Its no-database test path mutates the in-memory operations registry and is explicitly non-authoritative.
+- V71.6's `DurableAgentBudgetReservations` calls `reserve_agent_budget`, `finalize_agent_budget_reservation` and `recover_agent_budget_reservations` RPCs. These are not equivalent to the V71.6 registry's `record_usage` method.
+- Migration 111 defines `agent_budget_reservations`, a primary key on `reservation_id`, a unique workspace/budget/run tuple, and a foreign key from `budget_id` to `agent_budgets(budget_id)`. The reservation and finalization functions lock relevant rows while changing reserved/used counters.
+- Migration 112 updates expired-reservation recovery: expired reservations become `uncertain`; capacity is conservatively transferred from reserved to used pending reconciliation. Do not automatically release uncertain capacity or retry the associated external action.
+- These migration observations are source-only. Actual deployed function ownership, grants, RLS, policy interaction, locks under contention and transactional behavior remain unverified.
+
+### Required next trace
+
+1. Trace every caller of each mutation method above and classify whether it is request-path, worker-path, startup/hydration, test-only or administrative.
+2. Find every direct writer to the nine V71.18 tables and to `agent_budget_reservations`; identify bypasses around registry validation/fingerprinting.
+3. Trace the exact orchestration sequence linking V71.9 run creation/admission, V71.10 durable persistence/lease, V71.6 reservation, Action Kernel/outbox execution receipt, and V71.21 finalization/recovery.
+4. Verify the run and reservation state machines against the same workspace, run ID, idempotency key and execution evidence without creating an unsafe cross-system transaction assumption.
+5. Add independent-process tests for stale cache, concurrent transitions, duplicate requests, lease expiry, reservation uncertainty and recovery after external side effects.
+
+**Finding:** the architecture needs a shared durable mutation contract plus specialized run-lease and budget-reservation transactions. A single generic CRUD wrapper would be unsafe because it could bypass V71.10 fencing or V71.21 atomic accounting.
+
+**Status:** source-level mutation inventory expanded; caller/writer trace and live database verification remain outstanding. Gate 0 remains **PARTIALLY COMPLETE**. No runtime code, migration, test execution, live database operation, credential change, deployment or production action occurred.
