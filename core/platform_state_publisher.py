@@ -118,9 +118,10 @@ class PlatformStatePublisher:
                     workspace_id="platform",
                     correlation_id=next(
                         (
-                            item.correlation_id
+                            evidence.correlation_id
                             for item in next_snapshot.services
-                            if item.correlation_id
+                            for evidence in item.evidence
+                            if evidence.correlation_id
                         ),
                         None,
                     ),
