@@ -242,3 +242,27 @@ def test_evidence_removed_by_prompt_trimming_is_not_accepted():
 
     assert report["verdict"] == "rejected"
     assert "evidence_reference_unknown:step_1" in report["errors"]
+
+
+def test_malformed_capability_name_fails_closed_without_exception():
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    plan = _plan(context)
+    plan["steps"][0]["capability"] = ["run_tests"]
+
+    report = verify_strategic_plan(plan, context, now=now)
+
+    assert report["verdict"] == "rejected"
+    assert "capability_name_invalid:step_1" in report["errors"]
+
+
+def test_missing_target_or_verification_method_is_rejected():
+    now = datetime.now(timezone.utc)
+    context = _context(now)
+    plan = _plan(context)
+    plan["steps"][0]["target"] = ""
+
+    report = verify_strategic_plan(plan, context, now=now)
+
+    assert report["verdict"] == "rejected"
+    assert "target_missing:step_1" in report["errors"]
