@@ -354,7 +354,6 @@ async def init_universal_pulse(container=None, event_bus=None, supabase=None) ->
 
 async def shutdown_universal_pulse() -> None:
     """Stop universal pulse."""
-    global universal_pulse
     await universal_pulse.stop()
 
 
