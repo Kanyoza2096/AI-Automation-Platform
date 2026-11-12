@@ -6,7 +6,7 @@ Canonical authentication for the Kanyoza organism platform.
 ALLOWED credentials (only):
   1. MASTER_API_TOKEN       → platform operator (species-level, all workspaces)
   2. PYTHON_SERVICE_TOKEN   → KCPG Gateway service credential (species-level)
-  3. kny_ / kz_ API keys    → workspace-scoped (workspace_id from token record)
+  3. KDO_API_ / kny_ / kz_ API keys → workspace-scoped (workspace_id from token record)
   4. Supabase JWT           → workspace resolved from owner_email / membership
 
 REMOVED (never accept again):
@@ -122,8 +122,8 @@ class SpeciesAuth:
                     return AuthIdentity(valid=False, error="Workspace token has no workspace scope")
                 return identity
 
-        # ── 3. Workspace API tokens (kny_ / kz_) ────────────────────────
-        if token.startswith("kny_") or token.startswith("kz_"):
+        # ── 3. Workspace API tokens (new KDO_API_ plus legacy prefixes) ──
+        if token.startswith(("KDO_API_", "kny_", "kz_")):
             return self._validate_workspace_token(token, key_store=key_store)
 
         # Explicitly reject known-bad legacy methods if someone passes them
@@ -219,7 +219,7 @@ class SpeciesAuth:
     ) -> AuthIdentity:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
 
-        # Prefer APITokenManager (kny_ tokens)
+        # Prefer APITokenManager (KDO_API_ and legacy kny_ tokens)
         try:
             from core.api_tokens import api_token_manager
 
@@ -248,10 +248,10 @@ class SpeciesAuth:
             logger.debug("api_token_manager validate failed: %s", exc)
 
         # Legacy api_keys table — OFF unless ALLOW_LEGACY_API_KEYS=1 (all environments).
-        # Canonical: api_tokens via APITokenManager (kny_).
+        # Canonical: api_tokens via APITokenManager (KDO_API_).
         import os as _os_leg
         if (not (_os_leg.getenv("ALLOW_LEGACY_API_KEYS") or "").strip().lower() in ("1", "true", "yes")):
-            return AuthIdentity(valid=False, error="Legacy api_keys disabled — use api_tokens (kny_)")
+            return AuthIdentity(valid=False, error="Legacy api_keys disabled — use api_tokens (KDO_API_)")
 
         found: Optional[dict] = None
         if key_store is not None:
