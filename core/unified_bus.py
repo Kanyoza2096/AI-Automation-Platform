@@ -79,7 +79,7 @@ class EventBusConfig:
 
 @dataclass
 class EventMetadata:
-    event_id: str = field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     correlation_id: Optional[str] = None
     parent_event_id: Optional[str] = None
     sequence_number: int = 0
@@ -430,7 +430,7 @@ class UnifiedEventBus:
                 )
                 return None
 
-        event_id = f"evt_{uuid.uuid4().hex[:12]}"
+        event_id = str(uuid.uuid4())
         try:
             from core.nerve import validate_and_normalize, NerveContractError
             if not workspace_id:
