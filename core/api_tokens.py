@@ -10,7 +10,7 @@ v2.0 FIXES:
     with explicit logging of the degradation.
 
 Tokens are stored as SHA-256 hashes in Supabase (never in plaintext).
-Token format: ``kny_<32-byte-hex>``
+Token format: ``KDO_API_<64-hex>`` (legacy ``kny_`` tokens remain valid)
 """
 
 from __future__ import annotations
@@ -36,7 +36,8 @@ class APITokenManager:
     silently returning unusable tokens.
     """
 
-    _PREFIX = "kny_"
+    _PREFIX = "KDO_API_"
+    _LEGACY_PREFIXES = ("kny_",)
 
     def __init__(self, supabase_client=None, *, allow_in_memory: bool = False) -> None:
         self._db = supabase_client
@@ -151,7 +152,7 @@ class APITokenManager:
         v2.0: DB failure during validation now logs a clear warning
         and falls back to in-memory rather than silently returning None.
         """
-        if not raw_token or not raw_token.startswith(self._PREFIX):
+        if not raw_token or not raw_token.startswith((self._PREFIX, *self._LEGACY_PREFIXES)):
             return None
 
         token_hash = self._hash(raw_token)
