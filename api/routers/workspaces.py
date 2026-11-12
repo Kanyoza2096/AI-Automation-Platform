@@ -36,7 +36,7 @@ async def create_workspace(
         from models.workspace import Workspace
         from repositories.workspace_repository import WorkspaceRepository
 
-        ws_id = body.id or f"ws-{_uuid_mod.uuid4().hex[:12]}"
+        ws_id = body.id or f"KDO_WS_{_uuid_mod.uuid4().hex}"
 
         # Auto-generate slug if not provided; enforce uniqueness
         slug = body.slug or _sanitize(body.name).lower().replace(" ", "-")
