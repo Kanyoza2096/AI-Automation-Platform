@@ -26,7 +26,7 @@ async def create_ai_profile(
         from models.ai_profile import AIProfile
         from repositories.ai_profile_repository import AIProfileRepository
 
-        profile_id = body.get("id") or f"profile-{_uuid_mod.uuid4().hex[:12]}"
+        profile_id = body.get("id") or f"KDO_AI_{_uuid_mod.uuid4().hex}"
         body["id"] = profile_id
         body["workspace_id"] = workspace_id
         if not body.get("name"):
