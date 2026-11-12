@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 import logging
 
 from api.dependencies import *
@@ -35,12 +36,13 @@ async def generate_api_key(
     try:
         workspace_id = resolve_plugin_workspace()
         from core.api_tokens import api_token_manager
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)).isoformat()
         result = await _async_wrap(
             api_token_manager.create_token,
             workspace_id,
             body.label,
-            ["read"],
-            None,
+            body.scopes,
+            expires_at,
         )
         await append_audit(
             audit_log, "api_key_created", f"key:{result['id']}", status_str="success",
@@ -50,6 +52,8 @@ async def generate_api_key(
             "token": result["token"],
             "label": result["name"],
             "permissions": result["permissions"],
+            "scopes": result["permissions"],
+            "expires_at": expires_at,
             "note": "Store this token securely. It will not be shown again.",
         }, 201)
     except RuntimeError as exc:
