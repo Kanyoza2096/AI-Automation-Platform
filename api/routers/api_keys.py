@@ -7,6 +7,8 @@ from api.v1_models import *
 from api.v1_helpers import *
 from api.v1_stores import *
 
+from core.plugin_execution import resolve_plugin_workspace
+
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
