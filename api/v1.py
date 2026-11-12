@@ -329,11 +329,22 @@ class RateLimitConfigRequest(BaseModel):
 
 class APIKeyGenerateRequest(BaseModel):
     label: str = Field(default="api-key", min_length=1, max_length=64)
+    scopes: list[str] = Field(default_factory=lambda: ["read"], min_length=1, max_length=2)
+    expires_in_days: int = Field(default=30, ge=1, le=365)
 
     @field_validator("label")
     @classmethod
     def sanitize_label(cls, v: str) -> str:
         return _sanitize(v)
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, values: list[str]) -> list[str]:
+        allowed = {"read", "write"}
+        normalized = list(dict.fromkeys(str(value).strip().lower() for value in values))
+        if not normalized or "read" not in normalized or not set(normalized).issubset(allowed):
+            raise ValueError("scopes must include read and may additionally include write")
+        return normalized
 
 
 class KnowledgeCreateRequest(BaseModel):
@@ -3823,12 +3834,13 @@ async def generate_api_key(
     try:
         workspace_id = resolve_plugin_workspace()
         from core.api_tokens import api_token_manager
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)).isoformat()
         result = await _async_wrap(
             api_token_manager.create_token,
             workspace_id,
             body.label,
-            ["read"],
-            None,
+            body.scopes,
+            expires_at,
         )
         await append_audit(
             audit_log, "api_key_created", f"key:{result['id']}", status_str="success",
@@ -3838,6 +3850,8 @@ async def generate_api_key(
             "token": result["token"],
             "label": result["name"],
             "permissions": result["permissions"],
+            "scopes": result["permissions"],
+            "expires_at": expires_at,
             "note": "Store this token securely. It will not be shown again.",
         }, 201)
     except RuntimeError as exc:
