@@ -116,9 +116,10 @@ def build_container() -> ServiceContainer:
         supabase = _resolve_supabase_safely(container)
         if supabase is not None:
             from services.supabase import _service_client, _anon_client
+            _wire_module_api_token_manager(supabase)
             logger.info(
                 "Supabase clients initialized at boot "
-                "(shim service=%s, shim anon=%s)",
+                "(shim service=%s, shim anon=%s, api_token_manager=persistent)",
                 "present" if _service_client else "None",
                 "present" if _anon_client else "None",
             )
@@ -1321,6 +1322,21 @@ def _register_observability(c: ServiceContainer, bindings: list[BindingMetadata]
 # ═══════════════════════════════════════════════════════════════════════════
 # SAFE RESOLVERS
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _wire_module_api_token_manager(client) -> None:
+    """Wire the module-level token manager used directly by API routes.
+
+    The DI factory also wires this singleton when resolved, but API routes
+    import the module singleton directly and do not resolve the DI binding.
+    Eager startup wiring keeps those two access paths on the same durable
+    Supabase client.
+    """
+    from core.api_tokens import api_token_manager
+
+    api_token_manager.set_supabase_client(client)
+
+
 
 def _resolve_supabase_safely(c: ServiceContainer):
     try:
