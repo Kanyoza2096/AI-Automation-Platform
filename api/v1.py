@@ -329,7 +329,7 @@ class RateLimitConfigRequest(BaseModel):
 
 class APIKeyGenerateRequest(BaseModel):
     label: str = Field(default="api-key", min_length=1, max_length=64)
-    permissions: list[str] = Field(default_factory=lambda: ["read"], min_length=1, max_length=2)
+    scopes: list[str] = Field(default_factory=lambda: ["read"], min_length=1, max_length=2)
     expires_in_days: int = Field(default=30, ge=1, le=365)
 
     @field_validator("label")
@@ -337,13 +337,13 @@ class APIKeyGenerateRequest(BaseModel):
     def sanitize_label(cls, v: str) -> str:
         return _sanitize(v)
 
-    @field_validator("permissions")
+    @field_validator("scopes")
     @classmethod
-    def validate_permissions(cls, values: list[str]) -> list[str]:
+    def validate_scopes(cls, values: list[str]) -> list[str]:
         allowed = {"read", "write"}
         normalized = list(dict.fromkeys(str(value).strip().lower() for value in values))
         if not normalized or "read" not in normalized or not set(normalized).issubset(allowed):
-            raise ValueError("permissions must include read and may additionally include write")
+            raise ValueError("scopes must include read and may additionally include write")
         return normalized
 
 
@@ -3839,7 +3839,7 @@ async def generate_api_key(
             api_token_manager.create_token,
             workspace_id,
             body.label,
-            body.permissions,
+            body.scopes,
             expires_at,
         )
         await append_audit(
@@ -3850,6 +3850,7 @@ async def generate_api_key(
             "token": result["token"],
             "label": result["name"],
             "permissions": result["permissions"],
+            "scopes": result["permissions"],
             "expires_at": expires_at,
             "note": "Store this token securely. It will not be shown again.",
         }, 201)
