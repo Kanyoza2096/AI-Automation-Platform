@@ -595,6 +595,24 @@ class LLMGateway:
             receipt_error = getattr(receipt, "error", None)
 
             if status == "succeeded" and raw_output.strip():
+                # A provider's transport-level success is not sufficient for
+                # structured output: a length-limited response is incomplete.
+                # Reject it here so the ordered policy can try the next route
+                # instead of returning a receipt that complete_structured()
+                # must reject after fallback has already been skipped.
+                normalized_finish = (finish_reason or "").strip().lower()
+                if (
+                    capability in ("structured_json", "structured")
+                    and normalized_finish in {"length", "max_tokens", "max_output_tokens"}
+                ):
+                    last_error = "structured_output_truncated"
+                    logger.warning(
+                        "AI fabric: %s returned truncated structured output "
+                        "(model=%s finish_reason=%s) — trying next route",
+                        provider_name, selected_model, finish_reason,
+                    )
+                    continue
+
                 latency = (time.monotonic() - start) * 1000
                 if len(attempted) > 1:
                     logger.warning(
