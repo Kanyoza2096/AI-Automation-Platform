@@ -249,11 +249,22 @@ class ImageGenerateRequest(BaseModel):
 
 class APIKeyGenerateRequest(BaseModel):
     label: str = Field(default="api-key", min_length=1, max_length=64)
+    scopes: list[str] = Field(default_factory=lambda: ["read"], min_length=1, max_length=2)
+    expires_in_days: int = Field(default=30, ge=1, le=365)
 
     @field_validator("label")
     @classmethod
     def sanitize_label(cls, v: str) -> str:
         return _sanitize(v)
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, values: list[str]) -> list[str]:
+        allowed = {"read", "write"}
+        normalized = list(dict.fromkeys(str(value).strip().lower() for value in values))
+        if not normalized or "read" not in normalized or not set(normalized).issubset(allowed):
+            raise ValueError("scopes must include read and may additionally include write")
+        return normalized
 
 
 # ═══════════════════════════════════════════════════════════════════════════
