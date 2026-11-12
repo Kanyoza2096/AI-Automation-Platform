@@ -37,7 +37,7 @@ class APITokenManager:
     """
 
     _PREFIX = "KDO_API_"
-    _LEGACY_PREFIXES = ("kny_",)
+    _LEGACY_PREFIXES = ("kny_", "kz_")
 
     def __init__(self, supabase_client=None, *, allow_in_memory: bool = False) -> None:
         self._db = supabase_client
