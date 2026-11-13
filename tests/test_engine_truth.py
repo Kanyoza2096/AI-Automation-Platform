@@ -86,6 +86,10 @@ def test_canonical_scheduler_identity_is_brand_scheduler():
     topology = SystemTopology()
     assert topology.nodes["brand_scheduler"].sector is Sector.CONTENT
     assert topology.nodes["brand_scheduler"].criticality == 3
+    from services.engine_health_handlers import NATIVE_HEALTH_ENGINES
+    assert "brand_scheduler" in NATIVE_HEALTH_ENGINES
+    assert "scheduler" not in NATIVE_HEALTH_ENGINES
+    assert "brand_scheduler" in MetaEngineV7.EXTERNAL_SERVICES
 
 
 def test_meta_engine_has_distinct_job_service_and_job_stats_nodes():
