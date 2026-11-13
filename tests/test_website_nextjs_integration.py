@@ -61,6 +61,24 @@ def test_registration_is_durable_and_uses_website_connector_account(monkeypatch)
     assert saved['account'].platform_config['status'] == 'draft'
 
 
+def test_website_social_account_identity_is_workspace_scoped(monkeypatch):
+    db = FakeDB()
+    saved = []
+    class Repo:
+        def __init__(self, client): pass
+        def save(self, account): saved.append(account); return account
+    monkeypatch.setattr('services.integrations.website_integration_service.SocialAccountRepository', Repo)
+    service = WebsiteIntegrationService(db)
+
+    service.register('ws-1', registration(), 'secret-one')
+    service.register('ws-2', registration(), 'secret-two')
+    service.register('ws-1', registration(), 'secret-one')
+
+    assert saved[0].id != saved[1].id
+    assert saved[0].id == saved[2].id
+    assert saved[0].id.startswith('website-')
+
+
 def test_event_is_idempotent_per_workspace_and_integration():
     db = FakeDB(); svc = WebsiteIntegrationService(db)
     # seed integration without invoking credential repository
