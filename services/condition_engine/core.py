@@ -1301,6 +1301,7 @@ class AutonomousConditionEngine:
             action=action or "observe", reason=decision.reason,
             confidence=decision.confidence, expected_value=expected,
             actual_value=actual_value, success=success, evaluated_at=utc_now(),
+            workspace_id=decision.evidence.get("workspace_id"),
         )
         self._decision_memory.append(memory)
         self._confidence_history[decision.brand_id].append({"confidence": decision.confidence, "success": success, "timestamp": utc_now()})
@@ -1447,7 +1448,25 @@ class AutonomousConditionEngine:
         if not self.supabase or not self.config.persist_decisions:
             return
         try:
-            self.supabase.table("autonomous_decisions").upsert({"id": decision.id, "brand_id": decision.brand_id, "state": decision.state.value, "confidence": decision.confidence, "reason": decision.reason, "recommended_action": decision.recommended_action, "risk": decision.risk.value, "requires_approval": decision.requires_approval, "evidence": decision.evidence, "created_at": decision.created_at.isoformat()}).execute()
+            decision_payload = {
+                "id": decision.id,
+                "state": decision.state.value,
+                "confidence": decision.confidence,
+                "reason": decision.reason,
+                "recommended_action": decision.recommended_action,
+                "risk": decision.risk.value,
+                "requires_approval": decision.requires_approval,
+                "evidence": decision.evidence,
+            }
+            self.supabase.table("autonomous_decisions").upsert(
+                {
+                    "workspace_id": decision.evidence.get("workspace_id"),
+                    "brand_id": decision.brand_id,
+                    "decision": decision_payload,
+                    "created_at": decision.created_at.isoformat(),
+                },
+                on_conflict="decision_key",
+            ).execute()
         except Exception as exc:
             logger.warning("Failed to persist decision: %s", exc)
     
@@ -1456,7 +1475,27 @@ class AutonomousConditionEngine:
         if not self.supabase or not self.config.persist_decisions:
             return
         try:
-            self.supabase.table("autonomous_decision_memory").upsert({"decision_id": memory.decision_id, "brand_id": memory.brand_id, "action": memory.action, "reason": memory.reason, "confidence": memory.confidence, "expected_value": memory.expected_value, "actual_value": memory.actual_value, "success": memory.success, "created_at": memory.created_at.isoformat(), "evaluated_at": memory.evaluated_at.isoformat() if memory.evaluated_at else None}).execute()
+            memory_payload = {
+                "decision_id": memory.decision_id,
+                "brand_id": memory.brand_id,
+                "action": memory.action,
+                "reason": memory.reason,
+                "confidence": memory.confidence,
+                "expected_value": memory.expected_value,
+                "actual_value": memory.actual_value,
+                "success": memory.success,
+                "created_at": memory.created_at.isoformat(),
+                "evaluated_at": memory.evaluated_at.isoformat() if memory.evaluated_at else None,
+            }
+            self.supabase.table("autonomous_decision_memory").upsert(
+                {
+                    "workspace_id": memory.workspace_id,
+                    "key": memory.action,
+                    "value": memory_payload,
+                    "updated_at": (memory.evaluated_at or memory.created_at).isoformat(),
+                },
+                on_conflict="memory_key",
+            ).execute()
         except Exception as exc:
             logger.warning("Failed to persist decision memory: %s", exc)
     
