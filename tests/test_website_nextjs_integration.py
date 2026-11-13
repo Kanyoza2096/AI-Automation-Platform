@@ -71,3 +71,27 @@ def test_event_is_idempotent_per_workspace_and_integration():
     assert first['accepted'] and not first['duplicate']
     assert second['accepted'] and second['duplicate']
     assert len(db.rows['website_integration_events']) == 1
+
+
+def test_event_type_must_be_enabled_for_integration():
+    db = FakeDB()
+    db.rows['website_integrations'] = [{
+        'workspace_id': 'ws-1', 'integration_id': 'site-demo', 'app_name': 'Demo',
+        'environment': 'production', 'status': 'configured', 'capabilities': [],
+        'event_types': ['article.published'],
+    }]
+    svc = WebsiteIntegrationService(db)
+    assert svc.event_type_is_registered('ws-1', 'site-demo', 'article.published')
+    assert not svc.event_type_is_registered('ws-1', 'site-demo', 'project.created')
+
+
+def test_growthbridge_domain_events_are_part_of_website_contract():
+    from contracts.website_integration import WebsiteEventType
+    expected = {
+        'project.created', 'project.updated', 'project.deleted',
+        'service.created', 'service.updated', 'blog.created', 'blog.published',
+        'application.created', 'application.updated', 'contact.submitted',
+        'partnership.requested', 'talent.profile.created', 'testimonial.created',
+        'settings.updated',
+    }
+    assert expected.issubset({item.value for item in WebsiteEventType})
