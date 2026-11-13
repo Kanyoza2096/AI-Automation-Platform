@@ -7,11 +7,13 @@ ALTER TABLE public.autonomous_decisions
     GENERATED ALWAYS AS (decision ->> 'id') STORED;
 
 CREATE UNIQUE INDEX IF NOT EXISTS autonomous_decisions_decision_key_uidx
-    ON public.autonomous_decisions (decision_key);
+    ON public.autonomous_decisions (decision_key)
+    WHERE decision_key IS NOT NULL;
 
 ALTER TABLE public.autonomous_decision_memory
     ADD COLUMN IF NOT EXISTS memory_key TEXT
     GENERATED ALWAYS AS (value ->> 'decision_id') STORED;
 
 CREATE UNIQUE INDEX IF NOT EXISTS autonomous_decision_memory_memory_key_uidx
-    ON public.autonomous_decision_memory (memory_key);
+    ON public.autonomous_decision_memory (memory_key)
+    WHERE memory_key IS NOT NULL;
