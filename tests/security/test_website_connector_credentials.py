@@ -36,6 +36,13 @@ def test_dedicated_issuer_creates_single_integration_write_credential():
     assert record["resource_constraints"] == {"integration_id": "site-a"}
 
 
+def test_dedicated_connector_token_revocation_invalidates_authentication():
+    manager = APITokenManager(allow_in_memory=True)
+    result = manager.create_website_connector_token("ws-1", "site-a")
+    assert manager.revoke_token(result["id"], "ws-1") is True
+    assert manager.validate_token(result["token"]) is None
+
+
 def test_website_connector_auth_accepts_only_matching_integration(monkeypatch):
     record = {
         "id": "tok-1",
