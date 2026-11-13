@@ -43,6 +43,24 @@ CANONICAL_ENGINE_DEPENDENCIES: Dict[str, Tuple[str, ...]] = {
     "autonomous_loop": ("meta_engine", "director", "condition_engine", "autonomous_content", "event_bus"),
 }
 
+# Stable, platform-owned capability declarations. Runtime readiness is always
+# derived from the owning service observation and its dependency graph; these
+# identifiers describe what a service provides, not whether it is currently ready.
+CANONICAL_ENGINE_CAPABILITIES: Dict[str, Tuple[str, ...]] = {
+    "event_bus": ("event_transport", "event_replay"),
+    "task_queue": ("async_task_execution",),
+    "job_service": ("job_lifecycle_management",),
+    "job_stats_service": ("job_metrics",),
+    "ai_orchestrator": ("ai_task_orchestration",),
+    "content_engine": ("content_generation",),
+    "condition_engine": ("condition_analysis", "decision_recommendation"),
+    "director": ("strategic_planning", "platform_coordination"),
+    "meta_engine": ("service_supervision", "health_assessment"),
+    "health_monitor": ("health_observation", "platform_state_publication"),
+    "brand_scheduler": ("brand_schedule_execution",),
+    "autonomous_loop": ("autonomous_coordination",),
+}
+
 
 def dependency_pairs() -> tuple[tuple[str, tuple[str, ...]], ...]:
     """Return immutable dependency declarations for consumers."""

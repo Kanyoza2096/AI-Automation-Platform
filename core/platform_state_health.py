@@ -10,7 +10,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from core.engine_topology import CANONICAL_ENGINE_DEPENDENCIES
+from core.engine_topology import (
+    CANONICAL_ENGINE_CAPABILITIES,
+    CANONICAL_ENGINE_DEPENDENCIES,
+)
 from core.platform_state import (
     EvidenceRef,
     ObserverObservation,
@@ -112,6 +115,7 @@ def build_platform_state_from_health_reports(
             service_id=service_id,
             owner=manifest_metadata[service_id][0],
             dependencies=tuple(required),
+            capabilities=CANONICAL_ENGINE_CAPABILITIES.get(service_id, ()),
             critical=manifest_metadata[service_id][1],
         )
         for service_id, required in dependencies.items()
