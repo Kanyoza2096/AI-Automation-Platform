@@ -191,12 +191,6 @@ def _resolve_image_engine(container):
 define_service("image_engine", _resolve_image_engine, critical=False)
 
 
-def _resolve_topic_selector(container):
-    from domain.content.topic_selector import topic_selector
-    return topic_selector
-
-define_service("topic_selector", _resolve_topic_selector, critical=False)
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REGISTRATION FUNCTION
