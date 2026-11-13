@@ -2235,8 +2235,9 @@ class _JobServiceHealthProvider:
                 if asyncio.iscoroutine(result):
                     result = await result
                 if isinstance(result, dict):
-                    status = str(result.get("status", "healthy")).lower()
-                    if status in ("healthy", "ok", "nominal", "ready"):
+                    raw_status = result.get("status", "unknown")
+                    status = str(getattr(raw_status, "value", raw_status)).strip().lower()
+                    if status in ("healthy", "ok", "nominal", "ready", "running"):
                         health_status = HealthStatus.HEALTHY
                     elif status in ("unknown", "not_configured", "starting"):
                         health_status = HealthStatus.UNKNOWN
@@ -2249,10 +2250,15 @@ class _JobServiceHealthProvider:
                         self.service_name,
                         metadata=result,
                     )
+                return HealthReport(
+                    HealthStatus.UNKNOWN,
+                    self.service_name,
+                    metadata={"status": "unknown", "reason": "unrecognized_health_payload"},
+                )
             return HealthReport(
-                HealthStatus.HEALTHY,
+                HealthStatus.UNKNOWN,
                 self.service_name,
-                metadata={"status": "running"},
+                metadata={"status": "unknown", "reason": "health_check_unavailable"},
             )
         except Exception as exc:
             return HealthReport(
