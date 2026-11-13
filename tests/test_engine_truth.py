@@ -9,6 +9,12 @@ from services.meta_engine import MetaEngineV7
 def test_brand_scoped_topic_selector_is_not_a_platform_service():
     assert "topic_selector" not in CANONICAL_ENGINE_DEPENDENCIES
     assert "topic_selector" not in CANONICAL_ENGINE_DEPENDENCIES["content_engine"]
+    from core.service_definitions import SERVICE_DEFINITIONS
+    assert "topic_selector" not in {name for name, _resolver, _critical in SERVICE_DEFINITIONS}
+    from services.engine_health_handlers import HEALTH_HANDLERS
+    assert "topic_selector" not in HEALTH_HANDLERS
+    from services.director import ENGINE_REGISTRY
+    assert not any(row[2] == "topic_selector" for row in ENGINE_REGISTRY)
 
 
 def test_meta_graph_matches_canonical_topology():
