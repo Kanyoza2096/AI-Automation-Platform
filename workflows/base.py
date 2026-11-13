@@ -256,12 +256,38 @@ class Step:
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000
             logger.error("Step '%s' failed: %s", self.name, exc, exc_info=True)
+
+            raw_code = getattr(exc, "code", None)
+            error_code = getattr(raw_code, "value", raw_code) or "unexpected_exception"
+            raw_context = getattr(exc, "context", None)
+            safe_keys = {
+                "topic", "validation_status", "semantic_review_status",
+                "semantic_review_reason", "semantic_review_request_id",
+                "errors", "brand_id", "platform", "provider", "model",
+            }
+            safe_context = {}
+            if isinstance(raw_context, dict):
+                for key in safe_keys:
+                    value = raw_context.get(key)
+                    if isinstance(value, str):
+                        safe_context[key] = value[:1000]
+                    elif isinstance(value, (int, float, bool)) or value is None:
+                        if key in raw_context:
+                            safe_context[key] = value
+                    elif key == "errors" and isinstance(value, list):
+                        safe_context[key] = [
+                            str(item)[:500] for item in value[:20]
+                        ]
+
+            detail = {"exception_type": type(exc).__name__}
+            if safe_context:
+                detail["context"] = safe_context
             return StepResult(
                 step_name=self.name,
                 status=StepStatus.FAILED,
-                error=str(exc),
-                error_code="unexpected_exception",
-                error_detail={"exception_type": type(exc).__name__},
+                error=str(getattr(exc, "message", None) or exc)[:2000],
+                error_code=str(error_code),
+                error_detail=detail,
                 latency_ms=latency,
             )
 
