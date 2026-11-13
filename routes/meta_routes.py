@@ -4,9 +4,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 logger = logging.getLogger("kanyoza.routes.meta")
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 
-router = APIRouter(prefix="/api/v1/meta", tags=["meta"], dependencies=[Depends(require_species_privileges)])
+router = APIRouter(prefix="/api/v1/meta", tags=["meta"], dependencies=[Depends(require_platform_or_species_privileges)])
 
 _incidents: list = []
 _snapshots: list = []
