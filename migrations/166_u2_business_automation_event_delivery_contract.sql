@@ -7,6 +7,15 @@
 --
 -- Claim ownership is a per-batch token stored in claimed_by. Workspace identity
 -- is derived from the joined event row, never supplied by the consumer.
+-- Failed acknowledgements are delayed explicitly because claimed_by/claimed_at
+-- must be cleared together to satisfy the delivery table's consistency check.
+
+ALTER TABLE public.event_deliveries
+    ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS event_deliveries_claim_idx
+    ON public.event_deliveries (consumer_group, available_at, created_at)
+    WHERE processed IS FALSE;
 
 CREATE OR REPLACE FUNCTION public.claim_business_automation_event_deliveries(
     p_consumer_group TEXT,
@@ -42,6 +51,7 @@ BEGIN
           ON e.id = d.event_id
         WHERE d.consumer_group = p_consumer_group
           AND d.processed IS FALSE
+          AND (d.available_at IS NULL OR d.available_at <= NOW())
           AND (
               d.claimed_at IS NULL
               OR d.claimed_at < NOW() - make_interval(secs => v_lease)
@@ -82,6 +92,65 @@ REVOKE ALL ON FUNCTION public.claim_business_automation_event_deliveries(TEXT, I
 GRANT EXECUTE ON FUNCTION public.claim_business_automation_event_deliveries(TEXT, INTEGER, INTEGER)
     TO service_role;
 
+-- Clear both claim columns together (required by the table's CHECK
+-- constraint). Failed work receives a two-minute retry delay; a worker that
+-- disappears without acknowledging remains reclaimable after its claim lease.
+CREATE OR REPLACE FUNCTION public.complete_business_automation_event_delivery(
+    p_delivery_id UUID,
+    p_workspace_id TEXT,
+    p_consumer_group TEXT,
+    p_claim_token TEXT,
+    p_success BOOLEAN,
+    p_error TEXT DEFAULT ''
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $
+DECLARE
+    v_updated INTEGER;
+BEGIN
+    IF p_workspace_id IS NULL OR length(trim(p_workspace_id)) = 0 THEN
+        RAISE EXCEPTION 'workspace_id is required';
+    END IF;
+    IF p_consumer_group IS NULL OR length(trim(p_consumer_group)) = 0 THEN
+        RAISE EXCEPTION 'consumer_group is required';
+    END IF;
+    IF p_claim_token IS NULL OR length(trim(p_claim_token)) = 0 THEN
+        RAISE EXCEPTION 'claim_token is required';
+    END IF;
+
+    UPDATE public.event_deliveries AS d
+    SET processed = p_success,
+        processed_at = CASE WHEN p_success THEN NOW() ELSE NULL END,
+        processing_error = NULLIF(LEFT(COALESCE(p_error, ''), 1000), ''),
+        claimed_by = NULL,
+        claimed_at = NULL,
+        available_at = CASE
+            WHEN p_success THEN NULL
+            ELSE NOW() + INTERVAL '2 minutes'
+        END
+    WHERE d.id = p_delivery_id
+      AND d.consumer_group = p_consumer_group
+      AND d.claimed_by = p_claim_token
+      AND EXISTS (
+          SELECT 1
+          FROM public.events AS e
+          WHERE e.id = d.event_id
+            AND e.workspace_id = p_workspace_id
+      );
+
+    GET DIAGNOSTICS v_updated = ROW_COUNT;
+    RETURN v_updated > 0;
+END;
+$;
+
+REVOKE ALL ON FUNCTION public.complete_business_automation_event_delivery(UUID, TEXT, TEXT, TEXT, BOOLEAN, TEXT)
+    FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.complete_business_automation_event_delivery(UUID, TEXT, TEXT, TEXT, BOOLEAN, TEXT)
+    TO service_role;
+
 -- Readiness is an end-to-end contract check, not merely proof that a trigger
 -- exists. It stays false unless the trigger, claim RPC and workspace-fenced
 -- completion RPC all target the same events/event_deliveries queue.
@@ -119,6 +188,7 @@ AS $$
               AND p.prosrc LIKE '%public.event_deliveries%'
               AND p.prosrc LIKE '%public.events%'
               AND p.prosrc NOT LIKE '%business_event_deliveries%'
+              AND p.prosrc LIKE '%available_at%'
         )
         AND EXISTS (
             SELECT 1
@@ -132,6 +202,7 @@ AS $$
               AND p.prosrc LIKE '%public.event_deliveries%'
               AND p.prosrc LIKE '%public.events%'
               AND p.prosrc LIKE '%p_claim_token%'
+              AND p.prosrc LIKE '%available_at%'
         );
 $$;
 
