@@ -13,6 +13,7 @@ class Port:
     def get(self, workspace_id, integration_id): return self.integrations.get((workspace_id,integration_id))
     def register(self, workspace_id, registration, website_api_token=""): return {"workspace_id":workspace_id,"integration_id":registration.integration_id}
     def event_is_registered(self, workspace_id, integration_id): return (workspace_id,integration_id) in self.integrations
+    def event_type_is_registered(self, workspace_id, integration_id, event_type): return event_type == "article.published" and (workspace_id,integration_id) in self.integrations
     def record_event(self, workspace_id, envelope): self.events.append((workspace_id,envelope.event_id)); return {"accepted":True,"duplicate":False,"event_id":envelope.event_id}
 
 
@@ -52,3 +53,18 @@ def test_website_route_does_not_construct_infrastructure():
     assert "services.integrations" not in source
     assert "services.supabase" not in source
     assert "core.unified_bus" not in source
+
+
+def test_application_service_rejects_event_type_not_enabled_for_integration():
+    port = Port()
+    svc = WebsiteIntegrationApplicationService(port)
+    envelope = WebsiteEventEnvelope(
+        integration_id="site-1", event_id="evt-12345680",
+        event_type=WebsiteEventType.ARTICLE_CREATED, payload={"id": "p2"},
+    )
+    try:
+        asyncio.run(svc.receive_event(WebsiteIntegrationContext("ws-1"), "site-1", envelope))
+    except ValueError as exc:
+        assert "not enabled" in str(exc)
+    else:
+        raise AssertionError("unregistered event type accepted")

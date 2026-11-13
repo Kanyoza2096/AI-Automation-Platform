@@ -259,7 +259,7 @@ class BusinessAutomationEventBridge:
             return
 
         event = dict(payload)
-        event_id = str(envelope.get("event_id") or event.get("event_id") or "").strip()
+        event_id = str(event.get("event_id") or envelope.get("event_id") or "").strip()
         # Never admit an event without a durable identity; Business Automation
         # uses event_id as its replay fence. Missing identity is rejected rather
         # than converted into a shared `missing` idempotency key.

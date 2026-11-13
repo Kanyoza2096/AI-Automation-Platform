@@ -20,6 +20,7 @@ class WebsiteIntegrationPort(Protocol):
     def get(self, workspace_id: str, integration_id: str) -> Any: ...
     def list(self, workspace_id: str) -> list[Any]: ...
     def event_is_registered(self, workspace_id: str, integration_id: str) -> bool: ...
+    def event_type_is_registered(self, workspace_id: str, integration_id: str, event_type: str) -> bool: ...
     def record_event(self, workspace_id: str, envelope: WebsiteEventEnvelope) -> Mapping[str, Any]: ...
 
 
@@ -61,8 +62,10 @@ class WebsiteIntegrationApplicationService:
             raise ValueError("integration_id mismatch")
         if not self._port.event_is_registered(workspace_id, integration_id):
             raise LookupError("Website integration not found")
+        if not self._port.event_type_is_registered(workspace_id, integration_id, envelope.event_type.value):
+            raise ValueError("event_type is not enabled for this website integration")
         result = self._port.record_event(workspace_id, envelope)
-        if self._event_publisher is not None and not result.get("duplicate"):
+        if self._event_publisher is not None:
             await self._event_publisher.publish(
                 f"website.integration.{envelope.event_type.value}",
                 payload={"integration_id": integration_id, "event_id": envelope.event_id, "payload": envelope.payload},

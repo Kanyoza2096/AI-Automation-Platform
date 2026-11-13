@@ -39,13 +39,16 @@ def website_integration_application(request: Any) -> WebsiteIntegrationApplicati
     class _BusPublisher:
         async def publish(self, event_type, *, payload, source, workspace_id):
             bus = await get_unified_bus()
-            if bus is not None:
-                await bus.publish(
-                    event_type,
-                    payload=payload,
-                    source=source,
-                    workspace_id=workspace_id,
-                )
+            if bus is None:
+                raise RuntimeError("Unified Event Bus is unavailable")
+            published_id = await bus.publish(
+                event_type,
+                payload=payload,
+                source=source,
+                workspace_id=workspace_id,
+            )
+            if not published_id:
+                raise RuntimeError("Unified Event Bus did not accept the website integration event")
 
     return WebsiteIntegrationApplicationService(
         WebsiteIntegrationService(client),

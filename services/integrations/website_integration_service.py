@@ -7,8 +7,6 @@ existing Action Kernel/outbox path.
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +15,7 @@ from models.social_account import SocialAccount, Platform
 from repositories.social_account_repository import SocialAccountRepository
 
 from contracts.website_integration import (
+    WebsiteCapability,
     WebsiteEventEnvelope,
     WebsiteIntegrationReadModel,
     WebsiteIntegrationRegistration,
@@ -58,12 +57,16 @@ class WebsiteIntegrationService:
         }
         if not website_api_token:
             raise ValueError("website_api_token is required to configure the Website Connector")
+        required_capability = WebsiteCapability.PUBLISH_ARTICLE if registration.publish_status == "publish" else WebsiteCapability.CREATE_DRAFT
+        if required_capability not in registration.capabilities:
+            raise ValueError(f"publish_status '{registration.publish_status}' requires capability '{required_capability.value}'")
         result = self.db.table(self.TABLE).upsert(row, on_conflict="workspace_id,integration_id").execute()
         # The existing WebsiteConnector is the only website mutation adapter.
         # Registration therefore creates/updates its canonical website account
         # rather than introducing a second executor.
+        account_id = self._website_account_id(workspace_id, registration.integration_id)
         account = SocialAccount(
-            id=f"website-{registration.integration_id}",
+            id=account_id,
             workspace_id=workspace_id,
             platform=Platform.WEBSITE,
             platform_account_id=registration.integration_id,
@@ -77,6 +80,7 @@ class WebsiteIntegrationService:
                 "delete_path_template": registration.delete_path_template,
                 "integration_id": registration.integration_id,
                 "environment": registration.environment,
+                "status": registration.publish_status,
             },
             enabled=True,
         )
@@ -96,6 +100,10 @@ class WebsiteIntegrationService:
 
     def event_is_registered(self, workspace_id: str, integration_id: str) -> bool:
         return self.get(workspace_id, integration_id) is not None
+
+    def event_type_is_registered(self, workspace_id: str, integration_id: str, event_type: str) -> bool:
+        integration = self.get(workspace_id, integration_id)
+        return integration is not None and event_type in {item.value for item in integration.event_types}
 
     def record_event(self, workspace_id: str, envelope: WebsiteEventEnvelope) -> dict[str, Any]:
         integration = self.get(workspace_id, envelope.integration_id)
@@ -137,6 +145,17 @@ class WebsiteIntegrationService:
             last_health_at=row.get("last_health_at"),
             last_health_ok=row.get("last_health_ok"),
         )
+
+    @staticmethod
+    def _website_account_id(workspace_id: str, integration_id: str) -> str:
+        """Return a deterministic account ID scoped to the owning workspace.
+
+        Website integration IDs are unique only within a workspace, while
+        social_accounts.id is globally unique. Hash both identifiers so two
+        tenants can safely register the same integration_id without colliding.
+        """
+        identity = f"{workspace_id}:{integration_id}".encode("utf-8")
+        return f"website-{hashlib.sha256(identity).hexdigest()[:32]}"
 
     @staticmethod
     def _hash_secret(secret: str) -> str:
