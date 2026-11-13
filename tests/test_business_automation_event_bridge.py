@@ -144,3 +144,38 @@ def test_event_bridge_rejects_missing_event_identity():
         assert bridge.stats()["errors"] == 1
         await bridge.unwire()
     asyncio.run(run())
+
+
+def test_website_integration_retry_uses_source_event_id_for_replay_fence():
+    async def run():
+        engine = BusinessAutomationEngine()
+        await engine.create_rule("ws1", {
+            "name": "GrowthBridge blog trigger",
+            "condition": {"field": "payload.resource_type", "op": "eq", "value": "blog"},
+            "action": "log",
+            "parameters": {"trigger_events": ["website.integration.blog.published"]},
+        })
+        class FakeBus:
+            async def subscribe_all(self, handler):
+                self.handler = handler
+                return lambda: None
+        bus = FakeBus()
+        bridge = BusinessAutomationEventBridge(engine, bus)
+        await bridge.wire()
+        for bus_event_id in ("bus-delivery-1", "bus-delivery-2"):
+            await bus.handler({
+                "event_name": "website.integration.blog.published",
+                "event_id": bus_event_id,
+                "source": "nextjs-website-integration",
+                "workspace_id": "ws1",
+                "payload": {
+                    "integration_id": "growthbridge",
+                    "event_id": "growthbridge-event-123456",
+                    "payload": {"resource_type": "blog", "resource_id": "post-1"},
+                },
+            })
+        history = await engine.history("ws1")
+        assert len(history) == 1
+        assert ":website.integration.blog.published:growthbridge-event-123456:1" in history[0].idempotency_key
+        await bridge.unwire()
+    asyncio.run(run())
