@@ -113,6 +113,31 @@ class WorkflowResult:
                 return s
         return None
 
+    def failure_evidence(self) -> dict[str, Any]:
+        """Return a compact, JSON-safe diagnostic envelope for failed runs."""
+        failed = [
+            {
+                "step": step.step_name,
+                "error": (step.error or "")[:2000],
+                "error_code": step.error_code or "unknown",
+                "detail": step.error_detail or {},
+                "latency_ms": round(step.latency_ms),
+            }
+            for step in self.steps
+            if step.status == StepStatus.FAILED
+        ]
+        return {
+            "schema_version": 1,
+            "workflow_name": self.workflow_name,
+            "duration_ms": round(self.total_ms),
+            "failed_steps": failed,
+            "completed_steps": [
+                step.step_name
+                for step in self.steps
+                if step.status == StepStatus.SUCCESS
+            ],
+        }
+
 
 class Step:
     """A single stage in a Workflow. Override *run* to implement the logic."""
@@ -162,12 +187,42 @@ class Step:
         except Exception as exc:
             latency = (time.monotonic() - start) * 1000
             logger.error("Step '%s' failed: %s", self.name, exc, exc_info=True)
+
+            # Preserve governed application-error identity and a deliberately
+            # small diagnostic context. Previously AIValidationError and other
+            # KanyozaError subclasses were flattened to unexpected_exception,
+            # losing the reason that a workflow gate rejected an operation.
+            raw_code = getattr(exc, "code", None)
+            error_code = getattr(raw_code, "value", raw_code) or "unexpected_exception"
+            raw_context = getattr(exc, "context", None)
+            safe_keys = {
+                "topic", "validation_status", "semantic_review_status",
+                "semantic_review_reason", "semantic_review_request_id",
+                "errors", "brand_id", "platform", "provider", "model",
+            }
+            safe_context = {}
+            if isinstance(raw_context, dict):
+                for key in safe_keys:
+                    value = raw_context.get(key)
+                    if isinstance(value, str):
+                        safe_context[key] = value[:1000]
+                    elif isinstance(value, (int, float, bool)) or value is None:
+                        if key in raw_context:
+                            safe_context[key] = value
+                    elif key == "errors" and isinstance(value, list):
+                        safe_context[key] = [
+                            str(item)[:500] for item in value[:20]
+                        ]
+
+            detail = {"exception_type": type(exc).__name__}
+            if safe_context:
+                detail["context"] = safe_context
             return StepResult(
                 step_name=self.name,
                 status=StepStatus.FAILED,
-                error=str(exc),
-                error_code="unexpected_exception",
-                error_detail={"exception_type": type(exc).__name__},
+                error=str(getattr(exc, "message", None) or exc)[:2000],
+                error_code=str(error_code),
+                error_detail=detail,
                 latency_ms=latency,
             )
 
