@@ -5,6 +5,7 @@ import pytest
 
 from contracts.website_integration import WebsiteCapability, WebsiteEventEnvelope, WebsiteEventType, WebsiteIntegrationRegistration
 from services.integrations.website_integration_service import WebsiteIntegrationService
+from application.website_integrations import WebsiteIntegrationApplicationService, WebsiteIntegrationContext
 
 
 class FakeTable:
@@ -95,3 +96,32 @@ def test_growthbridge_domain_events_are_part_of_website_contract():
         'settings.updated',
     }
     assert expected.issubset({item.value for item in WebsiteEventType})
+
+
+def test_duplicate_inbound_event_retries_fanout_with_stable_event_identity():
+    class Publisher:
+        def __init__(self): self.events = []
+        async def publish(self, event_type, *, payload, source, workspace_id):
+            self.events.append((event_type, payload, source, workspace_id))
+
+    async def run():
+        db = FakeDB()
+        db.rows['website_integrations'] = [{
+            'workspace_id': 'ws-1', 'integration_id': 'site-demo', 'app_name': 'Demo',
+            'environment': 'production', 'status': 'configured', 'capabilities': [],
+            'event_types': ['blog.published'],
+        }]
+        publisher = Publisher()
+        service = WebsiteIntegrationApplicationService(WebsiteIntegrationService(db), publisher)
+        event = WebsiteEventEnvelope(
+            integration_id='site-demo', event_id='evt-growthbridge-0001',
+            event_type=WebsiteEventType.BLOG_PUBLISHED, payload={'resource_id': 'post-1'},
+        )
+        first = await service.receive_event(WebsiteIntegrationContext('ws-1'), 'site-demo', event)
+        retry = await service.receive_event(WebsiteIntegrationContext('ws-1'), 'site-demo', event)
+        assert first['duplicate'] is False
+        assert retry['duplicate'] is True
+        assert len(publisher.events) == 2
+        assert publisher.events[0][1]['event_id'] == publisher.events[1][1]['event_id'] == 'evt-growthbridge-0001'
+
+    asyncio.run(run())
