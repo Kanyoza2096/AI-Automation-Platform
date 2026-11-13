@@ -91,6 +91,8 @@ class AuthIdentity:
     is_species: bool = False  # True for master token or python service token
     platform_role: str = ""  # Separate human platform authority; never inferred from workspace role
     platform_permissions: List[str] = field(default_factory=list)
+    credential_purpose: str = "workspace_api"
+    resource_constraints: dict = field(default_factory=dict)
     error: str = ""
 
     def has_permission(self, permission: str) -> bool:
@@ -295,6 +297,10 @@ class SpeciesAuth:
 
             record = api_token_manager.validate_token(token)
             if record:
+                purpose = record.get("credential_purpose") or "workspace_api"
+                constraints = record.get("resource_constraints") or {}
+                if purpose != "workspace_api" or not isinstance(constraints, dict):
+                    return AuthIdentity(valid=False, error="Credential purpose is not enabled for this endpoint")
                 workspace_id = record.get("workspace_id") or record.get("tenant_id")
                 if not workspace_id:
                     return AuthIdentity(valid=False, error="Workspace token has no workspace scope")
@@ -315,6 +321,8 @@ class SpeciesAuth:
                     permissions=permissions,
                     name=record.get("name") or "Scoped Token",
                     is_species=False,
+                    credential_purpose=purpose,
+                    resource_constraints=constraints,
                 )
         except Exception as exc:
             logger.debug("api_token_manager validate failed: %s", exc)
@@ -344,6 +352,10 @@ class SpeciesAuth:
             logger.warning("Canonical api_tokens lookup failed: %s", exc)
 
         if found and not found.get("revoked", False):
+            purpose = found.get("credential_purpose") or "workspace_api"
+            constraints = found.get("resource_constraints") or {}
+            if purpose != "workspace_api" or not isinstance(constraints, dict):
+                return AuthIdentity(valid=False, error="Credential purpose is not enabled for this endpoint")
             expires = found.get("expires_at")
             if expires:
                 try:
@@ -365,6 +377,8 @@ class SpeciesAuth:
                 permissions=permissions,
                 name=found.get("name") or "Scoped Token",
                 is_species=False,
+                credential_purpose=purpose,
+                resource_constraints=constraints,
             )
 
         # Legacy api_keys table — OFF unless explicitly enabled.
