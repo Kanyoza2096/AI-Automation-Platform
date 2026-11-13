@@ -18,6 +18,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("kanyoza.routes.cp_surface")
@@ -25,6 +26,11 @@ router = APIRouter(prefix="/api/v1", tags=["cp-surface"])
 
 # In-process guardian blocklist (species-level operational control)
 _blocklist: set[str] = set()
+
+
+def _container_dep():
+    from api.dependencies import get_container
+    return get_container
 
 
 def _auth_dep():
@@ -202,54 +208,141 @@ async def reflex_triggers():
 
 # ── Condition surfaces ──────────────────────────────────────────────────────
 
+async def _workspace_brand_ids(request: Request, container: Any) -> set[str]:
+    """Resolve the authenticated workspace's brands before exposing engine records."""
+    workspace_id = _workspace_id(request)
+    if container is None:
+        raise LookupError("workspace repository container unavailable")
+
+    from api.dependencies import require_workspace_ownership
+    from api.v1_helpers import _async_wrap
+    from repositories.brand_repository import BrandRepository
+
+    await require_workspace_ownership("workspace", workspace_id, request, container)
+    repository = await _async_wrap(container.resolve, BrandRepository)
+    brands = await _async_wrap(repository.find_by_workspace, workspace_id)
+    brand_ids = {
+        str((brand.get("id") if isinstance(brand, dict) else getattr(brand, "id", "")) or "").strip()
+        for brand in brands
+    }
+    brand_ids.discard("")
+    return brand_ids
+
+
+def _filter_workspace_condition_records(
+    records: List[Dict[str, Any]],
+    brand_ids: set[str],
+    collection_name: str,
+) -> List[Dict[str, Any]]:
+    """Fail closed if a record cannot be tied to a workspace-owned brand."""
+    if any(not str(record.get("brand_id") or "").strip() for record in records):
+        raise ValueError(f"{collection_name} contains an unscoped record")
+    return [record for record in records if str(record["brand_id"]) in brand_ids]
+
+
+def _condition_records(engine: Any, method_name: str, attribute_name: str) -> List[Dict[str, Any]]:
+    """Serialize the engine's actual keyed/list state without inventing empty data."""
+    provider = getattr(engine, method_name, None)
+    raw = provider() if callable(provider) else getattr(engine, attribute_name, None)
+    if raw is None:
+        raise LookupError(f"{attribute_name} provider unavailable")
+
+    if isinstance(raw, dict):
+        entries = list(raw.items())
+    elif isinstance(raw, (list, tuple)):
+        entries = [(None, item) for item in raw]
+    else:
+        raise TypeError(f"{attribute_name} has an unsupported collection shape")
+
+    records: List[Dict[str, Any]] = []
+    for key, item in entries:
+        record = jsonable_encoder(item)
+        if not isinstance(record, dict):
+            raise TypeError(f"{attribute_name} contains a non-record value")
+        if record.get("id") is None:
+            if isinstance(key, tuple) and key:
+                record["id"] = ":".join(str(part) for part in key)
+                record.setdefault("brand_id", str(key[0]))
+            elif key is not None:
+                record["id"] = str(key)
+            elif isinstance(record.get("metric"), str) and record["metric"].strip():
+                record["id"] = record["metric"]
+            else:
+                raise ValueError(f"{attribute_name} contains a record without a stable identifier")
+        records.append(record)
+    return records
+
+
 @router.get("/condition/baselines", dependencies=[Depends(_auth_dep())])
-async def condition_baselines(request: Request):
+async def condition_baselines(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
-        engine = autonomous_engine
-        baselines = []
-        if hasattr(engine, "get_baselines"):
-            baselines = engine.get_baselines() or []
-        elif hasattr(engine, "_baselines"):
-            raw = getattr(engine, "_baselines", {}) or {}
-            if isinstance(raw, dict):
-                baselines = [{"id": k, **(v if isinstance(v, dict) else {"value": v})} for k, v in raw.items()]
-            else:
-                baselines = list(raw)
+        brand_ids = await _workspace_brand_ids(request, container)
+        baselines = _condition_records(autonomous_engine, "get_baselines", "_baselines")
+        baselines = _filter_workspace_condition_records(baselines, brand_ids, "baselines")
         return {"ok": True, "baselines": baselines, "count": len(baselines), "source": "condition_engine"}
     except Exception as exc:
-        return {"ok": True, "baselines": [], "count": 0, "source": "none", "message": type(exc).__name__}
+        logger.warning("condition baselines unavailable: %s", type(exc).__name__)
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "baselines": [],
+            "count": 0,
+            "source": "error",
+            "error": type(exc).__name__,
+            "message": "Condition baseline evidence is unavailable.",
+        }
 
 
 @router.get("/condition/experiments", dependencies=[Depends(_auth_dep())])
-async def condition_experiments():
+async def condition_experiments(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
-        engine = autonomous_engine
-        experiments = []
-        if hasattr(engine, "get_experiments"):
-            experiments = engine.get_experiments() or []
-        elif hasattr(engine, "_experiments"):
-            experiments = list(getattr(engine, "_experiments", []) or [])
+        brand_ids = await _workspace_brand_ids(request, container)
+        experiments = _condition_records(autonomous_engine, "get_experiments", "_experiments")
+        experiments = _filter_workspace_condition_records(experiments, brand_ids, "experiments")
         return {"ok": True, "experiments": experiments, "count": len(experiments), "source": "condition_engine"}
     except Exception as exc:
-        return {"ok": True, "experiments": [], "count": 0, "source": "none", "message": type(exc).__name__}
+        logger.warning("condition experiments unavailable: %s", type(exc).__name__)
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "experiments": [],
+            "count": 0,
+            "source": "error",
+            "error": type(exc).__name__,
+            "message": "Condition experiment evidence is unavailable.",
+        }
 
 
 @router.get("/condition/decisions", dependencies=[Depends(_auth_dep())])
-async def condition_decisions():
+async def condition_decisions(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
-        engine = autonomous_engine
-        decisions = []
-        if hasattr(engine, "get_decisions"):
-            decisions = engine.get_decisions() or []
-        elif hasattr(engine, "_decision_history"):
-            decisions = list(getattr(engine, "_decision_history", []) or [])[-50:]
-        status = engine.get_status() if hasattr(engine, "get_status") else {}
-        return {"ok": True, "decisions": decisions, "count": len(decisions), "status": status, "source": "condition_engine"}
+        brand_ids = await _workspace_brand_ids(request, container)
+        decisions = _condition_records(autonomous_engine, "get_decisions", "_decisions")
+        decisions = _filter_workspace_condition_records(decisions, brand_ids, "decisions")
+        return {
+            "ok": True,
+            "decisions": decisions,
+            "count": len(decisions),
+            "status": {
+                "workspace_brand_count": len(brand_ids),
+                "workspace_decision_count": len(decisions),
+            },
+            "source": "condition_engine",
+        }
     except Exception as exc:
-        return {"ok": True, "decisions": [], "count": 0, "source": "none", "message": type(exc).__name__}
+        logger.warning("condition decisions unavailable: %s", type(exc).__name__)
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "decisions": [],
+            "count": 0,
+            "source": "error",
+            "error": type(exc).__name__,
+            "message": "Condition decision evidence is unavailable.",
+        }
 
 
 # ── Predictions optimal times ───────────────────────────────────────────────
