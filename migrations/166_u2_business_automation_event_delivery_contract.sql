@@ -43,7 +43,7 @@ BEGIN
         WHERE d.consumer_group = p_consumer_group
           AND d.processed IS FALSE
           AND (
-              d.claimed_by IS NULL
+              d.claimed_at IS NULL
               OR d.claimed_at < NOW() - make_interval(secs => v_lease)
           )
           AND e.workspace_id IS NOT NULL
