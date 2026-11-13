@@ -125,6 +125,7 @@ class JobService:
                 saved = AutomationJob(**result.data[0])
                 await self._emit("job.created", {
                     "job_id": saved.job_id, "brand_id": brand_id,
+                    "workspace_id": saved.workspace_id,
                     "workflow_type": "scheduled", "platform": platform,
                 })
                 return saved
@@ -184,6 +185,7 @@ class JobService:
                 saved = AutomationJob(**result.data[0])
                 await self._emit("job.created", {
                     "job_id": saved.job_id, "brand_id": brand_id,
+                    "workspace_id": saved.workspace_id,
                     "workflow_type": "manual", "platform": platform,
                 })
                 return saved
@@ -285,6 +287,7 @@ class JobService:
                 updated = AutomationJob(**result.data[0])
                 await self._emit("job.status_changed", {
                     "job_id": updated.job_id,
+                    "workspace_id": updated.workspace_id,
                     "old_status": old_status.value,
                     "new_status": new_status.value,
                     "brand_id": updated.brand_id,
