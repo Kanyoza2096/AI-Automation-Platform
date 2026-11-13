@@ -35,7 +35,7 @@ CREATE OR REPLACE FUNCTION public.write_platform_state_snapshot(
 RETURNS BIGINT
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_temp
+SET search_path = pg_catalog, public, pg_temp
 AS $function$
 DECLARE
     v_revision BIGINT;
