@@ -63,7 +63,12 @@ class WebsiteIntegrationApplicationService:
         integration = self._port.get(workspace_id, integration_id)
         if integration is None:
             raise LookupError("Website integration not found")
-        status = getattr(getattr(integration, "status", None), "value", getattr(integration, "status", None))
+        raw_status = (
+            integration.get("status")
+            if isinstance(integration, Mapping)
+            else getattr(integration, "status", None)
+        )
+        status = getattr(raw_status, "value", raw_status)
         if status not in ("configured", "connected"):
             raise LookupError("Website integration is not active")
         if not self._port.event_type_is_registered(workspace_id, integration_id, envelope.event_type.value):
