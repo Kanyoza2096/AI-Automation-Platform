@@ -2016,6 +2016,41 @@ async def _boot_commerce_order_notification_reconciliation_scheduler(container: 
         logger.warning("Commerce order-notification reconciliation scheduler unavailable: %s", _sanitize_error_message(exc))
 
 
+class _BrandSchedulerHealthProvider:
+    """Expose the existing brand scheduler manager under its canonical ID."""
+
+    def __init__(self, manager):
+        self._manager = manager
+        self.service_name = "brand_scheduler"
+
+    async def check_health_async(self) -> HealthReport:
+        try:
+            if not getattr(self._manager, "_running", False):
+                return HealthReport(
+                    HealthStatus.UNKNOWN,
+                    self.service_name,
+                    metadata={"status": "not_running"},
+                )
+            result = self._manager.health_check()
+            status = str((result or {}).get("status", "unknown")).strip().lower()
+            readiness = {
+                "healthy": HealthStatus.HEALTHY,
+                "ok": HealthStatus.HEALTHY,
+                "degraded": HealthStatus.DEGRADED,
+            }.get(status, HealthStatus.UNKNOWN)
+            return HealthReport(
+                readiness,
+                self.service_name,
+                metadata=result if isinstance(result, dict) else {"status": status},
+            )
+        except Exception as exc:
+            return HealthReport(
+                HealthStatus.DEGRADED,
+                self.service_name,
+                error_message=_sanitize_error_message(exc),
+            )
+
+
 async def _boot_brand_schedulers(container: ServiceContainer) -> None:
     from scheduler.brand_scheduler import BrandSchedulerManager
 
@@ -2034,6 +2069,7 @@ async def _boot_brand_schedulers(container: ServiceContainer) -> None:
     await shutdown_registry.register(
         "BrandSchedulerManager", manager.stop, timeout_seconds=10.0
     )
+    await health_registry.register(_BrandSchedulerHealthProvider(manager))
     logger.info("BrandSchedulers started")
 
 
