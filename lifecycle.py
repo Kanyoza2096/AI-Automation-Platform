@@ -2235,11 +2235,26 @@ class _JobServiceHealthProvider:
                 if asyncio.iscoroutine(result):
                     result = await result
                 if isinstance(result, dict):
-                    status = str(result.get("status", "healthy")).lower()
+                    raw_status = result.get("status", "unknown")
+                    status = str(getattr(raw_status, "value", raw_status)).strip().lower()
+                    readiness = {
+                        "healthy": HealthStatus.HEALTHY,
+                        "nominal": HealthStatus.HEALTHY,
+                        "ok": HealthStatus.HEALTHY,
+                        "ready": HealthStatus.HEALTHY,
+                        "running": HealthStatus.HEALTHY,
+                        "degraded": HealthStatus.DEGRADED,
+                        "unhealthy": HealthStatus.UNHEALTHY,
+                        "offline": HealthStatus.UNHEALTHY,
+                        "failed": HealthStatus.UNHEALTHY,
+                        "critical": HealthStatus.UNHEALTHY,
+                        "stopped": HealthStatus.UNHEALTHY,
+                        "unknown": HealthStatus.UNKNOWN,
+                        "starting": HealthStatus.UNKNOWN,
+                        "not_configured": HealthStatus.UNKNOWN,
+                    }.get(status, HealthStatus.UNKNOWN)
                     return HealthReport(
-                        HealthStatus.HEALTHY
-                        if status in ("healthy", "ok")
-                        else HealthStatus.DEGRADED,
+                        readiness,
                         self.service_name,
                         metadata=result,
                     )
