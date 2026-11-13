@@ -187,6 +187,32 @@ async def require_workspace_owner(request: Request) -> RequestContext:
     return await require_workspace_role(request, "owner")
 
 
+async def require_human_workspace_admin(request: Request) -> RequestContext:
+    """Require a human JWT-backed workspace admin or human platform super-admin.
+
+    Machine API tokens and species service credentials must never administer
+    website integration registrations, even if their workspace scopes contain
+    the string "admin".
+    """
+    ctx = getattr(request.state, "request_context", None) or get_request_context()
+    if ctx is None:
+        ctx = await require_auth_context(request)
+    is_human_jwt = (
+        getattr(ctx, "principal_type", "") == "human"
+        and getattr(ctx, "auth_method", "") == "supabase_jwt"
+        and not getattr(ctx, "species_privileges", False)
+    )
+    is_platform_super_admin = (
+        is_human_jwt
+        and getattr(ctx, "platform_role", "") == "super_admin"
+        and ctx.has_permission("platform:control_plane:access")
+    )
+    is_workspace_admin = is_human_jwt and at_least(getattr(ctx, "role", "viewer"), "admin")
+    if not (is_platform_super_admin or is_workspace_admin):
+        raise HTTPException(status_code=403, detail="Human workspace administrator authority required")
+    return ctx
+
+
 async def require_workspace_admin(request: Request) -> RequestContext:
     """Require an owner/admin (or species operator) for workspace administration."""
     ctx = getattr(request.state, "request_context", None) or get_request_context()
