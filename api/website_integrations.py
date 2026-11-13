@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.security.deps import require_auth_context, require_workspace_admin, require_workspace_operator
+from core.security.deps import require_auth_context, require_human_workspace_admin, require_workspace_operator
 from core.request_context import RequestContext
 from contracts.website_integration import WebsiteEventEnvelope, WebsiteIntegrationRegistration
 from application.website_integrations import WebsiteIntegrationApplicationService, WebsiteIntegrationContext
@@ -31,7 +31,7 @@ async def list_integrations(request: Request, ctx: RequestContext = Depends(requ
     return {"ok": True, "integrations": [x.model_dump(mode="json") for x in _application_service(request).list(WebsiteIntegrationContext(ctx.workspace_id))]}
 
 
-@router.post("", dependencies=[Depends(require_workspace_admin)])
+@router.post("", dependencies=[Depends(require_human_workspace_admin)])
 async def register_integration(body: RegisterWebsiteRequest, request: Request, ctx: RequestContext = Depends(require_auth_context)):
     service = _application_service(request)
     model = service.register(WebsiteIntegrationContext(ctx.workspace_id), body.model_copy(update={"status": "configured"}), body.website_api_token)
