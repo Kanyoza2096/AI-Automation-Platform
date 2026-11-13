@@ -518,6 +518,7 @@ class DecisionMemory:
     success: Optional[bool] = None
     created_at: datetime = field(default_factory=utc_now)
     evaluated_at: Optional[datetime] = None
+    workspace_id: Optional[str] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
