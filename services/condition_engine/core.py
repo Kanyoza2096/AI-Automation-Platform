@@ -1489,6 +1489,7 @@ class AutonomousConditionEngine:
             }
             self.supabase.table("autonomous_decision_memory").upsert(
                 {
+                    "workspace_id": memory.workspace_id,
                     "key": memory.action,
                     "value": memory_payload,
                     "updated_at": (memory.evaluated_at or memory.created_at).isoformat(),
