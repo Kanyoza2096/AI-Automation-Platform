@@ -127,7 +127,6 @@ class SystemTopology:
             "gemini": (Sector.HEALTH, 3),
             "github": (Sector.SECURITY, 3),
             "job_stats_service": (Sector.INFRA, 2),
-            "brand_scheduler": (Sector.CONTENT, 3),
             "autonomous_content": (Sector.CONTENT, 3),
             "autonomous_loop": (Sector.SELF, 4),
         }
