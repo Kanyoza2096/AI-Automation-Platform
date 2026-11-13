@@ -74,6 +74,8 @@ class APITokenManager:
         name: str = "Default",
         permissions: Optional[List[str]] = None,
         expires_at: Optional[str] = None,
+        credential_purpose: str = "workspace_api",
+        resource_constraints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Create a new API token for a workspace.
 
@@ -82,6 +84,14 @@ class APITokenManager:
         v2.0: Raises RuntimeError if DB persistence fails, rather than
         returning a token that was never stored.
         """
+        allowed_purposes = {"workspace_api", "service_integration", "website_connector"}
+        if credential_purpose not in allowed_purposes:
+            raise ValueError("Unsupported credential purpose")
+        if credential_purpose != "workspace_api":
+            raise ValueError("Non-default credential purposes are not issuable until endpoint enforcement is deployed")
+        constraints = resource_constraints or {}
+        if not isinstance(constraints, dict):
+            raise ValueError("resource_constraints must be an object")
         raw_token = f"{self._PREFIX}{secrets.token_hex(32)}"
         token_hash = self._hash(raw_token)
         token_id = f"tok-{uuid.uuid4().hex[:12]}"
@@ -92,6 +102,8 @@ class APITokenManager:
             "name": name,
             "token_hash": token_hash,
             "permissions": permissions or ["read"],
+            "credential_purpose": credential_purpose,
+            "resource_constraints": constraints,
             "expires_at": expires_at,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_used_at": None,
@@ -138,6 +150,8 @@ class APITokenManager:
             "id": token_id,
             "name": name,
             "permissions": permissions or ["read"],
+            "credential_purpose": credential_purpose,
+            "resource_constraints": constraints,
         }
 
     # ═══════════════════════════════════════════════════════════════
@@ -250,7 +264,8 @@ class APITokenManager:
                     self._db.table("api_tokens")
                     .select(
                         "id,name,permissions,created_at,"
-                        "last_used_at,expires_at,revoked"
+                        "last_used_at,expires_at,revoked,"
+                        "credential_purpose,resource_constraints"
                     )
                     .eq("workspace_id", workspace_id)
                     .execute()
