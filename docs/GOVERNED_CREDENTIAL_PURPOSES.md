@@ -15,7 +15,7 @@ continues to come only from the verified human identity exchange.
 
 ## Persistence
 
-Migration `052_governed_credential_purposes.sql` adds
+Migration `167_governed_credential_purposes.sql` adds
 `credential_purpose` and `resource_constraints` to `api_tokens`.
 Existing records are backfilled by the database default to `workspace_api`.
 The token hash remains the only stored secret representation.
