@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from core.request_context import RequestContext
+from core.security.deps import require_platform_or_species_privileges
 
 logger = logging.getLogger("kanyoza.routes.command_center")
 
@@ -354,6 +356,33 @@ async def command_center_operator_investigation(execution_id: str, request: Requ
         raise
     except Exception as exc:
         raise HTTPException(503, detail=f"operator_investigation_unavailable:{type(exc).__name__}") from exc
+
+
+@router.get("/platform-authority-check")
+async def platform_authority_check(
+    ctx: RequestContext = Depends(require_platform_or_species_privileges),
+):
+    """Read-only proof that the canonical request context passed platform authorization.
+
+    Returns no user identifiers, workspace data, credentials, or operational state.
+    Machine species principals are reported distinctly from human super-admins.
+    """
+    is_human_super_admin = (
+        ctx.principal_type == "human"
+        and ctx.auth_method == "supabase_jwt"
+        and ctx.platform_role == "super_admin"
+        and not ctx.species_privileges
+        and ctx.has_permission("platform:control_plane:access")
+    )
+    return {
+        "authorized": True,
+        "authority_type": "human_platform_super_admin" if is_human_super_admin else "machine_species",
+        "principal_type": ctx.principal_type,
+        "auth_method": ctx.auth_method,
+        "platform_role": ctx.platform_role or None,
+        "species_privileges": bool(ctx.species_privileges),
+        "permission": "platform:control_plane:access",
+    }
 
 
 @router.get("/platform-control-plane", dependencies=[Depends(_auth_dep())])
