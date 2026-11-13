@@ -11,6 +11,7 @@ from api.v1_stores import *
 from core.plugin_execution import resolve_plugin_workspace
 
 from config.settings import settings
+from core.security.deps import require_human_workspace_admin
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ async def revoke_api_key(
     key_id: str,
     audit_log: AsyncAuditLog = Depends(get_audit_log),
     _auth: bool = Depends(require_auth),
-    _admin=Depends(require_workspace_admin),
+    _admin=Depends(require_human_workspace_admin),
 ):
     """Revoke a workspace-scoped API token."""
     try:

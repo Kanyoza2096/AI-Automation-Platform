@@ -76,6 +76,8 @@ class APITokenManager:
         expires_at: Optional[str] = None,
         credential_purpose: str = "workspace_api",
         resource_constraints: Optional[Dict[str, Any]] = None,
+        *,
+        _purpose_authorized: bool = False,
     ) -> Dict[str, Any]:
         """Create a new API token for a workspace.
 
@@ -87,11 +89,24 @@ class APITokenManager:
         allowed_purposes = {"workspace_api", "service_integration", "website_connector"}
         if credential_purpose not in allowed_purposes:
             raise ValueError("Unsupported credential purpose")
-        if credential_purpose != "workspace_api":
-            raise ValueError("Non-default credential purposes are not issuable until endpoint enforcement is deployed")
+        if credential_purpose == "service_integration":
+            raise ValueError("Service integration credentials are not enabled")
+        if credential_purpose == "website_connector" and not _purpose_authorized:
+            raise ValueError("Website connector credentials must use the dedicated issuance flow")
+        if credential_purpose == "workspace_api" and _purpose_authorized:
+            raise ValueError("Purpose authorization cannot be used for workspace API credentials")
         constraints = resource_constraints if resource_constraints is not None else {}
         if not isinstance(constraints, dict):
             raise ValueError("resource_constraints must be an object")
+        if credential_purpose == "website_connector":
+            integration_id = constraints.get("integration_id")
+            if (
+                set(constraints) != {"integration_id"}
+                or not isinstance(integration_id, str)
+                or not integration_id.strip()
+                or len(integration_id) > 128
+            ):
+                raise ValueError("Website connector credentials require exactly one integration_id constraint")
         raw_token = f"{self._PREFIX}{secrets.token_hex(32)}"
         token_hash = self._hash(raw_token)
         token_id = f"tok-{uuid.uuid4().hex[:12]}"
@@ -153,6 +168,33 @@ class APITokenManager:
             "credential_purpose": credential_purpose,
             "resource_constraints": constraints,
         }
+
+    def create_website_connector_token(
+        self,
+        workspace_id: str,
+        integration_id: str,
+        *,
+        expires_at: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Issue a least-privilege token for one registered website integration.
+
+        This is intentionally separate from generic workspace-token issuance.
+        The caller must enforce human administrator authority and verify that
+        the integration belongs to the requested workspace before calling.
+        """
+        workspace = str(workspace_id or "").strip()
+        integration = str(integration_id or "").strip()
+        if not workspace or not integration or len(integration) > 128:
+            raise ValueError("A workspace and valid integration_id are required")
+        return self.create_token(
+            workspace_id=workspace,
+            name=f"website:{integration}",
+            permissions=["write"],
+            expires_at=expires_at,
+            credential_purpose="website_connector",
+            resource_constraints={"integration_id": integration},
+            _purpose_authorized=True,
+        )
 
     # ═══════════════════════════════════════════════════════════════
     # VALIDATION

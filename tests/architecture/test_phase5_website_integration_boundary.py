@@ -8,7 +8,7 @@ from contracts.website_integration import WebsiteEventEnvelope, WebsiteEventType
 
 
 class Port:
-    def __init__(self): self.events=[]; self.integrations={("ws-1","site-1"): {"integration_id":"site-1"}}
+    def __init__(self): self.events=[]; self.integrations={("ws-1","site-1"): {"integration_id":"site-1","status":"configured"}}
     def list(self, workspace_id): return [self.integrations[(workspace_id,"site-1")]]
     def get(self, workspace_id, integration_id): return self.integrations.get((workspace_id,integration_id))
     def register(self, workspace_id, registration, website_api_token=""): return {"workspace_id":workspace_id,"integration_id":registration.integration_id}

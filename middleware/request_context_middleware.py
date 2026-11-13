@@ -83,9 +83,19 @@ def _is_service_auth_only(path: str) -> bool:
     """
     return path in SERVICE_AUTH_ONLY_EXACT
 
+def _is_website_connector_ingress(path: str) -> bool:
+    """Only the integration event-ingress route uses connector-purpose auth.
+
+    The route dependency validates the persisted website_connector token and
+    its exact integration constraint. All sibling management routes retain
+    ordinary human/workspace authentication.
+    """
+    import re
+    return bool(re.fullmatch(r"/api/v1/website-integrations/[^/]+/events", path))
+
 
 def _is_public(path: str) -> bool:
-    if _is_webhook_ingress(path):
+    if _is_webhook_ingress(path) or _is_website_connector_ingress(path):
         return True
     if path in PUBLIC_EXACT:
         return True
