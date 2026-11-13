@@ -28,10 +28,23 @@ connector-specific operation. Until each consumer is updated to enforce those
 checks, issue only `workspace_api` credentials. Do not issue a website or
 service credential for production use yet.
 
-## Planned follow-up
+## Implemented in this change
 
-1. Propagate purpose and constraints through SpeciesAuth and RequestContext.
-2. Add endpoint-specific purpose/resource guards.
-3. Expose purpose selection in API Manager with server-owned scope presets.
-4. Add tests for cross-workspace access, resource mismatch, expiry, revocation,
-   unknown purpose, and attempted platform-authority escalation.
+- Token purpose and resource constraints are carried by AuthIdentity and
+  immutable RequestContext.
+- Canonical token authentication rejects non-default and unknown purposes until
+  their endpoint consumers are explicitly enabled.
+- Website integration registration requires a human Supabase-JWT workspace
+  administrator or human platform super-admin. Machine API tokens and species
+  service credentials cannot register integrations, even if a token has an
+  admin permission string.
+- Regression tests cover rejection of connector/unknown purposes and request
+  context propagation.
+
+## Remaining before API Manager selection
+
+1. Add endpoint-specific purpose/resource guards for each service consumer.
+2. Define server-owned permission presets for service integrations.
+3. Expose only purposes whose consumers are fully enforced.
+4. Add cross-workspace, resource mismatch, expiry, revocation, and privilege
+   escalation tests at the route/service boundary.
