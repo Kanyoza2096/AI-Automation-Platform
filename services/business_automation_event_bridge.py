@@ -16,7 +16,7 @@ logger = logging.getLogger("kanyoza.business_automation.event_bridge")
 
 
 class BusinessAutomationEventBridge:
-    VERSION = "2.1.0"
+    VERSION = "2.2.0"
     CONSUMER_GROUP = "business_automation"
     POLL_INTERVAL_SECONDS = 2.0
     CLAIM_BATCH_SIZE = 25
@@ -233,10 +233,13 @@ class BusinessAutomationEventBridge:
         if not delivery_id: return
         if not claim_token:
             raise RuntimeError("durable business automation delivery is missing claim token")
+        workspace_id = str(row.get("workspace_id") or "").strip()
+        if not workspace_id:
+            raise RuntimeError("durable business automation delivery is missing workspace_id")
         if db is None: return
         result = await self._execute_db_rpc(
             "complete_business_automation_event_delivery",
-            {"p_delivery_id": delivery_id, "p_consumer_group": self.CONSUMER_GROUP, "p_claim_token": claim_token, "p_success": success, "p_error": (error or "")[:1000]},
+            {"p_delivery_id": delivery_id, "p_workspace_id": workspace_id, "p_consumer_group": self.CONSUMER_GROUP, "p_claim_token": claim_token, "p_success": success, "p_error": (error or "")[:1000]},
         )
         if result is None or result.data is False or result.data == []:
             raise RuntimeError("durable business automation delivery completion lost ownership")
