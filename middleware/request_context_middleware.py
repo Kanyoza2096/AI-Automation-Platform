@@ -95,7 +95,7 @@ def _is_website_connector_ingress(path: str) -> bool:
 
 
 def _is_public(path: str) -> bool:
-    if _is_webhook_ingress(path):
+    if _is_webhook_ingress(path) or _is_website_connector_ingress(path):
         return True
     if path in PUBLIC_EXACT:
         return True
