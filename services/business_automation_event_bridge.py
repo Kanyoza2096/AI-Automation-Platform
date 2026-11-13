@@ -236,7 +236,7 @@ class BusinessAutomationEventBridge:
         if db is None: return
         result = await self._execute_db_rpc(
             "complete_business_automation_event_delivery",
-            {"p_delivery_id": delivery_id, "p_consumer_group": self.CONSUMER_GROUP, "p_claim_token": claim_token, "p_success": success, "p_error": (error or "")[:1000]},
+            {"p_delivery_id": delivery_id, "p_workspace_id": str(row.get("workspace_id") or "").strip(), "p_consumer_group": self.CONSUMER_GROUP, "p_claim_token": claim_token, "p_success": success, "p_error": (error or "")[:1000]},
         )
         if result is None or result.data is False or result.data == []:
             raise RuntimeError("durable business automation delivery completion lost ownership")
