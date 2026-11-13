@@ -82,6 +82,10 @@ def test_canonical_scheduler_identity_is_brand_scheduler():
     from services.director import ENGINE_REGISTRY
     scheduler_rows = [row for row in ENGINE_REGISTRY if row[1] == "BrandSchedulerManager"]
     assert scheduler_rows and scheduler_rows[0][2] == "brand_scheduler"
+    from services.director.analysis import Sector, SystemTopology
+    topology = SystemTopology()
+    assert topology.nodes["brand_scheduler"].sector is Sector.CONTENT
+    assert topology.nodes["brand_scheduler"].criticality == 3
 
 
 def test_meta_engine_has_distinct_job_service_and_job_stats_nodes():
