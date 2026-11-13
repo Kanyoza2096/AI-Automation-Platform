@@ -250,7 +250,8 @@ class ImageGenerateRequest(BaseModel):
 class APIKeyGenerateRequest(BaseModel):
     label: str = Field(default="api-key", min_length=1, max_length=64)
     scopes: list[str] = Field(default_factory=lambda: ["read"], min_length=1, max_length=2)
-    expires_in_days: int = Field(default=30, ge=1, le=365)
+    # None means no scheduled expiry; explicit revocation remains available.
+    expires_in_days: Optional[int] = Field(default=30, ge=1, le=365)
 
     @field_validator("label")
     @classmethod
