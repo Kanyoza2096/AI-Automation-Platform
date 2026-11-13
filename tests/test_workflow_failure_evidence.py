@@ -17,7 +17,7 @@ class RejectingStep(Step):
                 "semantic_review_status": "needs_review",
                 "semantic_review_reason": "one claim is uncertain",
                 "semantic_review_request_id": "review-123",
-                "access_token": "must-not-be-persisted",
+                "private_notes": "must-not-be-persisted",
             },
         )
 
@@ -35,7 +35,7 @@ def test_application_error_keeps_machine_code_and_safe_diagnostics():
         "semantic_review_reason": "one claim is uncertain",
         "semantic_review_request_id": "review-123",
     }
-    assert "access_token" not in str(result.error_detail)
+    assert "private_notes" not in str(result.error_detail)
 
 
 def test_workflow_failure_evidence_contains_step_reason_and_progress():
