@@ -1446,10 +1446,15 @@ async def _boot_ai_orchestrator(container: ServiceContainer) -> None:
 
 async def _boot_content_engine(container: ServiceContainer) -> None:
     from services.content_engine import content_engine
+    from services.prompt_builder import prompt_builder
 
     content_engine.set_container(container)
     await health_registry.register(content_engine)
-    logger.info("ContentEngine: container wired")
+    # PromptBuilder is a separately declared canonical dependency of
+    # ContentEngine; publish its own health report rather than leaving the
+    # dependency permanently unknown in Platform State.
+    await health_registry.register(prompt_builder)
+    logger.info("ContentEngine and PromptBuilder: container wired and health-registered")
 
 
 async def _boot_meta_health_handlers(container: ServiceContainer) -> None:
