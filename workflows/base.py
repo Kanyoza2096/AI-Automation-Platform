@@ -115,12 +115,40 @@ class WorkflowResult:
 
     def failure_evidence(self) -> dict[str, Any]:
         """Return a compact, JSON-safe diagnostic envelope for failed runs."""
+        safe_detail_keys = {
+            "exception_type", "context", "topic", "validation_status",
+            "semantic_review_status", "semantic_review_reason",
+            "semantic_review_request_id", "errors", "brand_id", "brand_name",
+            "platform", "provider", "model", "decision_id", "raw_status",
+            "reconciliation_required", "media_error_code", "reason", "status",
+        }
+
+        def safe_detail(detail: Any) -> dict[str, Any]:
+            if not isinstance(detail, dict):
+                return {}
+            safe = {}
+            for key in safe_detail_keys:
+                if key not in detail:
+                    continue
+                value = detail[key]
+                if key == "context":
+                    safe_context = safe_detail(value)
+                    if safe_context:
+                        safe[key] = safe_context
+                elif key == "errors" and isinstance(value, list):
+                    safe[key] = [str(item)[:500] for item in value[:20]]
+                elif isinstance(value, str):
+                    safe[key] = value[:1000]
+                elif isinstance(value, (int, float, bool)) or value is None:
+                    safe[key] = value
+            return safe
+
         failed = [
             {
                 "step": step.step_name,
                 "error": (step.error or "")[:2000],
                 "error_code": step.error_code or "unknown",
-                "detail": step.error_detail or {},
+                "detail": safe_detail(step.error_detail),
                 "latency_ms": round(step.latency_ms),
             }
             for step in self.steps
