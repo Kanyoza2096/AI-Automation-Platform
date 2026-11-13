@@ -181,7 +181,7 @@ class APITokenManager:
         if record is None and (not self._db or db_error):
             record = self._tokens.get(token_hash)
 
-        if not record:
+        if not record or record.get("revoked") is True:
             return None
 
         # Expiry check
