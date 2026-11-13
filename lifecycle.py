@@ -783,6 +783,14 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             phase=BootPhase.BUSINESS,
             action=partial(_boot_condition_engine, container),
         ))
+        steps.append(BootStep(
+            name="EngagementTracker",
+            phase=BootPhase.BUSINESS,
+            action=partial(_boot_engagement_tracker, container),
+            rollback=partial(_stop_engagement_tracker),
+            critical=False,
+            timeout_seconds=15.0,
+        ))
 
     if mode in ("full", "core"):
         # v16.9: ContentIntelligence must be registered BEFORE ContentEngine
@@ -1557,6 +1565,22 @@ async def _boot_director(container: ServiceContainer) -> None:
             logger.warning("Director unbound check: %s", exc)
     except Exception as exc:
         logger.error("Director capability binding failed: %s", exc)
+
+
+async def _stop_engagement_tracker() -> None:
+    from services.engagement_tracker import shutdown_engagement_tracking
+    await shutdown_engagement_tracking()
+
+
+async def _boot_engagement_tracker(container: ServiceContainer) -> None:
+    from services.engagement_tracker import start_engagement_tracking, shutdown_engagement_tracking
+
+    tracker = await start_engagement_tracking(container=container)
+    await health_registry.register(tracker)
+    await shutdown_registry.register(
+        "EngagementTracker", shutdown_engagement_tracking, timeout_seconds=10.0
+    )
+    logger.info("EngagementTracker started and registered for health observation")
 
 
 async def _boot_condition_engine(container: ServiceContainer) -> None:

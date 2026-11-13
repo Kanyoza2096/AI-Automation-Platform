@@ -116,8 +116,16 @@ class EngagementTracker:
 
     async def check_health_async(self) -> dict:
         stats = self.get_stats()
+        if not self._running:
+            status = "stopped"
+        elif self.supabase is None:
+            # The tracker cannot fetch or persist engagement without its
+            # required data provider; running alone is not operational health.
+            status = "unknown"
+        else:
+            status = "healthy"
         return {
-            "status": "healthy" if self._running else "stopped",
+            "status": status,
             "cycles_completed": stats["cycles_completed"],
             "posts_analyzed": stats["posts_analyzed"],
             "cached_brands": stats["cached_brands"],
