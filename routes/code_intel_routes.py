@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 from services.code_intelligence_engine import code_intel_engine
 
-router = APIRouter(prefix="/api/v1/code-intel", tags=["code-intel"], dependencies=[Depends(require_species_privileges)])
+router = APIRouter(prefix="/api/v1/code-intel", tags=["code-intel"], dependencies=[Depends(require_platform_or_species_privileges)])
 
 @router.get("/status")
 def get_status():
