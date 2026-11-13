@@ -24,16 +24,24 @@ The token hash remains the only stored secret representation.
 
 Purpose metadata is not a substitute for endpoint authorization. A consumer
 must check both the purpose and its resource constraints before allowing a
-connector-specific operation. Until each consumer is updated to enforce those
-checks, issue only `workspace_api` credentials. Do not issue a website or
-service credential for production use yet.
+connector-specific operation. The dedicated website event-ingress consumer is
+now enabled; service-integration credentials remain disabled.
 
 ## Implemented in this change
 
 - Token purpose and resource constraints are carried by AuthIdentity and
   immutable RequestContext.
-- Canonical token authentication rejects non-default and unknown purposes until
-  their endpoint consumers are explicitly enabled.
+- Generic workspace API authentication continues to reject website-connector
+  and service-integration purposes.
+- Website connector credentials can be issued only through the dedicated
+  human-admin route after the integration is verified in the caller's workspace.
+- Connector tokens receive a server-owned `write` permission preset, a
+  90-day expiry, and exactly one `integration_id` resource constraint.
+- Only the matching website event-ingress route accepts connector-purpose
+  credentials; it rejects workspace tokens, service credentials, mismatched
+  integration IDs, missing write permission, expired tokens, and revoked tokens.
+- Connector credentials can be revoked only by a human workspace administrator
+  and only within their owning workspace and integration.
 - Website integration registration requires a human Supabase-JWT workspace
   administrator or human platform super-admin. Machine API tokens and species
   service credentials cannot register integrations, even if a token has an
@@ -41,10 +49,10 @@ service credential for production use yet.
 - Regression tests cover rejection of connector/unknown purposes and request
   context propagation.
 
-## Remaining before API Manager selection
+## Remaining
 
-1. Add endpoint-specific purpose/resource guards for each service consumer.
-2. Define server-owned permission presets for service integrations.
-3. Expose only purposes whose consumers are fully enforced.
-4. Add cross-workspace, resource mismatch, expiry, revocation, and privilege
-   escalation tests at the route/service boundary.
+1. Add the matching governed credential workflow to the Control Plane UI.
+2. Add full integration tests against the mounted FastAPI application and
+   durable Supabase token storage.
+3. Keep `service_integration` disabled until its own endpoint consumers,
+   permission presets, and resource-policy tests are implemented.
