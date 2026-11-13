@@ -6,6 +6,13 @@ from services.condition_engine.models import Baseline, Decision, DecisionState, 
 from routes import cp_surface_routes
 
 
+def allow_workspace(monkeypatch, brand_ids=("brand-1",)):
+    async def resolve_workspace_brands(request, container):
+        return set(brand_ids)
+
+    monkeypatch.setattr(cp_surface_routes, "_workspace_brand_ids", resolve_workspace_brands)
+
+
 def test_condition_baselines_serialize_keyed_dataclass_like_records(monkeypatch):
     engine = SimpleNamespace(
         _baselines={
@@ -13,12 +20,18 @@ def test_condition_baselines_serialize_keyed_dataclass_like_records(monkeypatch)
                 "metric": "engagement_rate",
                 "mean": 0.24,
                 "sample_count": 12,
+            },
+            ("brand-2", "engagement_rate"): {
+                "metric": "engagement_rate",
+                "mean": 0.91,
+                "sample_count": 4,
             }
         }
     )
     monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
 
-    result = asyncio.run(cp_surface_routes.condition_baselines(None))
+    result = asyncio.run(cp_surface_routes.condition_baselines(None, None))
 
     assert result["ok"] is True
     assert result["count"] == 1
@@ -32,6 +45,7 @@ def test_condition_experiments_serialize_dictionary_values_not_keys(monkeypatch)
         _experiments={
             "experiment-1": {
                 "id": "experiment-1",
+                "brand_id": "brand-1",
                 "name": "Landing page test",
                 "control": "A",
                 "variant": "B",
@@ -40,8 +54,9 @@ def test_condition_experiments_serialize_dictionary_values_not_keys(monkeypatch)
         }
     )
     monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
 
-    result = asyncio.run(cp_surface_routes.condition_experiments(None))
+    result = asyncio.run(cp_surface_routes.condition_experiments(None, None))
 
     assert result["ok"] is True
     assert result["count"] == 1
@@ -54,31 +69,33 @@ def test_condition_decisions_uses_actual_decision_store(monkeypatch):
         _decisions={
             "decision-1": {
                 "id": "decision-1",
+                "brand_id": "brand-1",
                 "reason": "Engagement dropped",
                 "recommended_action": "Review posting cadence",
                 "status": "proposed",
             }
         },
-        get_status=lambda: {"decisions": 1},
     )
     monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
 
-    result = asyncio.run(cp_surface_routes.condition_decisions())
+    result = asyncio.run(cp_surface_routes.condition_decisions(None, None))
 
     assert result["ok"] is True
     assert result["count"] == 1
     assert result["decisions"][0]["id"] == "decision-1"
     assert result["decisions"][0]["reason"] == "Engagement dropped"
-    assert result["status"]["decisions"] == 1
+    assert result["status"]["workspace_brand_count"] == 1
 
 
 def test_valid_empty_condition_stores_remain_valid_empty_collections(monkeypatch):
     engine = SimpleNamespace(_baselines={}, _experiments={}, _decisions={})
     monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
 
-    baselines = asyncio.run(cp_surface_routes.condition_baselines(None))
-    experiments = asyncio.run(cp_surface_routes.condition_experiments())
-    decisions = asyncio.run(cp_surface_routes.condition_decisions())
+    baselines = asyncio.run(cp_surface_routes.condition_baselines(None, None))
+    experiments = asyncio.run(cp_surface_routes.condition_experiments(None, None))
+    decisions = asyncio.run(cp_surface_routes.condition_decisions(None, None))
 
     assert baselines["ok"] is True and baselines["baselines"] == []
     assert experiments["ok"] is True and experiments["experiments"] == []
@@ -87,10 +104,11 @@ def test_valid_empty_condition_stores_remain_valid_empty_collections(monkeypatch
 
 def test_missing_condition_provider_is_not_reported_as_successful_empty(monkeypatch):
     monkeypatch.setattr(condition_engine, "autonomous_engine", SimpleNamespace())
+    allow_workspace(monkeypatch)
 
-    baselines = asyncio.run(cp_surface_routes.condition_baselines(None))
-    experiments = asyncio.run(cp_surface_routes.condition_experiments())
-    decisions = asyncio.run(cp_surface_routes.condition_decisions())
+    baselines = asyncio.run(cp_surface_routes.condition_baselines(None, None))
+    experiments = asyncio.run(cp_surface_routes.condition_experiments(None, None))
+    decisions = asyncio.run(cp_surface_routes.condition_decisions(None, None))
 
     assert baselines["ok"] is False and baselines["source"] == "error"
     assert experiments["ok"] is False and experiments["source"] == "error"
@@ -103,8 +121,9 @@ def test_condition_provider_exception_is_not_reported_as_successful_empty(monkey
             raise RuntimeError("internal provider details must not be exposed")
 
     monkeypatch.setattr(condition_engine, "autonomous_engine", BrokenConditionEngine())
+    allow_workspace(monkeypatch)
 
-    result = asyncio.run(cp_surface_routes.condition_baselines(None))
+    result = asyncio.run(cp_surface_routes.condition_baselines(None, None))
 
     assert result["ok"] is False
     assert result["source"] == "error"
@@ -138,13 +157,13 @@ def test_condition_engine_dataclasses_are_json_serialized(monkeypatch):
                 evidence={"observations": 3},
             )
         },
-        get_status=lambda: {"decisions": 1},
     )
     monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
 
-    baselines = asyncio.run(cp_surface_routes.condition_baselines(None))
-    experiments = asyncio.run(cp_surface_routes.condition_experiments())
-    decisions = asyncio.run(cp_surface_routes.condition_decisions())
+    baselines = asyncio.run(cp_surface_routes.condition_baselines(None, None))
+    experiments = asyncio.run(cp_surface_routes.condition_experiments(None, None))
+    decisions = asyncio.run(cp_surface_routes.condition_decisions(None, None))
 
     assert baselines["ok"] is True
     assert baselines["baselines"][0]["mean"] == 0.31
@@ -155,3 +174,23 @@ def test_condition_engine_dataclasses_are_json_serialized(monkeypatch):
     assert decisions["ok"] is True
     assert decisions["decisions"][0]["state"] == "observe"
     assert decisions["decisions"][0]["created_at"]
+
+
+def test_condition_records_without_workspace_brand_are_rejected(monkeypatch):
+    engine = SimpleNamespace(
+        _experiments={
+            "experiment-unknown": {
+                "id": "experiment-unknown",
+                "name": "Unscoped experiment",
+                "status": "running",
+            }
+        }
+    )
+    monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+    allow_workspace(monkeypatch)
+
+    result = asyncio.run(cp_surface_routes.condition_experiments(None, None))
+
+    assert result["ok"] is False
+    assert result["source"] == "error"
+    assert result["error"] == "ValueError"
