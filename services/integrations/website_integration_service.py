@@ -7,8 +7,6 @@ existing Action Kernel/outbox path.
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -96,6 +94,10 @@ class WebsiteIntegrationService:
 
     def event_is_registered(self, workspace_id: str, integration_id: str) -> bool:
         return self.get(workspace_id, integration_id) is not None
+
+    def event_type_is_registered(self, workspace_id: str, integration_id: str, event_type: str) -> bool:
+        integration = self.get(workspace_id, integration_id)
+        return integration is not None and event_type in {item.value for item in integration.event_types}
 
     def record_event(self, workspace_id: str, envelope: WebsiteEventEnvelope) -> dict[str, Any]:
         integration = self.get(workspace_id, envelope.integration_id)
