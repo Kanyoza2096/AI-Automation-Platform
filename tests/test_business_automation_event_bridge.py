@@ -74,6 +74,14 @@ def test_durable_inbox_claim_and_ack_are_rpc_backed():
             "claim_business_automation_event_deliveries",
             "complete_business_automation_event_delivery",
         ]
+        assert db.calls[1][1] == {
+            "p_delivery_id": "d1",
+            "p_workspace_id": "ws1",
+            "p_consumer_group": "business_automation",
+            "p_claim_token": "worker-a",
+            "p_success": True,
+            "p_error": "",
+        }
     asyncio.run(run())
 
 
