@@ -7,13 +7,13 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 
 logger = logging.getLogger("kanyoza.routes.cp_gaps")
 router = APIRouter(
     prefix="/api/v1",
     tags=["control-plane-gaps"],
-    dependencies=[Depends(require_species_privileges)],
+    dependencies=[Depends(require_platform_or_species_privileges)],
 )
 
 

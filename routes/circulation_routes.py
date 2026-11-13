@@ -5,9 +5,9 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 
 logger = logging.getLogger("kanyoza.routes.circulation")
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 
-router = APIRouter(prefix="/api/v1/circulation", tags=["circulation"], dependencies=[Depends(require_species_privileges)])
+router = APIRouter(prefix="/api/v1/circulation", tags=["circulation"], dependencies=[Depends(require_platform_or_species_privileges)])
 
 
 def _monitor():
