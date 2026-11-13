@@ -1,0 +1,38 @@
+name: Condition Engine Surface Contract
+
+on:
+  pull_request:
+    branches: [staging]
+    paths:
+      - "routes/cp_surface_routes.py"
+      - "tests/test_condition_surface_routes.py"
+      - "services/condition_engine/**"
+      - ".github/workflows/condition-surface-tests.yml"
+  push:
+    branches: [staging]
+    paths:
+      - "routes/cp_surface_routes.py"
+      - "tests/test_condition_surface_routes.py"
+      - "services/condition_engine/**"
+      - ".github/workflows/condition-surface-tests.yml"
+
+jobs:
+  condition-surface-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+      - name: Install project dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile Condition Engine surface
+        run: python -m compileall -q routes/cp_surface_routes.py
+      - name: Run focused Condition Engine surface tests
+        run: pytest -q tests/test_condition_surface_routes.py
