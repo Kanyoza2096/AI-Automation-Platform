@@ -28,9 +28,9 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger("kanyoza.routes.rules")
 
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 
-router = APIRouter(prefix="/api/v1/rules", tags=["rules"], dependencies=[Depends(require_species_privileges)])
+router = APIRouter(prefix="/api/v1/rules", tags=["rules"], dependencies=[Depends(require_platform_or_species_privileges)])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
