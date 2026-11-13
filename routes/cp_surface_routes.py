@@ -221,7 +221,10 @@ async def _workspace_brand_ids(request: Request, container: Any) -> set[str]:
     await require_workspace_ownership("workspace", workspace_id, request, container)
     repository = await _async_wrap(container.resolve, BrandRepository)
     brands = await _async_wrap(repository.find_by_workspace, workspace_id)
-    brand_ids = {str(getattr(brand, "id", "")).strip() for brand in brands}
+    brand_ids = {
+        str((brand.get("id") if isinstance(brand, dict) else getattr(brand, "id", "")) or "").strip()
+        for brand in brands
+    }
     brand_ids.discard("")
     return brand_ids
 
