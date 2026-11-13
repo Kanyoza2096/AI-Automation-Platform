@@ -28,6 +28,11 @@ router = APIRouter(prefix="/api/v1", tags=["cp-surface"])
 _blocklist: set[str] = set()
 
 
+def _container_dep():
+    from api.dependencies import get_container
+    return get_container
+
+
 def _auth_dep():
     from api.v1 import require_auth
     return require_auth
@@ -203,6 +208,35 @@ async def reflex_triggers():
 
 # ── Condition surfaces ──────────────────────────────────────────────────────
 
+async def _workspace_brand_ids(request: Request, container: Any) -> set[str]:
+    """Resolve the authenticated workspace's brands before exposing engine records."""
+    workspace_id = _workspace_id(request)
+    if container is None:
+        raise LookupError("workspace repository container unavailable")
+
+    from api.dependencies import require_workspace_ownership
+    from api.v1_helpers import _async_wrap
+    from repositories.brand_repository import BrandRepository
+
+    await require_workspace_ownership("workspace", workspace_id, request, container)
+    repository = await _async_wrap(container.resolve, BrandRepository)
+    brands = await _async_wrap(repository.find_by_workspace, workspace_id)
+    brand_ids = {str(getattr(brand, "id", "")).strip() for brand in brands}
+    brand_ids.discard("")
+    return brand_ids
+
+
+def _filter_workspace_condition_records(
+    records: List[Dict[str, Any]],
+    brand_ids: set[str],
+    collection_name: str,
+) -> List[Dict[str, Any]]:
+    """Fail closed if a record cannot be tied to a workspace-owned brand."""
+    if any(not str(record.get("brand_id") or "").strip() for record in records):
+        raise ValueError(f"{collection_name} contains an unscoped record")
+    return [record for record in records if str(record["brand_id"]) in brand_ids]
+
+
 def _condition_records(engine: Any, method_name: str, attribute_name: str) -> List[Dict[str, Any]]:
     """Serialize the engine's actual keyed/list state without inventing empty data."""
     provider = getattr(engine, method_name, None)
@@ -237,10 +271,12 @@ def _condition_records(engine: Any, method_name: str, attribute_name: str) -> Li
 
 
 @router.get("/condition/baselines", dependencies=[Depends(_auth_dep())])
-async def condition_baselines(request: Request):
+async def condition_baselines(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
+        brand_ids = await _workspace_brand_ids(request, container)
         baselines = _condition_records(autonomous_engine, "get_baselines", "_baselines")
+        baselines = _filter_workspace_condition_records(baselines, brand_ids, "baselines")
         return {"ok": True, "baselines": baselines, "count": len(baselines), "source": "condition_engine"}
     except Exception as exc:
         logger.warning("condition baselines unavailable: %s", type(exc).__name__)
@@ -256,10 +292,12 @@ async def condition_baselines(request: Request):
 
 
 @router.get("/condition/experiments", dependencies=[Depends(_auth_dep())])
-async def condition_experiments():
+async def condition_experiments(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
+        brand_ids = await _workspace_brand_ids(request, container)
         experiments = _condition_records(autonomous_engine, "get_experiments", "_experiments")
+        experiments = _filter_workspace_condition_records(experiments, brand_ids, "experiments")
         return {"ok": True, "experiments": experiments, "count": len(experiments), "source": "condition_engine"}
     except Exception as exc:
         logger.warning("condition experiments unavailable: %s", type(exc).__name__)
@@ -275,10 +313,12 @@ async def condition_experiments():
 
 
 @router.get("/condition/decisions", dependencies=[Depends(_auth_dep())])
-async def condition_decisions():
+async def condition_decisions(request: Request, container=Depends(_container_dep())):
     try:
         from services.condition_engine import autonomous_engine
+        brand_ids = await _workspace_brand_ids(request, container)
         decisions = _condition_records(autonomous_engine, "get_decisions", "_decisions")
+        decisions = _filter_workspace_condition_records(decisions, brand_ids, "decisions")
         status = {}
         status_provider = getattr(autonomous_engine, "get_status", None)
         if callable(status_provider):
