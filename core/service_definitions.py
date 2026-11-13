@@ -125,7 +125,7 @@ def _resolve_scheduler(container):
     from scheduler.brand_scheduler import BrandSchedulerManager
     return _resolve_existing(container, BrandSchedulerManager)
 
-define_service("scheduler", _resolve_scheduler, critical=False)
+define_service("brand_scheduler", _resolve_scheduler, critical=False)
 
 
 def _resolve_event_recorder(container):

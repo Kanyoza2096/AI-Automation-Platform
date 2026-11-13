@@ -254,7 +254,7 @@ NATIVE_HEALTH_ENGINES = {
     "guardian",              # Has health_check()
     "meta_engine",           # Has get_status()
     "meta_director",         # Has get_status()
-    "scheduler",             # Has get_status()
+    "brand_scheduler",       # Has health_check()
     "job_service",           # Has get_stats()
     "event_bus",             # Has get_stats()
 }

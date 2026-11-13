@@ -21,7 +21,7 @@
 
 ## Registered observation targets
 
-`ENGINE_REGISTRY` names targets for content, rendering, conditions, email, engagement, Guardian, Meta Engine, AI Orchestrator, scheduler, job stats, plugin registry, event bus, render queue, image generation, topic selection, prompt building, and health monitoring. Registration means an observer is attempted; it does not prove health or decision integration. Function/class exports and singleton symbols need per-target contract checks.
+`ENGINE_REGISTRY` names runtime-owned targets for content, rendering, conditions, email, engagement, Guardian, Meta Engine, AI Orchestrator, the canonical `brand_scheduler`, job stats, plugin registry, event bus, render queue, image generation, prompt building, and health monitoring. Brand-scoped topic selection is an internal content-workflow component, not a platform singleton or independent Director observation target; its operational evidence belongs to the content workflow. Registration means an observer is attempted; it does not prove health or decision integration. Function/class exports and singleton symbols need per-target contract checks.
 
 ## Current source-level changes relevant to this matrix
 
