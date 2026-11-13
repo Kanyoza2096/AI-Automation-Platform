@@ -43,6 +43,9 @@ class PostEngagement(BaseModel):
     id: str
     post_id: str
     brand_id: str
+    # Tenant context is carried in-memory into Condition Engine observations.
+    # Exclude it from post_engagement writes until that table's schema is verified.
+    workspace_id: Optional[str] = Field(default=None, exclude=True)
     platform: str = "facebook"
     platform_post_id: Optional[str] = None
 
@@ -258,7 +261,12 @@ class EngagementTracker:
                     if fetched_at:
                         fetched_time = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
                         if datetime.now(timezone.utc) - fetched_time < timedelta(hours=1):
-                            return PostEngagement(**latest)
+                            return PostEngagement(
+                                **{
+                                    **latest,
+                                    "workspace_id": latest.get("workspace_id") or post.get("workspace_id"),
+                                }
+                            )
             except Exception:
                 pass
 
@@ -274,6 +282,7 @@ class EngagementTracker:
             id=f"eng_{post_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
             post_id=post_id,
             brand_id=brand_id,
+            workspace_id=post.get("workspace_id"),
             platform=post.get("platform", "facebook"),
             platform_post_id=platform_post_id,
             likes=insights.get("likes", 0),
@@ -399,6 +408,7 @@ class EngagementTracker:
                 engagement=engagement.total_engagement,
                 engagement_rate=engagement.engagement_rate,
                 metadata={
+                    "workspace_id": engagement.workspace_id,
                     "ratio": ratio,
                     "platform": engagement.platform,
                     "post_created_at": engagement.post_created_at.isoformat() if engagement.post_created_at else None,
@@ -497,6 +507,7 @@ class EngagementTracker:
                     post_id=f"brand_check_{brand_id}",
                     brand_id=brand_id,
                     metadata={
+                        "workspace_id": workspace_id,
                         "event": "scheduled_tick",
                         "brand_name": brand.get("name", ""),
                         "days_since_last_post": days_since,
