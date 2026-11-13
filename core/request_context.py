@@ -28,6 +28,8 @@ class RequestContext:
     platform_permissions: tuple = ()
     principal_type: str = "human"  # human | machine
     auth_method: str = ""
+    credential_purpose: str = "workspace_api"
+    resource_constraints: Dict[str, Any] = field(default_factory=dict)
     correlation_id: str = ""
     brand_id: Optional[str] = None
     user_email: Optional[str] = None
@@ -164,6 +166,8 @@ def bind_from_auth_identity(identity: Any, *, correlation_id: str = "", brand_id
             is_species or str(getattr(identity, "method", "") or "") in ("workspace_token", "user_api_key")
         ) else "human",
         auth_method=str(getattr(identity, "method", "") or ""),
+        credential_purpose=str(getattr(identity, "credential_purpose", "workspace_api") or "workspace_api"),
+        resource_constraints=dict(getattr(identity, "resource_constraints", None) or {}),
         correlation_id=correlation_id or "",
         brand_id=brand_id,
         user_email=getattr(identity, "user_email", None),

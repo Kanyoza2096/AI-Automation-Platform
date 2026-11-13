@@ -100,3 +100,97 @@ def test_unknown_workspace_token_fails_closed_when_supabase_client_unavailable(m
 
     assert identity.valid is False
     assert identity.error == "Legacy api_keys disabled — use api_tokens (kny_)"
+
+
+def test_non_default_credential_purpose_is_rejected_until_enforcement(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = {
+        "workspace_id": "ws-1",
+        "name": "website-connector",
+        "permissions": ["read", "write"],
+        "credential_purpose": "website_connector",
+        "resource_constraints": {"integration_id": "growthbridge-production"},
+    }
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+    monkeypatch.delenv("ALLOW_LEGACY_API_KEYS", raising=False)
+
+    identity = auth.validate(bearer_token="KDO_API_connector")
+
+    assert identity.valid is False
+    assert "purpose is not enabled" in identity.error
+
+
+def test_unknown_credential_purpose_is_rejected(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = {
+        "workspace_id": "ws-1",
+        "permissions": ["read"],
+        "credential_purpose": "platform_superuser",
+        "resource_constraints": {},
+    }
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+
+    identity = auth.validate(bearer_token="KDO_API_unknown")
+
+    assert identity.valid is False
+
+
+
+def test_website_integration_admin_guard_rejects_machine_admin_scope():
+    import asyncio
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from core.request_context import RequestContext
+    from core.security.deps import require_human_workspace_admin
+
+    ctx = RequestContext(
+        principal_id="machine-token",
+        workspace_id="ws-1",
+        role="admin",
+        permissions=("read", "write", "admin"),
+        principal_type="machine",
+        auth_method="workspace_token",
+    )
+    request = SimpleNamespace(state=SimpleNamespace(request_context=ctx))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(require_human_workspace_admin(request))
+    assert exc.value.status_code == 403
+
+
+def test_website_integration_admin_guard_accepts_human_workspace_admin():
+    import asyncio
+    from types import SimpleNamespace
+    from core.request_context import RequestContext
+    from core.security.deps import require_human_workspace_admin
+
+    ctx = RequestContext(
+        principal_id="human-user",
+        workspace_id="ws-1",
+        role="admin",
+        permissions=("read", "write", "admin"),
+        principal_type="human",
+        auth_method="supabase_jwt",
+    )
+    request = SimpleNamespace(state=SimpleNamespace(request_context=ctx))
+    assert asyncio.run(require_human_workspace_admin(request)) is ctx
+
+
+def test_website_integration_admin_guard_accepts_human_platform_super_admin():
+    import asyncio
+    from types import SimpleNamespace
+    from core.request_context import RequestContext
+    from core.security.deps import require_human_workspace_admin
+
+    ctx = RequestContext(
+        principal_id="platform-admin",
+        workspace_id="ws-1",
+        role="viewer",
+        principal_type="human",
+        auth_method="supabase_jwt",
+        platform_role="super_admin",
+        platform_permissions=("platform:*",),
+    )
+    request = SimpleNamespace(state=SimpleNamespace(request_context=ctx))
+    assert asyncio.run(require_human_workspace_admin(request)) is ctx

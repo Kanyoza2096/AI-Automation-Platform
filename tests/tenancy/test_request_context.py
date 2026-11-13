@@ -140,3 +140,22 @@ def test_workspace_api_token_auth_maps_write_scope_to_operator(monkeypatch):
     assert identity.valid is True
     assert identity.role == "operator"
     assert identity.permissions == ["read", "write"]
+
+
+
+def test_request_context_carries_credential_purpose_and_resource_constraints():
+    clear_request_context()
+    identity = FakeIdentity(
+        is_species=False,
+        workspace_id="ws-connector",
+        permissions=["read"],
+        user_id=None,
+        method="workspace_token",
+        name="Scoped Connector",
+        credential_purpose="website_connector",
+        resource_constraints={"integration_id": "growthbridge-production"},
+    )
+    ctx = bind_from_auth_identity(identity)
+    assert ctx.credential_purpose == "website_connector"
+    assert ctx.resource_constraints == {"integration_id": "growthbridge-production"}
+    clear_request_context()
