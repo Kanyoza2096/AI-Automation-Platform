@@ -116,7 +116,7 @@ class SharedSupabaseClient:
 class JobStatsService:
     """Read-only stats service with shared Supabase client."""
 
-    service_name: str = "JobStatsService"
+    service_name: str = "job_stats_service"
 
     CACHE_TTL_SECONDS = 30
     MAX_BROKEN_PIPE_RETRIES = 2
