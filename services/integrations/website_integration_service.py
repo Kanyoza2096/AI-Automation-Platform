@@ -64,8 +64,9 @@ class WebsiteIntegrationService:
         # The existing WebsiteConnector is the only website mutation adapter.
         # Registration therefore creates/updates its canonical website account
         # rather than introducing a second executor.
+        account_id = self._website_account_id(workspace_id, registration.integration_id)
         account = SocialAccount(
-            id=f"website-{registration.integration_id}",
+            id=account_id,
             workspace_id=workspace_id,
             platform=Platform.WEBSITE,
             platform_account_id=registration.integration_id,
@@ -144,6 +145,17 @@ class WebsiteIntegrationService:
             last_health_at=row.get("last_health_at"),
             last_health_ok=row.get("last_health_ok"),
         )
+
+    @staticmethod
+    def _website_account_id(workspace_id: str, integration_id: str) -> str:
+        """Return a deterministic account ID scoped to the owning workspace.
+
+        Website integration IDs are unique only within a workspace, while
+        social_accounts.id is globally unique. Hash both identifiers so two
+        tenants can safely register the same integration_id without colliding.
+        """
+        identity = f"{workspace_id}:{integration_id}".encode("utf-8")
+        return f"website-{hashlib.sha256(identity).hexdigest()[:32]}"
 
     @staticmethod
     def _hash_secret(secret: str) -> str:
