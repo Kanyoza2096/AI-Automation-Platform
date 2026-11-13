@@ -15,6 +15,7 @@ from models.social_account import SocialAccount, Platform
 from repositories.social_account_repository import SocialAccountRepository
 
 from contracts.website_integration import (
+    WebsiteCapability,
     WebsiteEventEnvelope,
     WebsiteIntegrationReadModel,
     WebsiteIntegrationRegistration,
@@ -42,6 +43,7 @@ class WebsiteIntegrationService:
             "workspace_id": workspace_id,
             "app_name": registration.app_name,
             "environment": registration.environment,
+                "status": registration.publish_status,
             "base_url": registration.base_url,
             "publish_path": registration.publish_path,
             "lookup_path_template": registration.lookup_path_template,
@@ -56,6 +58,9 @@ class WebsiteIntegrationService:
         }
         if not website_api_token:
             raise ValueError("website_api_token is required to configure the Website Connector")
+        required_capability = WebsiteCapability.PUBLISH_ARTICLE if registration.publish_status == "publish" else WebsiteCapability.CREATE_DRAFT
+        if required_capability not in registration.capabilities:
+            raise ValueError(f"publish_status '{registration.publish_status}' requires capability '{required_capability.value}'")
         result = self.db.table(self.TABLE).upsert(row, on_conflict="workspace_id,integration_id").execute()
         # The existing WebsiteConnector is the only website mutation adapter.
         # Registration therefore creates/updates its canonical website account
