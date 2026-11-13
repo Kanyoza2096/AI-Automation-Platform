@@ -43,7 +43,6 @@ class WebsiteIntegrationService:
             "workspace_id": workspace_id,
             "app_name": registration.app_name,
             "environment": registration.environment,
-                "status": registration.publish_status,
             "base_url": registration.base_url,
             "publish_path": registration.publish_path,
             "lookup_path_template": registration.lookup_path_template,
@@ -80,6 +79,7 @@ class WebsiteIntegrationService:
                 "delete_path_template": registration.delete_path_template,
                 "integration_id": registration.integration_id,
                 "environment": registration.environment,
+                "status": registration.publish_status,
             },
             enabled=True,
         )
