@@ -28,7 +28,6 @@ Canonical nodes: **30**.
 | `condition_engine` | `event_bus`, `supabase`, `content_engine`, `engagement_tracker` | service definition: _resolve_condition_engine (critical) | services.condition_engine.autonomous_engine [learning] | ConditionEngine — full/core/condition |
 | `director` | `event_bus`, `supabase` | service definition: _resolve_director (critical) | services.director.director [self_improvement] | Director — full/core/director |
 | `meta_engine` | `event_bus`, `supabase` | service definition: _resolve_meta_engine (critical) | services.meta_engine.meta_engine [health] | MetaEngine — full/core/meta |
-| `brand_scheduler` | `job_service`, `content_engine`, `supabase` | no direct service definition; boot owner or dynamic runtime must supply instance (n/a) | not directly listed | BrandSchedulers — full/workers |
 | `email_service` | `event_bus` | service definition: _resolve_email_service (optional) | services.email_service.email_service [clients] | not mapped to a named boot step — verify selected mode/owner |
 | `engagement_tracker` | `supabase` | service definition: _resolve_engagement_tracker (optional) | services.engagement_tracker.engagement_tracker [growth] | not mapped to a named boot step — verify selected mode/owner |
 | `guardian` | `supabase`, `github` | no direct service definition; boot owner or dynamic runtime must supply instance (n/a) | services.guardian_service.guardian_service [security] | not mapped to a named boot step — verify selected mode/owner |
