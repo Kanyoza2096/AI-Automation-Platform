@@ -35,7 +35,7 @@ Canonical nodes: **30**.
 | `guardian_scheduler` | `guardian` | no direct service definition; boot owner or dynamic runtime must supply instance (n/a) | not directly listed | not mapped to a named boot step — verify selected mode/owner |
 | `health_monitor` | `event_bus` | service definition: _resolve_health_monitor (optional) | services.health_monitor_service.HealthMonitorService [health] | HealthMonitor — full/api |
 | `enterprise_emitters` | `event_bus` | no direct service definition; boot owner or dynamic runtime must supply instance (n/a) | not directly listed | EnterpriseEmitters — full/api |
-| `scheduler` | `job_service`, `content_engine` | service definition: _resolve_scheduler (optional) | scheduler.brand_scheduler.BrandSchedulerManager [content] | BrandSchedulers / BrandSchedulerManager — full/workers |
+| `brand_scheduler` | `job_service`, `content_engine`, `supabase` | service definition: _resolve_scheduler (optional) | scheduler.brand_scheduler.BrandSchedulerManager [content] | BrandSchedulers / BrandSchedulerManager — full/workers |
 | `autonomous_content` | `ai_orchestrator`, `content_engine`, `event_bus`, `supabase` | service definition: _resolve_autonomous_content (optional) | not directly listed | AutonomousContent — full/core |
 | `autonomous_loop` | `meta_engine`, `director`, `condition_engine`, `autonomous_content`, `event_bus` | service definition: _resolve_autonomous_loop (optional) | not directly listed | AutonomousLoop — full/core |
 
