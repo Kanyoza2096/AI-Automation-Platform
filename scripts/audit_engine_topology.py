@@ -39,7 +39,6 @@ BOOT_OWNERS = {
     "autonomous_content": ("AutonomousContent", "full/core"),
     "autonomous_loop": ("AutonomousLoop", "full/core"),
     "brand_scheduler": ("BrandSchedulers", "full/workers"),
-    "scheduler": ("BrandSchedulers / BrandSchedulerManager", "full/workers"),
     "health_monitor": ("HealthMonitor", "full/api"),
     "enterprise_emitters": ("EnterpriseEmitters", "full/api"),
     "github": ("GitHubConnector", "full/github"),
