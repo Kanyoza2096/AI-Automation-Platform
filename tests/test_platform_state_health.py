@@ -215,3 +215,33 @@ def test_infrastructure_probe_is_attributed_to_health_monitor_owner():
     assert services["supabase"].readiness is Readiness.UNAVAILABLE
     assert services["gemini"].readiness is Readiness.UNKNOWN
     assert services["redis"].evidence[0].source == "health_monitor_probe:redis"
+
+
+
+def test_canonical_capabilities_are_projected_and_inherit_owner_readiness():
+    snapshot = build_platform_state_from_health_reports(
+        {"director": Report("director", "degraded")},
+        now=NOW,
+        dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
+    )
+
+    service = snapshot.services[0]
+    capabilities = {item.capability_id: item for item in snapshot.capabilities}
+
+    assert service.capabilities == ("strategic_planning", "platform_coordination")
+    assert capabilities["strategic_planning"].owner_service == "director"
+    assert capabilities["strategic_planning"].readiness is Readiness.DEGRADED
+    assert capabilities["platform_coordination"].readiness is Readiness.DEGRADED
+
+
+def test_capabilities_remain_unknown_when_owner_observation_is_missing():
+    snapshot = build_platform_state_from_health_reports(
+        {},
+        now=NOW,
+        dependencies={"director": ()},
+        service_ownership={"director": ("director", True)},
+    )
+
+    assert len(snapshot.capabilities) == 2
+    assert all(item.readiness is Readiness.UNKNOWN for item in snapshot.capabilities)
