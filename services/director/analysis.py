@@ -120,7 +120,6 @@ class SystemTopology:
             "guardian": (Sector.SECURITY, 4),
             "guardian_scheduler": (Sector.SECURITY, 3),
             "image_engine": (Sector.CONTENT, 3),
-            "topic_selector": (Sector.CONTENT, 2),
             "prompt_builder": (Sector.CONTENT, 2),
             "health_monitor": (Sector.HEALTH, 3),
             "enterprise_emitters": (Sector.HEALTH, 2),
@@ -1066,7 +1065,6 @@ ENGINE_REGISTRY = [
     ("core.event_bus", "EventBus", "event_bus", Sector.INFRA),
     ("core.render_queue", "get_render_queue", "render_queue", Sector.CONTENT),
     ("services.image_engine", "generate_best_image", "image_engine", Sector.CONTENT),
-    ("domain.content.topic_selector", "TopicSelector", "topic_selector", Sector.CONTENT),
     ("services.prompt_builder", "prompt_builder", "prompt_builder", Sector.CONTENT),
     ("services.health_monitor_service", "HealthMonitorService", "health_monitor", Sector.HEALTH),
 ]
