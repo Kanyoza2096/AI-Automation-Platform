@@ -100,3 +100,38 @@ def test_unknown_workspace_token_fails_closed_when_supabase_client_unavailable(m
 
     assert identity.valid is False
     assert identity.error == "Legacy api_keys disabled — use api_tokens (kny_)"
+
+
+def test_non_default_credential_purpose_is_rejected_until_enforcement(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = {
+        "workspace_id": "ws-1",
+        "name": "website-connector",
+        "permissions": ["read", "write"],
+        "credential_purpose": "website_connector",
+        "resource_constraints": {"integration_id": "growthbridge-production"},
+    }
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+    monkeypatch.delenv("ALLOW_LEGACY_API_KEYS", raising=False)
+
+    identity = auth.validate(bearer_token="KDO_API_connector")
+
+    assert identity.valid is False
+    assert "purpose is not enabled" in identity.error
+
+
+def test_unknown_credential_purpose_is_rejected(monkeypatch):
+    auth = SpeciesAuth()
+    manager = Mock()
+    manager.validate_token.return_value = {
+        "workspace_id": "ws-1",
+        "permissions": ["read"],
+        "credential_purpose": "platform_superuser",
+        "resource_constraints": {},
+    }
+    monkeypatch.setattr("core.api_tokens.api_token_manager", manager)
+
+    identity = auth.validate(bearer_token="KDO_API_unknown")
+
+    assert identity.valid is False
