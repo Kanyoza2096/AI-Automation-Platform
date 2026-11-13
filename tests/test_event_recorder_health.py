@@ -52,3 +52,66 @@ def test_event_recorder_reports_degraded_when_analytics_storage_is_unavailable()
     assert "analytics_storage_unavailable" in {
         issue["type"] for issue in report["issues"]
     }
+
+
+class FakeQuery:
+    def __init__(self, client):
+        self.client = client
+
+    def select(self, columns):
+        self.client.selected_columns = columns
+        return self
+
+    def limit(self, count):
+        self.client.limit_count = count
+        return self
+
+    def insert(self, row):
+        self.client.inserted_row = row
+        return self
+
+    def execute(self):
+        return type("Response", (), {"data": []})()
+
+
+class FakeSupabase:
+    def table(self, name):
+        assert name == "analytics_events"
+        return FakeQuery(self)
+
+
+def test_analytics_repository_health_probe_checks_persisted_schema_contract():
+    from repositories.analytics_repository import AnalyticsRepository
+
+    repository = AnalyticsRepository()
+    client = FakeSupabase()
+    repository._client = client
+
+    assert repository.check_storage() is True
+    assert "metadata" in client.selected_columns
+    assert "recorded_at" in client.selected_columns
+    assert client.limit_count == 1
+
+
+def test_analytics_repository_preserves_non_column_event_fields_in_metadata():
+    from repositories.analytics_repository import AnalyticsRepository
+
+    repository = AnalyticsRepository()
+    client = FakeSupabase()
+    repository._client = client
+
+    repository.save({
+        "event": "post_generated",
+        "topic": "security",
+        "theme": "engineering",
+        "provider": "test-provider",
+        "latency_ms": 42,
+    })
+
+    assert client.inserted_row["event"] == "post_generated"
+    assert client.inserted_row["topic"] == "security"
+    assert client.inserted_row["metadata"] == {
+        "theme": "engineering",
+        "provider": "test-provider",
+        "latency_ms": 42,
+    }
