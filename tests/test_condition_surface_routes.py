@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import services.condition_engine as condition_engine
+from services.condition_engine.models import Baseline, Decision, DecisionState, Experiment
 from routes import cp_surface_routes
 
 
@@ -110,3 +111,47 @@ def test_condition_provider_exception_is_not_reported_as_successful_empty(monkey
     assert result["error"] == "RuntimeError"
     assert result["message"] == "Condition baseline evidence is unavailable."
     assert "internal provider details" not in str(result)
+
+
+def test_condition_engine_dataclasses_are_json_serialized(monkeypatch):
+    engine = SimpleNamespace(
+        _baselines={
+            ("brand-1", "engagement_rate"): Baseline(metric="engagement_rate", mean=0.31, sample_count=8)
+        },
+        _experiments={
+            "experiment-1": Experiment(
+                id="experiment-1",
+                brand_id="brand-1",
+                name="Landing page test",
+                variable="headline",
+                control="A",
+                variant="B",
+            )
+        },
+        _decisions={
+            "decision-1": Decision(
+                id="decision-1",
+                brand_id="brand-1",
+                state=DecisionState.OBSERVE,
+                confidence=0.82,
+                reason="Engagement evidence is incomplete",
+                evidence={"observations": 3},
+            )
+        },
+        get_status=lambda: {"decisions": 1},
+    )
+    monkeypatch.setattr(condition_engine, "autonomous_engine", engine)
+
+    baselines = asyncio.run(cp_surface_routes.condition_baselines(None))
+    experiments = asyncio.run(cp_surface_routes.condition_experiments())
+    decisions = asyncio.run(cp_surface_routes.condition_decisions())
+
+    assert baselines["ok"] is True
+    assert baselines["baselines"][0]["mean"] == 0.31
+    assert baselines["baselines"][0]["calculated_at"]
+    assert experiments["ok"] is True
+    assert experiments["experiments"][0]["control"] == "A"
+    assert experiments["experiments"][0]["variant"] == "B"
+    assert decisions["ok"] is True
+    assert decisions["decisions"][0]["state"] == "observe"
+    assert decisions["decisions"][0]["created_at"]
