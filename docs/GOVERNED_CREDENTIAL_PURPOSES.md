@@ -42,6 +42,9 @@ now enabled; service-integration credentials remain disabled.
   integration IDs, missing write permission, expired tokens, and revoked tokens.
 - Connector credentials can be revoked only by a human workspace administrator
   and only within their owning workspace and integration.
+- For GrowthBridge event delivery into KDO, store the one-time credential in
+  the GrowthBridge deployment as `KDO_WEBSITE_INTEGRATION_TOKEN`; do not
+  confuse it with the separate outbound website publishing credential.
 - Website integration registration requires a human Supabase-JWT workspace
   administrator or human platform super-admin. Machine API tokens and species
   service credentials cannot register integrations, even if a token has an
