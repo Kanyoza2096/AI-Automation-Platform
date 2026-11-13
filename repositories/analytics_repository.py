@@ -27,6 +27,18 @@ class AnalyticsRepository(Repository[dict]):
                 logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
+    def check_storage(self) -> bool:
+        """Perform a read-only probe of the analytics table; never writes test rows."""
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            client.table(self.TABLE).select("event").limit(1).execute()
+            return True
+        except Exception:
+            logger.warning("Analytics storage health probe failed")
+            return False
+
     def find_by_id(self, record_id: str) -> Optional[dict]:
         client = self._get_client()
         if client is None:
