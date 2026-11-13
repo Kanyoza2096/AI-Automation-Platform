@@ -107,7 +107,7 @@ RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
-AS $
+AS $function$
 DECLARE
     v_updated INTEGER;
 BEGIN
@@ -144,7 +144,7 @@ BEGIN
     GET DIAGNOSTICS v_updated = ROW_COUNT;
     RETURN v_updated > 0;
 END;
-$;
+$function$;
 
 REVOKE ALL ON FUNCTION public.complete_business_automation_event_delivery(UUID, TEXT, TEXT, TEXT, BOOLEAN, TEXT)
     FROM PUBLIC, anon, authenticated;
