@@ -89,7 +89,7 @@ class APITokenManager:
             raise ValueError("Unsupported credential purpose")
         if credential_purpose != "workspace_api":
             raise ValueError("Non-default credential purposes are not issuable until endpoint enforcement is deployed")
-        constraints = resource_constraints or {}
+        constraints = resource_constraints if resource_constraints is not None else {}
         if not isinstance(constraints, dict):
             raise ValueError("resource_constraints must be an object")
         raw_token = f"{self._PREFIX}{secrets.token_hex(32)}"
