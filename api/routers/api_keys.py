@@ -36,7 +36,10 @@ async def generate_api_key(
     try:
         workspace_id = resolve_plugin_workspace()
         from core.api_tokens import api_token_manager
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)).isoformat()
+        expires_at = (
+            (datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)).isoformat()
+            if body.expires_in_days is not None else None
+        )
         result = await _async_wrap(
             api_token_manager.create_token,
             workspace_id,
