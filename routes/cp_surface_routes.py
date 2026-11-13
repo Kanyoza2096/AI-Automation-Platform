@@ -319,19 +319,14 @@ async def condition_decisions(request: Request, container=Depends(_container_dep
         brand_ids = await _workspace_brand_ids(request, container)
         decisions = _condition_records(autonomous_engine, "get_decisions", "_decisions")
         decisions = _filter_workspace_condition_records(decisions, brand_ids, "decisions")
-        status = {}
-        status_provider = getattr(autonomous_engine, "get_status", None)
-        if callable(status_provider):
-            try:
-                value = status_provider()
-                status = jsonable_encoder(value) if isinstance(value, dict) else {}
-            except Exception as status_exc:
-                logger.warning("condition engine status summary unavailable: %s", type(status_exc).__name__)
         return {
             "ok": True,
             "decisions": decisions,
             "count": len(decisions),
-            "status": status,
+            "status": {
+                "workspace_brand_count": len(brand_ids),
+                "workspace_decision_count": len(decisions),
+            },
             "source": "condition_engine",
         }
     except Exception as exc:
