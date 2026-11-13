@@ -6,10 +6,9 @@ from core.service_definitions import _resolve_autonomous_content, _resolve_auton
 from services.meta_engine import MetaEngineV7
 
 
-def test_canonical_topology_prevents_topic_selector_content_cycle():
-    assert CANONICAL_ENGINE_DEPENDENCIES["topic_selector"] == ("supabase",)
-    assert "topic_selector" in CANONICAL_ENGINE_DEPENDENCIES["content_engine"]
-    assert "content_engine" not in CANONICAL_ENGINE_DEPENDENCIES["topic_selector"]
+def test_brand_scoped_topic_selector_is_not_a_platform_service():
+    assert "topic_selector" not in CANONICAL_ENGINE_DEPENDENCIES
+    assert "topic_selector" not in CANONICAL_ENGINE_DEPENDENCIES["content_engine"]
 
 
 def test_meta_graph_matches_canonical_topology():
@@ -54,11 +53,11 @@ def test_failure_classification_marks_dependency_cascade():
             return {"status": "offline"}
 
     meta.register("supabase", Engine())
-    meta.register("topic_selector", Dependent())
+    meta.register("brand_scheduler", Dependent())
     snapshot = meta._scan_all_engines(force=True)
-    topic = snapshot.engines["topic_selector"]
-    assert topic.failure_class == "degraded_due_to_dependency"
-    assert topic.root_dependency == "supabase"
+    scheduler = snapshot.engines["brand_scheduler"]
+    assert scheduler.failure_class == "degraded_due_to_dependency"
+    assert scheduler.root_dependency == "supabase"
     asyncio.run(meta.stop())
 
 
