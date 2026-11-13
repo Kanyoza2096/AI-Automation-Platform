@@ -70,9 +70,20 @@ def test_durable_inbox_claim_and_ack_are_rpc_backed():
         rows = await bridge._claim_durable_events()
         assert rows[0]["event_id"] == "e1"
         await bridge._ack_durable(rows[0], success=True)
-        assert [c[0] for c in db.calls] == [
-            "claim_business_automation_event_deliveries",
-            "complete_business_automation_event_delivery",
+        assert db.calls == [
+            ("claim_business_automation_event_deliveries", {
+                "p_consumer_group": "business_automation",
+                "p_limit": 25,
+                "p_lease_seconds": 120,
+            }),
+            ("complete_business_automation_event_delivery", {
+                "p_delivery_id": "d1",
+                "p_workspace_id": "ws1",
+                "p_consumer_group": "business_automation",
+                "p_claim_token": "worker-a",
+                "p_success": True,
+                "p_error": "",
+            }),
         ]
     asyncio.run(run())
 
