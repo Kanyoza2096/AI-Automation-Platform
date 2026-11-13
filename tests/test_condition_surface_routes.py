@@ -194,3 +194,35 @@ def test_condition_records_without_workspace_brand_are_rejected(monkeypatch):
     assert result["ok"] is False
     assert result["source"] == "error"
     assert result["error"] == "ValueError"
+
+
+def test_workspace_brand_resolution_checks_ownership_and_uses_repository(monkeypatch):
+    import api.dependencies
+    import api.v1_helpers
+
+    calls = []
+
+    class FakeRepository:
+        def find_by_workspace(self, workspace_id):
+            calls.append(("find_by_workspace", workspace_id))
+            return [SimpleNamespace(id="brand-1"), SimpleNamespace(id="brand-2")]
+
+    class FakeContainer:
+        def resolve(self, repository_type):
+            return FakeRepository()
+
+    async def allow_ownership(resource_type, workspace_id, request, container):
+        calls.append(("ownership", resource_type, workspace_id))
+
+    async def run_sync(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(cp_surface_routes, "_workspace_id", lambda request: "workspace-1")
+    monkeypatch.setattr(api.dependencies, "require_workspace_ownership", allow_ownership)
+    monkeypatch.setattr(api.v1_helpers, "_async_wrap", run_sync)
+
+    brand_ids = asyncio.run(cp_surface_routes._workspace_brand_ids(object(), FakeContainer()))
+
+    assert brand_ids == {"brand-1", "brand-2"}
+    assert ("ownership", "workspace", "workspace-1") in calls
+    assert ("find_by_workspace", "workspace-1") in calls
