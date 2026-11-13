@@ -2,9 +2,7 @@ name: Backend GitHub Connector Contract CI
 
 on:
   pull_request:
-    branches: [staging]
   push:
-    branches: [staging]
 
 permissions:
   contents: read
