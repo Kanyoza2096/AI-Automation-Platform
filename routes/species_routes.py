@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 from services.supabase import supabase_service
 
 router = APIRouter(prefix="/api/v1/species", tags=["species"])
 
 
 @router.get("/workspaces")
-async def list_workspaces(ctx=Depends(require_species_privileges)):
+async def list_workspaces(ctx=Depends(require_platform_or_species_privileges)):
     client = supabase_service.service_client or supabase_service.client
     if client is None:
         return {"ok": False, "error": "supabase_unavailable", "workspaces": [], "count": 0}
