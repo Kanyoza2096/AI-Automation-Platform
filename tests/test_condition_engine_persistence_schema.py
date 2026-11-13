@@ -79,6 +79,7 @@ def test_decision_memory_persistence_uses_existing_jsonb_contract_and_generated_
     table, payload, conflict = engine.supabase.calls[0]
     assert table == "autonomous_decision_memory"
     assert conflict == "memory_key"
+    assert payload["workspace_id"] == "ws-1"
     assert payload["key"] == "observe"
     assert payload["value"]["decision_id"] == "decision-123"
     assert payload["value"]["brand_id"] == "brand-1"
