@@ -21,6 +21,7 @@ def test_platform_state_migration_defines_reader_schema_and_atomic_writer():
     assert "and revision = p_expected_revision" in normalized
     assert "platform_state_revision_conflict" in normalized
     assert "using errcode = '40001'" in normalized
+    assert "set search_path = pg_catalog, public, pg_temp" in normalized
 
 
 def test_platform_state_migration_restricts_access_to_service_role():
