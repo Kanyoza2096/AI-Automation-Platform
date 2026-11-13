@@ -3,8 +3,12 @@ GitHub Connector Plugin Admin Routes v2.0
 Advanced GitHub intelligence and workflow automation endpoints.
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Optional
+
+from plugins.github_connector.routes.contracts import build_ci_payload
 
 from core.security.deps import require_species_privileges
 
@@ -98,10 +102,11 @@ async def list_repos(visibility: str = "all", sort: str = "updated", per_page: i
             ]
         }
     
-    data = plugin._github_request(f"/user/repos?visibility={visibility}&sort={sort}&per_page={per_page}")
+    data = await plugin._github_request(f"/user/repos?visibility={visibility}&sort={sort}&per_page={per_page}")
     if isinstance(data, list):
-        return {"ok": True, "mock": False, "repositories": data}
-    return {"ok": False, "error": data.get("error", "Failed to fetch repositories")}
+        return {"ok": True, "mock": False, "source": "github_api", "repositories": data, "count": len(data)}
+    error = data.get("error", "Failed to fetch repositories") if isinstance(data, dict) else "GitHub returned an unrecognised repository response"
+    return {"ok": False, "mock": False, "repositories": [], "count": 0, "error": error}
 
 
 @router.get("/repos/{owner}/{repo}/pulls")
@@ -139,10 +144,11 @@ async def list_pull_requests(owner: str, repo: str, state: str = "open"):
             ]
         }
     
-    data = plugin._github_request(f"/repos/{owner}/{repo}/pulls?state={state}")
+    data = await plugin._github_request(f"/repos/{owner}/{repo}/pulls?state={state}")
     if isinstance(data, list):
         return {"ok": True, "mock": False, "pull_requests": data}
-    return {"ok": False, "error": data.get("error", "Failed to fetch pull requests")}
+    error = data.get("error", "Failed to fetch pull requests") if isinstance(data, dict) else "GitHub returned an unrecognised pull-request response"
+    return {"ok": False, "mock": False, "pull_requests": [], "error": error}
 
 
 @router.get("/repos/{owner}/{repo}/issues")
@@ -176,10 +182,65 @@ async def list_issues(owner: str, repo: str, state: str = "open"):
             ]
         }
     
-    data = plugin._github_request(f"/repos/{owner}/{repo}/issues?state={state}")
+    data = await plugin._github_request(f"/repos/{owner}/{repo}/issues?state={state}")
     if isinstance(data, list):
         return {"ok": True, "mock": False, "issues": data}
-    return {"ok": False, "error": data.get("error", "Failed to fetch issues")}
+    error = data.get("error", "Failed to fetch issues") if isinstance(data, dict) else "GitHub returned an unrecognised issue response"
+    return {"ok": False, "mock": False, "issues": [], "error": error}
+
+
+@router.get("/ci")
+async def list_ci_runs(max_repos: int = 10, per_repo: int = 5):
+    """Return recent GitHub Actions runs across a bounded set of repositories.
+
+    The endpoint is intentionally read-only and caps fan-out to protect the
+    GitHub API rate budget. Missing credentials are reported as an explicit
+    mock/unavailable state; no synthetic workflow runs are created.
+    """
+    plugin = _get_plugin()
+    if not plugin or not plugin.github_token:
+        return {
+            "ok": True,
+            "mock": True,
+            "source": "mock",
+            "runs": [],
+            "count": 0,
+            "repos_scanned": 0,
+            "message": "GitHub token not configured; workflow runs are unavailable.",
+        }
+
+    max_repos = max(1, min(int(max_repos), 20))
+    per_repo = max(1, min(int(per_repo), 10))
+    repositories = await plugin._github_request(
+        f"/user/repos?sort=updated&per_page={max_repos}"
+    )
+    if not isinstance(repositories, list):
+        error = repositories.get("error", "Failed to list repositories") if isinstance(repositories, dict) else "GitHub returned an unrecognised repository response"
+        return {
+            "ok": False,
+            "mock": False,
+            "source": "github_api",
+            "runs": [],
+            "count": 0,
+            "repos_scanned": 0,
+            "errors": [error],
+            "error": error,
+        }
+
+    repositories = [
+        repo for repo in repositories
+        if isinstance(repo, dict) and isinstance(repo.get("full_name"), str) and repo["full_name"]
+    ]
+    responses = await asyncio.gather(
+        *(
+            plugin._github_request(
+                f"/repos/{repo['full_name']}/actions/runs?per_page={per_repo}"
+            )
+            for repo in repositories
+        ),
+        return_exceptions=True,
+    )
+    return build_ci_payload(repositories, responses)
 
 
 @router.post("/review-pr")
