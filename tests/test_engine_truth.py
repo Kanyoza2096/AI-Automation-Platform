@@ -69,6 +69,21 @@ def test_engine_registry_does_not_alias_job_stats_as_job_service():
     assert matches[0][2] == "job_stats_service"
 
 
+def test_canonical_scheduler_identity_is_brand_scheduler():
+    assert "brand_scheduler" in CANONICAL_ENGINE_DEPENDENCIES
+    assert "scheduler" not in CANONICAL_ENGINE_DEPENDENCIES
+    assert CANONICAL_ENGINE_DEPENDENCIES["brand_scheduler"] == (
+        "job_service", "content_engine", "supabase"
+    )
+    from core.service_definitions import SERVICE_DEFINITIONS
+    service_names = {name for name, _resolver, _critical in SERVICE_DEFINITIONS}
+    assert "brand_scheduler" in service_names
+    assert "scheduler" not in service_names
+    from services.director import ENGINE_REGISTRY
+    scheduler_rows = [row for row in ENGINE_REGISTRY if row[1] == "BrandSchedulerManager"]
+    assert scheduler_rows and scheduler_rows[0][2] == "brand_scheduler"
+
+
 def test_meta_engine_has_distinct_job_service_and_job_stats_nodes():
     meta = MetaEngineV7()
     assert meta._deps.get_dependencies("job_service") == ["supabase", "event_bus"]
