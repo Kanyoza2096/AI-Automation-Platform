@@ -113,6 +113,29 @@ async def require_species_privileges(request: Request) -> RequestContext:
         raise HTTPException(status_code=403, detail="Platform operator privileges required")
     return ctx
 
+async def require_platform_or_species_privileges(request: Request) -> RequestContext:
+    """Allow machine species principals or explicitly granted human platform super-admins.
+
+    Workspace owners/admins and platform operators do not qualify. Human grants
+    are accepted only when the canonical Supabase-JWT context carries the
+    server-resolved super_admin role; client metadata and workspace RBAC are
+    never consulted here.
+    """
+    ctx = getattr(request.state, "request_context", None) or get_request_context()
+    if ctx is None:
+        ctx = await require_auth_context(request)
+
+    is_human_platform_super_admin = (
+        getattr(ctx, "principal_type", "") == "human"
+        and getattr(ctx, "auth_method", "") == "supabase_jwt"
+        and getattr(ctx, "platform_role", "") == "super_admin"
+        and not getattr(ctx, "species_privileges", False)
+        and ctx.has_permission("platform:control_plane:access")
+    )
+    if not (getattr(ctx, "species_privileges", False) or is_human_platform_super_admin):
+        raise HTTPException(status_code=403, detail="Platform authority required")
+    return ctx
+
 
 async def require_workspace_role(request: Request, minimum_role: str) -> RequestContext:
     """Require an authenticated workspace role at or above *minimum_role*.
