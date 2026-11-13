@@ -32,7 +32,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 from collections import deque
 
 logger = logging.getLogger("kanyoza.events.api")
@@ -40,7 +40,7 @@ logger = logging.getLogger("kanyoza.events.api")
 router = APIRouter(
     prefix="/api/v1/events",
     tags=["events"],
-    dependencies=[Depends(require_species_privileges)],
+    dependencies=[Depends(require_platform_or_species_privileges)],
 )
 
 
@@ -461,7 +461,7 @@ async def get_event_topology(_auth=Depends(_require_auth)):
 
 
 @router.post("/publish")
-async def publish_event(data: PublishEventRequest, _auth=Depends(_require_auth), _species=Depends(require_species_privileges)):
+async def publish_event(data: PublishEventRequest, _auth=Depends(_require_auth), _species=Depends(require_platform_or_species_privileges)):
     bus = await _get_event_bus()
     if not bus:
         raise HTTPException(503, "Event bus not available")
@@ -505,7 +505,7 @@ async def list_subscribers(_auth=Depends(_require_auth)):
 
 
 @router.delete("/clear")
-async def clear_events(_auth=Depends(_require_auth), _species=Depends(require_species_privileges)):
+async def clear_events(_auth=Depends(_require_auth), _species=Depends(require_platform_or_species_privileges)):
     event_history.clear()
     return {"ok": True, "message": "Event history cleared"}
 
