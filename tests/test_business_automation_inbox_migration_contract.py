@@ -23,7 +23,7 @@ def test_claim_rpc_uses_lease_and_skip_locked_with_fencing_token():
 
     assert "for update of d skip locked" in sql
     assert "p_lease_seconds" in sql
-    assert "claimed_at < now() - make_interval" in sql
+    assert "d.claimed_at < now() - make_interval" in sql
     assert "d.claimed_by" in sql
     assert "claim_token text" in sql
 
