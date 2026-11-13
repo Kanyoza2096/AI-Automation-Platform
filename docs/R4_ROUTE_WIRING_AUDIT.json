@@ -762,7 +762,7 @@
       "path": "/api/v1/condition/baselines",
       "module": "routes/cp_surface_routes.py",
       "handler": "condition_baselines",
-      "line": 181,
+      "line": 239,
       "signals": [
         "service_import"
       ],
@@ -773,7 +773,7 @@
       "path": "/api/v1/condition/decisions",
       "module": "routes/cp_surface_routes.py",
       "handler": "condition_decisions",
-      "line": 215,
+      "line": 277,
       "signals": [
         "service_import"
       ],
@@ -784,7 +784,7 @@
       "path": "/api/v1/condition/experiments",
       "module": "routes/cp_surface_routes.py",
       "handler": "condition_experiments",
-      "line": 200,
+      "line": 258,
       "signals": [
         "service_import"
       ],
