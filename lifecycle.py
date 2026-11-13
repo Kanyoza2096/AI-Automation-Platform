@@ -2236,10 +2236,16 @@ class _JobServiceHealthProvider:
                     result = await result
                 if isinstance(result, dict):
                     status = str(result.get("status", "healthy")).lower()
+                    if status in ("healthy", "ok", "nominal", "ready"):
+                        health_status = HealthStatus.HEALTHY
+                    elif status in ("unknown", "not_configured", "starting"):
+                        health_status = HealthStatus.UNKNOWN
+                    elif status in ("unhealthy", "offline", "failed", "critical", "stopped"):
+                        health_status = HealthStatus.UNHEALTHY
+                    else:
+                        health_status = HealthStatus.DEGRADED
                     return HealthReport(
-                        HealthStatus.HEALTHY
-                        if status in ("healthy", "ok")
-                        else HealthStatus.DEGRADED,
+                        health_status,
                         self.service_name,
                         metadata=result,
                     )
