@@ -129,7 +129,6 @@ class SystemTopology:
             "job_stats_service": (Sector.INFRA, 2),
             "autonomous_content": (Sector.CONTENT, 3),
             "autonomous_loop": (Sector.SELF, 4),
-            "scheduler": (Sector.CONTENT, 3),
         }
 
         for name in CANONICAL_ENGINE_DEPENDENCIES:
@@ -1060,7 +1059,7 @@ ENGINE_REGISTRY = [
     ("services.meta_engine", "meta_engine", "meta_engine", Sector.HEALTH),
     ("services.director", "director", "meta_director", Sector.SELF),
     ("ai.orchestrator", "AIOrchestrator", "ai_orchestrator", Sector.HEALTH),
-    ("scheduler.brand_scheduler", "BrandSchedulerManager", "scheduler", Sector.CONTENT),
+    ("scheduler.brand_scheduler", "BrandSchedulerManager", "brand_scheduler", Sector.CONTENT),
     ("services.job_stats_service", "get_job_stats_service", "job_stats_service", Sector.INFRA),
     ("plugins.base", "PluginRegistry", "plugin_registry", Sector.INFRA),
     ("core.event_bus", "EventBus", "event_bus", Sector.INFRA),
