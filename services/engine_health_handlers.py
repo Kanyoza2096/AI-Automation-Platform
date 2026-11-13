@@ -101,22 +101,6 @@ def image_engine_health(engine: Any) -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TOPIC SELECTOR
-# ═══════════════════════════════════════════════════════════════════════════
-
-def topic_selector_health(engine: Any) -> Dict[str, Any]:
-    """Health check for TopicSelector."""
-    try:
-        if engine is not None and not isinstance(engine, type):
-            return {"status": "healthy", "message": "TopicSelector instance available"}
-        if engine is not None and isinstance(engine, type):
-            return {"status": "healthy", "message": "TopicSelector class available"}
-        return {"status": "offline", "message": "TopicSelector not available"}
-    except Exception as exc:
-        return {"status": "degraded", "message": str(exc)}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # PROMPT BUILDER
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -237,7 +221,6 @@ HEALTH_HANDLERS = {
     "content_engine": content_engine_health,
     "card_renderer": card_renderer_health,
     "image_engine": image_engine_health,
-    "topic_selector": topic_selector_health,
     "prompt_builder": prompt_builder_health,
     "health_monitor": health_monitor_health,       # NEW
     "plugin_registry": plugin_registry_health,     # NEW
