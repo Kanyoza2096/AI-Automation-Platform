@@ -111,6 +111,12 @@ async def issue_connector_credential(
     integration = service.get(WebsiteIntegrationContext(ctx.workspace_id), integration_id)
     if integration is None:
         raise HTTPException(404, "Website integration not found")
+    integration_status = getattr(
+        getattr(integration, "status", None), "value",
+        getattr(integration, "status", None),
+    )
+    if integration_status not in ("configured", "connected"):
+        raise HTTPException(409, "Website integration must be configured or connected")
     expires_at = (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
     try:
         from core.api_tokens import api_token_manager
