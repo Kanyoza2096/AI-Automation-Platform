@@ -60,8 +60,12 @@ class WebsiteIntegrationApplicationService:
         workspace_id = context.validate()
         if envelope.integration_id != integration_id:
             raise ValueError("integration_id mismatch")
-        if not self._port.event_is_registered(workspace_id, integration_id):
+        integration = self._port.get(workspace_id, integration_id)
+        if integration is None:
             raise LookupError("Website integration not found")
+        status = getattr(getattr(integration, "status", None), "value", getattr(integration, "status", None))
+        if status not in ("configured", "connected"):
+            raise LookupError("Website integration is not active")
         if not self._port.event_type_is_registered(workspace_id, integration_id, envelope.event_type.value):
             raise ValueError("event_type is not enabled for this website integration")
         result = self._port.record_event(workspace_id, envelope)
