@@ -27,6 +27,40 @@ class EventRecorder:
     def is_started(self) -> bool:
         return self._started
 
+    def health_check(self) -> dict:
+        """Report subscription and analytics-storage readiness without writing data."""
+        expected_subscriptions = 4
+        active_subscriptions = len(self._unsubscribe_callbacks)
+        issues = []
+
+        if not self._started or active_subscriptions != expected_subscriptions:
+            issues.append("event_subscriptions_incomplete")
+
+        storage_probe = getattr(self._repo, "check_storage", None)
+        storage_readable = False
+        if callable(storage_probe):
+            try:
+                storage_readable = storage_probe() is True
+            except Exception:
+                logger.warning("EventRecorder storage health probe failed")
+        if not storage_readable:
+            issues.append("analytics_storage_unavailable")
+
+        return {
+            "status": "healthy" if not issues else "degraded",
+            "metrics": {
+                "started": self._started,
+                "active_subscriptions": active_subscriptions,
+                "expected_subscriptions": expected_subscriptions,
+                "storage_readable": storage_readable,
+            },
+            "issues": [{"type": issue} for issue in issues],
+        }
+
+    # Both names are supported by the platform's health-provider adapters.
+    def check_health(self) -> dict:
+        return self.health_check()
+
     async def start(self) -> None:
         """Await all subscriptions and roll back if any registration fails."""
         async with self._lifecycle_lock:

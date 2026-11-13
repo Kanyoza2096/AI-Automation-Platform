@@ -27,6 +27,18 @@ class AnalyticsRepository(Repository[dict]):
                 logger.warning("Failed to get Supabase client: %s", e)
         return self._client
 
+    def check_storage(self) -> bool:
+        """Perform a read-only probe of the analytics table; never writes test rows."""
+        client = self._get_client()
+        if client is None:
+            return False
+        try:
+            client.table(self.TABLE).select("event,topic,platform,post_id,workspace_id,recorded_at,metadata").limit(1).execute()
+            return True
+        except Exception:
+            logger.warning("Analytics storage health probe failed")
+            return False
+
     def find_by_id(self, record_id: str) -> Optional[dict]:
         client = self._get_client()
         if client is None:
@@ -46,8 +58,29 @@ class AnalyticsRepository(Repository[dict]):
         if client is None:
             return entity
 
+        # Keep writes aligned with the deployed analytics_events schema.
+        # Event-specific fields without dedicated columns remain in metadata.
+        row = {
+            "event": str(entity.get("event") or "unknown"),
+            "topic": entity.get("topic"),
+            "platform": entity.get("platform"),
+            "post_id": entity.get("post_id"),
+            "workspace_id": entity.get("workspace_id"),
+            "recorded_at": entity.get("recorded_at"),
+            "metadata": {
+                **(entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}),
+                **{
+                    key: value
+                    for key, value in entity.items()
+                    if key not in {
+                        "event", "topic", "platform", "post_id",
+                        "workspace_id", "recorded_at", "metadata",
+                    }
+                },
+            },
+        }
         try:
-            client.table(self.TABLE).insert(entity).execute()
+            client.table(self.TABLE).insert(row).execute()
         except Exception as e:
             logger.error("Failed to save analytics event: %s", e)
         return entity
