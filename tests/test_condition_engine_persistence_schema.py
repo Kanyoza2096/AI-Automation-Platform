@@ -71,6 +71,7 @@ def test_decision_memory_persistence_uses_existing_jsonb_contract_and_generated_
         success=True,
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         evaluated_at=None,
+        workspace_id="ws-1",
     )
 
     engine._persist_decision_memory(memory)
