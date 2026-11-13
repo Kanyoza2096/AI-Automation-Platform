@@ -10,12 +10,12 @@ from typing import Optional
 
 from plugins.github_connector.routes.contracts import build_ci_payload
 
-from core.security.deps import require_species_privileges
+from core.security.deps import require_platform_or_species_privileges
 
 router = APIRouter(
     prefix="/api/v1/github",
     tags=["github-connector"],
-    dependencies=[Depends(require_species_privileges)],
+    dependencies=[Depends(require_platform_or_species_privileges)],
 )
 
 
