@@ -58,6 +58,7 @@ def test_registration_is_durable_and_uses_website_connector_account(monkeypatch)
     assert item.connector_authority == 'WebsiteConnector'
     assert saved['account'].platform.value == 'website'
     assert saved['account'].access_token == 'site-secret'
+    assert saved['account'].platform_config['status'] == 'draft'
 
 
 def test_event_is_idempotent_per_workspace_and_integration():
@@ -125,3 +126,15 @@ def test_duplicate_inbound_event_retries_fanout_with_stable_event_identity():
         assert publisher.events[0][1]['event_id'] == publisher.events[1][1]['event_id'] == 'evt-growthbridge-0001'
 
     asyncio.run(run())
+
+
+def test_website_registration_cannot_publish_without_publish_capability():
+    db = FakeDB()
+    draft_only = WebsiteIntegrationRegistration(
+        integration_id='site-draft', app_name='Draft Site', base_url='https://draft.example',
+        capabilities=[WebsiteCapability.CREATE_DRAFT],
+        event_types=[WebsiteEventType.BLOG_PUBLISHED],
+        publish_status='publish',
+    )
+    with pytest.raises(ValueError, match='requires capability'):
+        WebsiteIntegrationService(db).register('ws-1', draft_only, 'site-secret')
