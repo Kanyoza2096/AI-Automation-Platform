@@ -430,7 +430,10 @@ class EngagementTracker:
             loop = asyncio.get_event_loop()
             brands_response = await loop.run_in_executor(
                 None,
-                lambda: self.supabase.table("brands").select("id,name").eq("status", "active").execute(),
+                lambda: self.supabase.table("brands")
+                .select("id,name,workspace_id")
+                .eq("status", "active")
+                .execute(),
             )
 
             if not brands_response.data:
@@ -438,19 +441,41 @@ class EngagementTracker:
 
             for brand in brands_response.data:
                 brand_id = brand.get("id")
+                workspace_id = brand.get("workspace_id")
+                if not brand_id or not workspace_id:
+                    logger.warning(
+                        "Skipping dead-brand check for brand without id/workspace_id"
+                    )
+                    continue
 
                 try:
+                    # Brand IDs are TEXT identifiers. Query the canonical
+                    # published-post history using both tenant and brand scope;
+                    # the legacy posts table has a UUID brand_id in production.
                     posts_response = await loop.run_in_executor(
                         None,
-                        lambda: self.supabase.table("posts").select("created_at").eq("brand_id", brand_id).order("created_at", desc=True).limit(1).execute(),
+                        lambda brand_id=brand_id, workspace_id=workspace_id: (
+                            self.supabase.table("post_history")
+                            .select("published_at")
+                            .eq("workspace_id", workspace_id)
+                            .eq("brand_id", brand_id)
+                            .gte("published_at", "1970-01-01T00:00:00+00:00")
+                            .order("published_at", desc=True)
+                            .limit(1)
+                            .execute()
+                        ),
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to fetch posts for brand {brand_id}: {e}")
+                    logger.warning(
+                        "Failed to fetch published-post history for brand %s: %s",
+                        brand_id,
+                        e,
+                    )
                     continue
 
                 days_since = 0
                 if posts_response.data and len(posts_response.data) > 0:
-                    last_post = posts_response.data[0].get("created_at", "")
+                    last_post = posts_response.data[0].get("published_at", "")
                     if last_post:
                         try:
                             last_date = datetime.fromisoformat(last_post.replace("Z", "+00:00"))
