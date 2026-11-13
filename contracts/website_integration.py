@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -60,6 +60,7 @@ class WebsiteIntegrationRegistration(BaseModel):
     event_types: list[WebsiteEventType] = Field(default_factory=list, max_length=50)
     capabilities: list[WebsiteCapability] = Field(default_factory=list, max_length=50)
     status: WebsiteIntegrationStatus = WebsiteIntegrationStatus.REGISTERED
+    publish_status: Literal['publish', 'draft'] = 'draft'
 
     @field_validator("base_url")
     @classmethod
