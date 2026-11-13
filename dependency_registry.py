@@ -175,7 +175,7 @@ def _bind_meta_engine(c: ServiceContainer) -> None:
         async def recover_scheduler(_diagnosis=None):
             from scheduler.brand_scheduler import BrandSchedulerManager
             mgr = c.try_resolve(BrandSchedulerManager)
-            return {"ok": mgr is not None, "engine": "scheduler"}
+            return {"ok": mgr is not None, "engine": "brand_scheduler"}
 
         async def recover_content(_diagnosis=None):
             from services.content_engine import content_engine
@@ -184,7 +184,7 @@ def _bind_meta_engine(c: ServiceContainer) -> None:
         if hasattr(meta, "register_recovery_handler"):
             meta.register_recovery_handler("director", recover_director)
             meta.register_recovery_handler("condition", recover_condition)
-            meta.register_recovery_handler("scheduler", recover_scheduler)
+            meta.register_recovery_handler("brand_scheduler", recover_scheduler)
             meta.register_recovery_handler("content", recover_content)
             logger.info("✅ Meta Engine recovery handlers registered")
         else:
