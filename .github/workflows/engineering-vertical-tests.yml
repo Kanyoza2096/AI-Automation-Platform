@@ -556,7 +556,7 @@ jobs:
             tests/test_condition_engine_readiness_contract.py \
             tests/test_organism_platform_state_projection.py \
             tests/test_engine_truth.py \
-            tests/test_platform_state_migration_postgres.py
+            tests/test_platform_state_migration_postgres.py \
             tests/test_website_nextjs_integration.py \
             tests/test_business_automation_event_bridge.py \
             tests/architecture/test_phase5_website_integration_boundary.py
