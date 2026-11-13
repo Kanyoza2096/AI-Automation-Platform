@@ -1391,8 +1391,14 @@ class BrandScheduler:
 
             else:
                 failed = [s.step_name for s in result.steps if not s.ok]
+                failure_evidence = result.failure_evidence()
+                # Persist the diagnostic envelope on the existing job result
+                # column. Do not persist generated captions or full workflow
+                # context; StepResult carries only bounded, allowlisted error
+                # context from governed application exceptions.
                 if automation_job and self._job_service:
                     try:
+                        automation_job.result = failure_evidence
                         _job_call(
                             self._job_service, "mark_failed",
                             automation_job, error=f"Steps failed: {failed}",
@@ -1409,13 +1415,26 @@ class BrandScheduler:
                 self._dead_letter_queue.push(
                     brand_id=self.brand.id,
                     error=f"Steps failed: {failed}",
-                    payload={"source": source, "today": today, "hour": hour},
+                    payload={
+                        "source": source, "today": today, "hour": hour,
+                        "failure_evidence": failure_evidence,
+                    },
                     workspace_id=getattr(self.brand, "workspace_id", None),
                 )
 
                 logger.warning(
-                    "[%s] job=%s FAILED — steps=%s (queued for retry)",
-                    self.brand.name, job_id, failed,
+                    "[%s] job=%s FAILED — steps=%s evidence=%s (queued for retry)",
+                    self.brand.name,
+                    job_id,
+                    failed,
+                    [
+                        {
+                            "step": item["step"],
+                            "code": item["error_code"],
+                            "reason": item["error"][:300],
+                        }
+                        for item in failure_evidence["failed_steps"]
+                    ],
                 )
                 return False
 
