@@ -1301,6 +1301,7 @@ class AutonomousConditionEngine:
             action=action or "observe", reason=decision.reason,
             confidence=decision.confidence, expected_value=expected,
             actual_value=actual_value, success=success, evaluated_at=utc_now(),
+            workspace_id=decision.evidence.get("workspace_id"),
         )
         self._decision_memory.append(memory)
         self._confidence_history[decision.brand_id].append({"confidence": decision.confidence, "success": success, "timestamp": utc_now()})
