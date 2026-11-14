@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
 from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -36,7 +37,6 @@ class DirectorWebsiteEventAdapter:
 
     SOURCE = "nextjs-website-integration"
     OBSERVER_NAME = "website_integration_events"
-    CONSUMER_ID = "director.website-integration-events.v1"
     MAX_RETAINED_EVENTS = 50
     EVENT_NAMES = tuple(
         f"website.integration.{event_type.value}" for event_type in WebsiteEventType
@@ -50,6 +50,7 @@ class DirectorWebsiteEventAdapter:
         self.supabase = supabase_client
         self._unsubscribers: list[Any] = []
         self._latest_events: OrderedDict[str, dict] = OrderedDict()
+        self._latest_lock = threading.RLock()
         self._observer = FunctionObserver(
             self.OBSERVER_NAME, Sector.BRANDS, self.observe
         )
@@ -86,7 +87,8 @@ class DirectorWebsiteEventAdapter:
         self._started = False
 
     def observe(self) -> Observation:
-        events = list(self._latest_events.values())[-self.MAX_RETAINED_EVENTS:]
+        with self._latest_lock:
+            events = list(self._latest_events.values())[-self.MAX_RETAINED_EVENTS:]
         latest = events[-1] if events else None
         stamp = (
             datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00"))
@@ -275,18 +277,19 @@ class DirectorWebsiteEventAdapter:
 
         self.director.decisions.append(decision)
         event_key = f"{workspace_id}:{integration_id}:{external_event_id}"
-        self._latest_events[event_key] = {
-            "workspace_id": workspace_id,
-            "integration_id": integration_id,
-            "event_id": external_event_id,
-            "event_type": event_type,
-            "occurred_at": occurred_at,
-            "observed_at": observed_at.isoformat(),
-            "brand_id": brand_id,
-        }
-        self._latest_events.move_to_end(event_key)
-        while len(self._latest_events) > self.MAX_RETAINED_EVENTS:
-            self._latest_events.popitem(last=False)
+        with self._latest_lock:
+            self._latest_events[event_key] = {
+                "workspace_id": workspace_id,
+                "integration_id": integration_id,
+                "event_id": external_event_id,
+                "event_type": event_type,
+                "occurred_at": occurred_at,
+                "observed_at": observed_at.isoformat(),
+                "brand_id": brand_id,
+            }
+            self._latest_events.move_to_end(event_key)
+            while len(self._latest_events) > self.MAX_RETAINED_EVENTS:
+                self._latest_events.popitem(last=False)
 
         logger.info(
             "Director recorded website event workspace=%s integration=%s type=%s",
