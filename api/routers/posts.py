@@ -433,3 +433,56 @@ async def create_post(
             }, 201)
     except Exception as exc:
         return _safe_err(exc, "POST /api/v1/posts")
+
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(
+    post_id: str,
+    request: Request,
+    draft_store: DraftStore = Depends(get_draft_store),
+    audit_log: AsyncAuditLog = Depends(get_audit_log),
+    _auth: bool = Depends(require_auth),
+):
+    """Delete a draft owned by the authenticated workspace.
+
+    Published posts and queued executions are deliberately not deleted by this
+    endpoint. Their lifecycle requires their own governed cancellation or
+    takedown contract; this route only removes a workspace-owned draft.
+    """
+    workspace_id = _resolve_workspace_from_request(request)
+    if not workspace_id:
+        raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+
+    drafts = await draft_store.get_all()
+    owned_draft = next(
+        (
+            draft for draft in drafts
+            if str(draft.get("id") or draft.get("draft_id") or "") == str(post_id)
+            and str(draft.get("workspace_id") or "") == str(workspace_id)
+        ),
+        None,
+    )
+    if owned_draft is None:
+        # Same response for unknown and other-workspace IDs prevents enumeration.
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    if str(owned_draft.get("state") or "draft").lower() != "draft":
+        raise HTTPException(status_code=409, detail="Only draft posts can be deleted")
+
+    deleted = await draft_store.delete(post_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    await append_audit(
+        audit_log,
+        "post_draft_deleted",
+        f"draft:{post_id}",
+        status_str="success",
+    )
+    return _ok({
+        "deleted": True,
+        "post_id": post_id,
+        "state": "draft",
+        "workspace_id": workspace_id,
+    })
