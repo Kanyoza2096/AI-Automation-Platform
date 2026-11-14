@@ -1417,6 +1417,13 @@
       "line": 4569
     },
     {
+      "method": "DELETE",
+      "path": "/api/v1/posts/{post_id}",
+      "module": "api/routers/posts.py",
+      "handler": "delete_post",
+      "line": 439
+    },
+    {
       "method": "GET",
       "path": "/api/v1/posts",
       "module": "api/v1.py",

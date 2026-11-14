@@ -55,6 +55,25 @@ class DraftStore:
 
         return draft
 
+    async def set(self, draft_id: str, data: dict) -> dict:
+        """Persist a caller-assigned draft ID; Redis failures must not look successful."""
+        import json as _json
+
+        draft = {"id": str(draft_id), **data}
+        if self._using_redis:
+            ttl_seconds = DRAFT_TTL_DAYS * 86400
+            try:
+                await self._redis.set(
+                    f"draft:{draft_id}",
+                    _json.dumps(draft),
+                    ex=ttl_seconds,
+                )
+            except Exception as exc:
+                raise RuntimeError("Draft store persistence is unavailable") from exc
+        else:
+            self._fallback[str(draft_id)] = draft
+        return draft
+
     async def get_all(self) -> list[dict]:
         """Return all active drafts."""
         import json as _json
@@ -83,11 +102,8 @@ class DraftStore:
                 existed = await self._redis.get(f"draft:{draft_id}")
                 await self._redis.delete(f"draft:{draft_id}")
                 return existed is not None
-            except Exception:
-                if draft_id in self._fallback:
-                    del self._fallback[draft_id]
-                    return True
-                return False
+            except Exception as exc:
+                raise RuntimeError("Draft store deletion is unavailable") from exc
 
         if draft_id in self._fallback:
             del self._fallback[draft_id]
