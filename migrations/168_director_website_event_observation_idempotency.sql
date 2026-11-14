@@ -2,6 +2,15 @@
 -- A process-local lock is insufficient when multiple KDO workers consume the
 -- same event. This RPC makes the idempotency check and insert one transaction.
 
+-- Speed up idempotency lookups for the adapter's bounded event ledger.
+CREATE INDEX IF NOT EXISTS idx_director_observations_website_event_identity
+    ON public.director_observations (
+        workspace_id,
+        (payload #>> '{metrics,integration_id}'),
+        (payload #>> '{metrics,website_event_id}')
+    )
+    WHERE payload->>'source' = 'website_integration_events';
+
 CREATE OR REPLACE FUNCTION public.record_director_website_event_observation(
     p_workspace_id TEXT,
     p_integration_id TEXT,
