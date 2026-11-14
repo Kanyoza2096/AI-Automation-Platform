@@ -125,22 +125,23 @@ class DirectorWebsiteEventAdapter:
         event_name = str(event_context.get("event_name") or "")
         if event_name not in self.EVENT_NAMES:
             raise ValueError("unsupported_website_event")
-        if event_context.get("source") != self.SOURCE:
+        source = str(event_context.get("source") or "")
+        is_dead_letter_replay = source == "dead_letter_replay"
+        if source != self.SOURCE and not is_dead_letter_replay:
             raise ValueError("untrusted_website_event_source")
 
         workspace_id = str(event_context.get("workspace_id") or "").strip()
         brand_id = str(event_context.get("brand_id") or "").strip() or None
         event = event_context.get("payload")
-        if not workspace_id or not isinstance(event, dict):
+        if (not workspace_id and not is_dead_letter_replay) or not isinstance(event, dict):
             raise ValueError("workspace_scope_and_event_payload_required")
 
         integration_id = str(event.get("integration_id") or "").strip()
         external_event_id = str(event.get("event_id") or "").strip()
-        event_payload = event.get("payload")
         if (
             not integration_id
             or not external_event_id
-            or not isinstance(event_payload, dict)
+            or not isinstance(event.get("payload"), dict)
         ):
             raise ValueError("invalid_website_event_envelope")
 
@@ -157,6 +158,10 @@ class DirectorWebsiteEventAdapter:
         )
         if receipt is None:
             raise ValueError("website_event_receipt_not_verified")
+        if not workspace_id:
+            workspace_id = str(receipt.get("workspace_id") or "").strip()
+        if not workspace_id:
+            raise ValueError("website_event_workspace_scope_not_resolved")
 
         digest = hashlib.sha256(
             f"{workspace_id}:{integration_id}:{external_event_id}".encode("utf-8")
@@ -332,6 +337,28 @@ class DirectorWebsiteEventAdapter:
         self, workspace_id: str, integration_id: str,
         event_id: str, event_type: str,
     ) -> dict | None:
+        if not workspace_id:
+            # UnifiedEventBus dead-letter replay retains the event payload and
+            # event ID but intentionally omits original workspace metadata.
+            # Recover scope only from one unambiguous durable authenticated receipt.
+            replay_response = (
+                self.supabase.table("website_integration_events")
+                .select("workspace_id,event_id,event_type,occurred_at,payload,integration_id")
+                .eq("integration_id", integration_id)
+                .eq("event_id", event_id)
+                .limit(2)
+                .execute()
+            )
+            replay_rows = replay_response.data or []
+            if len(replay_rows) != 1:
+                return None
+            workspace_id = str(replay_rows[0].get("workspace_id") or "").strip()
+            if not workspace_id:
+                return None
+            replay_receipt = replay_rows[0]
+        else:
+            replay_receipt = None
+
         integration_response = (
             self.supabase.table("website_integrations")
             .select("integration_id,status,event_types")
@@ -349,17 +376,20 @@ class DirectorWebsiteEventAdapter:
         if event_type not in (integration.get("event_types") or []):
             return None
 
-        response = (
-            self.supabase.table("website_integration_events")
-            .select("event_id,event_type,occurred_at,payload")
-            .eq("workspace_id", workspace_id)
-            .eq("integration_id", integration_id)
-            .eq("event_id", event_id)
-            .limit(1)
-            .execute()
-        )
-        rows = response.data or []
-        receipt = rows[0] if rows else None
+        if replay_receipt is not None:
+            receipt = replay_receipt
+        else:
+            response = (
+                self.supabase.table("website_integration_events")
+                .select("event_id,event_type,occurred_at,payload,workspace_id")
+                .eq("workspace_id", workspace_id)
+                .eq("integration_id", integration_id)
+                .eq("event_id", event_id)
+                .limit(1)
+                .execute()
+            )
+            rows = response.data or []
+            receipt = rows[0] if rows else None
         if not isinstance(receipt, dict) or receipt.get("event_type") != event_type:
             return None
         return receipt
