@@ -375,7 +375,7 @@ class DirectorWebsiteEventAdapter:
             "workspace_id": workspace_id,
         }
 
-    async def _persist_observation(self, observation: Observation, workspace_id: str) -> None:
+    def _persist_observation(self, observation: Observation, workspace_id: str) -> None:
         record = {
             "payload": json.dumps(safe(asdict(observation))),
             "timestamp": iso(observation.timestamp),
