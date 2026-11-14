@@ -426,6 +426,7 @@ class DirectorWebsiteEventAdapter:
                 "integration_id": integration_id,
                 "schema_version": schema_version,
                 "fetched_at": fetched_at.isoformat(),
+                "updated_at": fetched_at.isoformat(),
                 "source_updated_at": (
                     str(source_updated_at)[:80] if source_updated_at is not None else None
                 ),
