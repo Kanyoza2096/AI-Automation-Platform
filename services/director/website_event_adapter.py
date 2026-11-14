@@ -179,6 +179,8 @@ class DirectorWebsiteEventAdapter:
         decision_id = f"website_event_{digest}"
 
         existing = await asyncio.to_thread(self._load_decision, decision_id)
+        if existing and not self._decision_belongs_to_workspace(existing, workspace_id):
+            raise ValueError("website_event_decision_workspace_mismatch")
         if existing and self._decision_is_complete(existing):
             self._remember_event(
                 workspace_id, integration_id, external_event_id,
@@ -298,12 +300,9 @@ class DirectorWebsiteEventAdapter:
         decision.action_taken["observation_persisted"] = True
         await asyncio.to_thread(self._upsert_decision, decision, workspace_id)
 
-        with self._latest_lock:
-            if not any(
-                getattr(existing_decision, "id", None) == decision.id
-                for existing_decision in self.director.decisions
-            ):
-                self.director.decisions.append(decision)
+        # Keep workspace-specific decision evidence in the durable,
+        # workspace-scoped audit table. Director.decisions is process-wide and
+        # must not become a cross-tenant record feed.
         self._remember_event(
             workspace_id, integration_id, external_event_id,
             event_type, occurred_at, brand_id, observed_at,
@@ -462,6 +461,19 @@ class DirectorWebsiteEventAdapter:
         if not isinstance(receipt, dict) or receipt.get("event_type") != event_type:
             return None
         return receipt
+
+    @staticmethod
+    def _decision_belongs_to_workspace(record: dict, workspace_id: str) -> bool:
+        payload = record.get("payload", record)
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                return False
+        if not isinstance(payload, dict):
+            return False
+        recorded_workspace = record.get("workspace_id") or payload.get("workspace_id")
+        return str(recorded_workspace or "") == workspace_id
 
     @staticmethod
     def _decision_is_complete(record: dict) -> bool:
