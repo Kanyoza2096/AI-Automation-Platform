@@ -153,7 +153,7 @@ def test_valid_website_event_persists_observation_and_decision_without_task():
         assert result is None  # Event bus handlers acknowledge by completion.
         assert len(db.rows["director_observations"]) == 1
         assert len(db.rows["director_decisions"]) == 1
-        decision = json.loads(db.rows["director_decisions"][0]["payload"])
+        decision = db.rows["director_decisions"][0]["payload"]
         assert decision["outcome"] == "observed"
         assert decision["workspace_id"] == "ws-1"
         assert decision["action_taken"]["task_created"] is False
@@ -231,14 +231,14 @@ def test_duplicate_replay_after_restart_hydrates_observer_without_duplicate_rows
         ).hexdigest()[:24]
         db.rows["director_decisions"].append({
             "id": decision_id,
-            "payload": json.dumps({"outcome": "observed"}),
+            "payload": {"outcome": "observed"},
         })
         db.rows["director_observations"].append({
             "id": 1,
             "workspace_id": "ws-1",
-            "payload": json.dumps({
+            "payload": {
                 "metrics": {"website_event_id": "evt-growthbridge-0001"}
-            }),
+            },
         })
         adapter, _director2, bus2, _db2 = build_adapter()
         adapter.supabase = db
