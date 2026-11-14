@@ -828,8 +828,28 @@ class Director:
         except Exception as exc:
             log.exception("Startup failed: %s", sanitize_error_message(exc))
 
+    @staticmethod
+    def _is_process_global_decision_record(raw: dict) -> bool:
+        """Exclude workspace-scoped integration audit records from global state.
+
+        Legacy website-event decisions predate the explicit record_scope marker;
+        identify those by their observation source as well.
+        """
+        if raw.get("record_scope") == "workspace":
+            return False
+        if raw.get("director_global_restore") is False:
+            return False
+        observed_state = raw.get("observed_state")
+        if isinstance(observed_state, list) and any(
+            isinstance(item, dict)
+            and item.get("source") == "website_integration_events"
+            for item in observed_state
+        ):
+            return False
+        return True
+
     async def _restore_decisions(self) -> dict:
-        """Restore the bounded decision audit trail from the configured store."""
+        """Restore the bounded process-global decision audit trail."""
         try:
             records = await self.store.list_decisions(limit=2000)
         except Exception as exc:
@@ -845,6 +865,8 @@ class Director:
                     raw = json.loads(raw)
                 if not isinstance(raw, dict) or not raw.get("id"):
                     errors += 1
+                    continue
+                if not self._is_process_global_decision_record(raw):
                     continue
                 fields = {key: raw[key] for key in Decision.__dataclass_fields__ if key in raw}
                 stamp = fields.get("timestamp")
