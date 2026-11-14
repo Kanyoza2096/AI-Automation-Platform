@@ -42,23 +42,45 @@ async def get_public_metrics():
 
 @router.get("/metrics/resources")
 async def get_resource_metrics(_auth: bool = Depends(require_auth)):
-    """Get system resource metrics."""
+    """Get host resource metrics without converting provider failures into zeroes."""
+    observed_at = datetime.now(timezone.utc).isoformat()
     try:
-        cpu = mem = disk = 0.0
-        try:
-            import psutil as _ps
-            cpu = _ps.cpu_percent(interval=None)
-            mem = _ps.virtual_memory().percent
-            disk = _ps.disk_usage("/").percent
-        except Exception:
-            pass
+        import psutil as _ps
+    except Exception:
         return _ok({
-            "cpu_percent": cpu,
-            "memory_percent": mem,
-            "disk_percent": disk,
+            "available": False,
+            "source": "unavailable",
+            "reason": "psutil_unavailable",
+            "cpu_percent": None,
+            "memory_percent": None,
+            "disk_percent": None,
+            "as_of": observed_at,
         })
-    except Exception as exc:
-        return _safe_err(exc, "GET /api/v1/metrics/resources")
+
+    values = {"cpu_percent": None, "memory_percent": None, "disk_percent": None}
+    failures = []
+    for key, read_value in (
+        ("cpu_percent", lambda: _ps.cpu_percent(interval=None)),
+        ("memory_percent", lambda: _ps.virtual_memory().percent),
+        ("disk_percent", lambda: _ps.disk_usage("/").percent),
+    ):
+        try:
+            value = read_value()
+            if isinstance(value, (int, float)) and 0 <= value <= 100:
+                values[key] = float(value)
+            else:
+                failures.append(key)
+        except Exception:
+            failures.append(key)
+
+    available_count = sum(value is not None for value in values.values())
+    return _ok({
+        "available": available_count > 0,
+        "source": "psutil",
+        "reason": "partial" if failures and available_count else ("provider_error" if failures else None),
+        **values,
+        "as_of": observed_at,
+    })
 
 
 @router.get("/metrics/query")
@@ -66,21 +88,43 @@ async def metrics_query(
     _auth: bool = Depends(require_auth),
     q: str = "",
 ):
-    """Prometheus-compatible metrics query."""
+    """Read only explicitly supported counters; this is not a general PromQL engine."""
+    metric_name = q.strip()
+    supported = {
+        "kanyoza_errors_total": "errors",
+        "kanyoza_requests_total": "requests_total",
+    }
+    if metric_name not in supported:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "status": "error",
+                "error": "unsupported_query",
+                "message": "This endpoint currently supports only kanyoza_errors_total and kanyoza_requests_total. General PromQL expressions are not implemented.",
+                "supported_metrics": list(supported),
+            },
+        )
+
     try:
         from utils.metrics import metrics as _m
         snap = await _async_wrap(_m.get_snapshot)
-        value = 0
-        if "error" in q.lower():
-            value = snap.get("counters", {}).get("errors", 0)
-        elif "rps" in q.lower():
-            value = snap.get("counters", {}).get("requests_total", 0)
+        counters = snap.get("counters") if isinstance(snap, dict) else None
+        raw_value = counters.get(supported[metric_name]) if isinstance(counters, dict) else None
+        if not isinstance(raw_value, (int, float)):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "error": "metric_unavailable",
+                    "message": f"The backend has not exposed a numeric value for {metric_name}.",
+                },
+            )
         return JSONResponse({
             "status": "success",
             "data": {
                 "result": [{
-                    "metric": {"__name__": q or "kanyoza_metric"},
-                    "value": [int(datetime.now(timezone.utc).timestamp()), str(value)],
+                    "metric": {"__name__": metric_name},
+                    "value": [int(datetime.now(timezone.utc).timestamp()), str(raw_value)],
                 }]
             },
         })
