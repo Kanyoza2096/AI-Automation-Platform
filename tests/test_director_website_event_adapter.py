@@ -138,6 +138,8 @@ class FakeDB:
             }],
             "director_decisions": [],
             "director_observations": [],
+            "social_accounts": [],
+            "director_website_context_snapshots": [],
         }
 
     def table(self, name):
@@ -606,3 +608,105 @@ def test_legacy_website_event_decision_is_excluded_from_global_restore():
         "id": "normal-global-decision",
         "observed_state": [{"source": "health_monitor"}],
     }) is True
+
+
+
+def test_event_refreshes_context_only_after_verified_receipt(monkeypatch):
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        calls = []
+
+        def refresh(workspace_id, integration_id, event_id):
+            calls.append((workspace_id, integration_id, event_id))
+            return True
+
+        monkeypatch.setattr(adapter, "_refresh_context_snapshot", refresh)
+        result = await adapter.handle_event(event_context())
+        assert result["accepted"] is True
+        assert result["context_refreshed"] is True
+        assert calls == [("ws-1", "site-demo", "evt-growthbridge-0001")]
+
+    asyncio.run(scenario())
+
+
+def test_context_snapshot_uses_exact_workspace_integration_and_is_bounded(monkeypatch):
+    from types import SimpleNamespace
+    import services.director.website_event_adapter as adapter_module
+
+    adapter, _director, _bus, db = build_adapter()
+    db.rows["social_accounts"] = [{
+        "id": "website-account-1",
+        "workspace_id": "ws-1",
+        "brand_id": None,
+        "platform": "website",
+        "platform_account_id": "site-demo",
+        "enabled": True,
+        "access_token": "encrypted-at-rest",
+        "platform_config": {
+            "base_url": "https://example.test/",
+            "context_path": "/api/kdo/context",
+        },
+    }]
+
+    account = SimpleNamespace(
+        workspace_id="ws-1",
+        platform_account_id="site-demo",
+        platform=SimpleNamespace(value="website"),
+        enabled=True,
+        access_token="decrypted-in-process",
+    )
+    monkeypatch.setattr(
+        adapter_module.SocialAccountRepository,
+        "hydrate_row",
+        lambda _self, _row: account,
+    )
+
+    class FakeConnector:
+        def fetch_context(self):
+            return {
+                "schema_version": "1.0",
+                "workspace_id": "ws-1",
+                "source_updated_at": "2026-11-14T12:00:00Z",
+                "website": {"name": "GrowthBridge"},
+            }
+
+    monkeypatch.setattr(
+        adapter_module,
+        "create_connector",
+        lambda resolved: FakeConnector(),
+    )
+
+    assert adapter._refresh_context_snapshot(
+        "ws-1", "site-demo", "evt-growthbridge-0001"
+    ) is True
+    snapshots = db.rows["director_website_context_snapshots"]
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert snapshot["workspace_id"] == "ws-1"
+    assert snapshot["integration_id"] == "site-demo"
+    assert snapshot["last_event_id"] == "evt-growthbridge-0001"
+    assert snapshot["trust_class"] == "untrusted_business_context"
+    assert snapshot["instructions_are_data"] is True
+    assert snapshot["context"]["website"]["name"] == "GrowthBridge"
+
+
+def test_context_snapshot_fails_closed_on_ambiguous_account(monkeypatch):
+    adapter, _director, _bus, db = build_adapter()
+    db.rows["social_accounts"] = [
+        {
+            "workspace_id": "ws-1",
+            "platform": "website",
+            "platform_account_id": "site-demo",
+            "enabled": True,
+        },
+        {
+            "workspace_id": "ws-1",
+            "platform": "website",
+            "platform_account_id": "site-demo",
+            "enabled": True,
+        },
+    ]
+    assert adapter._refresh_context_snapshot(
+        "ws-1", "site-demo", "evt-growthbridge-0001"
+    ) is False
+    assert db.rows["director_website_context_snapshots"] == []
