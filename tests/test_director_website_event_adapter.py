@@ -30,6 +30,9 @@ class FakeTable:
         self.contains_filter = (key, value)
         return self
 
+    def order(self, *_args, **_kwargs):
+        return self
+
     def insert(self, row):
         self.row = row
         self.mode = "insert"
@@ -161,7 +164,10 @@ def test_valid_website_event_persists_observation_and_decision_without_task():
         assert director.tasks == []
         observation = director.observers[adapter.OBSERVER_NAME].observe()
         assert observation.status.value == "unknown"
-        assert observation.metrics["events"][0]["event_id"] == "evt-growthbridge-0001"
+        assert observation.metrics["event_count"] == 1
+        assert observation.metrics["event_type_counts"] == {"blog.created": 1}
+        assert "events" not in observation.metrics
+        assert "workspace_id" not in observation.metrics
         assert observation.metrics["director_signals"] == []
         await adapter.stop()
         assert all(not handlers for handlers in bus.handlers.values())
@@ -179,9 +185,7 @@ def test_duplicate_growthbridge_event_is_idempotent():
             {**event_context(), "event_id": "another-internal-event-uuid"},
         )
         assert len(db.rows["director_observations"]) == 1
-        assert len(
-            adapter.observe().metrics["events"]
-        ) == 1
+        assert adapter.observe().metrics["event_count"] == 1
         assert len(db.rows["director_decisions"]) == 1
         await adapter.stop()
 
@@ -246,7 +250,7 @@ def test_duplicate_replay_after_restart_hydrates_observer_without_duplicate_rows
         await bus2.emit("website.integration.blog.created", event_context())
         assert len(db.rows["director_observations"]) == 1
         assert len(db.rows["director_decisions"]) == 1
-        assert adapter.observe().metrics["events"][0]["event_id"] == "evt-growthbridge-0001"
+        assert adapter.observe().metrics["event_count"] == 1
         await adapter.stop()
 
     asyncio.run(scenario())
@@ -283,3 +287,19 @@ def test_dead_letter_replay_rejects_ambiguous_workspace_receipts():
 
     asyncio.run(scenario())
 
+
+
+def test_start_hydrates_persisted_observations_after_process_restart():
+    async def scenario():
+        first_adapter, _director, _bus, db = build_adapter()
+        await first_adapter.handle_event(event_context())
+        second_adapter, _director2, bus2, _db2 = build_adapter()
+        second_adapter.supabase = db
+        await second_adapter.start()
+        observation = second_adapter.observe()
+        assert observation.metrics["event_count"] == 1
+        assert observation.metrics["event_type_counts"] == {"blog.created": 1}
+        assert "workspace_id" not in observation.metrics
+        await second_adapter.stop()
+
+    asyncio.run(scenario())
