@@ -64,6 +64,9 @@ class DirectorWebsiteEventAdapter:
         if self._started:
             return
         try:
+            # Director's registry is process-wide. Rehydrate only the bounded,
+            # persisted website-event observations before accepting new events.
+            await asyncio.to_thread(self._hydrate_recent_events)
             for event_name in self.EVENT_NAMES:
                 unsubscribe = self.event_bus.subscribe(event_name, self.handle_event)
                 if inspect.isawaitable(unsubscribe):
@@ -98,15 +101,22 @@ class DirectorWebsiteEventAdapter:
             datetime.fromisoformat(latest["observed_at"].replace("Z", "+00:00"))
             if latest else datetime.now(timezone.utc)
         )
+        event_type_counts: dict[str, int] = {}
+        for event in events:
+            event_type = str(event.get("event_type") or "unknown")
+            event_type_counts[event_type] = event_type_counts.get(event_type, 0) + 1
         return Observation(
             source=self.OBSERVER_NAME,
             sector=Sector.BRANDS,
             # An external change notification is not a health assertion.
+            # Director is process-wide: expose aggregate counts only, never
+            # workspace, brand, integration, or external event identifiers.
             status=Health.UNKNOWN,
             metrics={
                 "website_event_contract": "website.integration/v1",
                 "event_count": len(events),
-                "events": events,
+                "event_type_counts": event_type_counts,
+                "latest_observed_at": latest["observed_at"] if latest else None,
                 "director_signals": [],
                 "director_signal_contract": "metrics.director_signals/v1",
             },
@@ -307,6 +317,60 @@ class DirectorWebsiteEventAdapter:
             "observation_source": self.OBSERVER_NAME,
             "action": "observe_only",
         }
+
+    def _hydrate_recent_events(self) -> None:
+        """Restore bounded event metadata after restart without leaking tenant IDs."""
+        try:
+            response = (
+                self.supabase.table("director_observations")
+                .select("payload,timestamp")
+                .contains("payload", {"source": self.OBSERVER_NAME})
+                .order("timestamp", desc=True)
+                .limit(self.MAX_RETAINED_EVENTS)
+                .execute()
+            )
+            rows = list(response.data or [])
+            for row in reversed(rows):
+                payload = row.get("payload")
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except (TypeError, ValueError):
+                        continue
+                if not isinstance(payload, dict):
+                    continue
+                metrics = payload.get("metrics")
+                if not isinstance(metrics, dict):
+                    continue
+                workspace_id = str(metrics.get("workspace_id") or "").strip()
+                integration_id = str(metrics.get("integration_id") or "").strip()
+                event_id = str(metrics.get("website_event_id") or "").strip()
+                event_type = str(metrics.get("event_type") or "").strip()
+                if not all((workspace_id, integration_id, event_id, event_type)):
+                    continue
+                observed_at = row.get("timestamp")
+                if isinstance(observed_at, str):
+                    try:
+                        observed_at = datetime.fromisoformat(
+                            observed_at.replace("Z", "+00:00")
+                        )
+                    except ValueError:
+                        observed_at = None
+                self._remember_event(
+                    workspace_id,
+                    integration_id,
+                    event_id,
+                    event_type,
+                    metrics.get("occurred_at"),
+                    str(metrics.get("brand_id") or "").strip() or None,
+                    observed_at if isinstance(observed_at, datetime) else None,
+                )
+        except Exception:
+            # Event ingestion remains available; missing history is observable.
+            logger.warning(
+                "Director website event history hydration failed",
+                exc_info=True,
+            )
 
     def _remember_event(
         self, workspace_id: str, integration_id: str, event_id: str,
