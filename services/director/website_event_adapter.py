@@ -298,7 +298,12 @@ class DirectorWebsiteEventAdapter:
         decision.action_taken["observation_persisted"] = True
         await asyncio.to_thread(self._upsert_decision, decision, workspace_id)
 
-        self.director.decisions.append(decision)
+        with self._latest_lock:
+            if not any(
+                getattr(existing_decision, "id", None) == decision.id
+                for existing_decision in self.director.decisions
+            ):
+                self.director.decisions.append(decision)
         self._remember_event(
             workspace_id, integration_id, external_event_id,
             event_type, occurred_at, brand_id, observed_at,
