@@ -32,6 +32,7 @@ class WebsiteConnector:
 
     Optional:
       - ``lookup_path_template``: path containing ``{post_id}``
+      - ``context_path``: separate read-only website context endpoint
       - ``delete_path_template`` / ``edit_path_template``
       - ``status``: provider publication status, default ``publish``
     The account ``access_token`` is sent as a Bearer credential.
@@ -47,6 +48,7 @@ class WebsiteConnector:
         self._base_url = str(config.get("base_url") or "").strip()
         self._publish_path = str(config.get("publish_path") or "").strip()
         self._lookup_template = str(config.get("lookup_path_template") or "").strip()
+        self._context_path = str(config.get("context_path") or "").strip()
         self._delete_template = str(config.get("delete_path_template") or "").strip()
         self._edit_template = str(config.get("edit_path_template") or "").strip()
         self._status = str(config.get("status") or "publish").strip()
@@ -112,14 +114,14 @@ class WebsiteConnector:
     def fetch_context(self) -> Optional[dict[str, Any]]:
         """Fetch the provider's curated, read-only website context.
 
-        The configured lookup path is reused as the read-only context route.
-        It must be a relative HTTPS API path; callers cannot supply arbitrary
-        URLs. The provider token is sent only to the configured website origin.
+        Context retrieval has its own configured path and does not alter
+        post lookup/idempotency behavior. The path must be relative and is
+        resolved only against the configured HTTPS website origin.
         """
-        if not self._lookup_template or not self._token:
+        if not self._context_path or not self._token:
             return None
         try:
-            url = self._validate_url(self._lookup_template)
+            url = self._validate_url(self._context_path)
             response = requests.get(url, headers=self._headers(), timeout=_TIMEOUT)
             if not 200 <= response.status_code < 300:
                 logger.warning("Website context retrieval returned HTTP %s", response.status_code)
