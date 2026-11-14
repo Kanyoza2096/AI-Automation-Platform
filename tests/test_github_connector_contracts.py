@@ -133,3 +133,11 @@ def test_github_connector_reports_missing_credentials_as_unavailable():
 
     assert source.count('status_code=503, detail={') >= 7
     assert '"code": "github_token_unavailable"' in source
+
+
+
+def test_github_connector_health_is_not_healthy_without_credentials():
+    plugin_source = (ROOT / "plugins/github_connector/plugin.py").read_text(encoding="utf-8")
+
+    assert '"healthy" if self._running and bool(self.github_token)' in plugin_source
+    assert '"degraded" if self._running else "stopped"' in plugin_source
