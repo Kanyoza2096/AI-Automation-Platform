@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from services.director.models import Authority, Decision, Risk, Sector
 from services.director.website_event_adapter import DirectorWebsiteEventAdapter
 
 
@@ -398,3 +399,34 @@ def test_atomic_observation_rpc_deduplicates_concurrent_appends():
         assert len(db.rows["director_observations"]) == 1
 
     asyncio.run(scenario())
+
+
+
+def test_concurrent_decision_claim_conflict_is_idempotent_only_for_same_workspace():
+    from datetime import datetime, timezone
+
+    adapter, _director, _bus, db = build_adapter()
+    decision = Decision(
+        id="website_event_test-claim",
+        timestamp=datetime.now(timezone.utc),
+        decision="Observe",
+        reason="Test deterministic claim race",
+        confidence=0.0,
+        sector=Sector.BRANDS,
+        authority=Authority.NOTIFY,
+        risk=Risk.LOW,
+        outcome="observation_pending",
+        stage="observation",
+    )
+    # Simulate another worker committing the same deterministic claim first.
+    db.rows["director_decisions"].append({
+        "id": decision.id,
+        "workspace_id": "ws-1",
+        "payload": {"workspace_id": "ws-1", "outcome": "observation_pending"},
+    })
+    adapter._insert_decision_claim(decision, "ws-1")
+    assert len(db.rows["director_decisions"]) == 1
+
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        adapter._insert_decision_claim(decision, "ws-2")
+    assert len(db.rows["director_decisions"]) == 1
