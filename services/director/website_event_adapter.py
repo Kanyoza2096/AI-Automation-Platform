@@ -280,13 +280,13 @@ class DirectorWebsiteEventAdapter:
             await asyncio.to_thread(self._insert_decision_claim, decision, workspace_id)
 
         try:
-            observation_exists = await asyncio.to_thread(
-                self._observation_exists, workspace_id, external_event_id
+            await asyncio.to_thread(
+                self._persist_observation,
+                observation,
+                workspace_id,
+                integration_id,
+                external_event_id,
             )
-            if not observation_exists:
-                await asyncio.to_thread(
-                    self._persist_observation, observation, workspace_id
-                )
         except Exception:
             logger.exception(
                 "Director website event observation persistence failed event=%s",
@@ -512,11 +512,29 @@ class DirectorWebsiteEventAdapter:
         )
         return bool(response.data)
 
-    def _persist_observation(self, observation: Observation, workspace_id: str) -> None:
-        record = {
-            # director_observations.payload is JSONB and is queried by event ID.
-            "payload": safe(asdict(observation)),
-            "timestamp": iso(observation.timestamp),
-            "workspace_id": workspace_id,
-        }
-        self.supabase.table("director_observations").insert(record).execute()
+    def _persist_observation(
+        self,
+        observation: Observation,
+        workspace_id: str,
+        integration_id: str,
+        event_id: str,
+    ) -> bool:
+        """Atomically append one observation per workspace/integration/event.
+
+        The database RPC serializes concurrent deliveries with a transaction-
+        scoped advisory lock and returns the existing row on duplicate replay.
+        """
+        response = self.supabase.rpc(
+            "record_director_website_event_observation",
+            {
+                "p_workspace_id": workspace_id,
+                "p_integration_id": integration_id,
+                "p_event_id": event_id,
+                "p_payload": safe(asdict(observation)),
+                "p_timestamp": iso(observation.timestamp),
+            },
+        ).execute()
+        rows = response.data or []
+        if not rows:
+            raise RuntimeError("director_website_observation_rpc_returned_no_result")
+        return bool(rows[0].get("inserted"))
