@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from collections import deque
 from types import SimpleNamespace
 
@@ -70,8 +71,39 @@ class FakeTable:
         raise AssertionError(self.mode)
 
 
+class FakeRPC:
+    def __init__(self, db, name, params):
+        self.db = db
+        self.name = name
+        self.params = params
+
+    def execute(self):
+        if self.name != "record_director_website_event_observation":
+            raise AssertionError(self.name)
+        p = self.params
+        with self.db.rpc_lock:
+            existing = [
+                row for row in self.db.rows["director_observations"]
+                if row.get("workspace_id") == p["p_workspace_id"]
+                and row.get("payload", {}).get("source") == "website_integration_events"
+                and row.get("payload", {}).get("metrics", {}).get("integration_id") == p["p_integration_id"]
+                and row.get("payload", {}).get("metrics", {}).get("website_event_id") == p["p_event_id"]
+            ]
+            if existing:
+                return SimpleNamespace(data=[{"observation_id": existing[0]["id"], "inserted": False}])
+            row = {
+                "id": len(self.db.rows["director_observations"]) + 1,
+                "workspace_id": p["p_workspace_id"],
+                "timestamp": p["p_timestamp"],
+                "payload": p["p_payload"],
+            }
+            self.db.rows["director_observations"].append(row)
+            return SimpleNamespace(data=[{"observation_id": row["id"], "inserted": True}])
+
+
 class FakeDB:
     def __init__(self):
+        self.rpc_lock = threading.Lock()
         self.rows = {
             "website_integrations": [{
                 "workspace_id": "ws-1",
@@ -93,6 +125,9 @@ class FakeDB:
 
     def table(self, name):
         return FakeTable(self, name)
+
+    def rpc(self, name, params):
+        return FakeRPC(self, name, params)
 
 
 class FakeBus:
@@ -323,3 +358,43 @@ def test_process_wide_observer_never_exposes_cross_workspace_identifiers():
         "evt-growthbridge-0001", "evt-other", "brand-demo", "brand-other",
     ):
         assert tenant_value not in rendered_metrics
+
+
+
+def test_atomic_observation_rpc_deduplicates_concurrent_appends():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        observation = adapter._build_test_observation() if hasattr(adapter, "_build_test_observation") else None
+        if observation is None:
+            from services.director.models import Health, Observation, Sector
+            from datetime import datetime, timezone
+            observation = Observation(
+                source=adapter.OBSERVER_NAME,
+                sector=Sector.BRANDS,
+                status=Health.UNKNOWN,
+                metrics={
+                    "workspace_id": "ws-1",
+                    "integration_id": "site-demo",
+                    "website_event_id": "evt-growthbridge-0001",
+                    "event_type": "blog.created",
+                    "occurred_at": "2026-11-14T10:00:00+00:00",
+                    "brand_id": "brand-demo",
+                },
+                issues=[],
+                message="test",
+                timestamp=datetime.now(timezone.utc),
+            )
+        results = await asyncio.gather(*[
+            asyncio.to_thread(
+                adapter._persist_observation,
+                observation,
+                "ws-1",
+                "site-demo",
+                "evt-growthbridge-0001",
+            )
+            for _ in range(12)
+        ])
+        assert sum(results) == 1
+        assert len(db.rows["director_observations"]) == 1
+
+    asyncio.run(scenario())
