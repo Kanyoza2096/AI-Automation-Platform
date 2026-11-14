@@ -61,13 +61,17 @@ class FakeTable:
                 selected = [row for row in selected if includes(row.get(key), expected)]
             return SimpleNamespace(data=selected)
         if self.mode == "insert":
-            if any(row.get("id") == self.row.get("id") for row in rows if self.row.get("id")):
-                raise RuntimeError("duplicate key")
-            rows.append(dict(self.row))
+            # Mirror PostgreSQL's atomic primary-key enforcement in concurrent
+            # delivery tests; the production claim is protected by the PK.
+            with self.db.rpc_lock:
+                if any(row.get("id") == self.row.get("id") for row in rows if self.row.get("id")):
+                    raise RuntimeError("duplicate key")
+                rows.append(dict(self.row))
             return SimpleNamespace(data=[self.row])
         if self.mode == "upsert":
-            rows[:] = [row for row in rows if row.get("id") != self.row.get("id")]
-            rows.append(dict(self.row))
+            with self.db.rpc_lock:
+                rows[:] = [row for row in rows if row.get("id") != self.row.get("id")]
+                rows.append(dict(self.row))
             return SimpleNamespace(data=[self.row])
         raise AssertionError(self.mode)
 
