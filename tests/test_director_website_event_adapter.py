@@ -303,3 +303,23 @@ def test_start_hydrates_persisted_observations_after_process_restart():
         await second_adapter.stop()
 
     asyncio.run(scenario())
+
+
+def test_process_wide_observer_never_exposes_cross_workspace_identifiers():
+    adapter, _director, _bus, _db = build_adapter()
+    adapter._remember_event(
+        "ws-2", "site-other", "evt-other", "blog.published",
+        "2026-11-14T11:00:00+00:00", "brand-other",
+    )
+    observation = adapter.observe()
+    assert observation.metrics["event_count"] == 2
+    assert observation.metrics["event_type_counts"] == {
+        "blog.created": 1,
+        "blog.published": 1,
+    }
+    rendered_metrics = repr(observation.metrics)
+    for tenant_value in (
+        "ws-1", "ws-2", "site-demo", "site-other",
+        "evt-growthbridge-0001", "evt-other", "brand-demo", "brand-other",
+    ):
+        assert tenant_value not in rendered_metrics
