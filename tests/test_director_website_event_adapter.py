@@ -86,6 +86,18 @@ class FakeRPC:
         if self.name != "record_director_website_event_observation":
             raise AssertionError(self.name)
         p = self.params
+        payload = p.get("p_payload")
+        metrics = payload.get("metrics") if isinstance(payload, dict) else None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("source") != "website_integration_events"
+            or not isinstance(metrics, dict)
+            or metrics.get("workspace_id") != p.get("p_workspace_id")
+            or metrics.get("integration_id") != p.get("p_integration_id")
+            or metrics.get("website_event_id") != p.get("p_event_id")
+            or not metrics.get("event_type")
+        ):
+            raise RuntimeError("director_website_observation_payload_scope_mismatch")
         with self.db.rpc_lock:
             existing = [
                 row for row in self.db.rows["director_observations"]
@@ -485,5 +497,37 @@ def test_retry_recovers_after_decision_claim_when_observation_write_fails():
         assert len(db.rows["director_observations"]) == 1
         assert len(db.rows["director_decisions"]) == 1
         assert db.rows["director_decisions"][0]["payload"]["outcome"] == "observed"
+
+    asyncio.run(scenario())
+
+
+
+def test_atomic_observation_rpc_rejects_payload_scope_mismatch():
+    async def scenario():
+        adapter, _director, _bus, _db = build_adapter()
+        from services.director.models import Health, Observation, Sector
+        from datetime import datetime, timezone
+        observation = Observation(
+            source=adapter.OBSERVER_NAME,
+            sector=Sector.BRANDS,
+            status=Health.UNKNOWN,
+            metrics={
+                "workspace_id": "ws-other",
+                "integration_id": "site-demo",
+                "website_event_id": "evt-growthbridge-0001",
+                "event_type": "blog.created",
+            },
+            issues=[],
+            message="mismatched workspace scope",
+            timestamp=datetime.now(timezone.utc),
+        )
+        with pytest.raises(RuntimeError, match="payload_scope_mismatch"):
+            await asyncio.to_thread(
+                adapter._persist_observation,
+                observation,
+                "ws-1",
+                "site-demo",
+                "evt-growthbridge-0001",
+            )
 
     asyncio.run(scenario())
