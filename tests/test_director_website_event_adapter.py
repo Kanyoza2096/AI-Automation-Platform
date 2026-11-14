@@ -251,3 +251,35 @@ def test_duplicate_replay_after_restart_hydrates_observer_without_duplicate_rows
 
     asyncio.run(scenario())
 
+
+def test_dead_letter_replay_recovers_workspace_only_from_unique_durable_receipt():
+    async def scenario():
+        adapter, _director, bus, db = build_adapter()
+        replay = event_context(source="dead_letter_replay")
+        replay.pop("workspace_id")
+        await adapter.start()
+        await bus.emit("website.integration.blog.created", replay)
+        assert len(db.rows["director_observations"]) == 1
+        assert len(db.rows["director_decisions"]) == 1
+        decision = db.rows["director_decisions"][0]["payload"]
+        assert decision["workspace_id"] == "ws-1"
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_dead_letter_replay_rejects_ambiguous_workspace_receipts():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        duplicate_receipt = dict(db.rows["website_integration_events"][0])
+        duplicate_receipt["workspace_id"] = "ws-2"
+        db.rows["website_integration_events"].append(duplicate_receipt)
+        replay = event_context(source="dead_letter_replay")
+        replay.pop("workspace_id")
+        with pytest.raises(ValueError, match="website_event_receipt_not_verified"):
+            await adapter.handle_event(replay)
+        assert db.rows["director_observations"] == []
+        assert db.rows["director_decisions"] == []
+
+    asyncio.run(scenario())
+
