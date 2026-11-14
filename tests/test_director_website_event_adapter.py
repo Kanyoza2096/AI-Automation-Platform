@@ -446,3 +446,40 @@ def test_concurrent_event_deliveries_create_one_observation_and_one_decision():
         assert adapter.observe().metrics["event_count"] == 1
 
     asyncio.run(scenario())
+
+
+def test_retry_recovers_after_decision_claim_when_observation_write_fails():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        original_rpc = db.rpc
+        failed = {"once": False}
+
+        def fail_first_observation_rpc(name, params):
+            rpc = original_rpc(name, params)
+            original_execute = rpc.execute
+
+            def execute():
+                if not failed["once"]:
+                    failed["once"] = True
+                    raise RuntimeError("simulated_transient_observation_failure")
+                return original_execute()
+
+            rpc.execute = execute
+            return rpc
+
+        db.rpc = fail_first_observation_rpc
+        with pytest.raises(RuntimeError, match="simulated_transient_observation_failure"):
+            await adapter.handle_event(event_context())
+
+        assert len(db.rows["director_decisions"]) == 1
+        assert db.rows["director_decisions"][0]["payload"]["outcome"] == "observation_pending"
+        assert db.rows["director_observations"] == []
+
+        db.rpc = original_rpc
+        result = await adapter.handle_event(event_context())
+        assert result["accepted"] is True
+        assert len(db.rows["director_observations"]) == 1
+        assert len(db.rows["director_decisions"]) == 1
+        assert db.rows["director_decisions"][0]["payload"]["outcome"] == "observed"
+
+    asyncio.run(scenario())
