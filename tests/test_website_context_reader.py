@@ -73,3 +73,12 @@ def test_fetch_context_fails_closed_on_workspace_mismatch(monkeypatch):
     monkeypatch.setattr("services.connectors.website_connector.requests.get", get)
 
     assert connector.fetch_context() is None
+
+def test_fetch_context_rejects_external_or_traversal_path(monkeypatch):
+    connector = _connector()
+    connector._context_path = "//attacker.example/steal"
+    get = Mock()
+    monkeypatch.setattr("services.connectors.website_connector.requests.get", get)
+
+    assert connector.fetch_context() is None
+    get.assert_not_called()
