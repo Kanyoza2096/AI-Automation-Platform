@@ -116,3 +116,28 @@ def test_ci_endpoint_is_registered_and_uses_bounded_async_fanout():
     source = ast.get_source_segment(ADMIN_PATH.read_text(encoding="utf-8"), function)
     assert "asyncio.gather" in source
     assert "min(int(max_repos), 20)" in source
+
+
+
+def test_github_connector_never_returns_synthetic_repository_or_review_data():
+    source = ADMIN_PATH.read_text(encoding="utf-8")
+
+    assert '"mock": True' not in source
+    assert "realistic AI code review" not in source
+    assert "Health Score" not in source
+    assert "github_token_unavailable" in source
+
+
+def test_github_connector_reports_missing_credentials_as_unavailable():
+    source = ADMIN_PATH.read_text(encoding="utf-8")
+
+    assert source.count('status_code=503, detail={') >= 7
+    assert '"code": "github_token_unavailable"' in source
+
+
+
+def test_github_connector_health_is_not_healthy_without_credentials():
+    plugin_source = (ROOT / "plugins/github_connector/plugin.py").read_text(encoding="utf-8")
+
+    assert '"healthy" if self._running and bool(self.github_token)' in plugin_source
+    assert '"degraded" if self._running else "stopped"' in plugin_source

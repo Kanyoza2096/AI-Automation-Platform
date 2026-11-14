@@ -94,7 +94,7 @@ class GitHubConnectorPlugin:
 
     async def check_health_async(self) -> dict:
         return {
-            "status": "healthy" if self._running else "stopped",
+            "status": "healthy" if self._running and bool(self.github_token) else ("degraded" if self._running else "stopped"),
             "token_configured": bool(self.github_token),
             "version": self.VERSION,
             "rate_limit_remaining": self._rate_limit_remaining,
