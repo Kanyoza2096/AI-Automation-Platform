@@ -23,7 +23,7 @@ def test_fetch_context_uses_configured_https_path_and_bearer(monkeypatch):
     response = Mock(status_code=200, content=b'{"ok":true,"context":{"schema_version":"1.0"}}')
     response.json.return_value = {
         "ok": True,
-        "context": {"schema_version": "1.0", "services": [{"title": "Engineering"}]},
+        "context": {"schema_version": "1.0", "workspace_id": "ws-test", "services": [{"title": "Engineering"}]},
     }
     get = Mock(return_value=response)
     monkeypatch.setattr("services.connectors.website_connector.requests.get", get)
