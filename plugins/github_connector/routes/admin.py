@@ -101,8 +101,7 @@ async def list_ci_runs(max_repos: int = 10, per_repo: int = 5):
     """Return recent GitHub Actions runs across a bounded set of repositories.
 
     The endpoint is intentionally read-only and caps fan-out to protect the
-    GitHub API rate budget. Missing credentials are reported as an explicit
-    mock/unavailable state; no synthetic workflow runs are created.
+    GitHub API rate budget. Missing credentials return an explicit unavailable response; no synthetic workflow runs are created.
     """
     plugin = _get_plugin()
     if not plugin or not plugin.github_token:
