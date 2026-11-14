@@ -458,7 +458,9 @@ def test_concurrent_event_deliveries_create_one_observation_and_one_decision():
         assert all(result["accepted"] for result in results)
         assert len(db.rows["director_observations"]) == 1
         assert len(db.rows["director_decisions"]) == 1
-        assert len(director.decisions) == 1
+        # Workspace-specific decision records remain in durable storage;
+        # they are not copied into Director's process-wide decision collection.
+        assert len(director.decisions) == 0
         assert adapter.observe().metrics["event_count"] == 1
 
     asyncio.run(scenario())
@@ -529,5 +531,36 @@ def test_atomic_observation_rpc_rejects_payload_scope_mismatch():
                 "site-demo",
                 "evt-growthbridge-0001",
             )
+
+    asyncio.run(scenario())
+
+
+
+def test_existing_decision_from_another_workspace_is_rejected():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        decision_id = "website_event_" + __import__("hashlib").sha256(
+            b"ws-1:site-demo:evt-growthbridge-0001"
+        ).hexdigest()[:24]
+        db.rows["director_decisions"].append({
+            "id": decision_id,
+            "workspace_id": "ws-2",
+            "payload": {"workspace_id": "ws-2", "outcome": "observed"},
+        })
+        with pytest.raises(ValueError, match="decision_workspace_mismatch"):
+            await adapter.handle_event(event_context())
+        assert len(db.rows["director_observations"]) == 0
+        assert len(db.rows["director_decisions"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_workspace_specific_decision_is_not_added_to_global_director_collection():
+    async def scenario():
+        adapter, director, _bus, db = build_adapter()
+        await adapter.handle_event(event_context())
+        assert director.decisions == deque()
+        assert len(db.rows["director_decisions"]) == 1
+        assert db.rows["director_decisions"][0]["workspace_id"] == "ws-1"
 
     asyncio.run(scenario())
