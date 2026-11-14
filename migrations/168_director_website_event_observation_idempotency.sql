@@ -33,11 +33,14 @@ BEGIN
         RAISE EXCEPTION 'director_website_observation_scope_required';
     END IF;
 
-    IF jsonb_typeof(p_payload) <> 'object'
-       OR p_payload->>'source' <> 'website_integration_events'
-       OR p_payload #>> '{metrics,workspace_id}' <> p_workspace_id
-       OR p_payload #>> '{metrics,integration_id}' <> p_integration_id
-       OR p_payload #>> '{metrics,website_event_id}' <> p_event_id THEN
+    -- IS DISTINCT FROM is intentional: unlike <> it rejects NULL values.
+    IF p_payload IS NULL
+       OR jsonb_typeof(p_payload) IS DISTINCT FROM 'object'
+       OR p_payload->>'source' IS DISTINCT FROM 'website_integration_events'
+       OR p_payload #>> '{metrics,workspace_id}' IS DISTINCT FROM p_workspace_id
+       OR p_payload #>> '{metrics,integration_id}' IS DISTINCT FROM p_integration_id
+       OR p_payload #>> '{metrics,website_event_id}' IS DISTINCT FROM p_event_id
+       OR COALESCE(p_payload #>> '{metrics,event_type}', '') = '' THEN
         RAISE EXCEPTION 'director_website_observation_payload_scope_mismatch';
     END IF;
 
