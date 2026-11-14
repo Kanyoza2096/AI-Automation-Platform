@@ -255,9 +255,13 @@ class DirectorWebsiteEventAdapter:
             await asyncio.to_thread(self._insert_decision_claim, decision, workspace_id)
 
         try:
-            await asyncio.to_thread(
-                self._persist_observation, observation, workspace_id
+            observation_exists = await asyncio.to_thread(
+                self._observation_exists, workspace_id, external_event_id
             )
+            if not observation_exists:
+                await asyncio.to_thread(
+                    self._persist_observation, observation, workspace_id
+                )
         except Exception:
             logger.exception(
                 "Director website event observation persistence failed event=%s",
@@ -374,6 +378,17 @@ class DirectorWebsiteEventAdapter:
             "timestamp": iso(decision.timestamp),
             "workspace_id": workspace_id,
         }
+
+    def _observation_exists(self, workspace_id: str, event_id: str) -> bool:
+        response = (
+            self.supabase.table("director_observations")
+            .select("id")
+            .eq("workspace_id", workspace_id)
+            .contains("payload", {"metrics": {"website_event_id": event_id}})
+            .limit(1)
+            .execute()
+        )
+        return bool(response.data)
 
     def _persist_observation(self, observation: Observation, workspace_id: str) -> None:
         record = {
