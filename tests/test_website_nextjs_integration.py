@@ -42,6 +42,7 @@ class FakeDB:
 def registration():
     return WebsiteIntegrationRegistration(
         integration_id='site-demo', app_name='Demo Site', base_url='https://demo.example',
+        context_path='/api/kdo/context',
         capabilities=[WebsiteCapability.CREATE_DRAFT, WebsiteCapability.PUBLISH_ARTICLE],
         event_types=[WebsiteEventType.ARTICLE_PUBLISHED],
     )
@@ -59,6 +60,7 @@ def test_registration_is_durable_and_uses_website_connector_account(monkeypatch)
     assert saved['account'].platform.value == 'website'
     assert saved['account'].access_token == 'site-secret'
     assert saved['account'].platform_config['status'] == 'draft'
+    assert saved['account'].platform_config['context_path'] == '/api/kdo/context'
 
 
 def test_website_social_account_identity_is_workspace_scoped(monkeypatch):

@@ -76,6 +76,7 @@ class WebsiteIntegrationService:
                 "base_url": registration.base_url + "/",
                 "publish_path": registration.publish_path,
                 "lookup_path_template": registration.lookup_path_template,
+                "context_path": registration.context_path,
                 "edit_path_template": registration.edit_path_template,
                 "delete_path_template": registration.delete_path_template,
                 "integration_id": registration.integration_id,

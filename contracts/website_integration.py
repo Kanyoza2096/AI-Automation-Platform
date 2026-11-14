@@ -55,6 +55,7 @@ class WebsiteIntegrationRegistration(BaseModel):
     base_url: str = Field(min_length=1, max_length=2048)
     publish_path: str = Field(default="/api/kdo/content", min_length=1, max_length=512)
     lookup_path_template: str = Field(default="", max_length=512)
+    context_path: str = Field(default="", max_length=512)
     edit_path_template: str = Field(default="", max_length=512)
     delete_path_template: str = Field(default="", max_length=512)
     event_types: list[WebsiteEventType] = Field(default_factory=list, max_length=50)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Optional, TYPE_CHECKING
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
@@ -32,6 +32,7 @@ class WebsiteConnector:
 
     Optional:
       - ``lookup_path_template``: path containing ``{post_id}``
+      - ``context_path``: separate read-only website context endpoint
       - ``delete_path_template`` / ``edit_path_template``
       - ``status``: provider publication status, default ``publish``
     The account ``access_token`` is sent as a Bearer credential.
@@ -47,19 +48,27 @@ class WebsiteConnector:
         self._base_url = str(config.get("base_url") or "").strip()
         self._publish_path = str(config.get("publish_path") or "").strip()
         self._lookup_template = str(config.get("lookup_path_template") or "").strip()
+        self._context_path = str(config.get("context_path") or "").strip()
         self._delete_template = str(config.get("delete_path_template") or "").strip()
         self._edit_template = str(config.get("edit_path_template") or "").strip()
         self._status = str(config.get("status") or "publish").strip()
         self._token = str(getattr(social_account, "access_token", "") or "").strip()
 
     def _validate_url(self, path: str) -> str:
-        if not self._base_url or not self._publish_path:
+        if not self._base_url:
             raise ValueError("Website connector is not configured")
         parsed = urlparse(self._base_url)
-        if parsed.scheme != "https" or not parsed.netloc:
-            raise ValueError("Website connector requires an HTTPS base_url")
-        if not path.startswith("/"):
-            raise ValueError("Website connector API paths must start with '/'")
+        if (parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password
+                or parsed.query or parsed.fragment):
+            raise ValueError("Website connector requires a valid HTTPS base_url without credentials, query, or fragment")
+        if not path.startswith("/") or path.startswith("//") or "\\" in path:
+            raise ValueError("Website connector API paths must be root-relative paths")
+        path_parts = urlparse(path)
+        decoded_segments = unquote(path_parts.path).split("/")
+        if path_parts.scheme or path_parts.netloc or path_parts.query or path_parts.fragment:
+            raise ValueError("Website connector API paths cannot include a URL, query, or fragment")
+        if any(segment in {".", ".."} for segment in decoded_segments):
+            raise ValueError("Website connector API paths cannot traverse directories")
         return urljoin(self._base_url.rstrip("/") + "/", path.lstrip("/"))
 
     def _headers(self, idempotency_key: str = "") -> dict[str, str]:
@@ -109,6 +118,46 @@ class WebsiteConnector:
             logger.exception("Website publication failed")
             return ConnectorResult(False, self.platform, error=str(exc), outcome="failed")
 
+    def fetch_context(self) -> Optional[dict[str, Any]]:
+        """Fetch the provider's curated, read-only website context.
+
+        Context retrieval has its own configured path and does not alter
+        post lookup/idempotency behavior. The path must be relative and is
+        resolved only against the configured HTTPS website origin.
+        """
+        if not self._context_path or not self._token:
+            return None
+        try:
+            url = self._validate_url(self._context_path)
+            # Do not follow redirects: this endpoint is credentialed and must remain
+            # on the explicitly configured website route.
+            response = requests.get(
+                url, headers=self._headers(), timeout=_TIMEOUT, allow_redirects=False
+            )
+            if not 200 <= response.status_code < 300:
+                logger.warning("Website context retrieval returned HTTP %s", response.status_code)
+                return None
+            data = response.json() if response.content else {}
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                return None
+            context = data.get("context")
+            if not isinstance(context, dict):
+                return None
+            # The provider credential is workspace-scoped. Fail closed if the
+            # response does not affirm the same workspace as the connected
+            # account; never let a misconfigured integration cross tenant data.
+            expected_workspace = str(getattr(self._account, "workspace_id", "") or "").strip()
+            returned_workspace = str(context.get("workspace_id") or "").strip()
+            if not expected_workspace or returned_workspace != expected_workspace:
+                logger.warning("Website context workspace scope did not match the connected account")
+                return None
+            return context
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Website context retrieval failed: %s", exc)
+            return None
+        except Exception:
+            logger.exception("Unexpected website context retrieval failure")
+            return None
     def lookup_post(self, post_id: str) -> Any:
         if not self._lookup_template:
             return None
