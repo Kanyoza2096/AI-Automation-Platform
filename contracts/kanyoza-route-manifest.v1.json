@@ -1435,7 +1435,7 @@
       "path": "/api/v1/posts/{post_id}",
       "module": "api/routers/posts.py",
       "handler": "delete_post",
-      "line": null
+      "line": 439
     },
     {
       "method": "GET",
