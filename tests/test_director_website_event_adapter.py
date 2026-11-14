@@ -26,6 +26,10 @@ class FakeTable:
     def limit(self, _count):
         return self
 
+    def contains(self, key, value):
+        self.contains_filter = (key, value)
+        return self
+
     def insert(self, row):
         self.row = row
         self.mode = "insert"
@@ -43,6 +47,13 @@ class FakeTable:
                 row for row in rows
                 if all(str(row.get(key)) == str(value) for key, value in self.filters.items())
             ]
+            if hasattr(self, "contains_filter"):
+                key, expected = self.contains_filter
+                def includes(actual, wanted):
+                    if not isinstance(actual, dict) or not isinstance(wanted, dict):
+                        return actual == wanted
+                    return all(k in actual and includes(actual[k], v) for k, v in wanted.items())
+                selected = [row for row in selected if includes(row.get(key), expected)]
             return SimpleNamespace(data=selected)
         if self.mode == "insert":
             if any(row.get("id") == self.row.get("id") for row in rows if self.row.get("id")):
