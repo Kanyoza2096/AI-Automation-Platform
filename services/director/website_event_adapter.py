@@ -535,7 +535,12 @@ class DirectorWebsiteEventAdapter:
 
     @staticmethod
     def _decision_record(decision: Decision, workspace_id: str) -> dict:
-        payload = safe({**asdict(decision), "workspace_id": workspace_id})
+        payload = safe({
+            **asdict(decision),
+            "workspace_id": workspace_id,
+            "record_scope": "workspace",
+            "director_global_restore": False,
+        })
         return {
             "id": decision.id,
             # director_decisions.payload is JSONB; store an object, not a
