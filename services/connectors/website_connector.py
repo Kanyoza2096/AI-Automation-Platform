@@ -58,8 +58,9 @@ class WebsiteConnector:
         if not self._base_url:
             raise ValueError("Website connector is not configured")
         parsed = urlparse(self._base_url)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-            raise ValueError("Website connector requires a valid HTTPS base_url without embedded credentials")
+        if (parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password
+                or parsed.query or parsed.fragment):
+            raise ValueError("Website connector requires a valid HTTPS base_url without credentials, query, or fragment")
         if not path.startswith("/") or path.startswith("//") or "\\" in path:
             raise ValueError("Website connector API paths must be root-relative paths")
         path_parts = urlparse(path)
@@ -128,7 +129,11 @@ class WebsiteConnector:
             return None
         try:
             url = self._validate_url(self._context_path)
-            response = requests.get(url, headers=self._headers(), timeout=_TIMEOUT)
+            # Do not follow redirects: this endpoint is credentialed and must remain
+            # on the explicitly configured website route.
+            response = requests.get(
+                url, headers=self._headers(), timeout=_TIMEOUT, allow_redirects=False
+            )
             if not 200 <= response.status_code < 300:
                 logger.warning("Website context retrieval returned HTTP %s", response.status_code)
                 return None
