@@ -109,6 +109,34 @@ class WebsiteConnector:
             logger.exception("Website publication failed")
             return ConnectorResult(False, self.platform, error=str(exc), outcome="failed")
 
+    def fetch_context(self) -> Optional[dict[str, Any]]:
+        """Fetch the provider's curated, read-only website context.
+
+        The configured lookup path is reused as the read-only context route.
+        It must be a relative HTTPS API path; callers cannot supply arbitrary
+        URLs. The provider token is sent only to the configured website origin.
+        """
+        if not self._lookup_template or not self._token:
+            return None
+        try:
+            url = self._validate_url(self._lookup_template)
+            response = requests.get(url, headers=self._headers(), timeout=_TIMEOUT)
+            if not 200 <= response.status_code < 300:
+                logger.warning("Website context retrieval returned HTTP %s", response.status_code)
+                return None
+            data = response.json() if response.content else {}
+            if not isinstance(data, dict) or data.get("ok") is not True:
+                return None
+            context = data.get("context")
+            if not isinstance(context, dict):
+                return None
+            return context
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Website context retrieval failed: %s", exc)
+            return None
+        except Exception:
+            logger.exception("Unexpected website context retrieval failure")
+            return None
     def lookup_post(self, post_id: str) -> Any:
         if not self._lookup_template:
             return None
