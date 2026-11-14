@@ -564,3 +564,45 @@ def test_workspace_specific_decision_is_not_added_to_global_director_collection(
         assert db.rows["director_decisions"][0]["workspace_id"] == "ws-1"
 
     asyncio.run(scenario())
+
+
+
+def test_website_event_decision_is_marked_workspace_scoped_for_restore():
+    from datetime import datetime, timezone
+    from services.director.core import Director
+
+    adapter, _director, _bus, _db = build_adapter()
+    decision = Decision(
+        id="website_event_scope-test",
+        timestamp=datetime.now(timezone.utc),
+        decision="Observe",
+        reason="Workspace-only audit",
+        confidence=0.0,
+        sector=Sector.BRANDS,
+        authority=Authority.NOTIFY,
+        risk=Risk.LOW,
+        outcome="observed",
+        stage="observation",
+        observed_state=[{"source": adapter.OBSERVER_NAME, "workspace_id": "ws-1"}],
+    )
+    record = adapter._decision_record(decision, "ws-1")
+    assert record["payload"]["record_scope"] == "workspace"
+    assert record["payload"]["director_global_restore"] is False
+    assert Director._is_process_global_decision_record(record["payload"]) is False
+
+
+def test_legacy_website_event_decision_is_excluded_from_global_restore():
+    from services.director.core import Director
+
+    legacy = {
+        "id": "website_event_legacy",
+        "observed_state": [{
+            "source": "website_integration_events",
+            "workspace_id": "ws-1",
+        }],
+    }
+    assert Director._is_process_global_decision_record(legacy) is False
+    assert Director._is_process_global_decision_record({
+        "id": "normal-global-decision",
+        "observed_state": [{"source": "health_monitor"}],
+    }) is True
