@@ -233,11 +233,18 @@ def test_duplicate_replay_after_restart_hydrates_observer_without_duplicate_rows
             "id": decision_id,
             "payload": json.dumps({"outcome": "observed"}),
         })
-        adapter, _director2, bus2, db2 = build_adapter()
+        db.rows["director_observations"].append({
+            "id": 1,
+            "workspace_id": "ws-1",
+            "payload": json.dumps({
+                "metrics": {"website_event_id": "evt-growthbridge-0001"}
+            }),
+        })
+        adapter, _director2, bus2, _db2 = build_adapter()
         adapter.supabase = db
         await adapter.start()
         await bus2.emit("website.integration.blog.created", event_context())
-        assert len(db.rows["director_observations"]) == 0
+        assert len(db.rows["director_observations"]) == 1
         assert len(db.rows["director_decisions"]) == 1
         assert adapter.observe().metrics["events"][0]["event_id"] == "evt-growthbridge-0001"
         await adapter.stop()
