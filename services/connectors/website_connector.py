@@ -132,6 +132,14 @@ class WebsiteConnector:
             context = data.get("context")
             if not isinstance(context, dict):
                 return None
+            # The provider credential is workspace-scoped. Fail closed if the
+            # response does not affirm the same workspace as the connected
+            # account; never let a misconfigured integration cross tenant data.
+            expected_workspace = str(getattr(self._account, "workspace_id", "") or "").strip()
+            returned_workspace = str(context.get("workspace_id") or "").strip()
+            if not expected_workspace or returned_workspace != expected_workspace:
+                logger.warning("Website context workspace scope did not match the connected account")
+                return None
             return context
         except (requests.RequestException, ValueError) as exc:
             logger.warning("Website context retrieval failed: %s", exc)
