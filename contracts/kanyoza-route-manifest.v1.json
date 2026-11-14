@@ -997,18 +997,18 @@
       "line": 4054
     },
     {
-      "method": "POST",
-      "path": "/api/v1/keys/generate",
-      "module": "api/v1.py",
-      "handler": "generate_api_key",
-      "line": 4015
-    },
-    {
       "method": "DELETE",
       "path": "/api/v1/keys/{key_id}",
       "module": "api/v1.py",
       "handler": "revoke_api_key",
       "line": 4069
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/keys/generate",
+      "module": "api/v1.py",
+      "handler": "generate_api_key",
+      "line": 4015
     },
     {
       "method": "GET",
@@ -1060,18 +1060,18 @@
       "line": 1341
     },
     {
-      "method": "POST",
-      "path": "/api/v1/messages/reply",
-      "module": "api/v1.py",
-      "handler": "send_message",
-      "line": 1356
-    },
-    {
       "method": "GET",
       "path": "/api/v1/messages/{sender_id}",
       "module": "api/v1.py",
       "handler": "get_conversation",
       "line": 1383
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/messages/reply",
+      "module": "api/v1.py",
+      "handler": "send_message",
+      "line": 1356
     },
     {
       "method": "GET",
@@ -1319,13 +1319,6 @@
       "line": 202
     },
     {
-      "method": "POST",
-      "path": "/api/v1/outbox/drain",
-      "module": "api/outbox_routes.py",
-      "handler": "drain_outbox",
-      "line": 55
-    },
-    {
       "method": "GET",
       "path": "/api/v1/outbox/{workspace_id}",
       "module": "api/outbox_routes.py",
@@ -1345,6 +1338,13 @@
       "module": "api/outbox_routes.py",
       "handler": "reconcile_outbox_item",
       "line": 69
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/outbox/drain",
+      "module": "api/outbox_routes.py",
+      "handler": "drain_outbox",
+      "line": 55
     },
     {
       "method": "GET",
@@ -1397,6 +1397,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/plugins/{plugin_name}/execute",
+      "module": "api/v1.py",
+      "handler": "execute_plugin_command",
+      "line": 4569
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/plugins/pdf_merger/execute",
       "module": "api/v1.py",
       "handler": "pdf_merger_execute",
@@ -1408,13 +1415,6 @@
       "module": "api/v1.py",
       "handler": "upload_pdfs_for_merger",
       "line": 4497
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/plugins/{plugin_name}/execute",
-      "module": "api/v1.py",
-      "handler": "execute_plugin_command",
-      "line": 4569
     },
     {
       "method": "GET",
@@ -1429,6 +1429,13 @@
       "module": "api/v1.py",
       "handler": "create_post",
       "line": 1076
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/posts/{post_id}",
+      "module": "api/routers/posts.py",
+      "handler": "delete_post",
+      "line": null
     },
     {
       "method": "GET",
@@ -1585,6 +1592,34 @@
       "line": 136
     },
     {
+      "method": "DELETE",
+      "path": "/api/v1/rules/{rule_id}",
+      "module": "routes/rule_routes.py",
+      "handler": "delete_rule",
+      "line": 151
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/rules/{rule_id}",
+      "module": "routes/rule_routes.py",
+      "handler": "update_rule",
+      "line": 144
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/{rule_id}/test",
+      "module": "routes/rule_routes.py",
+      "handler": "test_rule",
+      "line": 168
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/rules/{rule_id}/toggle",
+      "module": "routes/rule_routes.py",
+      "handler": "toggle_rule",
+      "line": 158
+    },
+    {
       "method": "GET",
       "path": "/api/v1/rules/events",
       "module": "routes/rule_routes.py",
@@ -1618,34 +1653,6 @@
       "module": "routes/rule_routes.py",
       "handler": "test_all_rules",
       "line": 176
-    },
-    {
-      "method": "DELETE",
-      "path": "/api/v1/rules/{rule_id}",
-      "module": "routes/rule_routes.py",
-      "handler": "delete_rule",
-      "line": 151
-    },
-    {
-      "method": "PUT",
-      "path": "/api/v1/rules/{rule_id}",
-      "module": "routes/rule_routes.py",
-      "handler": "update_rule",
-      "line": 144
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/rules/{rule_id}/test",
-      "module": "routes/rule_routes.py",
-      "handler": "test_rule",
-      "line": 168
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/rules/{rule_id}/toggle",
-      "module": "routes/rule_routes.py",
-      "handler": "toggle_rule",
-      "line": 158
     },
     {
       "method": "GET",
@@ -1977,6 +1984,20 @@
       "line": 4095
     },
     {
+      "method": "POST",
+      "path": "/api/v1/workflow/{workflow_id}/cancel",
+      "module": "api/v1.py",
+      "handler": "cancel_workflow",
+      "line": 4267
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/workflow/{workflow_id}/rollback",
+      "module": "api/v1.py",
+      "handler": "rollback_workflow",
+      "line": 4293
+    },
+    {
       "method": "GET",
       "path": "/api/v1/workflow/history",
       "module": "api/v1.py",
@@ -2010,20 +2031,6 @@
       "module": "api/v1.py",
       "handler": "workflow_trigger",
       "line": 4212
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/workflow/{workflow_id}/cancel",
-      "module": "api/v1.py",
-      "handler": "cancel_workflow",
-      "line": 4267
-    },
-    {
-      "method": "POST",
-      "path": "/api/v1/workflow/{workflow_id}/rollback",
-      "module": "api/v1.py",
-      "handler": "rollback_workflow",
-      "line": 4293
     },
     {
       "method": "GET",
