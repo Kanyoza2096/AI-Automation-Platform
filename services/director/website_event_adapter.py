@@ -28,6 +28,8 @@ from services.director.models import (
     Sector,
 )
 from services.director.utils import iso, safe
+from repositories.social_account_repository import SocialAccountRepository
+from services.connectors.connector_factory import create_connector
 
 logger = logging.getLogger("kanyoza.director.website_events")
 
@@ -38,6 +40,7 @@ class DirectorWebsiteEventAdapter:
     SOURCE = "nextjs-website-integration"
     OBSERVER_NAME = "website_integration_events"
     MAX_RETAINED_EVENTS = 50
+    MAX_CONTEXT_BYTES = 256 * 1024
     EVENT_NAMES = tuple(
         f"website.integration.{event_type.value}" for event_type in WebsiteEventType
     )
@@ -186,7 +189,15 @@ class DirectorWebsiteEventAdapter:
                 workspace_id, integration_id, external_event_id,
                 event_type, receipt.get("occurred_at"), brand_id,
             )
-            return {"accepted": True, "duplicate": True, "decision_id": decision_id}
+            context_refreshed = await asyncio.to_thread(
+                self._refresh_context_snapshot,
+                workspace_id, integration_id, external_event_id,
+            )
+            return {
+                "accepted": True, "duplicate": True,
+                "decision_id": decision_id,
+                "context_refreshed": context_refreshed,
+            }
 
         occurred_at = receipt.get("occurred_at")
         if isinstance(occurred_at, datetime):
@@ -308,11 +319,20 @@ class DirectorWebsiteEventAdapter:
             event_type, occurred_at, brand_id, observed_at,
         )
 
+        # Context retrieval is best-effort and read-only. The durable event
+        # receipt/observation remains accepted if the website is temporarily
+        # unavailable; the scheduled reconciliation path can refresh later.
+        context_refreshed = await asyncio.to_thread(
+            self._refresh_context_snapshot,
+            workspace_id, integration_id, external_event_id,
+        )
+
         logger.info(
-            "Director recorded website event workspace=%s integration=%s type=%s",
+            "Director recorded website event workspace=%s integration=%s type=%s context_refreshed=%s",
             workspace_id,
             integration_id,
             event_type,
+            context_refreshed,
         )
         return {
             "accepted": True,
@@ -320,7 +340,113 @@ class DirectorWebsiteEventAdapter:
             "decision_id": decision_id,
             "observation_source": self.OBSERVER_NAME,
             "action": "observe_only",
+            "context_refreshed": context_refreshed,
         }
+
+
+    def _refresh_context_snapshot(
+        self, workspace_id: str, integration_id: str, event_id: str
+    ) -> bool:
+        """Fetch and persist curated website context for one exact tenant integration.
+
+        The website payload is untrusted business data, never executable
+        instructions. Credential resolution is by exact workspace + platform +
+        provider integration identity; brand_id is intentionally not required.
+        """
+        try:
+            account_response = (
+                self.supabase.table("social_accounts")
+                .select("*")
+                .eq("workspace_id", workspace_id)
+                .eq("platform", "website")
+                .eq("platform_account_id", integration_id)
+                .limit(2)
+                .execute()
+            )
+            rows = account_response.data or []
+            if len(rows) != 1:
+                logger.warning(
+                    "Website context account resolution failed: expected one account "
+                    "(workspace=%s integration=%s count=%s)",
+                    workspace_id, integration_id, len(rows),
+                )
+                return False
+
+            account = SocialAccountRepository(
+                supabase_client=self.supabase
+            ).hydrate_row(rows[0])
+            account_platform = (
+                account.platform.value
+                if hasattr(account.platform, "value")
+                else str(account.platform)
+            )
+            if (
+                account.workspace_id != workspace_id
+                or account.platform_account_id != integration_id
+                or account_platform.lower() != "website"
+                or not account.enabled
+                or not account.access_token
+            ):
+                logger.warning("Website context account failed tenant or credential validation")
+                return False
+
+            connector = create_connector(account)
+            fetch_context = getattr(connector, "fetch_context", None)
+            if not callable(fetch_context):
+                logger.warning("Website connector does not expose read-only context retrieval")
+                return False
+            context = fetch_context()
+            if not isinstance(context, dict):
+                logger.warning(
+                    "Website context retrieval unavailable workspace=%s integration=%s",
+                    workspace_id, integration_id,
+                )
+                return False
+            if str(context.get("workspace_id") or "").strip() != workspace_id:
+                logger.warning("Website context response workspace mismatch")
+                return False
+
+            schema_version = str(context.get("schema_version") or "").strip()
+            if not schema_version or len(schema_version) > 32:
+                logger.warning("Website context response schema version invalid")
+                return False
+            serialized = json.dumps(
+                context, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                allow_nan=False,
+            )
+            encoded = serialized.encode("utf-8")
+            if len(encoded) > self.MAX_CONTEXT_BYTES:
+                logger.warning("Website context response exceeded bounded snapshot size")
+                return False
+
+            fetched_at = datetime.now(timezone.utc)
+            source_updated_at = context.get("source_updated_at")
+            snapshot = {
+                "workspace_id": workspace_id,
+                "integration_id": integration_id,
+                "schema_version": schema_version,
+                "fetched_at": fetched_at.isoformat(),
+                "source_updated_at": (
+                    str(source_updated_at)[:80] if source_updated_at is not None else None
+                ),
+                "content_hash": hashlib.sha256(encoded).hexdigest(),
+                "last_event_id": event_id,
+                "trust_class": "untrusted_business_context",
+                "instructions_are_data": True,
+                "context": context,
+            }
+            self.supabase.table("director_website_context_snapshots").upsert(
+                snapshot, on_conflict="workspace_id,integration_id"
+            ).execute()
+            return True
+        except Exception as exc:
+            # Never log connector credentials, response bodies or provider data.
+            logger.warning(
+                "Website context snapshot refresh failed (%s)",
+                type(exc).__name__,
+            )
+            return False
+
 
     def _hydrate_recent_events(self) -> None:
         """Restore bounded event metadata after restart without leaking tenant IDs."""
