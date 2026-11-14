@@ -63,13 +63,17 @@ class DirectorWebsiteEventAdapter:
     async def start(self) -> None:
         if self._started:
             return
-        for event_name in self.EVENT_NAMES:
-            unsubscribe = self.event_bus.subscribe(event_name, self.handle_event)
-            if inspect.isawaitable(unsubscribe):
-                unsubscribe = await unsubscribe
-            if callable(unsubscribe):
-                self._unsubscribers.append(unsubscribe)
-        self._started = True
+        try:
+            for event_name in self.EVENT_NAMES:
+                unsubscribe = self.event_bus.subscribe(event_name, self.handle_event)
+                if inspect.isawaitable(unsubscribe):
+                    unsubscribe = await unsubscribe
+                if callable(unsubscribe):
+                    self._unsubscribers.append(unsubscribe)
+            self._started = True
+        except Exception:
+            await self.stop()
+            raise
         logger.info(
             "Director website event adapter subscribed to %d contract event types",
             len(self._unsubscribers),
