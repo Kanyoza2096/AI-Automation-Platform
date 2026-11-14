@@ -4,7 +4,11 @@ FastAPI dependencies for canonical authentication + RequestContext binding.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import os
+import time
 from typing import Optional
 
 from fastapi import Header, HTTPException, Request
@@ -13,6 +17,48 @@ from core.request_context import RequestContext, bind_from_auth_identity, get_re
 from core.authorization import at_least
 
 logger = logging.getLogger("kanyoza.security.deps")
+
+
+def _bind_verified_gateway_human_context(request: Request, machine_ctx: RequestContext, correlation: str) -> Optional[RequestContext]:
+    """Bind a short-lived KCPG HMAC actor envelope to a service-authenticated request."""
+    if not getattr(machine_ctx, "species_privileges", False):
+        return None
+    names = {"timestamp": "x-kcpg-context-timestamp", "request_id": "x-kcpg-context-request-id", "workspace_id": "x-kcpg-context-workspace-id", "actor_id": "x-kcpg-context-actor-id", "actor_role": "x-kcpg-context-actor-role", "signature": "x-kcpg-context-signature"}
+    values = {key: request.headers.get(header) for key, header in names.items()}
+    present = [value is not None for value in values.values()]
+    if not any(present):
+        return None
+    if not all(present):
+        raise HTTPException(status_code=403, detail="incomplete_kcpg_context")
+    secret = os.getenv("KCPG_CONTEXT_SIGNING_SECRET", "").strip()
+    if len(secret) < 32:
+        raise HTTPException(status_code=503, detail="kcpg_context_signing_not_configured")
+    try:
+        timestamp = int(values["timestamp"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=403, detail="invalid_kcpg_context_timestamp")
+    if abs(int(time.time() * 1000) - timestamp) > 300000:
+        raise HTTPException(status_code=403, detail="expired_kcpg_context")
+    workspace_id = str(values["workspace_id"] or "").strip()
+    actor_id = str(values["actor_id"] or "").strip()
+    request_id = str(values["request_id"] or "").strip()
+    actor_role = str(values["actor_role"] or "").strip().lower()
+    if not workspace_id or not actor_id or not request_id:
+        raise HTTPException(status_code=403, detail="invalid_kcpg_context_identity")
+    if actor_role not in {"viewer", "operator", "admin", "owner"}:
+        raise HTTPException(status_code=403, detail="invalid_kcpg_context_role")
+    selected_workspace = str(request.headers.get("X-Workspace-ID") or "").strip()
+    if not selected_workspace or selected_workspace != workspace_id:
+        raise HTTPException(status_code=403, detail="kcpg_context_workspace_mismatch")
+    canonical = "|".join((values["timestamp"], request_id, workspace_id, actor_id, actor_role))
+    expected = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, str(values["signature"])):
+        raise HTTPException(status_code=403, detail="invalid_kcpg_context_signature")
+    ctx = RequestContext(principal_id=actor_id, workspace_id=workspace_id, role=actor_role, permissions=(), principal_type="human", auth_method="supabase_jwt", correlation_id=request_id or correlation, metadata={"authority_source": "verified_kcpg_hmac"})
+    request.state.request_context = ctx
+    from core.request_context import set_request_context
+    set_request_context(ctx)
+    return ctx
 
 
 async def require_auth_context(
@@ -28,7 +74,8 @@ async def require_auth_context(
     """
     existing = getattr(request.state, "request_context", None)
     if existing is not None and getattr(existing, "workspace_id", None):
-        return existing
+        trusted = _bind_verified_gateway_human_context(request, existing, x_correlation_id or request.headers.get("X-Correlation-ID") or "")
+        return trusted or existing
 
     bearer = ""
     if authorization and authorization.lower().startswith("bearer "):
@@ -99,9 +146,12 @@ async def require_auth_context(
                 user_email=identity.user_email,
             )
             set_request_context(ctx)
-            return ctx
-            
-    return bind_from_auth_identity(identity, correlation_id=correlation)
+            trusted = _bind_verified_gateway_human_context(request, ctx, correlation)
+            return trusted or ctx
+
+    resolved = bind_from_auth_identity(identity, correlation_id=correlation)
+    trusted = _bind_verified_gateway_human_context(request, resolved, correlation)
+    return trusted or resolved
 
 
 async def require_species_privileges(request: Request) -> RequestContext:
