@@ -96,7 +96,7 @@ class FakeBus:
     def __init__(self):
         self.handlers = {}
 
-    def subscribe(self, event_name, handler):
+    async def subscribe(self, event_name, handler):
         self.handlers.setdefault(event_name, []).append(handler)
 
         def unsubscribe():
@@ -179,6 +179,9 @@ def test_duplicate_growthbridge_event_is_idempotent():
             {**event_context(), "event_id": "another-internal-event-uuid"},
         )
         assert len(db.rows["director_observations"]) == 1
+        assert len(
+            adapter.observe().metrics["events"]
+        ) == 1
         assert len(db.rows["director_decisions"]) == 1
         await adapter.stop()
 
@@ -218,3 +221,26 @@ def test_inactive_integration_cannot_feed_director():
         assert db.rows["director_decisions"] == []
 
     asyncio.run(scenario())
+
+def test_duplicate_replay_after_restart_hydrates_observer_without_duplicate_rows():
+    async def scenario():
+        _first_adapter, _director, _bus, db = build_adapter()
+        # Simulate a previously completed delivery stored durably.
+        decision_id = "website_event_" + __import__("hashlib").sha256(
+            b"ws-1:site-demo:evt-growthbridge-0001"
+        ).hexdigest()[:24]
+        db.rows["director_decisions"].append({
+            "id": decision_id,
+            "payload": json.dumps({"outcome": "observed"}),
+        })
+        adapter, _director2, bus2, db2 = build_adapter()
+        adapter.supabase = db
+        await adapter.start()
+        await bus2.emit("website.integration.blog.created", event_context())
+        assert len(db.rows["director_observations"]) == 0
+        assert len(db.rows["director_decisions"]) == 1
+        assert adapter.observe().metrics["events"][0]["event_id"] == "evt-growthbridge-0001"
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
