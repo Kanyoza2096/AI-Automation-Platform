@@ -1533,6 +1533,39 @@ async def _boot_director(container: ServiceContainer) -> None:
         logger.warning("Director auto_discover soft-fail: %s", exc)
         discovered = 0
 
+    # Website change notifications enter Director through the existing
+    # UnifiedEventBus. The adapter registers an evidence-only observer before
+    # Director starts; it never creates tasks or grants publishing authority.
+    try:
+        from core.unified_bus import UnifiedEventBus
+        from services.director.website_event_adapter import DirectorWebsiteEventAdapter
+
+        event_bus = container.try_resolve(UnifiedEventBus)
+        if event_bus is None or supabase_client is None:
+            logger.warning(
+                "Director website event adapter unavailable: event bus or durable database client missing"
+            )
+        else:
+            website_event_adapter = DirectorWebsiteEventAdapter(
+                director, event_bus, supabase_client
+            )
+            website_event_adapter.register_observer()
+            await website_event_adapter.start()
+            container.register_instance(
+                DirectorWebsiteEventAdapter, website_event_adapter
+            )
+            await shutdown_registry.register(
+                "DirectorWebsiteEventAdapter",
+                website_event_adapter.stop,
+                timeout_seconds=5.0,
+            )
+            logger.info("Director website event adapter wired (evidence-only)")
+    except Exception as exc:
+        logger.warning(
+            "Director website event adapter wiring failed: %s",
+            _sanitize_error_message(exc),
+        )
+
     try:
         await director.start()
     except Exception as exc:
