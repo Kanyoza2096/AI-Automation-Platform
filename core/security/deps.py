@@ -244,9 +244,10 @@ async def require_human_workspace_admin(request: Request) -> RequestContext:
     website integration registrations, even if their workspace scopes contain
     the string "admin".
     """
-    ctx = getattr(request.state, "request_context", None) or get_request_context()
-    if ctx is None:
-        ctx = await require_auth_context(request)
+    # Always resolve through require_auth_context first. For KCPG service-authenticated
+    # requests this verifies and binds the signed human envelope before role checks;
+    # reading middleware's initial species context directly would reject the human actor.
+    ctx = await require_auth_context(request)
     is_human_jwt = (
         getattr(ctx, "principal_type", "") == "human"
         and getattr(ctx, "auth_method", "") == "supabase_jwt"
