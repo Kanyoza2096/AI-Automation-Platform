@@ -64,3 +64,12 @@ def test_fetch_context_is_disabled_without_context_path_or_token(monkeypatch):
 
     assert connector.fetch_context() is None
     get.assert_not_called()
+
+def test_fetch_context_fails_closed_on_workspace_mismatch(monkeypatch):
+    connector = _connector()
+    response = Mock(status_code=200, content=b'{"ok":true,"context":{"workspace_id":"ws-other"}}')
+    response.json.return_value = {"ok": True, "context": {"workspace_id": "ws-other"}}
+    get = Mock(return_value=response)
+    monkeypatch.setattr("services.connectors.website_connector.requests.get", get)
+
+    assert connector.fetch_context() is None
