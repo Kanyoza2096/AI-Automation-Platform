@@ -400,7 +400,9 @@ class DirectorWebsiteEventAdapter:
         payload = safe({**asdict(decision), "workspace_id": workspace_id})
         return {
             "id": decision.id,
-            "payload": json.dumps(payload),
+            # director_decisions.payload is JSONB; store an object, not a
+            # JSON-encoded string scalar, so JSONB filters and readers work.
+            "payload": payload,
             "timestamp": iso(decision.timestamp),
             "workspace_id": workspace_id,
         }
@@ -418,7 +420,8 @@ class DirectorWebsiteEventAdapter:
 
     def _persist_observation(self, observation: Observation, workspace_id: str) -> None:
         record = {
-            "payload": json.dumps(safe(asdict(observation))),
+            # director_observations.payload is JSONB and is queried by event ID.
+            "payload": safe(asdict(observation)),
             "timestamp": iso(observation.timestamp),
             "workspace_id": workspace_id,
         }
