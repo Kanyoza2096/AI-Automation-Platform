@@ -151,7 +151,6 @@ async def review_pr(data: dict):
     if not plugin:
         raise HTTPException(503, "Plugin not running")
     
-    # If no token configured or mock testing requested, return realistic AI code review
     if not plugin.github_token:
         raise HTTPException(status_code=503, detail={
             "code": "github_token_unavailable",
