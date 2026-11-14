@@ -161,6 +161,10 @@ class DirectorWebsiteEventAdapter:
 
         existing = await asyncio.to_thread(self._load_decision, decision_id)
         if existing and self._decision_is_complete(existing):
+            self._remember_event(
+                workspace_id, integration_id, external_event_id,
+                event_type, receipt.get("occurred_at"), brand_id,
+            )
             return {"accepted": True, "duplicate": True, "decision_id": decision_id}
 
         occurred_at = receipt.get("occurred_at")
@@ -276,20 +280,10 @@ class DirectorWebsiteEventAdapter:
         await asyncio.to_thread(self._upsert_decision, decision, workspace_id)
 
         self.director.decisions.append(decision)
-        event_key = f"{workspace_id}:{integration_id}:{external_event_id}"
-        with self._latest_lock:
-            self._latest_events[event_key] = {
-                "workspace_id": workspace_id,
-                "integration_id": integration_id,
-                "event_id": external_event_id,
-                "event_type": event_type,
-                "occurred_at": occurred_at,
-                "observed_at": observed_at.isoformat(),
-                "brand_id": brand_id,
-            }
-            self._latest_events.move_to_end(event_key)
-            while len(self._latest_events) > self.MAX_RETAINED_EVENTS:
-                self._latest_events.popitem(last=False)
+        self._remember_event(
+            workspace_id, integration_id, external_event_id,
+            event_type, occurred_at, brand_id, observed_at,
+        )
 
         logger.info(
             "Director recorded website event workspace=%s integration=%s type=%s",
@@ -304,6 +298,31 @@ class DirectorWebsiteEventAdapter:
             "observation_source": self.OBSERVER_NAME,
             "action": "observe_only",
         }
+
+    def _remember_event(
+        self, workspace_id: str, integration_id: str, event_id: str,
+        event_type: str, occurred_at: Any, brand_id: str | None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        if isinstance(occurred_at, datetime):
+            occurred_at = occurred_at.astimezone(timezone.utc).isoformat()
+        elif not isinstance(occurred_at, str):
+            occurred_at = datetime.now(timezone.utc).isoformat()
+        observed_at = observed_at or datetime.now(timezone.utc)
+        event_key = f"{workspace_id}:{integration_id}:{event_id}"
+        with self._latest_lock:
+            self._latest_events[event_key] = {
+                "workspace_id": workspace_id,
+                "integration_id": integration_id,
+                "event_id": event_id,
+                "event_type": event_type,
+                "occurred_at": occurred_at,
+                "observed_at": observed_at.isoformat(),
+                "brand_id": brand_id,
+            }
+            self._latest_events.move_to_end(event_key)
+            while len(self._latest_events) > self.MAX_RETAINED_EVENTS:
+                self._latest_events.popitem(last=False)
 
     def _load_verified_receipt(
         self, workspace_id: str, integration_id: str,
