@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Optional, TYPE_CHECKING
-from urllib.parse import urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 
@@ -55,13 +55,19 @@ class WebsiteConnector:
         self._token = str(getattr(social_account, "access_token", "") or "").strip()
 
     def _validate_url(self, path: str) -> str:
-        if not self._base_url or not self._publish_path:
+        if not self._base_url:
             raise ValueError("Website connector is not configured")
         parsed = urlparse(self._base_url)
-        if parsed.scheme != "https" or not parsed.netloc:
-            raise ValueError("Website connector requires an HTTPS base_url")
-        if not path.startswith("/"):
-            raise ValueError("Website connector API paths must start with '/'")
+        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+            raise ValueError("Website connector requires a valid HTTPS base_url without embedded credentials")
+        if not path.startswith("/") or path.startswith("//") or "\\" in path:
+            raise ValueError("Website connector API paths must be root-relative paths")
+        path_parts = urlparse(path)
+        decoded_segments = unquote(path_parts.path).split("/")
+        if path_parts.scheme or path_parts.netloc or path_parts.query or path_parts.fragment:
+            raise ValueError("Website connector API paths cannot include a URL, query, or fragment")
+        if any(segment in {".", ".."} for segment in decoded_segments):
+            raise ValueError("Website connector API paths cannot traverse directories")
         return urljoin(self._base_url.rstrip("/") + "/", path.lstrip("/"))
 
     def _headers(self, idempotency_key: str = "") -> dict[str, str]:
