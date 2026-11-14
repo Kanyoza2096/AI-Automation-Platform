@@ -9,7 +9,8 @@ def _connector():
         platform_config={
             "base_url": "https://growthbridgevirtual.onrender.com/",
             "publish_path": "/api/kdo/content",
-            "lookup_path_template": "/api/kdo/context",
+            "lookup_path_template": "/api/kdo/content/{post_id}",
+            "context_path": "/api/kdo/context",
         },
         access_token="KDO_API_test-token",
         workspace_id="ws-test",
@@ -46,12 +47,13 @@ def test_fetch_context_fails_closed_on_http_error(monkeypatch):
     assert connector.fetch_context() is None
 
 
-def test_fetch_context_is_disabled_without_lookup_path_or_token(monkeypatch):
+def test_fetch_context_is_disabled_without_context_path_or_token(monkeypatch):
     account = SimpleNamespace(
         platform_config={
             "base_url": "https://growthbridgevirtual.onrender.com/",
             "publish_path": "/api/kdo/content",
-            "lookup_path_template": "",
+            "lookup_path_template": "/api/kdo/content/{post_id}",
+            "context_path": "",
         },
         access_token="",
         workspace_id="ws-test",
