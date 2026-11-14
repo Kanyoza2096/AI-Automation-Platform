@@ -430,3 +430,19 @@ def test_concurrent_decision_claim_conflict_is_idempotent_only_for_same_workspac
     with pytest.raises(RuntimeError, match="duplicate key"):
         adapter._insert_decision_claim(decision, "ws-2")
     assert len(db.rows["director_decisions"]) == 1
+
+
+def test_concurrent_event_deliveries_create_one_observation_and_one_decision():
+    async def scenario():
+        adapter, director, _bus, db = build_adapter()
+        results = await asyncio.gather(*[
+            adapter.handle_event(event_context())
+            for _ in range(8)
+        ])
+        assert all(result["accepted"] for result in results)
+        assert len(db.rows["director_observations"]) == 1
+        assert len(db.rows["director_decisions"]) == 1
+        assert len(director.decisions) == 1
+        assert adapter.observe().metrics["event_count"] == 1
+
+    asyncio.run(scenario())
