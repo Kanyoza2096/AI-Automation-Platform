@@ -1,0 +1,209 @@
+import asyncio
+import json
+from collections import deque
+from types import SimpleNamespace
+
+import pytest
+
+from services.director.website_event_adapter import DirectorWebsiteEventAdapter
+
+
+class FakeTable:
+    def __init__(self, db, name):
+        self.db = db
+        self.name = name
+        self.filters = {}
+        self.mode = "select"
+
+    def select(self, *_args):
+        self.mode = "select"
+        return self
+
+    def eq(self, key, value):
+        self.filters[key] = value
+        return self
+
+    def limit(self, _count):
+        return self
+
+    def insert(self, row):
+        self.row = row
+        self.mode = "insert"
+        return self
+
+    def upsert(self, row, **_kwargs):
+        self.row = row
+        self.mode = "upsert"
+        return self
+
+    def execute(self):
+        rows = self.db.rows.setdefault(self.name, [])
+        if self.mode == "select":
+            selected = [
+                row for row in rows
+                if all(str(row.get(key)) == str(value) for key, value in self.filters.items())
+            ]
+            return SimpleNamespace(data=selected)
+        if self.mode == "insert":
+            if any(row.get("id") == self.row.get("id") for row in rows if self.row.get("id")):
+                raise RuntimeError("duplicate key")
+            rows.append(dict(self.row))
+            return SimpleNamespace(data=[self.row])
+        if self.mode == "upsert":
+            rows[:] = [row for row in rows if row.get("id") != self.row.get("id")]
+            rows.append(dict(self.row))
+            return SimpleNamespace(data=[self.row])
+        raise AssertionError(self.mode)
+
+
+class FakeDB:
+    def __init__(self):
+        self.rows = {
+            "website_integrations": [{
+                "workspace_id": "ws-1",
+                "integration_id": "site-demo",
+                "status": "configured",
+                "event_types": ["blog.created"],
+            }],
+            "website_integration_events": [{
+                "workspace_id": "ws-1",
+                "integration_id": "site-demo",
+                "event_id": "evt-growthbridge-0001",
+                "event_type": "blog.created",
+                "occurred_at": "2026-11-14T10:00:00+00:00",
+                "payload": {"resource_id": "post-1"},
+            }],
+            "director_decisions": [],
+            "director_observations": [],
+        }
+
+    def table(self, name):
+        return FakeTable(self, name)
+
+
+class FakeBus:
+    def __init__(self):
+        self.handlers = {}
+
+    def subscribe(self, event_name, handler):
+        self.handlers.setdefault(event_name, []).append(handler)
+
+        def unsubscribe():
+            self.handlers[event_name].remove(handler)
+
+        return unsubscribe
+
+    async def emit(self, event_name, context):
+        for handler in self.handlers.get(event_name, []):
+            await handler(context)
+
+
+class FakeDirector:
+    def __init__(self):
+        self.observers = {}
+        self.decisions = deque()
+        self.tasks = []
+
+    def register_observer(self, observer):
+        self.observers[observer.name] = observer
+
+
+def event_context(source="nextjs-website-integration"):
+    return {
+        "event_name": "website.integration.blog.created",
+        "source": source,
+        "event_id": "internal-event-uuid",
+        "workspace_id": "ws-1",
+        "brand_id": "brand-demo",
+        "payload": {
+            "integration_id": "site-demo",
+            "event_id": "evt-growthbridge-0001",
+            "payload": {"resource_id": "post-1"},
+        },
+    }
+
+
+def build_adapter():
+    director = FakeDirector()
+    bus = FakeBus()
+    db = FakeDB()
+    adapter = DirectorWebsiteEventAdapter(director, bus, db)
+    adapter.register_observer()
+    return adapter, director, bus, db
+
+
+def test_valid_website_event_persists_observation_and_decision_without_task():
+    async def scenario():
+        adapter, director, bus, db = build_adapter()
+        await adapter.start()
+        result = await bus.emit(
+            "website.integration.blog.created", event_context()
+        )
+        assert result is None  # Event bus handlers acknowledge by completion.
+        assert len(db.rows["director_observations"]) == 1
+        assert len(db.rows["director_decisions"]) == 1
+        decision = json.loads(db.rows["director_decisions"][0]["payload"])
+        assert decision["outcome"] == "observed"
+        assert decision["workspace_id"] == "ws-1"
+        assert decision["action_taken"]["task_created"] is False
+        assert decision["action_taken"]["public_publishing_authorized"] is False
+        assert director.tasks == []
+        observation = director.observers[adapter.OBSERVER_NAME].observe()
+        assert observation.status.value == "unknown"
+        assert observation.metrics["events"][0]["event_id"] == "evt-growthbridge-0001"
+        assert observation.metrics["director_signals"] == []
+        await adapter.stop()
+        assert all(not handlers for handlers in bus.handlers.values())
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_growthbridge_event_is_idempotent():
+    async def scenario():
+        adapter, _director, bus, db = build_adapter()
+        await adapter.start()
+        await bus.emit("website.integration.blog.created", event_context())
+        await bus.emit(
+            "website.integration.blog.created",
+            {**event_context(), "event_id": "another-internal-event-uuid"},
+        )
+        assert len(db.rows["director_observations"]) == 1
+        assert len(db.rows["director_decisions"]) == 1
+        await adapter.stop()
+
+    asyncio.run(scenario())
+
+
+def test_untrusted_source_is_rejected_before_database_write():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        with pytest.raises(ValueError, match="untrusted_website_event_source"):
+            await adapter.handle_event(event_context(source="unknown"))
+        assert db.rows["director_observations"] == []
+        assert db.rows["director_decisions"] == []
+
+    asyncio.run(scenario())
+
+
+def test_event_without_durable_workspace_receipt_is_rejected():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        db.rows["website_integration_events"].clear()
+        with pytest.raises(ValueError, match="website_event_receipt_not_verified"):
+            await adapter.handle_event(event_context())
+        assert db.rows["director_observations"] == []
+        assert db.rows["director_decisions"] == []
+
+    asyncio.run(scenario())
+
+
+def test_inactive_integration_cannot_feed_director():
+    async def scenario():
+        adapter, _director, _bus, db = build_adapter()
+        db.rows["website_integrations"][0]["status"] = "revoked"
+        with pytest.raises(ValueError, match="website_event_receipt_not_verified"):
+            await adapter.handle_event(event_context())
+        assert db.rows["director_observations"] == []
+        assert db.rows["director_decisions"] == []
+
+    asyncio.run(scenario())
