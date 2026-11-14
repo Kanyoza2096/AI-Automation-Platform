@@ -486,7 +486,34 @@ class DirectorWebsiteEventAdapter:
 
     def _insert_decision_claim(self, decision: Decision, workspace_id: str) -> None:
         record = self._decision_record(decision, workspace_id)
-        self.supabase.table("director_decisions").insert(record).execute()
+        try:
+            self.supabase.table("director_decisions").insert(record).execute()
+        except Exception:
+            # A concurrent consumer may have won the deterministic primary-key
+            # claim after our initial read. Treat only a confirmed same-workspace
+            # claim as an idempotent race; propagate every other database error.
+            try:
+                existing = self._load_decision(decision.id)
+            except Exception:
+                raise
+            if not existing:
+                raise
+            payload = existing.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    payload = None
+            existing_workspace = existing.get("workspace_id")
+            if (
+                existing_workspace == workspace_id
+                or (
+                    isinstance(payload, dict)
+                    and payload.get("workspace_id") == workspace_id
+                )
+            ):
+                return
+            raise
 
     def _upsert_decision(self, decision: Decision, workspace_id: str) -> None:
         record = self._decision_record(decision, workspace_id)
