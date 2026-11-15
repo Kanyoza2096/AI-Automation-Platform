@@ -30,10 +30,12 @@ def make_scheduler(bus, loop):
 def test_emit_dispatches_coroutine_to_owner_loop_from_worker_thread():
     loop = asyncio.new_event_loop()
     ready = threading.Event()
-    thread = threading.Thread(
-        target=lambda: (asyncio.set_event_loop(loop), ready.set(), loop.run_forever()),
-        daemon=True,
-    )
+    def run_owner_loop():
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+
+    thread = threading.Thread(target=run_owner_loop, daemon=True)
     thread.start()
     assert ready.wait(timeout=2)
     bus = AsyncEventBus()
