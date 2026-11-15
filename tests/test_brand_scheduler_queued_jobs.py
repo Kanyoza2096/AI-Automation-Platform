@@ -11,8 +11,8 @@ class FakeJobService:
         self.jobs = jobs
         self.calls = []
 
-    def find_by_brand(self, brand_id, status=None, limit=50):
-        self.calls.append((brand_id, status, limit))
+    def find_by_brand(self, brand_id, status=None, limit=50, *, oldest_first=False):
+        self.calls.append((brand_id, status, limit, oldest_first))
         return self.jobs
 
 
@@ -61,7 +61,7 @@ def test_due_queued_scheduled_job_is_resumed_through_idempotent_slot():
     accepted = scheduler._process_queued_automation_jobs()
 
     assert accepted == 1
-    assert service.calls == [("brand-a", JobStatus.QUEUED, 50)]
+    assert service.calls == [("brand-a", JobStatus.QUEUED, 50, True)]
     scheduler._trigger_workflow.assert_called_once()
     kwargs = scheduler._trigger_workflow.call_args.kwargs
     assert kwargs["source"] == "queued_retry"
