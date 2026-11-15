@@ -7,7 +7,9 @@ from scheduler.brand_scheduler import BrandScheduler
 
 
 class FakeBrand:
+    id = "brand-test"
     name = "test-brand"
+    workspace_id = "workspace-test"
 
 
 class AsyncEventBus:
@@ -49,7 +51,7 @@ def test_emit_dispatches_coroutine_to_owner_loop_from_worker_thread():
         worker.start()
         worker.join(timeout=2)
         assert not worker.is_alive()
-        assert bus.calls == [("scheduler.test", {"ok": True})]
+        assert bus.calls == [("scheduler.test", {"ok": True, "workspace_id": "workspace-test", "brand_id": "brand-test"})]
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
@@ -82,5 +84,44 @@ def test_emit_closes_awaitable_when_owner_loop_is_unavailable(caplog):
             scheduler._emit("scheduler.test", {"ok": True})
         assert "owner event loop unavailable" in caplog.text
         assert bus.calls == []
+    finally:
+        loop.close()
+
+
+def test_emit_refuses_missing_or_synthetic_workspace(caplog):
+    loop = asyncio.new_event_loop()
+    bus = AsyncEventBus()
+    scheduler = make_scheduler(bus, loop)
+    scheduler.brand.workspace_id = "default"
+
+    try:
+        with caplog.at_level("ERROR"):
+            scheduler._emit("scheduler.test", {"ok": True})
+        assert "concrete brand/workspace identity unavailable" in caplog.text
+        assert bus.calls == []
+    finally:
+        loop.close()
+
+
+def test_workflow_context_binds_brand_and_workspace():
+    loop = asyncio.new_event_loop()
+    scheduler = make_scheduler(AsyncEventBus(), loop)
+    try:
+        context = scheduler._build_workflow_context(job_id="job-1", source="scheduled")
+        assert context["brand"] is scheduler.brand
+        assert context["brand_id"] == "brand-test"
+        assert context["workspace_id"] == "workspace-test"
+        assert context["job_id"] == "job-1"
+    finally:
+        loop.close()
+
+
+def test_workflow_context_rejects_synthetic_workspace():
+    loop = asyncio.new_event_loop()
+    scheduler = make_scheduler(AsyncEventBus(), loop)
+    scheduler.brand.workspace_id = "unbound"
+    try:
+        with pytest.raises(ValueError, match="concrete brand and tenant workspace"):
+            scheduler._build_workflow_context(job_id="job-1")
     finally:
         loop.close()
