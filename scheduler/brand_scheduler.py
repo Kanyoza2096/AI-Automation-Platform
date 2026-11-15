@@ -1647,9 +1647,8 @@ class BrandScheduler:
                     }
                 self._manual_trigger_keys[idempotency_key] = now
 
-        require_dist = str(os.getenv("REQUIRE_DISTRIBUTED_LOCK", "")).lower() in (
-            "1", "true", "yes",
-        )
+        # Manual publishing is an external side effect; never permit a local-only lock.
+        require_dist = True
         if not self._distributed_lock.acquire(require_distributed=require_dist):
             return {
                 "ok": False,
