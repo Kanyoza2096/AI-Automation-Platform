@@ -208,7 +208,11 @@ def build_workspace_plan(evaluation: Mapping[str, Any], *, workspace_id: str,
 
 def propose_workspace_plan(supabase: Any, *, workspace_id: str,
                            evaluation_id: str, requested_by: str) -> dict:
-    """Load one completed tenant evaluation and persist its idempotent proposal."""
+    """Load one completed tenant evaluation and persist its idempotent proposal.
+
+    requested_by must come from the authenticated workspace session, never
+    from an untrusted request-body field.
+    """
     workspace_id = _text(workspace_id, "workspace_id", 128)
     evaluation_id = _text(evaluation_id, "evaluation_id", 128)
     requested_by = _text(requested_by, "requested_by", 256)
@@ -264,8 +268,10 @@ def decide_workspace_plan(supabase: Any, *, workspace_id: str, plan_id: str,
     workspace_id = _text(workspace_id, "workspace_id", 128)
     plan_id = _text(plan_id, "plan_id", 128)
     actor_id = _text(actor_id, "actor_id", 256)
-    if decision not in {"approve", "reject"}:
+    if not isinstance(decision, str) or decision not in {"approve", "reject"}:
         raise WorkspacePlanningError("plan_decision_invalid")
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 1000):
+        raise WorkspacePlanningError("plan_decision_reason_invalid")
     response = supabase.rpc(
         "decide_director_workspace_plan",
         {
