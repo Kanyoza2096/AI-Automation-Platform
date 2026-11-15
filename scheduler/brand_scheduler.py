@@ -1597,8 +1597,9 @@ class BrandScheduler:
                         workspace_id=getattr(self.brand, "workspace_id", None),
                     )
 
+                retry_note = "queued for retry" if retryable else "terminal validation failure; retry suppressed"
                 logger.warning(
-                    "[%s] job=%s FAILED — steps=%s evidence=%s (queued for retry)",
+                    "[%s] job=%s FAILED — steps=%s evidence=%s (%s)",
                     self.brand.name,
                     job_id,
                     failed,
@@ -1610,6 +1611,7 @@ class BrandScheduler:
                         }
                         for item in failure_evidence["failed_steps"]
                     ],
+                    retry_note,
                 )
                 return False
 
