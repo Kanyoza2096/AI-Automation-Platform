@@ -1546,8 +1546,14 @@ async def _boot_director(container: ServiceContainer) -> None:
                 "Director website event adapter unavailable: event bus or durable database client missing"
             )
         else:
+            from services.director.website_evaluation import (
+                make_llm_website_context_evaluator,
+            )
+
+            website_evaluator = make_llm_website_context_evaluator(get_llm_gateway())
             website_event_adapter = DirectorWebsiteEventAdapter(
-                director, event_bus, supabase_client
+                director, event_bus, supabase_client,
+                website_evaluator=website_evaluator,
             )
             website_event_adapter.register_observer()
             await website_event_adapter.start()
@@ -1559,7 +1565,7 @@ async def _boot_director(container: ServiceContainer) -> None:
                 website_event_adapter.stop,
                 timeout_seconds=5.0,
             )
-            logger.info("Director website event adapter wired (evidence-only)")
+            logger.info("Director website event adapter wired (workspace-scoped advisory evaluation; no execution authority)")
     except Exception as exc:
         logger.warning(
             "Director website event adapter wiring failed: %s",
