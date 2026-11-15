@@ -328,6 +328,8 @@ class JobService:
         limit: int = 50,
         *,
         oldest_first: bool = False,
+        workflow_type: Optional[WorkflowType] = None,
+        source: Optional[str] = None,
     ) -> List[AutomationJob]:
         """Find brand jobs, optionally prioritizing the oldest backlog entries."""
         client = self._require_client()
@@ -336,6 +338,10 @@ class JobService:
             query = client.table(self._table).select("*").eq("brand_id", brand_id)
             if status:
                 query = query.eq("status", status.value)
+            if workflow_type:
+                query = query.eq("workflow_type", workflow_type.value)
+            if source:
+                query = query.eq("source", source)
             result = await loop.run_in_executor(
                 None,
                 lambda: query.order(
