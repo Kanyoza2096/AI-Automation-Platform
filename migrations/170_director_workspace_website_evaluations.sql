@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS public.director_website_evaluations (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, integration_id, event_id, context_hash),
     CHECK (
-        (status = 'evaluated' AND jsonb_typeof(payload) = 'object' AND lease_until IS NULL)
+        (status = 'evaluated' AND payload IS NOT NULL AND jsonb_typeof(payload) = 'object' AND lease_until IS NULL)
         OR (status IN ('pending', 'failed') AND payload IS NULL)
     )
 );
