@@ -38,6 +38,17 @@ class JobServiceEventLoopBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(worker.is_alive())
         self.assertTrue(bus.called)
 
+    async def test_emit_refuses_to_rebind_bus_when_owner_loop_is_stopped(self):
+        stopped_loop = asyncio.new_event_loop()
+        bus = _LoopBoundBus(stopped_loop)
+        service = JobService.__new__(JobService)
+        service._event_bus = bus
+
+        await service._emit("job.status_changed", {"job_id": "job-test"})
+
+        self.assertFalse(bus.called)
+        stopped_loop.close()
+
 
 if __name__ == "__main__":
     unittest.main()
