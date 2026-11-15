@@ -76,7 +76,13 @@ caption against every rule below. Revise it until every check passes.
    third-person account or neutral reflection. Never invent a personal story.
 4. Do not claim the brand performed an action, achieved a result, or used a
    product unless that fact is explicitly supported by supplied source data.
-5. Return only the requested caption/JSON format. Do not include this check,
+5. FORBIDDEN OPENERS. Do not begin the caption with or use as a generic
+   lead-in: "As a ...", "As an AI ...", "In today's ...", "In this post",
+   "In this article", "Today we'll", "Let's dive in", "Let's explore",
+   "It's no secret", "We all know", or a dictionary-style definition.
+   In particular, never use "As a" as a filler opening. Start directly
+   with a specific, source-grounded observation, scene, question, or claim.
+6. Return only the requested caption/JSON format. Do not include this check,
    explanations, labels, or compliance commentary in the output.
 
 FINAL SILENT CHECK: scan every word, including quoted material and
