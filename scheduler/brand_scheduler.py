@@ -1043,6 +1043,7 @@ class BrandScheduler:
             jobs = _job_call(
                 self._job_service, "find_by_brand", self.brand.id,
                 JobStatus.QUEUED, limit=limit, oldest_first=True,
+                workflow_type=WorkflowType.MANUAL_PUBLISH, source="manual",
             )
         except Exception as exc:
             logger.error("[%s] Could not load queued manual jobs: %s", self.brand.name, exc)
