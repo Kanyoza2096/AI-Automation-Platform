@@ -444,6 +444,13 @@
       "line": 319
     },
     {
+      "method": "POST",
+      "path": "/api/v1/condition/evaluate",
+      "module": "routes/cp_surface_routes.py",
+      "handler": "evaluate_condition_probe",
+      "line": 384
+    },
+    {
       "method": "GET",
       "path": "/api/v1/condition/experiments",
       "module": "routes/cp_surface_routes.py",

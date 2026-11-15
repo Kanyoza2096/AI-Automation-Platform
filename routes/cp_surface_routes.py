@@ -15,6 +15,7 @@ v15.5 (2026-10-30) — dream system canonical resolution:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -343,6 +344,73 @@ async def condition_decisions(request: Request, container=Depends(_container_dep
             "error": type(exc).__name__,
             "message": "Condition decision evidence is unavailable.",
         }
+
+
+class ConditionEvaluationBody(BaseModel):
+    condition: Dict[str, Any] = Field(default_factory=dict)
+    event: Dict[str, Any] = Field(default_factory=dict)
+
+
+def _validate_condition_probe(condition: Dict[str, Any], *, depth: int = 0, budget: Optional[List[int]] = None) -> None:
+    """Bound user-supplied condition probes before calling the shared evaluator."""
+    if budget is None:
+        budget = [0]
+    budget[0] += 1
+    if depth > 5 or budget[0] > 100:
+        raise ValueError("condition nesting or size exceeds the evaluation limit")
+    if not isinstance(condition, dict):
+        raise ValueError("each condition must be an object")
+    if not condition:
+        return
+    if "all" in condition or "any" in condition:
+        if "all" in condition and "any" in condition:
+            raise ValueError("condition groups must use either all or any, not both")
+        key = "all" if "all" in condition else "any"
+        children = condition.get(key)
+        if not isinstance(children, list) or not 1 <= len(children) <= 20:
+            raise ValueError("condition groups must contain 1..20 conditions")
+        for child in children:
+            _validate_condition_probe(child, depth=depth + 1, budget=budget)
+        return
+    field = str(condition.get("field") or "")
+    operator = str(condition.get("op") or "eq")
+    if not field or len(field) > 160 or not re.fullmatch(r"[A-Za-z0-9_.-]+", field):
+        raise ValueError("condition field must be a bounded dotted identifier")
+    if operator not in {"eq", "ne", "gt", "gte", "lt", "lte", "contains", "in", "not_in", "exists", "truthy"}:
+        raise ValueError("unsupported condition operator")
+
+
+@router.post("/condition/evaluate", dependencies=[Depends(_auth_dep())])
+async def evaluate_condition_probe(
+    body: ConditionEvaluationBody,
+    request: Request,
+    container=Depends(_container_dep()),
+):
+    """Evaluate a bounded sample event; this is read-only and never runs an action."""
+    workspace_id = _workspace_id(request)
+    try:
+        # Reuse the same ownership check as the workspace-filtered condition
+        # projections. No brand data is needed to evaluate a sample event.
+        await _workspace_brand_ids(request, container)
+        if len(repr(body.condition)) > 4_000:
+            raise ValueError("condition exceeds the 4 KB evaluation limit")
+        if len(repr(body.event)) > 12_000:
+            raise ValueError("sample event exceeds the 12 KB evaluation limit")
+        _validate_condition_probe(body.condition)
+        from services.business_automation import BusinessAutomationEngine
+        matched = BusinessAutomationEngine.evaluate(body.condition, body.event)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception as exc:
+        logger.warning("condition evaluation unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "Workspace condition evaluation is unavailable") from exc
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "matched": bool(matched),
+        "source": "business_automation_condition_evaluator",
+        "side_effects": False,
+    }
 
 
 # ── Predictions optimal times ───────────────────────────────────────────────
