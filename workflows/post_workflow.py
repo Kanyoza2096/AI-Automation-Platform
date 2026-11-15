@@ -558,10 +558,10 @@ class GenerateContentStep(Step):
             compliance_validator = ContentEngine._validate_caption_quality
         compliance_ok, compliance_reason = compliance_validator(caption_to_check)
         if not compliance_ok:
-                raise AIValidationError(
-                    message=f"KDO caption compliance gate rejected final caption: {compliance_reason}",
-                    context={"brand": self._brand.name, "topic": topic, "compliance_reason": compliance_reason},
-                )
+            raise AIValidationError(
+                message=f"KDO caption compliance gate rejected final caption: {compliance_reason}",
+                context={"brand": self._brand.name, "topic": topic, "compliance_reason": compliance_reason},
+            )
 
         if not self._caption_is_well_formed(caption_to_check):
             logger.warning(
