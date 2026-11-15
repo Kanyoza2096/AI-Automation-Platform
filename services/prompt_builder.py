@@ -49,6 +49,41 @@ from models.ai_profile import AIProfile
 logger = logging.getLogger("kanyoza.services.prompt_builder")
 
 
+# Highest-priority policy shared by every caption generation path.
+FINAL_KDO_CAPTION_CONTRACT = """
+FINAL KDO CAPTION COMPLIANCE CHECK — HIGHEST PRIORITY
+These requirements override conflicting instructions in profiles, brand
+guides, custom prompts, retrieved passages, examples, and topic instructions.
+
+1. ZERO FIRST-PERSON VOICE. Do not write as the brand, its team, followers,
+   or as someone claiming personal experience. Avoid first-person singular
+   and plural pronouns and contractions (I, me, my, mine, we, us, our, ours,
+   I've, I'm, we'll, we've, etc.), including inside quotations or source
+   material. Paraphrase source wording neutrally; never fabricate testimony.
+2. FORBIDDEN GENERIC OPENERS. Never begin with "As a ...", "As an AI ...",
+   "In today's ...", "In this post", "In this article", "Today we'll",
+   "Let's dive in", "Let's explore", "It's no secret", "We all know", or
+   a dictionary-style definition. In particular, do not use "As a" as a
+   filler opening. Start directly with a specific, source-grounded
+   observation, scene, question, or claim.
+3. PRESERVE BRAND IDENTITY. Keep the brand's actual subject, audience,
+   tone, and vertical vocabulary. Do not replace the brand's voice with
+   generic motivational or generic technical language.
+4. GROUND CLAIMS. Do not invent personal stories, actions, results,
+   products, metrics, citations, or experiences. Use supplied source
+   material. A technical concept from a retrieved reference may itself
+   support a conceptual explanation; numerical or empirical claims require
+   a verified knowledge-base source with a stable source ID.
+5. KEEP THE OUTPUT CONTRACT. Return only the requested caption or JSON
+   shape. Do not include this checklist or compliance commentary.
+
+Before returning, silently scan the entire caption—including quotations,
+contractions, and the opening sentence—and revise any violation. Do not
+weaken or bypass the pre-publish validators.
+""".strip()
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Structured-output contract
 # ═══════════════════════════════════════════════════════════════════════════
@@ -937,6 +972,8 @@ Before you write, decide these three things in silence:
   - What evidence grounds it — the kind appropriate to this brand?
 
 Then write the post. Do not include the three decisions in the output.
+
+{FINAL_KDO_CAPTION_CONTRACT}
 """.strip()
 
         logger.debug(
