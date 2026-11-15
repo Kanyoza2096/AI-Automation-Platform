@@ -29,7 +29,8 @@ logger = logging.getLogger("kanyoza.core.distributed_lock")
 class LockMode(str, Enum):
     DISTRIBUTED = "distributed"       # Redis held
     DEGRADED_LOCAL = "degraded_local" # process-local only
-    UNAVAILABLE = "unavailable"       # could not acquire
+    CONTENDED = "contended"           # Redis is healthy; another owner holds the key
+    UNAVAILABLE = "unavailable"       # Redis unavailable or coordination failed
 
 
 class DistributedLock:
@@ -94,17 +95,32 @@ class DistributedLock:
                     self.mode = LockMode.DISTRIBUTED
                     self._redis_healthy = True
                     return True
-                # someone else holds it
-                self.mode = LockMode.UNAVAILABLE
+                # SET NX returning false is a healthy contention result, not
+                # a Redis outage. Inspect only existence/TTL; never expose token.
+                self.mode = LockMode.CONTENDED
                 self._redis_healthy = True
+                try:
+                    inspection = self.redis.inspect_distributed_lock(f"lock:{self.name}")
+                    logger.info(
+                        "DistributedLock '%s': outcome=contended key_exists=%s ttl_seconds=%s",
+                        self.name,
+                        inspection.get("exists"),
+                        inspection.get("ttl_seconds"),
+                    )
+                except Exception as inspect_exc:
+                    logger.warning(
+                        "DistributedLock '%s': outcome=contended; lock inspection failed (%s)",
+                        self.name,
+                        type(inspect_exc).__name__,
+                    )
                 return False
             except Exception as exc:
                 self._redis_healthy = False
                 logger.warning(
-                    "DistributedLock '%s': Redis error (%s) — %s",
+                    "DistributedLock '%s': outcome=unavailable error_type=%s policy=%s",
                     self.name,
-                    exc,
-                    "no local fallback" if require_distributed or not self.allow_local_fallback else "DEGRADED_LOCAL",
+                    type(exc).__name__,
+                    "no_local_fallback" if require_distributed or not self.allow_local_fallback else "degraded_local_allowed",
                 )
                 if require_distributed or not self.allow_local_fallback:
                     self.mode = LockMode.UNAVAILABLE

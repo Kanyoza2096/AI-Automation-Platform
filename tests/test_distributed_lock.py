@@ -56,3 +56,44 @@ def test_distributed_lock_fails_closed_when_real_redis_write_fails():
     assert not lock.acquire(require_distributed=True)
     assert lock.mode == LockMode.UNAVAILABLE
 
+
+
+def test_distributed_lock_reports_contention_separately_from_unavailable():
+    class ContendedRedis:
+        is_available = True
+
+        def set_distributed(self, *args, **kwargs):
+            return False
+
+        def inspect_distributed_lock(self, key):
+            assert key == "lock:brand:test:publish"
+            return {"exists": True, "ttl_seconds": 123}
+
+    lock = DistributedLock(
+        "brand:test:publish",
+        ContendedRedis(),
+        allow_local_fallback=False,
+    )
+    assert not lock.acquire(require_distributed=True)
+    assert lock.mode == LockMode.CONTENDED
+
+
+def test_distributed_lock_keeps_unavailable_for_redis_write_errors():
+    class FailingRedis:
+        is_available = True
+
+        def set_distributed(self, *args, **kwargs):
+            raise RuntimeError("simulated transport failure")
+
+    lock = DistributedLock("brand:test:publish", FailingRedis(), allow_local_fallback=False)
+    assert not lock.acquire(require_distributed=True)
+    assert lock.mode == LockMode.UNAVAILABLE
+
+
+def test_lock_inspection_is_strict_and_does_not_use_memory_fallback():
+    import pytest
+    from core.redis_client import RedisConnectionError
+
+    client = UpstashRedisClient(RedisConfig(enabled=False))
+    with pytest.raises(RedisConnectionError, match="Redis unavailable"):
+        client.inspect_distributed_lock("lock:x")
