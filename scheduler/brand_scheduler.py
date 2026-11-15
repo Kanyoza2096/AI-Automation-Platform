@@ -1901,8 +1901,14 @@ class BrandSchedulerManager:
         # Refresh dependencies on schedulers created before this container bind.
         # Manual API triggers must share the same durable JobService and Redis lock client.
         for scheduler in self._schedulers.values():
-            scheduler._job_service = self._job_service
-            scheduler._distributed_lock.redis = self._redis_client
+            # A transient/missing container registration must not erase a
+            # previously valid dependency from an already-running scheduler.
+            # Missing dependencies still fail closed for newly created schedulers
+            # and manual triggers.
+            if self._job_service is not None:
+                scheduler._job_service = self._job_service
+            if self._redis_client is not None:
+                scheduler._distributed_lock.redis = self._redis_client
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._event_loop = loop
