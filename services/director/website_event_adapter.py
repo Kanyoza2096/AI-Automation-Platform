@@ -431,6 +431,7 @@ class DirectorWebsiteEventAdapter:
                 or evaluation.get("advisory_only") is not True
                 or evaluation.get("authority") != "none"
                 or evaluation.get("tasks_created") is not False
+                or evaluation.get("content_generation_started") is not False
                 or evaluation.get("public_publishing_authorized") is not False
                 or evaluation.get("deployment_authorized") is not False
             ):
