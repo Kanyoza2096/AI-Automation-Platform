@@ -392,6 +392,8 @@ async def evaluate_condition_probe(
         # Reuse the same ownership check as the workspace-filtered condition
         # projections. No brand data is needed to evaluate a sample event.
         await _workspace_brand_ids(request, container)
+        if len(repr(body.condition)) > 4_000:
+            raise ValueError("condition exceeds the 4 KB evaluation limit")
         if len(repr(body.event)) > 12_000:
             raise ValueError("sample event exceeds the 12 KB evaluation limit")
         _validate_condition_probe(body.condition)
