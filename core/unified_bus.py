@@ -227,9 +227,9 @@ class UnifiedEventBus:
 
     async def start(self) -> None:
         current_loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not current_loop:
+            raise RuntimeError("UnifiedEventBus must be used from its owning event loop")
         if self._running:
-            if self._loop is not current_loop:
-                raise RuntimeError("UnifiedEventBus must be used from its owning event loop")
             logger.warning("UnifiedEventBus already running")
             return
 
