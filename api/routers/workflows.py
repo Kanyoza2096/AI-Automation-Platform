@@ -47,41 +47,17 @@ async def list_workflows(
 @router.post("/workflow/run")
 async def run_workflow(
     body: WorkflowRunRequest,
-    container=Depends(get_container),
-    workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
-    _auth: bool = Depends(require_auth),
+    _auth=Depends(require_workspace_operator),
 ):
-    """Run a workflow for all brands."""
-    try:
-        name = body.workflow.strip().lower()
-        if name not in AVAILABLE_WORKFLOWS:
-            return _err(f"Unknown workflow: {name}. Available: {list(AVAILABLE_WORKFLOWS.keys())}", 400)
+    """Legacy all-brands workflow execution is disabled.
 
-        from scheduler.brand_scheduler import BrandSchedulerManager
-        manager = await _async_wrap(container.resolve, BrandSchedulerManager)
-        result = await manager.trigger_all()  # async — await directly
-
-        entry = {
-            "workflow": name,
-            "ok": result.get("ok", False),
-            "ran_at": datetime.now(timezone.utc).isoformat(),
-            "brands_triggered": result.get("brands_triggered", 0),
-        }
-        await workflow_history.append(entry)
-
-        if result.get("ok"):
-            return _ok({
-                "workflow": name,
-                "brands_triggered": result.get("brands_triggered", 0),
-                "results": result.get("results", {}),
-            })
-        failed = result.get("brands_failed") or []
-        return _err(
-            f"Workflow failed for {len(failed)} brand(s): {failed}",
-            500,
-        )
-    except Exception as exc:
-        return _safe_err(exc, "POST /api/v1/workflow/run")
+    The old implementation ignored the requested workflow name and triggered
+    every registered brand. Use the governed single-brand command instead.
+    """
+    return _err(
+        "Global workflow execution is disabled; use the governed brand-specific trigger.",
+        410,
+    )
 
 
 @router.get("/workflow/status")
@@ -135,14 +111,12 @@ async def workflow_history_endpoint(
 
 
 @router.post("/workflow/pause")
-async def workflow_pause(container=Depends(get_container), _auth=Depends(require_workspace_operator)):
-    try:
-        from scheduler.brand_scheduler import BrandSchedulerManager
-        manager = await _async_wrap(container.resolve, BrandSchedulerManager)
-        await _async_wrap(manager.stop)
-        return _ok({"status": "paused"})
-    except Exception as exc:
-        return _safe_err(exc, "POST /api/v1/workflow/pause")
+async def workflow_pause(_auth=Depends(require_workspace_operator)):
+    """Global scheduler pause is disabled until workspace-scoped pause exists."""
+    return _err(
+        "Global scheduler pause is disabled until workspace-scoped pause/resume is available.",
+        410,
+    )
 
 
 @router.post("/workflow/trigger")
@@ -203,50 +177,22 @@ async def workflow_trigger(
 @router.post("/workflow/{workflow_id}/cancel")
 async def cancel_workflow(
     workflow_id: str,
-    workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
-    audit_log: AsyncAuditLog = Depends(get_audit_log),
-    _auth: bool = Depends(require_auth),
+    _auth=Depends(require_workspace_operator),
 ):
-    """Cancel a running workflow."""
-    found = await workflow_history.find_and_update(
-        "id", workflow_id,
-        {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()},
+    """History-only cancellation is disabled; it did not cancel durable work."""
+    return _err(
+        "Workflow cancellation is unavailable until a durable workspace-scoped cancellation contract exists.",
+        410,
     )
-    if not found:
-        found = await workflow_history.find_and_update(
-            "topic", workflow_id,
-            {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()},
-        )
-    if not found:
-        return _err("Workflow not found", 404)
-
-    await append_audit(
-        audit_log, "workflow_cancelled", f"workflow:{workflow_id}", status_str="success",
-    )
-    return _ok({"cancelled": True})
 
 
 @router.post("/workflow/{workflow_id}/rollback")
 async def rollback_workflow(
     workflow_id: str,
-    workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
-    audit_log: AsyncAuditLog = Depends(get_audit_log),
-    _auth: bool = Depends(require_auth),
+    _auth=Depends(require_workspace_operator),
 ):
-    """Rollback a workflow."""
-    found = await workflow_history.find_and_update(
-        "id", workflow_id,
-        {"status": "rolled_back", "rolled_back_at": datetime.now(timezone.utc).isoformat()},
+    """History-only rollback is disabled; it did not reverse executed work."""
+    return _err(
+        "Workflow rollback is unavailable until a durable workspace-scoped rollback contract exists.",
+        410,
     )
-    if not found:
-        found = await workflow_history.find_and_update(
-            "topic", workflow_id,
-            {"status": "rolled_back", "rolled_back_at": datetime.now(timezone.utc).isoformat()},
-        )
-    if not found:
-        return _err("Workflow not found", 404)
-
-    await append_audit(
-        audit_log, "workflow_rolled_back", f"workflow:{workflow_id}", status_str="success",
-    )
-    return _ok({"rolled_back": True})
