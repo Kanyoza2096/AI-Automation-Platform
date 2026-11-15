@@ -147,6 +147,7 @@ BEGIN
        OR p_payload->>'advisory_only' IS DISTINCT FROM 'true'
        OR p_payload->>'authority' IS DISTINCT FROM 'none'
        OR p_payload->>'tasks_created' IS DISTINCT FROM 'false'
+       OR p_payload->>'content_generation_started' IS DISTINCT FROM 'false'
        OR p_payload->>'public_publishing_authorized' IS DISTINCT FROM 'false'
        OR p_payload->>'deployment_authorized' IS DISTINCT FROM 'false' THEN
         RAISE EXCEPTION 'director_website_evaluation_payload_scope_mismatch';
