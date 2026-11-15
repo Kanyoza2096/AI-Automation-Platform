@@ -51,9 +51,9 @@ async def bot_status(container=Depends(get_container)):
 async def force_post(
     body: dict = {},
     container=Depends(get_container),
-    _auth: bool = Depends(require_auth),
+    _auth=Depends(require_workspace_operator),
 ):
-    """Force a post now. Pass brand_id to target a specific brand.
+    """Force a post now for a brand owned by the authenticated workspace.
     
     Returns job_id for traceability (Architecture §29).
     """
@@ -62,15 +62,19 @@ async def force_post(
         from repositories.ai_profile_repository import AIProfileRepository
         
         brand_id = body.get("brand_id", "") if body else ""
-        
+        workspace_id = str(getattr(_auth, "workspace_id", "") or "").strip()
+
+        if not workspace_id:
+            return _err("Authenticated workspace context is required", 403)
         if not brand_id:
             return _err("brand_id is required", 400)
-        
+
         brand_repo = await _async_wrap(container.resolve, BrandRepository)
         brand = await _async_wrap(brand_repo.find_by_id, brand_id)
-        
-        if not brand:
-            return _err(f"Brand '{brand_id}' not found", 404)
+
+        # Do not allow a workspace operator to trigger another tenant's brand.
+        if not brand or str(getattr(brand, "workspace_id", "") or "") != workspace_id:
+            return _err("Brand not found in the authenticated workspace", 404)
         
         ai_profile = None
         if getattr(brand, 'ai_profile_id', None):
@@ -79,7 +83,10 @@ async def force_post(
         
         if not ai_profile:
             return _err(f"No AI profile for brand '{brand_id}'", 400)
-        
+        profile_workspace_id = getattr(ai_profile, "workspace_id", None)
+        if profile_workspace_id and str(profile_workspace_id) != workspace_id:
+            return _err("Brand AI profile is not owned by the authenticated workspace", 404)
+
         from scheduler.brand_scheduler import BrandScheduler
         scheduler = BrandScheduler(brand=brand, ai_profile=ai_profile, container=container)
         result = await _async_wrap(scheduler.trigger_manual)
@@ -87,7 +94,10 @@ async def force_post(
         # Include job_id in response for traceability
         response = {
             "ok": result.get("ok", False),
+            "brand_id": brand_id,
             "brand": result.get("brand", brand.name),
+            "queued": result.get("queued", False),
+            "published": result.get("published", False),
             "topic": result.get("topic", ""),
             "platforms": result.get("platforms", []),
             "duration_ms": result.get("duration_ms"),
