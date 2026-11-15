@@ -1,5 +1,6 @@
 -- 170: Durable, idempotent workspace-scoped Director website evaluations.
--- Claims are serialized in PostgreSQL to prevent duplicate model calls.
+-- Advisory locks and per-claim tokens prevent duplicate model calls and stale
+-- workers from completing a lease that has already been reclaimed.
 
 CREATE TABLE IF NOT EXISTS public.director_website_evaluations (
     evaluation_id TEXT PRIMARY KEY,
@@ -12,13 +13,18 @@ CREATE TABLE IF NOT EXISTS public.director_website_evaluations (
     payload JSONB,
     error_code TEXT,
     lease_until TIMESTAMPTZ,
+    lease_token UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, integration_id, event_id, context_hash),
     CHECK (
         (status = 'evaluated' AND payload IS NOT NULL
-            AND jsonb_typeof(payload) = 'object' AND lease_until IS NULL)
-        OR (status IN ('pending', 'failed') AND payload IS NULL)
+            AND jsonb_typeof(payload) = 'object'
+            AND lease_until IS NULL AND lease_token IS NULL)
+        OR (status = 'pending' AND payload IS NULL
+            AND lease_until IS NOT NULL AND lease_token IS NOT NULL)
+        OR (status = 'failed' AND payload IS NULL
+            AND lease_until IS NULL AND lease_token IS NULL)
     )
 );
 
@@ -37,13 +43,14 @@ CREATE OR REPLACE FUNCTION public.claim_director_website_evaluation(
     p_context_hash TEXT,
     p_lease_seconds INTEGER DEFAULT 120
 )
-RETURNS TABLE(claimed BOOLEAN, evaluation_status TEXT, evaluation_payload JSONB)
+RETURNS TABLE(claimed BOOLEAN, evaluation_status TEXT, evaluation_payload JSONB, claim_token UUID)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public, pg_temp
 AS $$
 DECLARE
     current_row public.director_website_evaluations%ROWTYPE;
+    new_token UUID;
 BEGIN
     IF COALESCE(p_evaluation_id, '') = ''
        OR COALESCE(p_workspace_id, '') = ''
@@ -69,14 +76,16 @@ BEGIN
      FOR UPDATE;
 
     IF NOT FOUND THEN
+        new_token := gen_random_uuid();
         INSERT INTO public.director_website_evaluations (
             evaluation_id, workspace_id, integration_id, event_id,
-            context_hash, status, lease_until
+            context_hash, status, lease_until, lease_token
         ) VALUES (
             p_evaluation_id, p_workspace_id, p_integration_id, p_event_id,
-            p_context_hash, 'pending', now() + make_interval(secs => p_lease_seconds)
+            p_context_hash, 'pending',
+            now() + make_interval(secs => p_lease_seconds), new_token
         );
-        RETURN QUERY SELECT TRUE, 'pending'::TEXT, NULL::JSONB;
+        RETURN QUERY SELECT TRUE, 'pending'::TEXT, NULL::JSONB, new_token;
         RETURN;
     END IF;
 
@@ -88,23 +97,25 @@ BEGIN
     END IF;
 
     IF current_row.status = 'evaluated' THEN
-        RETURN QUERY SELECT FALSE, current_row.status, current_row.payload;
+        RETURN QUERY SELECT FALSE, current_row.status, current_row.payload, NULL::UUID;
         RETURN;
     END IF;
 
     IF current_row.status = 'pending' AND current_row.lease_until > now() THEN
-        RETURN QUERY SELECT FALSE, current_row.status, NULL::JSONB;
+        RETURN QUERY SELECT FALSE, current_row.status, NULL::JSONB, NULL::UUID;
         RETURN;
     END IF;
 
+    new_token := gen_random_uuid();
     UPDATE public.director_website_evaluations
        SET status = 'pending',
            error_code = NULL,
            lease_until = now() + make_interval(secs => p_lease_seconds),
+           lease_token = new_token,
            updated_at = now()
      WHERE evaluation_id = p_evaluation_id;
 
-    RETURN QUERY SELECT TRUE, 'pending'::TEXT, NULL::JSONB;
+    RETURN QUERY SELECT TRUE, 'pending'::TEXT, NULL::JSONB, new_token;
 END;
 $$;
 
@@ -114,6 +125,7 @@ CREATE OR REPLACE FUNCTION public.complete_director_website_evaluation(
     p_integration_id TEXT,
     p_event_id TEXT,
     p_context_hash TEXT,
+    p_claim_token UUID,
     p_payload JSONB
 )
 RETURNS BOOLEAN
@@ -124,7 +136,8 @@ AS $$
 DECLARE
     updated_count INTEGER;
 BEGIN
-    IF p_payload IS NULL
+    IF p_claim_token IS NULL
+       OR p_payload IS NULL
        OR jsonb_typeof(p_payload) IS DISTINCT FROM 'object'
        OR p_payload->>'evaluation_id' IS DISTINCT FROM p_evaluation_id
        OR p_payload->>'workspace_id' IS DISTINCT FROM p_workspace_id
@@ -144,12 +157,14 @@ BEGIN
            payload = p_payload,
            error_code = NULL,
            lease_until = NULL,
+           lease_token = NULL,
            updated_at = now()
      WHERE evaluation_id = p_evaluation_id
        AND workspace_id = p_workspace_id
        AND integration_id = p_integration_id
        AND event_id = p_event_id
        AND context_hash = p_context_hash
+       AND lease_token = p_claim_token
        AND status = 'pending';
 
     GET DIAGNOSTICS updated_count = ROW_COUNT;
@@ -163,6 +178,7 @@ CREATE OR REPLACE FUNCTION public.fail_director_website_evaluation(
     p_integration_id TEXT,
     p_event_id TEXT,
     p_context_hash TEXT,
+    p_claim_token UUID,
     p_error_code TEXT
 )
 RETURNS BOOLEAN
@@ -178,12 +194,14 @@ BEGIN
            payload = NULL,
            error_code = left(COALESCE(p_error_code, 'evaluation_failed'), 120),
            lease_until = NULL,
+           lease_token = NULL,
            updated_at = now()
      WHERE evaluation_id = p_evaluation_id
        AND workspace_id = p_workspace_id
        AND integration_id = p_integration_id
        AND event_id = p_event_id
        AND context_hash = p_context_hash
+       AND lease_token = p_claim_token
        AND status = 'pending';
 
     GET DIAGNOSTICS updated_count = ROW_COUNT;
@@ -193,15 +211,15 @@ $$;
 
 REVOKE ALL ON FUNCTION public.claim_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER)
     FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.complete_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB)
+REVOKE ALL ON FUNCTION public.complete_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, JSONB)
     FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.fail_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT)
+REVOKE ALL ON FUNCTION public.fail_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT)
     FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.claim_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER)
     TO service_role;
-GRANT EXECUTE ON FUNCTION public.complete_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB)
+GRANT EXECUTE ON FUNCTION public.complete_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, JSONB)
     TO service_role;
-GRANT EXECUTE ON FUNCTION public.fail_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT)
+GRANT EXECUTE ON FUNCTION public.fail_director_website_evaluation(TEXT, TEXT, TEXT, TEXT, TEXT, UUID, TEXT)
     TO service_role;
 
 COMMENT ON TABLE public.director_website_evaluations IS
