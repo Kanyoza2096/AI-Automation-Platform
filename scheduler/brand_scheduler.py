@@ -857,6 +857,25 @@ class BrandScheduler:
                 # If the slot has already resolved, ack the DLQ entry
                 # without retrying. This prevents re-publishing a
                 # PUBLISHED slot and re-failing a terminal-FAILED slot.
+                manual_job_id = meta.get("automation_job_id")
+                if manual_job_id and self._job_service:
+                    manual_job = _job_call(self._job_service, "find_by_id", str(manual_job_id))
+                    if not manual_job or str(getattr(manual_job, "brand_id", "")) != str(self.brand.id) or str(getattr(manual_job, "workspace_id", "")) != str(getattr(self.brand, "workspace_id", "")):
+                        self._dead_letter_queue.ack(entry.get("id"))
+                        continue
+                    manual_status = getattr(getattr(manual_job, "status", None), "value", getattr(manual_job, "status", None))
+                    if manual_status == JobStatus.RETRY_PENDING.value:
+                        manual_job = _job_call(self._job_service, "reset_to_pending", manual_job.job_id)
+                    elif manual_status != JobStatus.QUEUED.value:
+                        self._dead_letter_queue.ack(entry.get("id"))
+                        continue
+                    accepted = bool(manual_job) and self._trigger_workflow(
+                        source="manual", existing_job=manual_job,
+                    )
+                    if accepted:
+                        self._dead_letter_queue.ack(entry.get("id"))
+                    continue
+
                 if today_date is not None and hour_int is not None and self._job_service:
                     _, slot_signal = self._get_or_create_automation_job(
                         brand_id=self.brand.id,
@@ -1644,6 +1663,7 @@ class BrandScheduler:
                         error=f"Steps failed: {failed}",
                         payload={
                             "source": source, "today": today, "hour": hour,
+                            "automation_job_id": getattr(automation_job, "job_id", None),
                             "failure_evidence": failure_evidence,
                         },
                         workspace_id=getattr(self.brand, "workspace_id", None),
@@ -1686,7 +1706,10 @@ class BrandScheduler:
             self._dead_letter_queue.push(
                 brand_id=self.brand.id,
                 error=str(e),
-                payload={"source": source, "today": today, "hour": hour},
+                payload={
+                    "source": source, "today": today, "hour": hour,
+                    "automation_job_id": getattr(automation_job, "job_id", None),
+                },
                 workspace_id=getattr(self.brand, "workspace_id", None),
             )
 
