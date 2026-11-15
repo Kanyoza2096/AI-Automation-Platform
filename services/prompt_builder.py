@@ -949,7 +949,9 @@ Before you write, decide these three things in silence:
   - What is the one point this post makes?
   - What evidence grounds it — the kind appropriate to this brand?
 
-Then write the post. Do not include the three decisions in the output.\n\n{FINAL_KDO_CAPTION_CONTRACT}
+Then write the post. Do not include the three decisions in the output.
+
+{FINAL_KDO_CAPTION_CONTRACT}
 """.strip()
 
         logger.debug(
