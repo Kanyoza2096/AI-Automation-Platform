@@ -174,14 +174,18 @@ _FORBIDDEN_CLOSES = (
 # v15.9.1 — first-person gate. Word-boundary regex so "I" matches
 # standalone "I" but not "INTEGRATION"; "us" matches "us" but not "used".
 _FIRST_PERSON_PATTERNS = (
-    re.compile(r"\b(I)\b"),
-    re.compile(r"\b(we)\b", re.IGNORECASE),
-    re.compile(r"\b(our)\b", re.IGNORECASE),
-    re.compile(r"\b(us)\b", re.IGNORECASE),
-    re.compile(r"\b(my)\b", re.IGNORECASE),
-    re.compile(r"\b(me)\b", re.IGNORECASE),
+    # Standalone first-person pronouns and possessives.
+    re.compile(
+        r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b",
+        re.IGNORECASE,
+    ),
+    # First-person contractions are separate tokens and must not leak
+    # through the standalone-pronoun check.
+    re.compile(
+        r"\b(?:i|we)(?:'m|'ve|'ll|'d|’m|’ve|’ll|’d)\b",
+        re.IGNORECASE,
+    ),
 )
-
 # v15.9.1 — word-count bounds. Set to accommodate the 180-200 word target
 # while rejecting clear violations (tweets that pass as captions, essays).
 _MIN_WORDS = 80
