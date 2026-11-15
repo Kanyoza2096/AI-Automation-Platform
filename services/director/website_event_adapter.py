@@ -411,6 +411,9 @@ class DirectorWebsiteEventAdapter:
                 "status": claim.get("evaluation_status") or "in_progress",
                 "evaluation": claim.get("evaluation_payload"),
             }
+        claim_token = claim.get("claim_token")
+        if not claim_token:
+            raise RuntimeError("director_website_evaluation_claim_token_missing")
         try:
             evaluation = self.website_evaluator(
                 workspace_id=workspace_id,
@@ -450,6 +453,7 @@ class DirectorWebsiteEventAdapter:
                     "p_integration_id": integration_id,
                     "p_event_id": event_id,
                     "p_context_hash": content_hash,
+                    "p_claim_token": str(claim_token),
                     "p_payload": evaluation,
                 },
             ).execute()
@@ -467,6 +471,7 @@ class DirectorWebsiteEventAdapter:
                         "p_integration_id": integration_id,
                         "p_event_id": event_id,
                         "p_context_hash": content_hash,
+                        "p_claim_token": str(claim_token),
                         "p_error_code": type(exc).__name__,
                     },
                 ).execute()
