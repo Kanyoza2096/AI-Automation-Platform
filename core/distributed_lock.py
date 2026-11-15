@@ -94,7 +94,7 @@ class DistributedLock:
                 )
                 if result:
                     self._lock_holder = token
-                    self._lock_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+                    self._lock_fingerprint = hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
                     self._lock_expires = time.monotonic() + self.timeout_seconds
                     self.mode = LockMode.DISTRIBUTED
                     self._redis_healthy = True
