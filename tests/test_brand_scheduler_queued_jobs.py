@@ -114,3 +114,23 @@ def test_missing_job_service_is_a_noop():
     )
 
     assert scheduler._process_queued_automation_jobs() == 0
+
+
+
+def test_workflow_is_not_executed_when_job_transition_to_running_fails():
+    job = make_job()
+    scheduler, service = make_scheduler([job])
+    service.find_by_idempotency_key = Mock(return_value=job)
+    service.transition = Mock(side_effect=RuntimeError("database unavailable"))
+    scheduler._trigger_workflow = BrandScheduler._trigger_workflow.__get__(
+        scheduler, BrandScheduler
+    )
+    scheduler._container = Mock()
+
+    assert scheduler._trigger_workflow(
+        source="queued_retry",
+        today=job.scheduled_for.date(),
+        hour=job.scheduled_for.hour,
+    ) is False
+    service.transition.assert_called_once()
+    scheduler._container.resolve.assert_not_called()
