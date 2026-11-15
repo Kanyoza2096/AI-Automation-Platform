@@ -45,12 +45,14 @@ class DirectorWebsiteEventAdapter:
         f"website.integration.{event_type.value}" for event_type in WebsiteEventType
     )
 
-    def __init__(self, director: Any, event_bus: Any, supabase_client: Any):
+    def __init__(self, director: Any, event_bus: Any, supabase_client: Any,
+                 website_evaluator: Any | None = None):
         if director is None or event_bus is None or supabase_client is None:
             raise ValueError("director, event_bus, and service-role Supabase client are required")
         self.director = director
         self.event_bus = event_bus
         self.supabase = supabase_client
+        self.website_evaluator = website_evaluator
         self._unsubscribers: list[Any] = []
         self._latest_events: OrderedDict[str, dict] = OrderedDict()
         self._latest_lock = threading.RLock()
@@ -193,10 +195,15 @@ class DirectorWebsiteEventAdapter:
                 self._refresh_context_snapshot,
                 workspace_id, integration_id, external_event_id,
             )
+            evaluation = await asyncio.to_thread(
+                self._evaluate_context_snapshot,
+                workspace_id, integration_id, external_event_id,
+            ) if context_refreshed and self.website_evaluator else {"status": "not_run"}
             return {
                 "accepted": True, "duplicate": True,
                 "decision_id": decision_id,
                 "context_refreshed": context_refreshed,
+                "evaluation": evaluation,
             }
 
         occurred_at = receipt.get("occurred_at")
@@ -326,6 +333,10 @@ class DirectorWebsiteEventAdapter:
             self._refresh_context_snapshot,
             workspace_id, integration_id, external_event_id,
         )
+        evaluation = await asyncio.to_thread(
+            self._evaluate_context_snapshot,
+            workspace_id, integration_id, external_event_id,
+        ) if context_refreshed and self.website_evaluator else {"status": "not_run"}
 
         logger.info(
             "Director recorded website event workspace=%s integration=%s type=%s context_refreshed=%s",
@@ -333,6 +344,7 @@ class DirectorWebsiteEventAdapter:
             integration_id,
             event_type,
             context_refreshed,
+            evaluation_status=evaluation.get("status"),
         )
         return {
             "accepted": True,
@@ -341,7 +353,126 @@ class DirectorWebsiteEventAdapter:
             "observation_source": self.OBSERVER_NAME,
             "action": "observe_only",
             "context_refreshed": context_refreshed,
+            "evaluation": evaluation,
         }
+
+
+    def _evaluate_context_snapshot(
+        self, workspace_id: str, integration_id: str, event_id: str
+    ) -> dict:
+        """Evaluate one exact persisted tenant snapshot under a durable lease.
+
+        PostgreSQL serializes claims by workspace/integration/event/context hash.
+        A completed result is reused; an active lease prevents duplicate model
+        calls; expired/failed claims can be retried. No plan or task is created.
+        """
+        if self.website_evaluator is None:
+            return {"status": "not_configured"}
+        response = (
+            self.supabase.table("director_website_context_snapshots")
+            .select("workspace_id,integration_id,fetched_at,content_hash,last_event_id,trust_class,instructions_are_data,context")
+            .eq("workspace_id", workspace_id)
+            .eq("integration_id", integration_id)
+            .limit(1)
+            .execute()
+        )
+        rows = response.data or []
+        if len(rows) != 1:
+            raise RuntimeError("director_website_context_snapshot_unavailable")
+        snapshot = rows[0]
+        if (
+            snapshot.get("workspace_id") != workspace_id
+            or snapshot.get("integration_id") != integration_id
+            or snapshot.get("last_event_id") != event_id
+        ):
+            raise RuntimeError("director_website_context_snapshot_scope_mismatch")
+        content_hash = str(snapshot.get("content_hash") or "")
+        identity = hashlib.sha256(
+            f"{workspace_id}:{integration_id}:{event_id}:{content_hash}".encode("utf-8")
+        ).hexdigest()[:24]
+        evaluation_id = f"website_eval_{identity}"
+        claim_response = self.supabase.rpc(
+            "claim_director_website_evaluation",
+            {
+                "p_evaluation_id": evaluation_id,
+                "p_workspace_id": workspace_id,
+                "p_integration_id": integration_id,
+                "p_event_id": event_id,
+                "p_context_hash": content_hash,
+                "p_lease_seconds": 120,
+            },
+        ).execute()
+        claims = claim_response.data or []
+        claim = claims[0] if isinstance(claims, list) and claims else claim_response.data
+        if not isinstance(claim, dict):
+            raise RuntimeError("director_website_evaluation_claim_unavailable")
+        if not claim.get("claimed"):
+            return {
+                "status": claim.get("evaluation_status") or "in_progress",
+                "evaluation": claim.get("evaluation_payload"),
+            }
+        try:
+            evaluation = self.website_evaluator(
+                workspace_id=workspace_id,
+                integration_id=integration_id,
+                snapshot=snapshot,
+            )
+            if not isinstance(evaluation, dict):
+                raise RuntimeError("director_website_evaluator_returned_invalid_result")
+            if (
+                evaluation.get("workspace_id") != workspace_id
+                or evaluation.get("integration_id") != integration_id
+                or evaluation.get("event_id") != event_id
+                or evaluation.get("context_hash") != content_hash
+                or evaluation.get("evaluation_id") != evaluation_id
+                or evaluation.get("advisory_only") is not True
+                or evaluation.get("authority") != "none"
+                or evaluation.get("tasks_created") is not False
+                or evaluation.get("public_publishing_authorized") is not False
+                or evaluation.get("deployment_authorized") is not False
+            ):
+                raise RuntimeError("director_website_evaluation_scope_or_authority_invalid")
+            evaluation = {
+                **evaluation,
+                "planning_status": (
+                    "awaiting_workspace_scoped_governed_planner"
+                    if evaluation.get("action_warranted")
+                    else "not_required"
+                ),
+                "approval_required": bool(evaluation.get("action_warranted")),
+                "plan_created": False,
+            }
+            completed = self.supabase.rpc(
+                "complete_director_website_evaluation",
+                {
+                    "p_evaluation_id": evaluation_id,
+                    "p_workspace_id": workspace_id,
+                    "p_integration_id": integration_id,
+                    "p_event_id": event_id,
+                    "p_context_hash": content_hash,
+                    "p_payload": evaluation,
+                },
+            ).execute()
+            complete_data = completed.data
+            if complete_data is not True and complete_data != [True]:
+                raise RuntimeError("director_website_evaluation_completion_not_confirmed")
+            return {"status": "evaluated", "evaluation": evaluation}
+        except Exception as exc:
+            try:
+                self.supabase.rpc(
+                    "fail_director_website_evaluation",
+                    {
+                        "p_evaluation_id": evaluation_id,
+                        "p_workspace_id": workspace_id,
+                        "p_integration_id": integration_id,
+                        "p_event_id": event_id,
+                        "p_context_hash": content_hash,
+                        "p_error_code": type(exc).__name__,
+                    },
+                ).execute()
+            except Exception:
+                logger.warning("Director website evaluation failure state could not be persisted")
+            raise
 
 
     def _refresh_context_snapshot(
