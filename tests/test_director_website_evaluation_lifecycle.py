@@ -98,6 +98,7 @@ class _RPC:
             assert payload["advisory_only"] is True
             assert payload["authority"] == "none"
             assert payload["tasks_created"] is False
+            assert payload["content_generation_started"] is False
             assert payload["public_publishing_authorized"] is False
             assert payload["deployment_authorized"] is False
             row.update(status="evaluated", payload=payload, lease_token=None)
