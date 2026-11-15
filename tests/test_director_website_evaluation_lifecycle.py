@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+CLAIM_TOKEN = "11111111-1111-4111-8111-111111111111"
+
 from services.director.website_event_adapter import DirectorWebsiteEventAdapter
 
 
@@ -78,15 +80,17 @@ class _RPC:
                     "context_hash": p["p_context_hash"],
                     "status": "pending",
                     "payload": None,
+                    "lease_token": CLAIM_TOKEN,
                 }
                 self.db.evaluations[p["p_evaluation_id"]] = row
             return SimpleNamespace(data=[{
                 "claimed": True, "evaluation_status": "pending",
-                "evaluation_payload": None,
+                "evaluation_payload": None, "claim_token": CLAIM_TOKEN,
             }])
         if self.name == "complete_director_website_evaluation":
             row = self.db.evaluations[p["p_evaluation_id"]]
             payload = p["p_payload"]
+            assert p["p_claim_token"] == CLAIM_TOKEN
             assert payload["workspace_id"] == row["workspace_id"]
             assert payload["integration_id"] == row["integration_id"]
             assert payload["event_id"] == row["event_id"]
@@ -96,11 +100,12 @@ class _RPC:
             assert payload["tasks_created"] is False
             assert payload["public_publishing_authorized"] is False
             assert payload["deployment_authorized"] is False
-            row.update(status="evaluated", payload=payload)
+            row.update(status="evaluated", payload=payload, lease_token=None)
             return SimpleNamespace(data=True)
         if self.name == "fail_director_website_evaluation":
             row = self.db.evaluations[p["p_evaluation_id"]]
-            row.update(status="failed", payload=None)
+            assert p["p_claim_token"] == CLAIM_TOKEN
+            row.update(status="failed", payload=None, lease_token=None)
             return SimpleNamespace(data=True)
         raise AssertionError(self.name)
 
@@ -222,7 +227,7 @@ def test_failed_evaluation_claim_is_retried_and_then_persisted():
     db.evaluations[expected["evaluation_id"]] = {
         "workspace_id": "ws-1", "integration_id": "site-1",
         "event_id": "evt-1", "context_hash": snapshot["content_hash"],
-        "status": "failed", "payload": None,
+        "status": "failed", "payload": None, "lease_token": None,
     }
     calls = []
     evaluator = lambda **kwargs: calls.append(kwargs) or expected
