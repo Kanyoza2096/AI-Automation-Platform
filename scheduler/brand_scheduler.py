@@ -1323,10 +1323,11 @@ class BrandScheduler:
                                 automation_job, JobStatus.RUNNING,
                             )
                         except Exception as e:
-                            logger.warning(
-                                "[%s] job=%s — transition to RUNNING failed: %s",
+                            logger.error(
+                                "[%s] job=%s — transition to RUNNING failed; refusing workflow execution: %s",
                                 self.brand.name, job_id, e,
                             )
+                            return False
 
             logger.info(
                 "[%s] job=%s START | brand=%s | source=%s | agent=%s",
