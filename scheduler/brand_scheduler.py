@@ -849,6 +849,7 @@ class BrandScheduler:
                     first_cycle = False
                 else:
                     self._process_queued_automation_jobs()
+                    self._process_queued_manual_jobs()
                     self._check_schedule()
                     self._check_scheduled_posts()
                     self._retry_dead_letter_queue()
@@ -916,6 +917,25 @@ class BrandScheduler:
                 # If the slot has already resolved, ack the DLQ entry
                 # without retrying. This prevents re-publishing a
                 # PUBLISHED slot and re-failing a terminal-FAILED slot.
+                manual_job_id = meta.get("automation_job_id")
+                if manual_job_id and self._job_service:
+                    manual_job = _job_call(self._job_service, "find_by_id", str(manual_job_id))
+                    if not manual_job or str(getattr(manual_job, "brand_id", "")) != str(self.brand.id) or str(getattr(manual_job, "workspace_id", "")) != str(getattr(self.brand, "workspace_id", "")):
+                        self._dead_letter_queue.ack(entry.get("id"))
+                        continue
+                    manual_status = getattr(getattr(manual_job, "status", None), "value", getattr(manual_job, "status", None))
+                    if manual_status == JobStatus.RETRY_PENDING.value:
+                        manual_job = _job_call(self._job_service, "reset_to_pending", manual_job.job_id)
+                    elif manual_status != JobStatus.QUEUED.value:
+                        self._dead_letter_queue.ack(entry.get("id"))
+                        continue
+                    accepted = bool(manual_job) and self._trigger_workflow(
+                        source="manual", existing_job=manual_job,
+                    )
+                    if accepted:
+                        self._dead_letter_queue.ack(entry.get("id"))
+                    continue
+
                 if today_date is not None and hour_int is not None and self._job_service:
                     _, slot_signal = self._get_or_create_automation_job(
                         brand_id=self.brand.id,
@@ -1073,6 +1093,44 @@ class BrandScheduler:
                 )
 
         return accepted
+
+    def _process_queued_manual_jobs(self, limit: int = 25) -> int:
+        """Execute persisted manual jobs outside the HTTP request lifecycle."""
+        if not self._job_service or not self.ai_profile:
+            return 0
+        workspace_id = str(getattr(self.brand, "workspace_id", "") or "")
+        try:
+            jobs = _job_call(
+                self._job_service, "find_by_brand", self.brand.id,
+                JobStatus.QUEUED, limit=limit, oldest_first=True,
+                workflow_type=WorkflowType.MANUAL_PUBLISH, source="manual",
+            )
+        except Exception as exc:
+            logger.error("[%s] Could not load queued manual jobs: %s", self.brand.name, exc)
+            return 0
+
+        processed = 0
+        for job in jobs or []:
+            status = getattr(getattr(job, "status", None), "value", getattr(job, "status", None))
+            workflow_type = getattr(getattr(job, "workflow_type", None), "value", getattr(job, "workflow_type", None))
+            if status != JobStatus.QUEUED.value:
+                continue
+            if workflow_type != WorkflowType.MANUAL_PUBLISH.value or getattr(job, "source", None) != "manual":
+                continue
+            if getattr(job, "brand_id", None) != self.brand.id:
+                continue
+            if str(getattr(job, "workspace_id", "") or "") != workspace_id:
+                logger.warning("[%s] Skipping manual job %s: workspace scope mismatch", self.brand.name, getattr(job, "job_id", "?"))
+                continue
+            scheduled_for = getattr(job, "scheduled_for", None)
+            if isinstance(scheduled_for, datetime):
+                if scheduled_for.tzinfo is None:
+                    scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+                if scheduled_for > datetime.now(timezone.utc):
+                    continue
+            if self._trigger_workflow(source="manual", existing_job=job):
+                processed += 1
+        return processed
 
     def _check_schedule(self) -> None:
         status = _brand_status_value(self.brand)
@@ -1386,8 +1444,9 @@ class BrandScheduler:
         self, source: str = "scheduled", today=None, hour=None,
         scheduled_post_id: Optional[str] = None,
         scheduled_caption: Optional[str] = None,
+        existing_job: Optional[AutomationJob] = None,
     ) -> bool:
-        job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+        job_id = str(getattr(existing_job, "job_id", "") or f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}")
         agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
 
         # Publishing is an external side effect: local-only locks are never sufficient.
@@ -1414,8 +1473,8 @@ class BrandScheduler:
             return False
 
         publish_started = time.monotonic()
-        automation_job: Optional[AutomationJob] = None
-        idempotency_key: Optional[str] = None
+        automation_job: Optional[AutomationJob] = existing_job
+        idempotency_key: Optional[str] = getattr(existing_job, "idempotency_key", None)
 
         try:
             if not self._job_service:
@@ -1447,6 +1506,19 @@ class BrandScheduler:
                                 self.brand.name, job_id, e,
                             )
                             return False
+            elif automation_job is not None:
+                if str(getattr(automation_job, "brand_id", "")) != str(self.brand.id) or str(getattr(automation_job, "workspace_id", "")) != str(getattr(self.brand, "workspace_id", "")):
+                    logger.error("[%s] Refusing manual job with mismatched brand/workspace scope", self.brand.name)
+                    return False
+                if getattr(automation_job, "status", None) != JobStatus.QUEUED:
+                    return False
+                try:
+                    automation_job = _job_call(
+                        self._job_service, "transition", automation_job, JobStatus.RUNNING,
+                    )
+                except Exception as e:
+                    logger.error("[%s] job=%s — manual job claim failed: %s", self.brand.name, job_id, e)
+                    return False
 
             logger.info(
                 "[%s] job=%s START | brand=%s | source=%s | agent=%s",
@@ -1652,6 +1724,7 @@ class BrandScheduler:
                         error=f"Steps failed: {failed}",
                         payload={
                             "source": source, "today": today, "hour": hour,
+                            "automation_job_id": getattr(automation_job, "job_id", None),
                             "failure_evidence": failure_evidence,
                         },
                         workspace_id=getattr(self.brand, "workspace_id", None),
@@ -1694,7 +1767,10 @@ class BrandScheduler:
             self._dead_letter_queue.push(
                 brand_id=self.brand.id,
                 error=str(e),
-                payload={"source": source, "today": today, "hour": hour},
+                payload={
+                    "source": source, "today": today, "hour": hour,
+                    "automation_job_id": getattr(automation_job, "job_id", None),
+                },
                 workspace_id=getattr(self.brand, "workspace_id", None),
             )
 
@@ -1714,194 +1790,34 @@ class BrandScheduler:
         return
 
     def trigger_manual(self, idempotency_key: Optional[str] = None) -> dict:
-        if idempotency_key:
-            with self._manual_trigger_lock:
-                now = time.monotonic()
-                self._manual_trigger_keys = {
-                    k: v for k, v in self._manual_trigger_keys.items()
-                    if now - v < 300
-                }
-                if idempotency_key in self._manual_trigger_keys:
-                    return {
-                        "ok": False,
-                        "error": "Duplicate request — already triggered",
-                    }
-                self._manual_trigger_keys[idempotency_key] = now
+        """Persist a manual publishing job and return without running the workflow."""
+        if not self._job_service:
+            return {"ok": False, "error": "Manual publishing requires durable JobService persistence"}
+        if not self.ai_profile:
+            return {"ok": False, "error": "Brand has no AI profile"}
 
-        # Manual publishing is an external side effect; never permit a local-only lock.
-        require_dist = True
-        if not self._distributed_lock.acquire(require_distributed=require_dist):
-            return {
-                "ok": False,
-                "error": "Publish lock unavailable",
-                "lock_mode": str(
-                    getattr(self._distributed_lock.mode, "value", self._distributed_lock.mode)
-                ),
-            }
-        if getattr(self._distributed_lock, "is_degraded_local", False):
-            logger.warning(
-                "[%s] Manual publish DEGRADED_LOCAL — single-process only",
-                self.brand.name,
-            )
-
-        if not self._publish_semaphore.acquire(blocking=False):
-            self._distributed_lock.release()
-            return {"ok": False, "error": "Too many concurrent publishes"}
-
-        publish_started = time.monotonic()
-
+        job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+        workspace_id = str(getattr(self.brand, "workspace_id", "") or "")
         try:
-            job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
-
-            if not self._job_service:
-                raise RuntimeError(
-                    "Manual publishing requires durable JobService persistence; refusing to run"
-                )
-            workspace_id = getattr(self.brand, "workspace_id", "")
             automation_job = _job_call(
                 self._job_service, "create_manual_job",
                 brand_id=self.brand.id, workspace_id=workspace_id, job_id=job_id,
+                idempotency_key=idempotency_key,
             )
             if not automation_job:
-                raise RuntimeError(
-                    "Manual publishing job was not durably created; refusing to run"
-                )
-            automation_job = _job_call(
-                self._job_service, "transition",
-                automation_job, JobStatus.RUNNING,
-            )
-            if not automation_job or automation_job.status != JobStatus.RUNNING:
-                raise RuntimeError(
-                    "Manual publishing job did not persist RUNNING state; refusing to run"
-                )
-
-            workflow_factory = self._container.resolve("PostPublishWorkflowFactory")
-            workflow = workflow_factory(brand=self.brand, ai_profile=self.ai_profile)
-
-            wf_kwargs = dict(
-                job_id=job_id,
-                platform=getattr(self.brand, "platform", "facebook"),
-                source="manual",
-                risk_level="low",
-            )
-            result = self._execute_workflow(workflow, wf_kwargs)
-
-            context_platform = (
-                wf_kwargs.get("platform")
-                or getattr(self.brand, "platform", "facebook")
-            )
-            topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
-                result, context_platform=context_platform,
-            )
-            confirmed_post_id = self._extract_confirmed_post_id(result)
-
-            duration_ms = (time.monotonic() - publish_started) * 1000
-
-            if publish_ok and queued_publish:
-                self._pipeline_status = {
-                    "status": "queued", "current_step": "outbox", "progress": 90,
-                    "topic": topic, "platforms": [], "job_id": job_id,
-                }
-                return {
-                    "ok": True, "queued": True, "published": False,
-                    "brand": self.brand.name, "topic": topic,
-                    "platforms": [], "duration_ms": round(duration_ms), "job_id": job_id,
-                }
-
-            if publish_ok and not confirmed_post_id:
-                try:
-                    _job_call(
-                        self._job_service, "mark_failed",
-                        automation_job,
-                        error="Provider publish outcome unconfirmed; reconcile before retry",
-                        error_code="PUBLISH_UNCONFIRMED",
-                        retryable=False,
-                    )
-                except Exception as persist_error:
-                    logger.error(
-                        "[%s] job=%s — could not persist unconfirmed publish state: %s",
-                        self.brand.name, job_id, persist_error,
-                    )
-                self._pipeline_status = {
-                    "status": "unknown", "current_step": "reconciliation",
-                    "progress": 90, "topic": topic, "platforms": [],
-                    "job_id": job_id,
-                }
-                return {
-                    "ok": False, "published": False, "status": "unknown",
-                    "error": "Publish outcome unconfirmed; reconcile before retry",
-                    "brand": self.brand.name, "topic": topic,
-                    "duration_ms": round(duration_ms), "job_id": job_id,
-                }
-
-            if publish_ok and confirmed_post_id:
-                try:
-                    _job_call(
-                        self._job_service, "mark_published",
-                        automation_job, post_id=confirmed_post_id,
-                        result={"topic": topic, "platforms": platforms},
-                    )
-                except Exception as persist_error:
-                    logger.error(
-                        "[%s] job=%s — verified provider post could not be persisted: %s",
-                        self.brand.name, job_id, persist_error,
-                    )
-                    return {
-                        "ok": False, "published": False, "status": "unknown",
-                        "error": "Facebook accepted the post but KDO could not persist its receipt",
-                        "brand": self.brand.name, "topic": topic,
-                        "duration_ms": round(duration_ms), "job_id": job_id,
-                    }
-                self._metrics.record_publish_success(duration_ms)
-                self._notify_webhooks("post_published", {
-                    "brand_id": self.brand.id,
-                    "job_id": job_id,
-                    "topic": topic,
-                    "platforms": platforms,
-                })
-                return {
-                    "ok": True, "published": True, "brand": self.brand.name,
-                    "topic": topic, "platforms": platforms,
-                    "duration_ms": round(duration_ms), "job_id": job_id,
-                }
-
-            failure_evidence = result.failure_evidence()
-            retryable = _workflow_failure_is_retryable(failure_evidence)
-            if automation_job and self._job_service:
-                try:
-                    automation_job.result = failure_evidence
-                    _job_call(
-                        self._job_service, "mark_failed",
-                        automation_job, error="Publish workflow failed",
-                        error_code="WORKFLOW_FAILED", retryable=retryable,
-                    )
-                except Exception as persist_error:
-                    logger.error("[%s] job=%s — manual failure persistence failed: %s", self.brand.name, job_id, persist_error)
-
-            self._metrics.record_publish_failure(duration_ms)
-            if retryable:
-                self._dead_letter_queue.push(
-                    brand_id=self.brand.id,
-                    error="Publish workflow failed",
-                    payload={"source": "manual", "failure_evidence": failure_evidence},
-                    workspace_id=getattr(self.brand, "workspace_id", None),
-                )
-
-            return {"ok": False, "error": "Publish step failed", "job_id": job_id}
-
-        except Exception as e:
-            duration_ms = (time.monotonic() - publish_started) * 1000
-            self._metrics.record_publish_failure(duration_ms)
-            self._dead_letter_queue.push(
-                brand_id=self.brand.id,
-                error=str(e),
-                payload={"source": "manual"},
-                workspace_id=getattr(self.brand, "workspace_id", None),
-            )
-            return {"ok": False, "error": str(e), "brand": self.brand.name}
-        finally:
-            self._publish_semaphore.release()
-            self._distributed_lock.release()
+                raise RuntimeError("Manual publishing job was not durably created")
+            status = getattr(getattr(automation_job, "status", None), "value", getattr(automation_job, "status", None))
+            return {
+                "ok": True,
+                "queued": status in {JobStatus.CREATED.value, JobStatus.QUEUED.value, JobStatus.RETRY_PENDING.value},
+                "published": status == JobStatus.PUBLISHED.value,
+                "status": status,
+                "brand": self.brand.name,
+                "job_id": automation_job.job_id,
+            }
+        except Exception as exc:
+            logger.exception("[%s] Failed to enqueue manual publish", self.brand.name)
+            return {"ok": False, "error": str(exc), "brand": self.brand.name}
 
     def get_status(self) -> dict:
         today = datetime.now(self.timezone).date()

@@ -414,11 +414,13 @@ class AutomationJob(BaseModel):
         workspace_id: str,
         job_id: str,
         platform: str = "facebook",
+        idempotency_key: Optional[str] = None,
     ) -> "AutomationJob":
         now = datetime.now(timezone.utc)
         idempotency_key = (
-            f"{brand_id}-manual-"
-            f"{now.strftime('%Y%m%d-%H%M%S-%f')}"
+            f"{brand_id}-manual-{idempotency_key}"
+            if idempotency_key
+            else f"{brand_id}-manual-{now.strftime('%Y%m%d-%H%M%S-%f')}"
         )
         return cls(
             job_id=job_id,

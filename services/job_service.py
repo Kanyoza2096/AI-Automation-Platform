@@ -172,6 +172,7 @@ class JobService:
         caption: str | None = None,
         result: dict | None = None,
         status: "JobStatus | None" = None,
+        idempotency_key: str | None = None,
     ) -> AutomationJob:
         """Create a manual trigger job (async).
 
@@ -179,8 +180,19 @@ class JobService:
         AutomationJob shape (no obsolete payload/job_type fields).
         """
         from models.automation_job import JobStatus as _JS
+        if idempotency_key:
+            scoped_key = f"{brand_id}-manual-{idempotency_key}"
+            existing = await self.find_by_idempotency_key(scoped_key)
+            if existing:
+                if str(existing.workspace_id) != str(workspace_id) or str(existing.brand_id) != str(brand_id):
+                    raise DuplicateJobError(
+                        message="Manual publish idempotency key belongs to a different scope",
+                        context={"brand_id": brand_id, "workspace_id": workspace_id},
+                    )
+                return existing
         job = AutomationJob.for_manual_trigger(
-            brand_id=brand_id, workspace_id=workspace_id, job_id=job_id, platform=platform,
+            brand_id=brand_id, workspace_id=workspace_id, job_id=job_id,
+            platform=platform, idempotency_key=idempotency_key,
         )
         if topic is not None:
             job.topic = topic
@@ -212,6 +224,16 @@ class JobService:
                 return saved
             raise DatabaseQueryError(message="Insert returned no data")
         except Exception as e:
+            error_str = str(e).lower()
+            if "duplicate" in error_str or "unique" in error_str or "23505" in error_str:
+                if idempotency_key:
+                    existing = await self.find_by_idempotency_key(job.idempotency_key)
+                    if existing and str(existing.workspace_id) == str(workspace_id) and str(existing.brand_id) == str(brand_id):
+                        return existing
+                raise DuplicateJobError(
+                    message=f"Manual job already exists: {job.idempotency_key}",
+                    context={"idempotency_key": job.idempotency_key, "brand_id": brand_id},
+                )
             raise DatabaseQueryError(message=f"Failed to create manual job: {job_id}", cause=e)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -306,6 +328,8 @@ class JobService:
         limit: int = 50,
         *,
         oldest_first: bool = False,
+        workflow_type: Optional[WorkflowType] = None,
+        source: Optional[str] = None,
     ) -> List[AutomationJob]:
         """Find brand jobs, optionally prioritizing the oldest backlog entries."""
         client = self._require_client()
@@ -314,6 +338,10 @@ class JobService:
             query = client.table(self._table).select("*").eq("brand_id", brand_id)
             if status:
                 query = query.eq("status", status.value)
+            if workflow_type:
+                query = query.eq("workflow_type", workflow_type.value)
+            if source:
+                query = query.eq("source", source)
             result = await loop.run_in_executor(
                 None,
                 lambda: query.order(
