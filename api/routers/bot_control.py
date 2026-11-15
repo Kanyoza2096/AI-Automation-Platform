@@ -83,7 +83,10 @@ async def force_post(
         
         if not ai_profile:
             return _err(f"No AI profile for brand '{brand_id}'", 400)
-        
+        profile_workspace_id = getattr(ai_profile, "workspace_id", None)
+        if profile_workspace_id and str(profile_workspace_id) != workspace_id:
+            return _err("Brand AI profile is not owned by the authenticated workspace", 404)
+
         from scheduler.brand_scheduler import BrandScheduler
         scheduler = BrandScheduler(brand=brand, ai_profile=ai_profile, container=container)
         result = await _async_wrap(scheduler.trigger_manual)
@@ -91,7 +94,10 @@ async def force_post(
         # Include job_id in response for traceability
         response = {
             "ok": result.get("ok", False),
+            "brand_id": brand_id,
             "brand": result.get("brand", brand.name),
+            "queued": result.get("queued", False),
+            "published": result.get("published", False),
             "topic": result.get("topic", ""),
             "platforms": result.get("platforms", []),
             "duration_ms": result.get("duration_ms"),
