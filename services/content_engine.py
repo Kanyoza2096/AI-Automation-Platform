@@ -797,7 +797,7 @@ class ContentEngine:
             supplied = str(base_prompt).strip()
             from services.prompt_builder import FINAL_KDO_CAPTION_CONTRACT
             if FINAL_KDO_CAPTION_CONTRACT not in supplied:
-                supplied = f"{supplied}\\n\\n{FINAL_KDO_CAPTION_CONTRACT}"
+                supplied = f"{supplied}\n\n{FINAL_KDO_CAPTION_CONTRACT}"
             return supplied
 
         # Do not cache when the brand rotates topic axes: the cache key
