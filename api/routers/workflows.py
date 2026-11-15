@@ -130,6 +130,7 @@ async def workflow_pause(container=Depends(get_container), _auth=Depends(require
 @router.post("/workflow/trigger")
 async def workflow_trigger(
     body: dict = {},
+    request: Request = None,
     container=Depends(get_container),
     _auth=Depends(require_workspace_operator),
 ):
@@ -150,13 +151,21 @@ async def workflow_trigger(
         if not brand:
             return _err(f"Brand '{brand_id}' not found", 404)
 
+        # The operator role alone is not sufficient: bind the target brand to
+        # the authenticated workspace before resolving profiles or scheduling.
+        if request is None:
+            return _err("Authenticated request context is required", 403)
+        workspace_id = await require_workspace(request)
+        if getattr(brand, "workspace_id", None) != workspace_id:
+            return _err("Brand not found in the authenticated workspace", 404)
+
         ai_profile = None
         if getattr(brand, 'ai_profile_id', None):
             ai_repo = await _async_wrap(container.resolve, AIProfileRepository)
             ai_profile = await _async_wrap(ai_repo.find_by_id, brand.ai_profile_id)
 
-        if not ai_profile:
-            return _err(f"No AI profile found for brand '{brand_id}'. Assign one in Brand settings.", 400)
+        if not ai_profile or getattr(ai_profile, "workspace_id", None) != workspace_id:
+            return _err(f"No workspace-owned AI profile found for brand '{brand_id}'. Assign one in Brand settings.", 400)
 
         manager = container.try_resolve(BrandSchedulerManager)
         scheduler = None
