@@ -80,7 +80,9 @@ class DistributedLock:
                 if hasattr(self.redis, "is_available") and not self.redis.is_available:
                     raise RuntimeError("Redis client is unavailable")
                 token = uuid.uuid4().hex
-                result = self.redis.set(
+                # Coordination must bypass RedisClient's normal in-memory fallback.
+                set_operation = getattr(self.redis, "set_distributed", self.redis.set)
+                result = set_operation(
                     f"lock:{self.name}",
                     token,
                     ex=int(self.timeout_seconds),
