@@ -553,9 +553,11 @@ class GenerateContentStep(Step):
         # final candidate. This is essential after either bounded repair path:
         # a repaired caption must not bypass first-person/opener/length checks.
         compliance_validator = getattr(self._engine, "_validate_caption_quality", None)
-        if callable(compliance_validator):
-            compliance_ok, compliance_reason = compliance_validator(caption_to_check)
-            if not compliance_ok:
+        if not callable(compliance_validator):
+            from services.content_engine import ContentEngine
+            compliance_validator = ContentEngine._validate_caption_quality
+        compliance_ok, compliance_reason = compliance_validator(caption_to_check)
+        if not compliance_ok:
                 raise AIValidationError(
                     message=f"KDO caption compliance gate rejected final caption: {compliance_reason}",
                     context={"brand": self._brand.name, "topic": topic, "compliance_reason": compliance_reason},
@@ -763,10 +765,10 @@ class ValidateContentStep(Step):
                     repaired_caption, context.get("knowledge_evidence") or [],
                 )
                 compliance_validator = getattr(self._content_engine, "_validate_caption_quality", None)
-                if callable(compliance_validator):
-                    compliance_ok, compliance_reason = compliance_validator(repaired_caption)
-                else:
-                    compliance_ok, compliance_reason = True, "content engine compliance validator unavailable"
+                if not callable(compliance_validator):
+                    from services.content_engine import ContentEngine
+                    compliance_validator = ContentEngine._validate_caption_quality
+                compliance_ok, compliance_reason = compliance_validator(repaired_caption)
                 if not compliance_ok:
                     raise AIValidationError(
                         message="Single semantic-repair attempt failed KDO caption compliance gate",
