@@ -212,6 +212,7 @@ class UnifiedEventBus:
 
         # State
         self._running = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._started_at: Optional[datetime] = None
 
         logger.info(
@@ -225,10 +226,14 @@ class UnifiedEventBus:
     # ═══════════════════════════════════════════════════════════════════
 
     async def start(self) -> None:
+        current_loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not current_loop:
+            raise RuntimeError("UnifiedEventBus must be used from its owning event loop")
         if self._running:
             logger.warning("UnifiedEventBus already running")
             return
 
+        self._loop = current_loop
         self._running = True
         self._started_at = datetime.now(timezone.utc)
 
