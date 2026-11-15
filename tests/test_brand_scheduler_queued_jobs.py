@@ -18,6 +18,7 @@ class FakeJobService:
 
 def make_job(**overrides):
     now = datetime.now(timezone.utc)
+    slot = now - timedelta(hours=2)
     values = {
         "job_id": "pub_due_slot",
         "brand_id": "brand-a",
@@ -25,9 +26,9 @@ def make_job(**overrides):
         "status": JobStatus.QUEUED,
         "workflow_type": WorkflowType.CONTENT_PUBLISH,
         "source": "scheduled",
-        "scheduled_for": now - timedelta(hours=2),
-        "idempotency_key": "brand-a-2026-11-15-04-content",
-        "created_at": now - timedelta(hours=2),
+        "scheduled_for": slot,
+        "idempotency_key": f"brand-a-{slot.date().isoformat()}-{slot.hour:02d}-content",
+        "created_at": slot,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -60,12 +61,12 @@ def test_due_queued_scheduled_job_is_resumed_through_idempotent_slot():
     accepted = scheduler._process_queued_automation_jobs()
 
     assert accepted == 1
-    service.calls == [("brand-a", JobStatus.QUEUED, 50)]
+    assert service.calls == [("brand-a", JobStatus.QUEUED, 50)]
     scheduler._trigger_workflow.assert_called_once()
     kwargs = scheduler._trigger_workflow.call_args.kwargs
     assert kwargs["source"] == "queued_retry"
-    assert kwargs["today"].isoformat() == "2026-11-15"
-    assert kwargs["hour"] == 4
+    assert kwargs["today"].isoformat() == job.scheduled_for.date().isoformat()
+    assert kwargs["hour"] == job.scheduled_for.hour
 
 
 def test_future_queued_job_is_not_started_early():
