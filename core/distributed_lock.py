@@ -115,10 +115,11 @@ class DistributedLock:
                 try:
                     inspection = self.redis.inspect_distributed_lock(f"lock:{self.name}")
                     logger.info(
-                        "DistributedLock '%s': outcome=contended key_exists=%s ttl_seconds=%s",
+                        "DistributedLock '%s': outcome=contended key_exists=%s ttl_seconds=%s owner_fingerprint=%s",
                         self.name,
                         inspection.get("exists"),
                         inspection.get("ttl_seconds"),
+                        inspection.get("owner_fingerprint"),
                     )
                 except Exception as inspect_exc:
                     logger.warning(
