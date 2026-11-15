@@ -49,6 +49,7 @@ async def bot_status(container=Depends(get_container)):
 
 @router.post("/bot/post")
 async def force_post(
+    request: Request,
     body: dict = {},
     container=Depends(get_container),
     _auth=Depends(require_workspace_operator),
@@ -93,8 +94,15 @@ async def force_post(
         # container-owned JobService and Upstash client. Never create an
         # isolated scheduler that bypasses durable persistence or Redis locks.
         manager.set_container(container)
-        result = await manager.trigger_for_brand(brand_id)
-        
+        idempotency_key = (
+            request.headers.get("Idempotency-Key")
+            or (body.get("idempotency_key") if isinstance(body, dict) else None)
+        )
+        result = await manager.trigger_for_brand(brand_id, idempotency_key=idempotency_key)
+
+        if not result.get("ok"):
+            return _err(result.get("error", "Manual publish job could not be durably queued"), 503)
+
         # Include job_id in response for traceability
         response = {
             "ok": result.get("ok", False),
@@ -107,9 +115,7 @@ async def force_post(
             "duration_ms": result.get("duration_ms"),
             "job_id": result.get("job_id"),
         }
-        if not result.get("ok"):
-            response["error"] = result.get("error", "Unknown error")
-        
+        response["status"] = result.get("status", "QUEUED")
         return _ok(response, 202)
     except Exception as exc:
         return _safe_err(exc, "POST /api/v1/bot/post")
