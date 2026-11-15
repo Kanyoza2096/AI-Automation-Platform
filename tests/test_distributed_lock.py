@@ -97,3 +97,37 @@ def test_lock_inspection_is_strict_and_does_not_use_memory_fallback():
     client = UpstashRedisClient(RedisConfig(enabled=False))
     with pytest.raises(RedisConnectionError, match="Redis unavailable"):
         client.inspect_distributed_lock("lock:x")
+
+
+def test_lock_inspection_reads_upstash_existence_and_ttl_without_owner_token(monkeypatch):
+    client = UpstashRedisClient(RedisConfig(enabled=False))
+    client.config.enabled = True
+    client.mode = "upstash"
+    client._available = True
+    client._request_budget = 100
+    calls = []
+
+    def fake_cmd(*args):
+        calls.append(args)
+        return {"result": [1, 87]}
+
+    monkeypatch.setattr(client, "_cmd", fake_cmd)
+    result = client.inspect_distributed_lock("lock:brand:test:publish")
+
+    assert result == {"exists": True, "ttl_seconds": 87}
+    assert calls == [("EVAL", client.inspect_distributed_lock.__code__.co_consts[1], "1", "lock:brand:test:publish")]
+    assert client._requests_used == 1
+
+
+def test_lock_inspection_reports_missing_key_with_redis_ttl_sentinel(monkeypatch):
+    client = UpstashRedisClient(RedisConfig(enabled=False))
+    client.config.enabled = True
+    client.mode = "upstash"
+    client._available = True
+    client._request_budget = 100
+    monkeypatch.setattr(client, "_cmd", lambda *args: {"result": [0, -2]})
+
+    assert client.inspect_distributed_lock("lock:missing") == {
+        "exists": False,
+        "ttl_seconds": -2,
+    }
