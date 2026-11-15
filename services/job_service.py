@@ -93,7 +93,7 @@ class JobService:
             elif hasattr(self._event_bus, "publish_event"):
                 self._event_bus.publish_event(event_name, payload)
         except Exception as exc:
-            logger.debug("JobService event emission failed: %s", exc)
+            logger.error("JobService event emission failed: %s", exc, exc_info=True)
 
     # ------------------------------------------------------------------
     # Client resolution
