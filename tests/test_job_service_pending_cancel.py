@@ -51,6 +51,7 @@ def test_cancel_pending_job_is_workspace_scoped_and_atomic():
     row = {
         "id": "db-id",
         "job_id": "job-1",
+        "idempotency_key": "key-job-1",
         "workspace_id": "workspace-a",
         "brand_id": "brand-a",
         "status": "QUEUED",
@@ -79,6 +80,7 @@ def test_cancel_pending_job_does_not_cancel_running_or_other_workspace_jobs():
     queued = {
         "id": "db-id",
         "job_id": "job-2",
+        "idempotency_key": "key-job-2",
         "workspace_id": "workspace-b",
         "brand_id": "brand-b",
         "status": "QUEUED",
