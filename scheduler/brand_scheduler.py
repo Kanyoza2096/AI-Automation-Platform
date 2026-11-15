@@ -768,6 +768,7 @@ class BrandScheduler:
                     )
                     first_cycle = False
                 else:
+                    self._process_queued_automation_jobs()
                     self._check_schedule()
                     self._check_scheduled_posts()
                     self._retry_dead_letter_queue()
@@ -879,6 +880,113 @@ class BrandScheduler:
                     retry_count=int(meta.get("retry_count", 0)) + 1,
                     workspace_id=getattr(self.brand, "workspace_id", None),
                 )
+
+    def _process_queued_automation_jobs(self, limit: int = 50) -> int:
+        """Drain due, brand-scoped scheduled jobs returned to QUEUED.
+
+        The database retry cascade only changes lifecycle state; it does not
+        execute jobs. This consumer re-enters the existing idempotent workflow
+        path so a queued slot is resumed rather than abandoned after its hour.
+        """
+        if not self._job_service:
+            return 0
+
+        try:
+            queued_jobs = _job_call(
+                self._job_service,
+                "find_by_brand",
+                self.brand.id,
+                JobStatus.QUEUED,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.error(
+                "[%s] Could not load queued automation jobs: %s",
+                self.brand.name, exc,
+            )
+            return 0
+
+        now_utc = datetime.now(timezone.utc)
+        workspace_id = str(getattr(self.brand, "workspace_id", "") or "")
+        candidates = sorted(
+            queued_jobs or [],
+            key=lambda job: (
+                getattr(job, "scheduled_for", None)
+                or getattr(job, "created_at", now_utc)
+            ),
+        )
+        accepted = 0
+
+        for job in candidates:
+            try:
+                status = getattr(getattr(job, "status", None), "value", getattr(job, "status", None))
+                workflow_type = getattr(
+                    getattr(job, "workflow_type", None),
+                    "value",
+                    getattr(job, "workflow_type", None),
+                )
+                if status != JobStatus.QUEUED.value:
+                    continue
+                if getattr(job, "brand_id", None) != self.brand.id:
+                    continue
+                if str(getattr(job, "workspace_id", "") or "") != workspace_id:
+                    logger.warning(
+                        "[%s] Skipping queued job %s: workspace scope mismatch",
+                        self.brand.name, getattr(job, "job_id", "?"),
+                    )
+                    continue
+                if workflow_type != WorkflowType.CONTENT_PUBLISH.value:
+                    continue
+                if str(getattr(job, "source", "")) != "scheduled":
+                    continue
+
+                scheduled_for = getattr(job, "scheduled_for", None)
+                if not isinstance(scheduled_for, datetime):
+                    continue
+                if scheduled_for.tzinfo is None:
+                    scheduled_for = scheduled_for.replace(tzinfo=timezone.utc)
+                if scheduled_for > now_utc:
+                    continue
+
+                key = str(getattr(job, "idempotency_key", "") or "")
+                prefix = f"{self.brand.id}-"
+                if not key.startswith(prefix):
+                    continue
+                try:
+                    slot_date_raw, slot_hour_raw, slot_kind = key[len(prefix):].rsplit("-", 2)
+                    if slot_kind != "content":
+                        continue
+                    slot_date = date.fromisoformat(slot_date_raw)
+                    slot_hour = int(slot_hour_raw)
+                    if slot_hour < 0 or slot_hour > 23:
+                        continue
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[%s] Skipping queued job %s: invalid scheduled-slot key",
+                        self.brand.name, getattr(job, "job_id", "?"),
+                    )
+                    continue
+
+                logger.info(
+                    "[%s] Resuming overdue queued job %s for slot %s %02d:00 UTC",
+                    self.brand.name,
+                    getattr(job, "job_id", "?"),
+                    slot_date.isoformat(),
+                    slot_hour,
+                )
+                if self._trigger_workflow(
+                    source="queued_retry",
+                    today=slot_date,
+                    hour=slot_hour,
+                ):
+                    accepted += 1
+            except Exception as exc:
+                logger.error(
+                    "[%s] Queued job processing failed for %s: %s",
+                    self.brand.name, getattr(job, "job_id", "?"), exc,
+                )
+
+        return accepted
 
     def _check_schedule(self) -> None:
         status = _brand_status_value(self.brand)
