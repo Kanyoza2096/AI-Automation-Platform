@@ -8,17 +8,29 @@ from workflows import AVAILABLE_WORKFLOWS
 
 router = APIRouter()
 
+
+def _filter_workflow_history_for_workspace(entries, workspace_id: str):
+    """Return only records explicitly owned by the authenticated workspace."""
+    if not workspace_id:
+        return []
+    return [entry for entry in entries or [] if entry.get("workspace_id") == workspace_id]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # WORKFLOWS
 # ═══════════════════════════════════════════════════════════════════════════
 
 @router.get("/workflow")
 async def list_workflows(
+    request: Request,
     workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
     _auth: bool = Depends(require_auth),
 ):
-    """List available workflows with last run info."""
-    history = await workflow_history.get_all()
+    """List available workflows with last run info for the active workspace."""
+    workspace_id = await require_workspace(request)
+    history = _filter_workflow_history_for_workspace(
+        await workflow_history.get_all(), workspace_id,
+    )
     last_runs = {}
     for entry in reversed(history):
         name = entry.get("workflow")
@@ -73,11 +85,21 @@ async def run_workflow(
 
 
 @router.get("/workflow/status")
-async def workflow_status(container=Depends(get_container), _auth: bool = Depends(require_auth)):
+async def workflow_status(
+    request: Request,
+    container=Depends(get_container),
+    _auth: bool = Depends(require_auth),
+):
     try:
         from scheduler.brand_scheduler import BrandSchedulerManager
+        from repositories.brand_repository import BrandRepository
+        workspace_id = await require_workspace(request)
+        brand_repo = await _async_wrap(container.resolve, BrandRepository)
+        workspace_brands = await _async_wrap(brand_repo.find_by_workspace, workspace_id)
+        brand_ids = {brand.id for brand in workspace_brands}
         manager = await _async_wrap(container.resolve, BrandSchedulerManager)
         all_status = await _async_wrap(manager.get_all_status)
+        all_status = [status for status in all_status if status.get("brand_id") in brand_ids]
         running = sum(1 for s in all_status if s.get("running"))
         return _ok({
             "status": "running" if running > 0 else "idle",
@@ -90,6 +112,7 @@ async def workflow_status(container=Depends(get_container), _auth: bool = Depend
 
 @router.get("/workflow/history")
 async def workflow_history_endpoint(
+    request: Request,
     workflow_history: AsyncWorkflowHistory = Depends(get_workflow_history),
     _auth: bool = Depends(require_auth),
     limit: int = 20,
@@ -97,15 +120,10 @@ async def workflow_history_endpoint(
     """Get workflow run history — workspace-scoped."""
     try:
         limit = min(50, max(1, limit))
-        workspace_id = auth_workspace_id_var.get()
-
-        entries = await workflow_history.get_recent(limit)
-
-        if workspace_id:
-            entries = [
-                e for e in entries
-                if e.get("workspace_id") == workspace_id or e.get("workspace_id") is None
-            ]
+        workspace_id = await require_workspace(request)
+        entries = _filter_workflow_history_for_workspace(
+            await workflow_history.get_recent(limit), workspace_id,
+        )
 
         return _ok({
             "history": entries,
