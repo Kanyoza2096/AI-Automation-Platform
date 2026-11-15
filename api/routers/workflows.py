@@ -129,15 +129,15 @@ async def workflow_pause(container=Depends(get_container), _auth=Depends(require
 
 @router.post("/workflow/trigger")
 async def workflow_trigger(
+    request: Request,
     body: dict = {},
     container=Depends(get_container),
     _auth=Depends(require_workspace_operator),
 ):
     """Trigger a workflow run for a specific brand."""
     try:
-        from scheduler.brand_scheduler import BrandScheduler, BrandSchedulerManager
+        from scheduler.brand_scheduler import BrandSchedulerManager
         from repositories.brand_repository import BrandRepository
-        from repositories.ai_profile_repository import AIProfileRepository
 
         brand_id = body.get("brand_id", "") if body else ""
 
@@ -150,31 +150,20 @@ async def workflow_trigger(
         if not brand:
             return _err(f"Brand '{brand_id}' not found", 404)
 
-        ai_profile = None
-        if getattr(brand, 'ai_profile_id', None):
-            ai_repo = await _async_wrap(container.resolve, AIProfileRepository)
-            ai_profile = await _async_wrap(ai_repo.find_by_id, brand.ai_profile_id)
+        # The operator role alone is not sufficient: bind the target brand to
+        # the authenticated workspace before resolving profiles or scheduling.
+        workspace_id = await require_workspace(request)
+        if getattr(brand, "workspace_id", None) != workspace_id:
+            return _err("Brand not found in the authenticated workspace", 404)
 
-        if not ai_profile:
-            return _err(f"No AI profile found for brand '{brand_id}'. Assign one in Brand settings.", 400)
-
+        # Manual publishing must use the manager-owned scheduler so the
+        # durable JobService and distributed lock dependencies are retained.
+        # Constructing a one-off scheduler here would bypass that composition.
         manager = container.try_resolve(BrandSchedulerManager)
-        scheduler = None
-        if manager is not None and hasattr(manager, "_schedulers"):
-            scheduler = manager._schedulers.get(brand_id)
+        if manager is None or not hasattr(manager, "trigger_for_brand"):
+            return _err("Workspace scheduler is unavailable; manual trigger was not started", 503)
 
-        if scheduler is None:
-            from services.job_service import JobService
-            from core.event_bus import EventBus
-            scheduler = BrandScheduler(
-                brand=brand,
-                ai_profile=ai_profile,
-                container=container,
-                job_service=container.try_resolve(JobService),
-                event_bus=container.try_resolve(EventBus),
-            )
-
-        result = await _async_wrap(scheduler.trigger_manual)
+        result = await _async_wrap(manager.trigger_for_brand, brand_id)
 
         response = {
             "ok": result.get("ok", False),
