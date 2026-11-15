@@ -253,6 +253,43 @@ class UpstashRedisClient:
             self._available = False
             return self._fallback_get(key)
 
+    def inspect_distributed_lock(self, key: str) -> dict:
+        """Read lock existence and TTL atomically, without exposing its owner token.
+
+        This is a strict Redis-only diagnostic: it never reads the in-memory
+        fallback and never mutates or deletes the lock.
+        """
+        if not self.is_available:
+            raise RedisConnectionError("Redis unavailable; lock inspection refused")
+        if not self._check_budget():
+            raise RedisConnectionError("Redis request budget exhausted; lock inspection refused")
+
+        script = (
+            "local v = redis.call('GET', KEYS[1]); "
+            "local ttl = redis.call('TTL', KEYS[1]); "
+            "return {v and 1 or 0, ttl}"
+        )
+        try:
+            self._requests_used += 1
+            if self.mode == "traditional" and self._redis_client:
+                result = self._redis_client.eval(script, 1, key)
+            elif self.mode == "upstash":
+                response = self._cmd("EVAL", script, "1", key)
+                result = response.get("result")
+            else:
+                raise RedisConnectionError("Redis transport is not configured")
+            if not isinstance(result, (list, tuple)) or len(result) != 2:
+                raise RedisConnectionError("Unexpected Redis lock inspection response")
+            return {"exists": bool(int(result[0])), "ttl_seconds": int(result[1])}
+        except RedisConnectionError:
+            self._available = False
+            raise
+        except Exception as exc:
+            self._available = False
+            raise RedisConnectionError(
+                f"Redis lock inspection failed ({type(exc).__name__})"
+            ) from exc
+
     def set_distributed(self, key: str, value: str, ex: Optional[int] = None, *, nx: bool = False) -> bool:
         """Execute SET against Redis only; never use the in-memory fallback.
 
