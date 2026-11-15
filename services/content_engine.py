@@ -794,7 +794,11 @@ class ContentEngine:
         prompt_builder.last_used_axis = None
 
         if base_prompt:
-            return str(base_prompt).strip()
+            supplied = str(base_prompt).strip()
+            from services.prompt_builder import FINAL_KDO_CAPTION_CONTRACT
+            if FINAL_KDO_CAPTION_CONTRACT not in supplied:
+                supplied = f"{supplied}\\n\\n{FINAL_KDO_CAPTION_CONTRACT}"
+            return supplied
 
         # Do not cache when the brand rotates topic axes: the cache key
         # does not include the axis, so a cached prompt would freeze one
