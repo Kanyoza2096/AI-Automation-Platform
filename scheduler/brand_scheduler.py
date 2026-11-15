@@ -1310,9 +1310,8 @@ class BrandScheduler:
         job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
         agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
 
-        require_dist = str(os.getenv("REQUIRE_DISTRIBUTED_LOCK", "")).lower() in (
-            "1", "true", "yes",
-        )
+        # Publishing is an external side effect: local-only locks are never sufficient.
+        require_dist = True
         if not self._distributed_lock.acquire(require_distributed=require_dist):
             logger.warning(
                 "[%s] Could not acquire publish lock (mode=%s) — skip",
@@ -1459,9 +1458,15 @@ class BrandScheduler:
                         )
                     except Exception as e:
                         logger.error(
-                            "[%s] job=%s — mark published failed: %s",
+                            "[%s] job=%s — verified Facebook receipt could not be persisted: %s",
                             self.brand.name, job_id, e,
                         )
+                        self._pipeline_status = {
+                            "status": "unknown", "current_step": "reconciliation",
+                            "progress": 90, "topic": topic, "platforms": [],
+                            "job_id": job_id,
+                        }
+                        return False
 
                 if scheduled_post_id:
                     try:
