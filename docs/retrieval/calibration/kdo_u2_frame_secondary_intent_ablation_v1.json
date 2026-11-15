@@ -1,0 +1,71 @@
+{
+  "experiment": "U2 frame-aware secondary-intent retrieval ablation",
+  "version": 1,
+  "scope": {
+    "split": "dev",
+    "query_count": 25,
+    "holdout_evaluated": false,
+    "indexed_knowledge_chunks": 112,
+    "top_k": 5,
+    "subquery_depth": 20
+  },
+  "metrics": {
+    "baseline": {
+      "recall_at_5": 0.94,
+      "gold_hit_rate_at_5": 0.96,
+      "mrr": 0.828,
+      "hard_negative_top1_rate": 0.20,
+      "hard_negative_outrank_rate": 0.3333,
+      "hard_negative_outrank_denominator": 18,
+      "mean_retrieval_calls": 1.0
+    },
+    "relation_aware_deduplicated": {
+      "recall_at_5": 0.96,
+      "gold_hit_rate_at_5": 1.0,
+      "mrr": 0.856,
+      "hard_negative_top1_rate": 0.16,
+      "hard_negative_outrank_rate": 0.3158,
+      "hard_negative_outrank_denominator": 19,
+      "mean_retrieval_calls": 1.4
+    },
+    "frame_aware_with_secondary_intents": {
+      "recall_at_5": 0.96,
+      "gold_hit_rate_at_5": 1.0,
+      "mrr": 0.8293,
+      "hard_negative_top1_rate": 0.16,
+      "hard_negative_outrank_rate": 0.3158,
+      "hard_negative_outrank_denominator": 19,
+      "mean_retrieval_calls": 1.56
+    }
+  },
+  "secondary_intent_queries": [
+    "KDO-RET-028",
+    "KDO-RET-042",
+    "KDO-RET-044",
+    "KDO-RET-050"
+  ],
+  "observed_gold_rank_regression": {
+    "query_id": "KDO-RET-028",
+    "relation_aware_gold_rank": 1,
+    "frame_aware_gold_rank": 3
+  },
+  "top5_changed_queries": [
+    "KDO-RET-028",
+    "KDO-RET-042",
+    "KDO-RET-044",
+    "KDO-RET-050"
+  ],
+  "retrieval_call_accounting_correction": {
+    "previously_reported_relation_aware_mean_calls": 2.2,
+    "corrected_relation_aware_mean_calls": 1.4,
+    "reason": "The earlier call count included a duplicate retrieval of the unchanged full query as if it were a separate clause on queries without relation connectors. Deduplicating it preserves rankings and removes redundant offline retrieval calls."
+  },
+  "decision": "Keep secondary intents as diagnostic metadata. Do not automatically add secondary-intent clauses to retrieval.",
+  "limitations": [
+    "Lexical TF-IDF replica, not dense retrieval.",
+    "Development-only exploratory ablation; not a release gate.",
+    "Secondary-intent clause extraction is heuristic and can introduce off-topic evidence.",
+    "Retrieval call counts are offline function invocations, not hosted latency or cost measurements.",
+    "No holdout, database, LLM, staging or production runtime, publishing, or deployment was used."
+  ]
+}
