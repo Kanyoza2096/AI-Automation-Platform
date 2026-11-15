@@ -432,15 +432,19 @@ class JobService:
         return job
 
     async def mark_published(self, job: AutomationJob, *, post_id: Optional[str] = None, result: Optional[dict] = None) -> AutomationJob:
-        """Reconcile a verified connector success into PUBLISHED."""
+        """Persist PUBLISHED only when the provider returned a concrete post ID."""
+        post_id = str(post_id or "").strip()
+        if not post_id:
+            raise ValueError(
+                "Cannot mark job PUBLISHED without a confirmed provider post ID"
+            )
         current = job
         if current.status == JobStatus.QUEUED:
             current = await self.transition(current, JobStatus.RUNNING)
         if current.status in {JobStatus.RUNNING, JobStatus.GENERATING, JobStatus.VALIDATING, JobStatus.RENDERING, JobStatus.READY}:
             current = await self.transition(current, JobStatus.PUBLISHING)
         if current.status == JobStatus.PUBLISHING:
-            if post_id:
-                current.platform_post_id = post_id
+            current.platform_post_id = post_id
             if result:
                 current.result = result
             return await self.transition(current, JobStatus.PUBLISHED)

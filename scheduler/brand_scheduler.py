@@ -1266,6 +1266,42 @@ class BrandScheduler:
 
         return topic, publish_ok, platforms, queued_publish
 
+    @staticmethod
+    def _extract_confirmed_post_id(result) -> Optional[str]:
+        """Return a provider post ID only when the publish step confirms success."""
+        for step in getattr(result, "steps", []) or []:
+            if getattr(step, "step_name", None) != "publish" or not getattr(step, "ok", False):
+                continue
+            output = step.output if isinstance(step.output, dict) else {}
+            if output.get("queued"):
+                return None
+            status = str(output.get("status") or "").strip().lower()
+            flat_id = (
+                output.get("platform_post_id")
+                or output.get("provider_object_id")
+                or output.get("post_id")
+            )
+            flat_ok = bool(output.get("ok")) or status in {
+                "ok", "succeeded", "success", "published",
+            }
+            if flat_ok and flat_id:
+                return str(flat_id)
+            for value in output.values():
+                if not isinstance(value, dict):
+                    continue
+                nested_status = str(value.get("status") or "").strip().lower()
+                nested_ok = bool(value.get("ok")) or nested_status in {
+                    "ok", "succeeded", "success", "published",
+                }
+                nested_id = (
+                    value.get("platform_post_id")
+                    or value.get("provider_object_id")
+                    or value.get("post_id")
+                )
+                if nested_ok and nested_id:
+                    return str(nested_id)
+        return None
+
     def _trigger_workflow(
         self, source: str = "scheduled", today=None, hour=None,
         scheduled_post_id: Optional[str] = None,
@@ -1274,9 +1310,8 @@ class BrandScheduler:
         job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
         agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
 
-        require_dist = str(os.getenv("REQUIRE_DISTRIBUTED_LOCK", "")).lower() in (
-            "1", "true", "yes",
-        )
+        # Publishing is an external side effect: local-only locks are never sufficient.
+        require_dist = True
         if not self._distributed_lock.acquire(require_distributed=require_dist):
             logger.warning(
                 "[%s] Could not acquire publish lock (mode=%s) — skip",
@@ -1303,6 +1338,10 @@ class BrandScheduler:
         idempotency_key: Optional[str] = None
 
         try:
+            if not self._job_service:
+                raise RuntimeError(
+                    "Publishing requires durable JobService persistence; refusing to run"
+                )
             if today is not None and hour is not None:
                 workspace_id = getattr(self.brand, "workspace_id", "")
                 slot_date = today.isoformat()
@@ -1375,57 +1414,59 @@ class BrandScheduler:
             topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
                 result, context_platform=context_platform,
             )
+            confirmed_post_id = self._extract_confirmed_post_id(result)
 
             duration_ms = (time.monotonic() - publish_started) * 1000
 
-            if publish_ok and not queued_publish:
+            if publish_ok and not queued_publish and not confirmed_post_id:
+                logger.error(
+                    "[%s] job=%s — publish step returned without a confirmed provider post ID; "
+                    "automatic retry suppressed pending reconciliation",
+                    self.brand.name, job_id,
+                )
+                if automation_job and self._job_service:
+                    try:
+                        _job_call(
+                            self._job_service, "mark_failed",
+                            automation_job,
+                            error="Provider publish outcome unconfirmed; reconcile before retry",
+                            error_code="PUBLISH_UNCONFIRMED",
+                            retryable=False,
+                        )
+                    except Exception as persist_error:
+                        logger.error(
+                            "[%s] job=%s — could not persist unconfirmed publish state: %s",
+                            self.brand.name, job_id, persist_error,
+                        )
+                self._pipeline_status = {
+                    "status": "unknown", "current_step": "reconciliation",
+                    "progress": 90, "topic": topic, "platforms": [],
+                    "job_id": job_id,
+                }
+                return False
+
+            if publish_ok and not queued_publish and confirmed_post_id:
                 if today is not None and hour is not None:
                     self._fired_slots.add((today, hour, "content"))
 
                 if automation_job and self._job_service:
                     try:
-                        post_id = ""
-                        for step in result.steps:
-                            if step.step_name == "publish" and step.ok:
-                                output = step.output if isinstance(step.output, dict) else {}
-                                status_str = str(output.get("status") or "").strip().lower()
-
-                                if (
-                                    "status" in output
-                                    or isinstance(output.get("ok"), bool)
-                                    or "post_id" in output
-                                    or "platform_post_id" in output
-                                    or "provider_object_id" in output
-                                ):
-                                    _ok = bool(output.get("ok")) or status_str in (
-                                        "ok", "succeeded", "success", "published"
-                                    )
-                                    if _ok:
-                                        post_id = (
-                                            output.get("post_id")
-                                            or output.get("platform_post_id")
-                                            or output.get("provider_object_id")
-                                            or ""
-                                        )
-                                    break
-
-                                for _name, _value in output.items():
-                                    if isinstance(_value, dict) and _value.get("ok") and _value.get("post_id"):
-                                        post_id = _value["post_id"]
-                                        break
-                                if post_id:
-                                    break
-
                         _job_call(
                             self._job_service, "mark_published",
-                            automation_job, post_id=post_id,
+                            automation_job, post_id=confirmed_post_id,
                             result={"topic": topic, "platforms": platforms},
                         )
                     except Exception as e:
                         logger.error(
-                            "[%s] job=%s — mark published failed: %s",
+                            "[%s] job=%s — verified Facebook receipt could not be persisted: %s",
                             self.brand.name, job_id, e,
                         )
+                        self._pipeline_status = {
+                            "status": "unknown", "current_step": "reconciliation",
+                            "progress": 90, "topic": topic, "platforms": [],
+                            "job_id": job_id,
+                        }
+                        return False
 
                 if scheduled_post_id:
                     try:
@@ -1632,24 +1673,27 @@ class BrandScheduler:
         try:
             job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
 
-            automation_job = None
-            if self._job_service:
-                try:
-                    workspace_id = getattr(self.brand, "workspace_id", "")
-                    automation_job = _job_call(
-                        self._job_service, "create_manual_job",
-                        brand_id=self.brand.id, workspace_id=workspace_id, job_id=job_id,
-                    )
-                    if automation_job:
-                        _job_call(
-                            self._job_service, "transition",
-                            automation_job, JobStatus.RUNNING,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "[%s] job=%s — manual job creation failed: %s",
-                        self.brand.name, job_id, e,
-                    )
+            if not self._job_service:
+                raise RuntimeError(
+                    "Manual publishing requires durable JobService persistence; refusing to run"
+                )
+            workspace_id = getattr(self.brand, "workspace_id", "")
+            automation_job = _job_call(
+                self._job_service, "create_manual_job",
+                brand_id=self.brand.id, workspace_id=workspace_id, job_id=job_id,
+            )
+            if not automation_job:
+                raise RuntimeError(
+                    "Manual publishing job was not durably created; refusing to run"
+                )
+            automation_job = _job_call(
+                self._job_service, "transition",
+                automation_job, JobStatus.RUNNING,
+            )
+            if not automation_job or automation_job.status != JobStatus.RUNNING:
+                raise RuntimeError(
+                    "Manual publishing job did not persist RUNNING state; refusing to run"
+                )
 
             workflow_factory = self._container.resolve("PostPublishWorkflowFactory")
             workflow = workflow_factory(brand=self.brand, ai_profile=self.ai_profile)
@@ -1669,6 +1713,7 @@ class BrandScheduler:
             topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
                 result, context_platform=context_platform,
             )
+            confirmed_post_id = self._extract_confirmed_post_id(result)
 
             duration_ms = (time.monotonic() - publish_started) * 1000
 
@@ -1683,48 +1728,50 @@ class BrandScheduler:
                     "platforms": [], "duration_ms": round(duration_ms), "job_id": job_id,
                 }
 
-            if publish_ok:
-                if automation_job and self._job_service:
-                    try:
-                        post_id = ""
-                        for step in result.steps:
-                            if step.step_name == "publish" and step.ok:
-                                output = step.output if isinstance(step.output, dict) else {}
-                                status_str = str(output.get("status") or "").strip().lower()
+            if publish_ok and not confirmed_post_id:
+                try:
+                    _job_call(
+                        self._job_service, "mark_failed",
+                        automation_job,
+                        error="Provider publish outcome unconfirmed; reconcile before retry",
+                        error_code="PUBLISH_UNCONFIRMED",
+                        retryable=False,
+                    )
+                except Exception as persist_error:
+                    logger.error(
+                        "[%s] job=%s — could not persist unconfirmed publish state: %s",
+                        self.brand.name, job_id, persist_error,
+                    )
+                self._pipeline_status = {
+                    "status": "unknown", "current_step": "reconciliation",
+                    "progress": 90, "topic": topic, "platforms": [],
+                    "job_id": job_id,
+                }
+                return {
+                    "ok": False, "published": False, "status": "unknown",
+                    "error": "Publish outcome unconfirmed; reconcile before retry",
+                    "brand": self.brand.name, "topic": topic,
+                    "duration_ms": round(duration_ms), "job_id": job_id,
+                }
 
-                                if (
-                                    "status" in output
-                                    or isinstance(output.get("ok"), bool)
-                                    or "post_id" in output
-                                    or "platform_post_id" in output
-                                    or "provider_object_id" in output
-                                ):
-                                    _ok = bool(output.get("ok")) or status_str in (
-                                        "ok", "succeeded", "success", "published"
-                                    )
-                                    if _ok:
-                                        post_id = (
-                                            output.get("post_id")
-                                            or output.get("platform_post_id")
-                                            or output.get("provider_object_id")
-                                            or ""
-                                        )
-                                    break
-
-                                for _name, _value in output.items():
-                                    if isinstance(_value, dict) and _value.get("ok") and _value.get("post_id"):
-                                        post_id = _value["post_id"]
-                                        break
-                                if post_id:
-                                    break
-
-                        _job_call(
-                            self._job_service, "mark_published",
-                            automation_job, post_id=post_id,
-                            result={"topic": topic, "platforms": platforms},
-                        )
-                    except Exception:
-                        pass
+            if publish_ok and confirmed_post_id:
+                try:
+                    _job_call(
+                        self._job_service, "mark_published",
+                        automation_job, post_id=confirmed_post_id,
+                        result={"topic": topic, "platforms": platforms},
+                    )
+                except Exception as persist_error:
+                    logger.error(
+                        "[%s] job=%s — verified provider post could not be persisted: %s",
+                        self.brand.name, job_id, persist_error,
+                    )
+                    return {
+                        "ok": False, "published": False, "status": "unknown",
+                        "error": "Facebook accepted the post but KDO could not persist its receipt",
+                        "brand": self.brand.name, "topic": topic,
+                        "duration_ms": round(duration_ms), "job_id": job_id,
+                    }
                 self._metrics.record_publish_success(duration_ms)
                 self._notify_webhooks("post_published", {
                     "brand_id": self.brand.id,
