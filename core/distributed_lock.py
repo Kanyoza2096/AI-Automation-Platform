@@ -16,7 +16,9 @@ Never pretend an in-process lock is a distributed lock.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import threading
 import time
 import uuid
@@ -56,6 +58,7 @@ class DistributedLock:
         self.allow_local_fallback = allow_local_fallback
         self._thread_lock = threading.Lock()
         self._lock_holder: Optional[str] = None
+        self._lock_fingerprint: Optional[str] = None
         self._lock_expires: float = 0.0
         self.mode: LockMode = LockMode.UNAVAILABLE
         self._redis_healthy: Optional[bool] = None
@@ -91,9 +94,19 @@ class DistributedLock:
                 )
                 if result:
                     self._lock_holder = token
+                    self._lock_fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
                     self._lock_expires = time.monotonic() + self.timeout_seconds
                     self.mode = LockMode.DISTRIBUTED
                     self._redis_healthy = True
+                    logger.info(
+                        "DistributedLock '%s': outcome=acquired owner_fingerprint=%s "
+                        "lease_seconds=%s pid=%s thread=%s",
+                        self.name,
+                        self._lock_fingerprint,
+                        int(self.timeout_seconds),
+                        os.getpid(),
+                        threading.current_thread().name,
+                    )
                     return True
                 # SET NX returning false is a healthy contention result, not
                 # a Redis outage. Inspect only existence/TTL; never expose token.
@@ -170,7 +183,13 @@ class DistributedLock:
         if self.redis is not None and self._lock_holder and self._lock_holder != "thread":
             try:
                 if hasattr(self.redis, "compare_and_delete"):
-                    self.redis.compare_and_delete(f"lock:{self.name}", self._lock_holder)
+                    deleted = bool(self.redis.compare_and_delete(f"lock:{self.name}", self._lock_holder))
+                    logger.info(
+                        "DistributedLock '%s': outcome=%s owner_fingerprint=%s",
+                        self.name,
+                        "released" if deleted else "release_not_owner",
+                        self._lock_fingerprint or "unknown",
+                    )
                 else:
                     current = self.redis.get(f"lock:{self.name}")
                     if current is not None:
@@ -186,6 +205,7 @@ class DistributedLock:
                 pass
 
         self._lock_holder = None
+        self._lock_fingerprint = None
         self._lock_expires = 0.0
         self.mode = LockMode.UNAVAILABLE
 

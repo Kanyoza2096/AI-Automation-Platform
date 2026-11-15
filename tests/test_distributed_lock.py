@@ -67,7 +67,7 @@ def test_distributed_lock_reports_contention_separately_from_unavailable():
 
         def inspect_distributed_lock(self, key):
             assert key == "lock:brand:test:publish"
-            return {"exists": True, "ttl_seconds": 123}
+            return {"exists": True, "ttl_seconds": 123, "owner_fingerprint": "abc123"}
 
     lock = DistributedLock(
         "brand:test:publish",
@@ -109,16 +109,21 @@ def test_lock_inspection_reads_upstash_existence_and_ttl_without_owner_token(mon
 
     def fake_cmd(*args):
         calls.append(args)
-        return {"result": [1, 87]}
+        return {"result": [1, 87, "0123456789abcdef0123456789abcdef01234567"]}
 
     monkeypatch.setattr(client, "_cmd", fake_cmd)
     result = client.inspect_distributed_lock("lock:brand:test:publish")
 
-    assert result == {"exists": True, "ttl_seconds": 87}
+    assert result == {
+        "exists": True,
+        "ttl_seconds": 87,
+        "owner_fingerprint": "0123456789ab",
+    }
     assert len(calls) == 1
     assert calls[0][0] == "EVAL"
     assert "GET" in calls[0][1]
     assert "TTL" in calls[0][1]
+    assert "sha1hex" in calls[0][1]
     assert calls[0][2:] == ("1", "lock:brand:test:publish")
     assert client._requests_used == 1
 
@@ -134,4 +139,5 @@ def test_lock_inspection_reports_missing_key_with_redis_ttl_sentinel(monkeypatch
     assert client.inspect_distributed_lock("lock:missing") == {
         "exists": False,
         "ttl_seconds": -2,
+        "owner_fingerprint": None,
     }
