@@ -1898,6 +1898,12 @@ class BrandSchedulerManager:
         except Exception:
             pass
 
+        # Refresh dependencies on schedulers created before this container bind.
+        # Manual API triggers must share the same durable JobService and Redis lock client.
+        for scheduler in self._schedulers.values():
+            scheduler._job_service = self._job_service
+            scheduler._distributed_lock.redis = self._redis_client
+
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._event_loop = loop
         for scheduler in self._schedulers.values():
