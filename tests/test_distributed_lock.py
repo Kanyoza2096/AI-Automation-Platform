@@ -115,7 +115,11 @@ def test_lock_inspection_reads_upstash_existence_and_ttl_without_owner_token(mon
     result = client.inspect_distributed_lock("lock:brand:test:publish")
 
     assert result == {"exists": True, "ttl_seconds": 87}
-    assert calls == [("EVAL", client.inspect_distributed_lock.__code__.co_consts[1], "1", "lock:brand:test:publish")]
+    assert len(calls) == 1
+    assert calls[0][0] == "EVAL"
+    assert "GET" in calls[0][1]
+    assert "TTL" in calls[0][1]
+    assert calls[0][2:] == ("1", "lock:brand:test:publish")
     assert client._requests_used == 1
 
 
