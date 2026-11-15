@@ -733,13 +733,34 @@ class BrandScheduler:
         if not self._event_bus:
             return
 
+        # Scheduler events are tenant-scoped. Carry trusted identity from the
+        # scheduler's hydrated Brand, never a caller-supplied/default workspace.
+        workspace_id = str(getattr(self.brand, "workspace_id", "") or "").strip()
+        brand_id = str(getattr(self.brand, "id", "") or "").strip()
+        if not workspace_id or workspace_id.lower() in {"default", "unbound", "platform"} or not brand_id:
+            logger.error(
+                "[%s] Refusing scheduler event %s: concrete brand/workspace identity unavailable",
+                self.brand.name, event_name,
+            )
+            return
+        scoped_payload = dict(payload or {})
+        for key, trusted_value in (("workspace_id", workspace_id), ("brand_id", brand_id)):
+            supplied_value = scoped_payload.get(key)
+            if supplied_value not in (None, "", trusted_value):
+                logger.error(
+                    "[%s] Refusing scheduler event %s: %s scope mismatch",
+                    self.brand.name, event_name, key,
+                )
+                return
+            scoped_payload[key] = trusted_value
+
         try:
             if hasattr(self._event_bus, "publish_event"):
-                result = self._event_bus.publish_event(event_name, payload)
+                result = self._event_bus.publish_event(event_name, scoped_payload)
             elif hasattr(self._event_bus, "publish"):
-                result = self._event_bus.publish(event_name, payload)
+                result = self._event_bus.publish(event_name, scoped_payload)
             elif hasattr(self._event_bus, "emit"):
-                result = self._event_bus.emit(event_name, payload)
+                result = self._event_bus.emit(event_name, scoped_payload)
             else:
                 logger.warning(
                     "[%s] Event bus has no supported publish method for %s",
@@ -1329,6 +1350,25 @@ class BrandScheduler:
                 return None, None
             raise
 
+    def _build_workflow_context(self, **kwargs) -> dict:
+        """Bind every post workflow to its owning brand and concrete workspace."""
+        workspace_id = str(getattr(self.brand, "workspace_id", "") or "").strip()
+        brand_id = str(getattr(self.brand, "id", "") or "").strip()
+        if (
+            not workspace_id
+            or workspace_id.lower() in {"default", "unbound", "platform"}
+            or not brand_id
+        ):
+            raise ValueError(
+                "Post workflow requires a concrete brand and tenant workspace"
+            )
+        return {
+            **kwargs,
+            "brand": self.brand,
+            "brand_id": brand_id,
+            "workspace_id": workspace_id,
+        }
+
     def _execute_workflow(self, workflow, wf_kwargs: dict):
         """Run the workflow with an optional async history store.
 
@@ -1549,7 +1589,7 @@ class BrandScheduler:
                 brand=self.brand, ai_profile=self.ai_profile
             )
 
-            wf_kwargs = dict(
+            wf_kwargs = self._build_workflow_context(
                 job_id=job_id,
                 platform=getattr(self.brand, "platform", "facebook"),
                 source=source,
