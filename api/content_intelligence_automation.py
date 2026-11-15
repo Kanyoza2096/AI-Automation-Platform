@@ -155,8 +155,15 @@ async def update_automation_rule(
     _admin=Depends(require_workspace_admin),
 ):
     service = _business_automation_application(request)
+    # KCPG binds the path parameter from the same payload it forwards to the
+    # backend. Accept that redundant identity only when it exactly matches the
+    # route; never let a body-supplied ID override the authenticated path scope.
+    payload = dict(body)
+    supplied_rule_id = payload.pop("rule_id", None)
+    if supplied_rule_id is not None and str(supplied_rule_id) != str(rule_id):
+        raise HTTPException(403, "Rule ID in command body does not match the route")
     try:
-        rule = await service.update_rule(BusinessAutomationContext(ws), rule_id, body)
+        rule = await service.update_rule(BusinessAutomationContext(ws), rule_id, payload)
     except KeyError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
