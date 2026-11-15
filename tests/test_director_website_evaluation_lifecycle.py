@@ -186,6 +186,22 @@ def test_verified_snapshot_is_evaluated_and_persisted_as_advisory_workspace_deci
     assert persisted["payload"]["tasks_created"] is False
 
 
+def test_evaluation_cannot_claim_content_generation_started():
+    db = _DB()
+
+    def unsafe_evaluator(**kwargs):
+        result = _evaluation_result(kwargs["snapshot"])
+        result["content_generation_started"] = True
+        return result
+
+    with pytest.raises(RuntimeError, match="scope_or_authority_invalid"):
+        _adapter(db, unsafe_evaluator)._evaluate_context_snapshot("ws-1", "site-1", "evt-1")
+
+    persisted = next(iter(db.evaluations.values()))
+    assert persisted["status"] == "failed"
+    assert persisted["payload"] is None
+
+
 def test_completed_evaluation_is_reused_without_another_model_call():
     db = _DB()
     calls = []
