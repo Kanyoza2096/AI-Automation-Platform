@@ -191,3 +191,17 @@ def test_semantic_repair_cannot_reintroduce_prohibited_first_person_caption(monk
     }
     with pytest.raises(AIValidationError, match="KDO caption compliance gate"):
         asyncio.run(step.async_run(context))
+
+
+@pytest.mark.parametrize("caption", [
+    "We've seen this pattern in production and it changes the outcome.",
+    "We're building a system that solves this problem for every team.",
+    "I've tested this approach and the results are clear.",
+    "As a developer, this pattern deserves attention in every review.",
+])
+def test_caption_quality_gate_rejects_first_person_contractions_and_generic_openers(caption):
+    from services.content_engine import ContentEngine
+
+    ok, reason = ContentEngine._validate_caption_quality(caption)
+    assert ok is False
+    assert reason
