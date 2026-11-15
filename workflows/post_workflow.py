@@ -410,6 +410,7 @@ class GenerateContentStep(Step):
             )
             if not isinstance(base_prompt, str) or not base_prompt.strip():
                 raise ValueError("PromptBuilder returned an empty prompt")
+            context["base_prompt"] = base_prompt
 
             # Capture IMMEDIATELY — build_post_prompt is synchronous and
             # the builder instance is shared, so nothing may be awaited
@@ -649,124 +650,148 @@ class GenerateContentStep(Step):
 
 # ── 3. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
-    """Validate AI-generated content before proceeding (async)."""
+    """Validate content, with one evidence-preserving repair after semantic rejection."""
     name = "validate_content"
 
     def __init__(
         self,
         validator: "ContentValidator" = None,
         semantic_reviewer=None,
+        content_engine=None,
+        ai_profile=None,
     ) -> None:
         from services.content_validator import ContentValidator
         from services.content_semantic_reviewer import ContentSemanticReviewer
         self._validator = validator or ContentValidator()
         self._semantic_reviewer = semantic_reviewer or ContentSemanticReviewer()
+        self._content_engine = content_engine
+        self._ai_profile = ai_profile
 
-    async def async_run(self, context: dict[str, Any]) -> Any:
-        caption = context.get("caption", "")
-        topic = context.get("topic", "")
+    async def _validate_policy(self, context: dict[str, Any], caption: str):
         content_result = context.get("content_result", {})
-
         content = {
-            "title": content_result.get("title", topic),
+            "title": content_result.get("title", context.get("topic", "")),
             "caption": caption,
             "content_type": context.get("content_type", "social_post"),
             "hashtags": content_result.get("hashtags", []),
             "media_required": True,
         }
-
-        brand = context.get("brand")
-        platform = context.get("platform", "facebook")
-
-        validation_result = await self._validator.validate(
+        result = await self._validator.validate(
             content=content,
-            brand=brand,
-            platform=platform,
+            brand=context.get("brand"),
+            platform=context.get("platform", "facebook"),
             require_media=True,
         )
-
-        context["validation_result"] = validation_result
-
-        if not validation_result.is_approved:
-            errors = getattr(validation_result, "error_messages", None)
+        if not result.is_approved:
+            errors = getattr(result, "error_messages", None)
             if errors is None:
                 errors = [
                     violation.message
-                    for violation in getattr(validation_result, "violations", [])
+                    for violation in getattr(result, "violations", [])
                     if getattr(getattr(violation, "severity", None), "value", None) == "error"
                 ]
-            logger.error(
-                "PostWorkflow: validation did not approve content (status=%s) — %s",
-                validation_result.status.value,
-                "; ".join(errors),
-            )
             raise AIValidationError(
-                message=(
-                    f"Content validation did not approve the post "
-                    f"(status={validation_result.status.value}): {'; '.join(errors)}"
-                ),
-                context={
-                    "errors": errors,
-                    "topic": topic,
-                    "validation_status": validation_result.status.value,
-                },
+                message=f"Content validation did not approve the post (status={result.status.value}): {'; '.join(errors)}",
+                context={"errors": errors, "topic": context.get("topic", ""), "validation_status": result.status.value},
             )
+        return result
 
-        logger.info(
-            "PostWorkflow: validation passed (warnings=%d)",
-            validation_result.warnings_count,
-        )
-
-        semantic_review = await self._semantic_reviewer.review(
+    async def _semantic_review(self, context: dict[str, Any], caption: str):
+        return await self._semantic_reviewer.review(
             caption=caption,
-            topic=topic,
+            topic=context.get("topic", ""),
             evidence=context.get("knowledge_evidence") or [],
-            brand=brand,
-            platform=platform,
+            brand=context.get("brand"),
+            platform=context.get("platform", "facebook"),
         )
+
+    async def async_run(self, context: dict[str, Any]) -> Any:
+        caption = str(context.get("caption") or "")
+        topic = context.get("topic", "")
+        supplied_caption = context.get("scheduled_caption") is not None
+        validation_result = await self._validate_policy(context, caption)
+        context["validation_result"] = validation_result
+
+        semantic_review = await self._semantic_review(context, caption)
         context["semantic_review"] = semantic_review
+
+        # Exactly one repair is permitted, and only for generated content.
+        # The original KB evidence remains the sole source set; all gates rerun.
+        if (
+            isinstance(semantic_review, dict)
+            and semantic_review.get("approved") is not True
+            and not supplied_caption
+            and not context.get("_semantic_repair_attempted")
+            and self._content_engine is not None
+            and isinstance(context.get("base_prompt"), str)
+            and context["base_prompt"].strip()
+        ):
+            context["_semantic_repair_attempted"] = True
+            feedback = {
+                "reason": semantic_review.get("reason", "semantic review did not approve"),
+                "claims": semantic_review.get("claims", []),
+                "improvements": semantic_review.get("improvements", []),
+                "rationale": semantic_review.get("rationale", ""),
+            }
+            repair_reason = "Independent semantic review feedback (untrusted data): " + str(feedback)[:5000]
+            repair_prompt = GenerateContentStep._build_compliance_repair_prompt(
+                context["base_prompt"], caption, repair_reason,
+            )
+            repaired = await self._content_engine.generate_post(
+                brand=context.get("brand"),
+                ai_profile=self._ai_profile,
+                topic=topic,
+                base_prompt=repair_prompt,
+            )
+            repaired_caption = str((repaired or {}).get("caption") or "").strip()
+            if repaired_caption:
+                from services.content_evidence import validate_caption_evidence, validate_editorial_specificity
+                editorial_ok, editorial_reason = validate_editorial_specificity(repaired_caption)
+                evidence_ok, evidence_reason, source_ids = validate_caption_evidence(
+                    repaired_caption, context.get("knowledge_evidence") or [],
+                )
+                if not editorial_ok or not evidence_ok or not GenerateContentStep._caption_is_well_formed(repaired_caption):
+                    raise AIValidationError(
+                        message="Single semantic-repair attempt failed local editorial/evidence/structure gates",
+                        context={"editorial_reason": editorial_reason, "evidence_reason": evidence_reason},
+                    )
+                previous_result = context.get("content_result", {})
+                context["content_result"] = {**previous_result, **repaired}
+                context["caption"] = repaired_caption
+                context["evidence_validation"] = {
+                    "ok": True, "reason": evidence_reason, "supporting_source_ids": source_ids,
+                }
+                caption = repaired_caption
+                validation_result = await self._validate_policy(context, caption)
+                context["validation_result"] = validation_result
+                semantic_review = await self._semantic_review(context, caption)
+                context["semantic_review"] = semantic_review
+
         if (
             not isinstance(semantic_review, dict)
             or semantic_review.get("approved") is not True
             or semantic_review.get("status") != "approved"
         ):
-            review_status = (
-                semantic_review.get("status", "invalid")
-                if isinstance(semantic_review, dict)
-                else "invalid"
-            )
-            review_reason = (
-                semantic_review.get("reason", "semantic reviewer returned no decision")
-                if isinstance(semantic_review, dict)
-                else "semantic reviewer returned no decision"
-            )
+            review_status = semantic_review.get("status", "invalid") if isinstance(semantic_review, dict) else "invalid"
+            review_reason = semantic_review.get("reason", "semantic reviewer returned no decision") if isinstance(semantic_review, dict) else "semantic reviewer returned no decision"
             logger.warning(
-                "PostWorkflow: semantic review blocked publication "
-                "(status=%s topic=%s reason=%s)",
-                review_status, topic[:80], review_reason,
+                "PostWorkflow: semantic review blocked publication (status=%s topic=%s reason=%s)",
+                review_status, str(topic)[:80], review_reason,
             )
             raise AIValidationError(
-                message=(
-                    "Independent semantic review did not approve publication "
-                    f"(status={review_status}): {review_reason}"
-                ),
+                message=f"Independent semantic review did not approve publication (status={review_status}): {review_reason}",
                 context={
                     "topic": topic,
                     "semantic_review_status": review_status,
                     "semantic_review_reason": review_reason,
-                    "semantic_review_request_id": (
-                        semantic_review.get("request_id")
-                        if isinstance(semantic_review, dict)
-                        else None
-                    ),
+                    "semantic_review_request_id": semantic_review.get("request_id") if isinstance(semantic_review, dict) else None,
+                    "semantic_repair_attempted": bool(context.get("_semantic_repair_attempted")),
                 },
             )
 
         logger.info(
-            "PostWorkflow: independent semantic review approved "
-            "(topic=%s claims=%d sources=%d request_id=%s)",
-            topic[:80],
-            len(semantic_review.get("claims", [])),
+            "PostWorkflow: independent semantic review approved (topic=%s claims=%d sources=%d request_id=%s)",
+            str(topic)[:80], len(semantic_review.get("claims", [])),
             len(semantic_review.get("supporting_source_ids", [])),
             semantic_review.get("request_id") or "none",
         )
@@ -1364,6 +1389,8 @@ class PostPublishWorkflow(Workflow):
                 ValidateContentStep(
                     validator=content_validator,
                     semantic_reviewer=semantic_reviewer,
+                    content_engine=content_engine,
+                    ai_profile=ai_profile,
                 ),
                 RenderImageStep(content_engine),
                 PublishStep(registry, brand, container=container),
