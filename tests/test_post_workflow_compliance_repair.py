@@ -158,3 +158,36 @@ def test_caller_supplied_scheduled_caption_is_never_rewritten():
     with pytest.raises(Exception, match="Independent semantic review did not approve"):
         asyncio.run(step.async_run(context))
     assert engine.calls == 0
+
+
+def test_semantic_repair_cannot_reintroduce_prohibited_first_person_caption(monkeypatch):
+    import services.content_evidence as evidence
+    from workflows.post_workflow import ValidateContentStep
+    from core.errors import AIValidationError
+
+    monkeypatch.setattr(evidence, "validate_editorial_specificity", lambda caption: (True, "ok"))
+    monkeypatch.setattr(evidence, "validate_caption_evidence", lambda caption, sources: (True, "ok", ["kb-1"]))
+
+    class Reviewer:
+        def __init__(self): self.calls = 0
+        async def review(self, **kwargs):
+            self.calls += 1
+            return _semantic_decision(False) if self.calls == 1 else _semantic_decision(True)
+
+    class Engine:
+        async def generate_post(self, **kwargs):
+            return {"caption": "We built this system to solve the problem."}
+        def _validate_caption_quality(self, caption):
+            return (False, "first_person_violation: \\b(we)\\b")
+
+    step = ValidateContentStep(
+        validator=type("Validator", (), {"validate": _async_approved_policy_validator})(),
+        semantic_reviewer=Reviewer(), content_engine=Engine(),
+    )
+    context = {
+        "caption": "A factual caption with a material unsupported claim.",
+        "topic": "Testing", "brand": _brand(), "base_prompt": "Grounded prompt.",
+        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {}}],
+    }
+    with pytest.raises(AIValidationError, match="KDO caption compliance gate"):
+        asyncio.run(step.async_run(context))
