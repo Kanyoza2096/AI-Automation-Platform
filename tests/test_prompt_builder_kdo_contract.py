@@ -35,7 +35,7 @@ def test_custom_base_prompt_cannot_bypass_caption_contract():
 
 
 def test_custom_base_prompt_does_not_duplicate_caption_contract():
-    supplied = f"Custom task.\\n\\n{FINAL_KDO_CAPTION_CONTRACT}"
+    supplied = f"Custom task.\n\n{FINAL_KDO_CAPTION_CONTRACT}"
     prompt = ContentEngine()._build_prompt(
         brand=SimpleNamespace(id="brand-test", topic_axes=None),
         ai_profile=None,
