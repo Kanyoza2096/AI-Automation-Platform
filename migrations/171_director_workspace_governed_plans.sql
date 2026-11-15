@@ -128,6 +128,7 @@ BEGIN
     IF COALESCE(p_plan_id, '') = ''
        OR COALESCE(p_workspace_id, '') = ''
        OR COALESCE(p_actor_id, '') = ''
+       OR p_decision IS NULL
        OR p_decision NOT IN ('approve', 'reject') THEN
         RAISE EXCEPTION 'director_workspace_plan_decision_invalid';
     END IF;
