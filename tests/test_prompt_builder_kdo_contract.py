@@ -58,3 +58,18 @@ def test_custom_base_prompt_does_not_duplicate_contract():
     )
 
     assert prompt.count("FINAL KDO CAPTION COMPLIANCE CHECK") == 1
+
+def test_generated_prompt_explicitly_blocks_validator_rejected_openers():
+    brand = Brand.create_default("default")
+    profile = AIProfile.create_default("default")
+    prompt = PromptBuilder().build_post_prompt(
+        brand=brand,
+        ai_profile=profile,
+        topic="A grounded example topic",
+        structured=False,
+        platform="facebook",
+    )
+
+    assert '"As a ..."' in prompt
+    assert "FORBIDDEN OPENERS" in prompt
+    assert "specific, source-grounded observation" in prompt
