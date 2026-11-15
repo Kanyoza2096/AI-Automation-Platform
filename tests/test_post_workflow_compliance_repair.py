@@ -16,6 +16,19 @@ def test_compliance_repair_prompt_treats_prior_caption_as_untrusted_and_preserve
     assert "factual_evidence: unsupported empirical claim" in prompt
 
 
+async def _async_approved_policy_validator(self, **kwargs):
+    return _approved_policy_validator()
+
+
+def _approved_policy_validator():
+    return SimpleNamespace(
+        is_approved=True, is_rejected=False,
+        status=SimpleNamespace(value="approved"),
+        error_messages=[], warnings_count=0,
+        to_dict=lambda: {"status": "approved", "approved": True},
+    )
+
+
 def _semantic_decision(approved, reason="unsupported claim"):
     return {
         "approved": approved,
@@ -97,7 +110,7 @@ def test_second_semantic_rejection_still_blocks_after_one_repair(monkeypatch):
 
     engine = Engine()
     step = ValidateContentStep(
-        validator=type("Validator", (), {"validate": lambda self, **kwargs: _approved_policy_validator()})(),
+        validator=type("Validator", (), {"validate": _async_approved_policy_validator})(),
         semantic_reviewer=Reviewer(), content_engine=engine,
     )
     context = {
