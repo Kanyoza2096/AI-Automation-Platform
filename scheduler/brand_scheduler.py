@@ -908,6 +908,7 @@ class BrandScheduler:
 
         now_utc = datetime.now(timezone.utc)
         workspace_id = str(getattr(self.brand, "workspace_id", "") or "")
+
         def _queue_order(job):
             value = (
                 getattr(job, "scheduled_for", None)
@@ -925,12 +926,10 @@ class BrandScheduler:
 
         for job in candidates:
             try:
-                status = getattr(getattr(job, "status", None), "value", getattr(job, "status", None))
-                workflow_type = getattr(
-                    getattr(job, "workflow_type", None),
-                    "value",
-                    getattr(job, "workflow_type", None),
-                )
+                raw_status = getattr(job, "status", None)
+                status = getattr(raw_status, "value", raw_status)
+                raw_workflow_type = getattr(job, "workflow_type", None)
+                workflow_type = getattr(raw_workflow_type, "value", raw_workflow_type)
                 if status != JobStatus.QUEUED.value:
                     continue
                 if getattr(job, "brand_id", None) != self.brand.id:
