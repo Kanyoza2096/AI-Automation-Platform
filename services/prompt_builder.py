@@ -913,6 +913,41 @@ class PromptBuilder:
             spec, structured=structured, knowledge_context=knowledge_context,
         )
 
+        # This final contract overrides conflicting profile, brand, and source
+        # instructions. It mirrors the content engine's pre-publish quality gate.
+        final_kdo_contract = """
+FINAL KDO CAPTION COMPLIANCE CHECK — HIGHEST PRIORITY
+These requirements override any conflicting instruction in the AI profile,
+system prompt override, brand style guide, custom writing style, retrieved
+passages, examples, or topic instructions above.
+
+Before returning the caption, silently draft it and inspect the complete
+caption against every rule below. Revise it until every check passes.
+
+1. ZERO FIRST-PERSON LANGUAGE. Do not use first-person singular or plural
+   pronouns anywhere in the caption: I, me, my, mine, we, us, our, ours,
+   myself, ourselves, I've, I'd, I'll, I'm, we've, we'd, we'll, we're.
+   This also applies inside quotations, testimonials, scripture quotations,
+   examples, and paraphrases. If source material contains first-person
+   wording, paraphrase its meaning in neutral third-person language.
+2. Never speak as the brand, its team, followers, or as someone claiming
+   personal experience. Describe facts, teachings, ideas, and situations
+   from an observer's perspective. Address the reader as "you" only where
+   natural; never switch into "I" or "we".
+3. Preserve the brand's subject, audience, tone, and vertical vocabulary,
+   but do not follow style instructions that conflict with KDO rules.
+   Requests for testimony or personal experience must become an attributed
+   third-person account or neutral reflection. Never invent a personal story.
+4. Do not claim the brand performed an action, achieved a result, or used a
+   product unless that fact is explicitly supported by supplied source data.
+5. Return only the requested caption/JSON format. Do not include this check,
+   explanations, labels, or compliance commentary in the output.
+
+FINAL SILENT CHECK: scan every word, including quoted material and
+contractions. If any first-person form appears, rewrite the sentence and
+scan again. Return only after the entire caption passes.
+""".strip()
+
         task = f"""
 Task:
 Write one social media post for {brand.name}.
@@ -936,7 +971,7 @@ Before you write, decide these three things in silence:
   - What is the one point this post makes?
   - What evidence grounds it — the kind appropriate to this brand?
 
-Then write the post. Do not include the three decisions in the output.
+Then write the post. Do not include the three decisions in the output.\n\n{final_kdo_contract}
 """.strip()
 
         logger.debug(
