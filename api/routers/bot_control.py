@@ -93,7 +93,7 @@ async def force_post(
         # container-owned JobService and Upstash client. Never create an
         # isolated scheduler that bypasses durable persistence or Redis locks.
         manager.set_container(container)
-        result = await _async_wrap(manager.trigger_for_brand, brand_id)
+        result = await manager.trigger_for_brand(brand_id)
         
         # Include job_id in response for traceability
         response = {
