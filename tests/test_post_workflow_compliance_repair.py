@@ -72,6 +72,7 @@ def test_semantic_rejection_triggers_exactly_one_repair_and_rechecks(monkeypatch
 
     class Engine:
         def __init__(self): self.calls = 0
+        def _validate_caption_quality(self, caption): return True, "ok"
         async def generate_post(self, **kwargs):
             self.calls += 1
             assert "BOUNDED CAPTION COMPLIANCE REPAIR" in kwargs["base_prompt"]
@@ -112,6 +113,7 @@ def test_second_semantic_rejection_still_blocks_after_one_repair(monkeypatch):
 
     class Engine:
         def __init__(self): self.calls = 0
+        def _validate_caption_quality(self, caption): return True, "ok"
         async def generate_post(self, **kwargs):
             self.calls += 1
             return {"caption": "A revised factual caption remains unsupported."}
