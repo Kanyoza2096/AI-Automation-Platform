@@ -174,6 +174,48 @@ async def workflow_trigger(
         return _safe_err(exc, "POST /api/v1/workflow/trigger")
 
 
+@router.post("/workflow/jobs/{job_id}/cancel")
+async def cancel_pending_workflow_job(
+    job_id: str,
+    request: Request,
+    container=Depends(get_container),
+    _auth=Depends(require_workspace_operator),
+):
+    """Cancel a pending durable job owned by the authenticated workspace."""
+    try:
+        from services.job_service import JobService
+        from repositories.brand_repository import BrandRepository
+
+        workspace_id = await require_workspace(request)
+        job_service = await _async_wrap(container.resolve, JobService)
+        job = await _async_wrap(job_service.find_by_id, job_id)
+        if not job or getattr(job, "workspace_id", None) != workspace_id:
+            return _err("Job not found in the authenticated workspace", 404)
+
+        brand_repo = await _async_wrap(container.resolve, BrandRepository)
+        brand = await _async_wrap(brand_repo.find_by_id, job.brand_id)
+        if not brand or getattr(brand, "workspace_id", None) != workspace_id:
+            return _err("Job brand not found in the authenticated workspace", 404)
+
+        cancelled = await _async_wrap(
+            job_service.cancel_pending_job, job_id, workspace_id,
+        )
+        if cancelled is None:
+            return _err(
+                "Job is no longer pending; it may already be running or terminal.",
+                409,
+            )
+        return _ok({
+            "job_id": cancelled.job_id,
+            "brand_id": cancelled.brand_id,
+            "workspace_id": workspace_id,
+            "status": cancelled.status.value,
+            "cancelled_at": cancelled.completed_at.isoformat() if cancelled.completed_at else None,
+        })
+    except Exception as exc:
+        return _safe_err(exc, "POST /api/v1/workflow/jobs/{job_id}/cancel")
+
+
 @router.post("/workflow/{workflow_id}/cancel")
 async def cancel_workflow(
     workflow_id: str,

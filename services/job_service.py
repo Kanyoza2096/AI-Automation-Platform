@@ -197,6 +197,59 @@ class JobService:
     # Job Retrieval (ASYNC)
     # ═══════════════════════════════════════════════════════════════════
 
+    async def cancel_pending_job(
+        self, job_id: str, workspace_id: str,
+    ) -> Optional[AutomationJob]:
+        """Atomically cancel a job only while it is still pending.
+
+        The conditional status update is the concurrency boundary: a worker
+        that has already claimed the job wins, and this method returns None.
+        Running/publishing jobs are never reported as cancelled.
+        """
+        if not workspace_id:
+            raise ValueError("workspace_id is required")
+        client = self._require_client()
+        now = datetime.now(timezone.utc).isoformat()
+        pending_statuses = [
+            JobStatus.CREATED.value,
+            JobStatus.QUEUED.value,
+            JobStatus.RETRY_PENDING.value,
+        ]
+        update_data = {
+            "status": JobStatus.CANCELLED.value,
+            "updated_at": now,
+            "completed_at": now,
+        }
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: (
+                    client.table(self._table)
+                    .update(update_data)
+                    .eq("job_id", job_id)
+                    .eq("workspace_id", workspace_id)
+                    .in_("status", pending_statuses)
+                    .select("*")
+                    .execute()
+                ),
+            )
+            if not result.data:
+                return None
+            cancelled = AutomationJob(**result.data[0])
+            await self._emit("job.status_changed", {
+                "job_id": cancelled.job_id,
+                "workspace_id": cancelled.workspace_id,
+                "old_status": "PENDING",
+                "new_status": JobStatus.CANCELLED.value,
+                "brand_id": cancelled.brand_id,
+            })
+            return cancelled
+        except Exception as exc:
+            raise DatabaseQueryError(
+                message=f"Failed to cancel pending job: {job_id}", cause=exc,
+            )
+
     async def find_by_id(self, job_id: str) -> Optional[AutomationJob]:
         client = self._require_client()
         try:
