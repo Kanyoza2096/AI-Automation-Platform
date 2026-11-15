@@ -1,3 +1,8 @@
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
 from workflows.post_workflow import GenerateContentStep
 
 
@@ -14,6 +19,10 @@ def test_compliance_repair_prompt_treats_prior_caption_as_untrusted_and_preserve
     assert "Remove unsupported empirical, numerical, performance" in prompt
     assert "never invent facts, metrics, stories, citations, or source IDs" in prompt
     assert "factual_evidence: unsupported empirical claim" in prompt
+
+
+def _brand():
+    return SimpleNamespace(id='brand-test', name='Test Brand', workspace_id='workspace-test')
 
 
 async def _async_approved_policy_validator(self, **kwargs):
@@ -44,7 +53,6 @@ def _semantic_decision(approved, reason="unsupported claim"):
 
 def test_semantic_rejection_triggers_exactly_one_repair_and_rechecks(monkeypatch):
     import services.content_evidence as evidence
-    from types import SimpleNamespace
     from workflows.post_workflow import ValidateContentStep
 
     monkeypatch.setattr(evidence, "validate_editorial_specificity", lambda caption: (True, "ok"))
@@ -136,7 +144,7 @@ def test_caller_supplied_scheduled_caption_is_never_rewritten():
 
     engine = Engine()
     step = ValidateContentStep(
-        validator=type("Validator", (), {"validate": lambda self, **kwargs: _approved_policy_validator()})(),
+        validator=type("Validator", (), {"validate": _async_approved_policy_validator})(),
         semantic_reviewer=Reviewer(), content_engine=engine,
     )
     context = {
