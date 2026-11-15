@@ -253,6 +253,40 @@ class UpstashRedisClient:
             self._available = False
             return self._fallback_get(key)
 
+    def set_distributed(self, key: str, value: str, ex: Optional[int] = None, *, nx: bool = False) -> bool:
+        """Execute SET against Redis only; never use the in-memory fallback.
+
+        Intended for distributed locks and other coordination primitives where
+        a local fallback would create a false claim of cross-process ownership.
+        """
+        if not self.is_available:
+            raise RedisConnectionError("Redis unavailable; distributed SET refused")
+        if not self._check_budget():
+            raise RedisConnectionError("Redis request budget exhausted; distributed SET refused")
+
+        try:
+            self._requests_used += 1
+            if self.mode == "traditional" and self._redis_client:
+                result = self._redis_client.set(key, str(value), ex=ex, nx=nx)
+                return bool(result)
+
+            if self.mode == "upstash":
+                args = ["SET", key, str(value)]
+                if nx:
+                    args.append("NX")
+                if ex is not None:
+                    args += ["EX", ex]
+                result = self._cmd(*args)
+                return result.get("result") == "OK"
+
+            raise RedisConnectionError("Redis transport is not configured")
+        except RedisConnectionError:
+            self._available = False
+            raise
+        except Exception as exc:
+            self._available = False
+            raise RedisConnectionError(f"Distributed SET failed: {exc}") from exc
+
     def set(self, key: str, value: str, ex: Optional[int] = None, *, nx: bool = False) -> bool:
         if not self.is_available or not self._check_budget():
             return self._fallback_set(key, value, ex, nx=nx)

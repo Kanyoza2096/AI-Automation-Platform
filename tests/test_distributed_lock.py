@@ -30,3 +30,29 @@ def test_compare_and_delete_never_deletes_new_owner_in_memory():
     assert client.get("lock:x") == "owner-b"
     assert client.compare_and_delete("lock:x", "owner-b")
     assert client.get("lock:x") is None
+
+def test_distributed_set_refuses_in_memory_fallback_when_redis_disabled():
+    import pytest
+    from core.redis_client import RedisConnectionError
+
+    client = UpstashRedisClient(RedisConfig(enabled=False))
+    with pytest.raises(RedisConnectionError, match="Redis unavailable"):
+        client.set_distributed("lock:x", "owner", ex=60, nx=True)
+    assert client.get("lock:x") is None
+
+
+def test_distributed_lock_fails_closed_when_real_redis_write_fails():
+    class FailingRedis:
+        is_available = True
+
+        def set_distributed(self, *args, **kwargs):
+            raise RuntimeError("simulated Redis write failure")
+
+        def set(self, *args, **kwargs):
+            # A normal client fallback must not be used for distributed locks.
+            return True
+
+    lock = DistributedLock("x", FailingRedis(), allow_local_fallback=True)
+    assert not lock.acquire(require_distributed=True)
+    assert lock.mode == LockMode.UNAVAILABLE
+

@@ -87,9 +87,13 @@ async def force_post(
         if profile_workspace_id and str(profile_workspace_id) != workspace_id:
             return _err("Brand AI profile is not owned by the authenticated workspace", 404)
 
-        from scheduler.brand_scheduler import BrandScheduler
-        scheduler = BrandScheduler(brand=brand, ai_profile=ai_profile, container=container)
-        result = await _async_wrap(scheduler.trigger_manual)
+        from scheduler.brand_scheduler import BrandSchedulerManager
+        manager = await _async_wrap(container.resolve, BrandSchedulerManager)
+        # Ensure the manager and all existing brand schedulers use the live,
+        # container-owned JobService and Upstash client. Never create an
+        # isolated scheduler that bypasses durable persistence or Redis locks.
+        manager.set_container(container)
+        result = await manager.trigger_for_brand(brand_id)
         
         # Include job_id in response for traceability
         response = {
