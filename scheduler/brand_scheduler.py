@@ -898,6 +898,7 @@ class BrandScheduler:
                 self.brand.id,
                 JobStatus.QUEUED,
                 limit=limit,
+                oldest_first=True,
             )
         except Exception as exc:
             logger.error(
