@@ -908,13 +908,19 @@ class BrandScheduler:
 
         now_utc = datetime.now(timezone.utc)
         workspace_id = str(getattr(self.brand, "workspace_id", "") or "")
-        candidates = sorted(
-            queued_jobs or [],
-            key=lambda job: (
+        def _queue_order(job):
+            value = (
                 getattr(job, "scheduled_for", None)
-                or getattr(job, "created_at", now_utc)
-            ),
-        )
+                or getattr(job, "created_at", None)
+                or now_utc
+            )
+            if not isinstance(value, datetime):
+                return now_utc
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+
+        candidates = sorted(queued_jobs or [], key=_queue_order)
         accepted = 0
 
         for job in candidates:
