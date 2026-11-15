@@ -1,0 +1,115 @@
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+from models.automation_job import JobStatus, WorkflowType
+from scheduler.brand_scheduler import BrandScheduler
+
+
+class FakeJobService:
+    def __init__(self, jobs):
+        self.jobs = jobs
+        self.calls = []
+
+    def find_by_brand(self, brand_id, status=None, limit=50):
+        self.calls.append((brand_id, status, limit))
+        return self.jobs
+
+
+def make_job(**overrides):
+    now = datetime.now(timezone.utc)
+    values = {
+        "job_id": "pub_due_slot",
+        "brand_id": "brand-a",
+        "workspace_id": "workspace-a",
+        "status": JobStatus.QUEUED,
+        "workflow_type": WorkflowType.CONTENT_PUBLISH,
+        "source": "scheduled",
+        "scheduled_for": now - timedelta(hours=2),
+        "idempotency_key": "brand-a-2026-11-15-04-content",
+        "created_at": now - timedelta(hours=2),
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def make_scheduler(jobs):
+    brand = SimpleNamespace(
+        id="brand-a",
+        name="Brand A",
+        workspace_id="workspace-a",
+        timezone="UTC",
+        posting_schedule={},
+        status="active",
+    )
+    service = FakeJobService(jobs)
+    scheduler = BrandScheduler(
+        brand=brand,
+        ai_profile=SimpleNamespace(name="Test profile"),
+        container=object(),
+        job_service=service,
+    )
+    scheduler._trigger_workflow = Mock(return_value=True)
+    return scheduler, service
+
+
+def test_due_queued_scheduled_job_is_resumed_through_idempotent_slot():
+    job = make_job()
+    scheduler, service = make_scheduler([job])
+
+    accepted = scheduler._process_queued_automation_jobs()
+
+    assert accepted == 1
+    service.calls == [("brand-a", JobStatus.QUEUED, 50)]
+    scheduler._trigger_workflow.assert_called_once()
+    kwargs = scheduler._trigger_workflow.call_args.kwargs
+    assert kwargs["source"] == "queued_retry"
+    assert kwargs["today"].isoformat() == "2026-11-15"
+    assert kwargs["hour"] == 4
+
+
+def test_future_queued_job_is_not_started_early():
+    job = make_job(scheduled_for=datetime.now(timezone.utc) + timedelta(hours=1))
+    scheduler, _ = make_scheduler([job])
+
+    assert scheduler._process_queued_automation_jobs() == 0
+    scheduler._trigger_workflow.assert_not_called()
+
+
+def test_wrong_workspace_or_non_scheduled_jobs_are_not_consumed():
+    wrong_workspace = make_job(job_id="wrong_workspace", workspace_id="workspace-b")
+    manual = make_job(job_id="manual", source="manual")
+    wrong_type = make_job(job_id="news", workflow_type=WorkflowType.NEWS_PUBLISH)
+    scheduler, _ = make_scheduler([wrong_workspace, manual, wrong_type])
+
+    assert scheduler._process_queued_automation_jobs() == 0
+    scheduler._trigger_workflow.assert_not_called()
+
+
+def test_invalid_slot_key_is_ignored():
+    job = make_job(idempotency_key="brand-a-not-a-slot")
+    scheduler, _ = make_scheduler([job])
+
+    assert scheduler._process_queued_automation_jobs() == 0
+    scheduler._trigger_workflow.assert_not_called()
+
+
+def test_unaccepted_workflow_is_not_counted_as_resumed():
+    scheduler, _ = make_scheduler([make_job()])
+    scheduler._trigger_workflow.return_value = False
+
+    assert scheduler._process_queued_automation_jobs() == 0
+    scheduler._trigger_workflow.assert_called_once()
+
+
+def test_missing_job_service_is_a_noop():
+    brand = SimpleNamespace(
+        id="brand-a", name="Brand A", workspace_id="workspace-a",
+        timezone="UTC", posting_schedule={}, status="active",
+    )
+    scheduler = BrandScheduler(
+        brand=brand, ai_profile=SimpleNamespace(name="Test"),
+        container=object(), job_service=None,
+    )
+
+    assert scheduler._process_queued_automation_jobs() == 0
