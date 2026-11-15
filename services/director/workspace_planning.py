@@ -92,6 +92,7 @@ def _validate_evaluation(evaluation: Mapping[str, Any], workspace_id: str) -> di
         "constraints": _string_list(objective.get("constraints"), "constraints", 0, 12),
     }
     refs = _string_list(evaluation.get("evidence_refs"), "evidence_refs", 1, 2)
+    implications = _string_list(evaluation.get("business_implications"), "business_implications", 0, 8)
     if len(refs) != len(set(refs)):
         raise WorkspacePlanningError("evaluation_evidence_refs_not_unique")
     for key in ("evaluation_id", "integration_id", "event_id", "context_hash"):
@@ -101,7 +102,7 @@ def _validate_evaluation(evaluation: Mapping[str, Any], workspace_id: str) -> di
         or any(ch not in "0123456789abcdef" for ch in evaluation["context_hash"])
     ):
         raise WorkspacePlanningError("evaluation_context_hash_invalid")
-    return {**dict(evaluation), "recommended_objective": normalized, "evidence_refs": refs}
+    return {**dict(evaluation), "recommended_objective": normalized, "evidence_refs": refs, "business_implications": implications}
 
 
 def build_workspace_plan(evaluation: Mapping[str, Any], *, workspace_id: str,
@@ -250,3 +251,32 @@ def propose_workspace_plan(supabase: Any, *, workspace_id: str,
     if data is not True and data != [True]:
         raise WorkspacePlanningError("workspace_plan_persistence_not_confirmed")
     return plan
+
+
+def decide_workspace_plan(supabase: Any, *, workspace_id: str, plan_id: str,
+                          actor_id: str, decision: str, reason: str | None = None) -> bool:
+    """Record an independent human decision on a proposal, never execute it.
+
+    The caller must derive actor_id from its authenticated identity/session,
+    not from an untrusted request field. PostgreSQL enforces that the actor
+    differs from the original requester and that the proposal is workspace-scoped.
+    """
+    workspace_id = _text(workspace_id, "workspace_id", 128)
+    plan_id = _text(plan_id, "plan_id", 128)
+    actor_id = _text(actor_id, "actor_id", 256)
+    if decision not in {"approve", "reject"}:
+        raise WorkspacePlanningError("plan_decision_invalid")
+    response = supabase.rpc(
+        "decide_director_workspace_plan",
+        {
+            "p_plan_id": plan_id,
+            "p_workspace_id": workspace_id,
+            "p_actor_id": actor_id,
+            "p_decision": decision,
+            "p_reason": reason,
+        },
+    ).execute()
+    data = response.data
+    if data is not True and data != [True]:
+        raise WorkspacePlanningError("workspace_plan_decision_not_confirmed")
+    return True
