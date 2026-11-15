@@ -226,8 +226,14 @@ class JobService:
             return None
 
     async def find_by_brand(
-        self, brand_id: str, status: Optional[JobStatus] = None, limit: int = 50,
+        self,
+        brand_id: str,
+        status: Optional[JobStatus] = None,
+        limit: int = 50,
+        *,
+        oldest_first: bool = False,
     ) -> List[AutomationJob]:
+        """Find brand jobs, optionally prioritizing the oldest backlog entries."""
         client = self._require_client()
         try:
             loop = asyncio.get_event_loop()
@@ -235,7 +241,10 @@ class JobService:
             if status:
                 query = query.eq("status", status.value)
             result = await loop.run_in_executor(
-                None, lambda: query.order("created_at", desc=True).limit(limit).execute()
+                None,
+                lambda: query.order(
+                    "created_at", desc=not oldest_first
+                ).limit(limit).execute(),
             )
             return [AutomationJob(**row) for row in (result.data or [])]
         except Exception as e:
