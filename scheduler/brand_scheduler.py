@@ -723,17 +723,77 @@ class BrandScheduler:
         self._posts_failed = 0
 
     def _emit(self, event_name: str, payload: dict) -> None:
+        """Publish scheduler events without abandoning async bus coroutines.
+
+        BrandScheduler runs on a worker thread, while UnifiedEventBus is owned
+        by the application lifecycle loop. Awaitables must be submitted to that
+        loop; asyncio.run() here would create a second loop and violate bus
+        ownership.
+        """
         if not self._event_bus:
             return
+
         try:
             if hasattr(self._event_bus, "publish_event"):
-                self._event_bus.publish_event(event_name, payload)
+                result = self._event_bus.publish_event(event_name, payload)
             elif hasattr(self._event_bus, "publish"):
-                self._event_bus.publish(event_name, payload)
+                result = self._event_bus.publish(event_name, payload)
             elif hasattr(self._event_bus, "emit"):
-                self._event_bus.emit(event_name, payload)
+                result = self._event_bus.emit(event_name, payload)
+            else:
+                logger.warning(
+                    "[%s] Event bus has no supported publish method for %s",
+                    self.brand.name, event_name,
+                )
+                return
+
+            import inspect
+            if not inspect.isawaitable(result):
+                return
+
+            loop = self._event_loop
+            if loop is None or loop.is_closed() or not loop.is_running():
+                close = getattr(result, "close", None)
+                if close is not None:
+                    close()
+                logger.error(
+                    "[%s] Cannot dispatch scheduler event %s: owner event loop unavailable",
+                    self.brand.name, event_name,
+                )
+                return
+
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+
+            if running_loop is loop:
+                task = loop.create_task(result)
+                def _report_task_error(done_task):
+                    if done_task.cancelled():
+                        return
+                    try:
+                        done_task.result()
+                    except Exception:
+                        logger.exception(
+                            "[%s] Scheduler event publication failed: %s",
+                            self.brand.name, event_name,
+                        )
+                task.add_done_callback(_report_task_error)
+            else:
+                future = asyncio.run_coroutine_threadsafe(result, loop)
+                try:
+                    future.result(timeout=5.0)
+                except Exception:
+                    logger.exception(
+                        "[%s] Scheduler event publication failed: %s",
+                        self.brand.name, event_name,
+                    )
         except Exception:
-            pass
+            logger.exception(
+                "[%s] Scheduler event dispatch failed: %s",
+                self.brand.name, event_name,
+            )
 
     def _emit_dashboard(self, event_name: str, payload: dict) -> None:
         _emit_dashboard_event(event_name, payload, loop=self._event_loop)
