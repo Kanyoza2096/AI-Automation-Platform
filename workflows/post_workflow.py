@@ -549,6 +549,18 @@ class GenerateContentStep(Step):
                 },
             )
 
+        # Re-run the ContentEngine's deterministic KDO caption policy on the
+        # final candidate. This is essential after either bounded repair path:
+        # a repaired caption must not bypass first-person/opener/length checks.
+        compliance_validator = getattr(self._engine, "_validate_caption_quality", None)
+        if callable(compliance_validator):
+            compliance_ok, compliance_reason = compliance_validator(caption_to_check)
+            if not compliance_ok:
+                raise AIValidationError(
+                    message=f"KDO caption compliance gate rejected final caption: {compliance_reason}",
+                    context={"brand": self._brand.name, "topic": topic, "compliance_reason": compliance_reason},
+                )
+
         if not self._caption_is_well_formed(caption_to_check):
             logger.warning(
                 "PostWorkflow: rejecting malformed caption for brand='%s' "
@@ -750,6 +762,16 @@ class ValidateContentStep(Step):
                 evidence_ok, evidence_reason, source_ids = validate_caption_evidence(
                     repaired_caption, context.get("knowledge_evidence") or [],
                 )
+                compliance_validator = getattr(self._content_engine, "_validate_caption_quality", None)
+                if callable(compliance_validator):
+                    compliance_ok, compliance_reason = compliance_validator(repaired_caption)
+                else:
+                    compliance_ok, compliance_reason = True, "content engine compliance validator unavailable"
+                if not compliance_ok:
+                    raise AIValidationError(
+                        message="Single semantic-repair attempt failed KDO caption compliance gate",
+                        context={"compliance_reason": compliance_reason},
+                    )
                 if not editorial_ok or not evidence_ok or not GenerateContentStep._caption_is_well_formed(repaired_caption):
                     raise AIValidationError(
                         message="Single semantic-repair attempt failed local editorial/evidence/structure gates",
