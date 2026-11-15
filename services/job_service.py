@@ -76,11 +76,12 @@ class JobService:
                 # belong to the application loop that started the bus. Submit
                 # publication to that loop rather than awaiting its primitives
                 # from the scheduler's temporary loop.
-                if (
-                    bus_loop is not None
-                    and bus_loop is not current_loop
-                    and bus_loop.is_running()
-                ):
+                if bus_loop is not None and bus_loop is not current_loop:
+                    if not bus_loop.is_running():
+                        raise RuntimeError(
+                            "UnifiedEventBus owner loop is not running; "
+                            "refusing cross-loop publication"
+                        )
                     concurrent_future = asyncio.run_coroutine_threadsafe(
                         publish(event_name, payload), bus_loop
                     )
