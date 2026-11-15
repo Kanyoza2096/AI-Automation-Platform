@@ -155,7 +155,7 @@ async def workflow_trigger(
         if manager is None or not hasattr(manager, "trigger_for_brand"):
             return _err("Workspace scheduler is unavailable; manual trigger was not started", 503)
 
-        result = await _async_wrap(manager.trigger_for_brand, brand_id)
+        result = await manager.trigger_for_brand(brand_id)
 
         response = {
             "ok": result.get("ok", False),
