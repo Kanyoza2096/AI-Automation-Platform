@@ -1339,6 +1339,10 @@ class BrandScheduler:
         idempotency_key: Optional[str] = None
 
         try:
+            if not self._job_service:
+                raise RuntimeError(
+                    "Publishing requires durable JobService persistence; refusing to run"
+                )
             if today is not None and hour is not None:
                 workspace_id = getattr(self.brand, "workspace_id", "")
                 slot_date = today.isoformat()
