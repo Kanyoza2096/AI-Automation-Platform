@@ -267,7 +267,8 @@ class UpstashRedisClient:
         script = (
             "local v = redis.call('GET', KEYS[1]); "
             "local ttl = redis.call('TTL', KEYS[1]); "
-            "return {v and 1 or 0, ttl}"
+            "local fingerprint = v and redis.sha1hex(v) or ''; "
+            "return {v and 1 or 0, ttl, fingerprint}"
         )
         try:
             self._requests_used += 1
@@ -278,9 +279,14 @@ class UpstashRedisClient:
                 result = response.get("result")
             else:
                 raise RedisConnectionError("Redis transport is not configured")
-            if not isinstance(result, (list, tuple)) or len(result) != 2:
+            if not isinstance(result, (list, tuple)) or len(result) not in (2, 3):
                 raise RedisConnectionError("Unexpected Redis lock inspection response")
-            return {"exists": bool(int(result[0])), "ttl_seconds": int(result[1])}
+            fingerprint = str(result[2])[:12] if len(result) == 3 and result[2] else None
+            return {
+                "exists": bool(int(result[0])),
+                "ttl_seconds": int(result[1]),
+                "owner_fingerprint": fingerprint,
+            }
         except RedisConnectionError:
             self._available = False
             raise
