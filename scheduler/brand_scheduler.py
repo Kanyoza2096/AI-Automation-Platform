@@ -574,6 +574,26 @@ def retry_with_backoff(fn, max_retries: int = 2, base_delay: float = 1.0):
             time.sleep(delay)
 
 
+# Deterministic content/validation failures must not be retried unchanged.
+_DETERMINISTIC_WORKFLOW_FAILURE_CODES = {
+    "AI_VALIDATION_ERROR",
+    "content_validation_failed",
+    "editorial_quality_gate_rejected",
+}
+
+
+def _workflow_failure_is_retryable(failure_evidence: dict) -> bool:
+    """Keep deterministic validation rejections out of automatic retry loops."""
+    failed_steps = (failure_evidence or {}).get("failed_steps") or []
+    if not failed_steps:
+        return False
+    return not any(
+        str(step.get("error_code") or "").strip() in _DETERMINISTIC_WORKFLOW_FAILURE_CODES
+        for step in failed_steps
+        if isinstance(step, dict)
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # DASHBOARD EVENT EMITTER
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1548,17 +1568,15 @@ class BrandScheduler:
             else:
                 failed = [s.step_name for s in result.steps if not s.ok]
                 failure_evidence = result.failure_evidence()
-                # Persist the diagnostic envelope on the existing job result
-                # column. Do not persist generated captions or full workflow
-                # context; StepResult carries only bounded, allowlisted error
-                # context from governed application exceptions.
+                retryable = _workflow_failure_is_retryable(failure_evidence)
+                # Persist bounded diagnostics and retry only transient failures.
                 if automation_job and self._job_service:
                     try:
                         automation_job.result = failure_evidence
                         _job_call(
                             self._job_service, "mark_failed",
                             automation_job, error=f"Steps failed: {failed}",
-                            error_code="WORKFLOW_FAILED", retryable=True,
+                            error_code="WORKFLOW_FAILED", retryable=retryable,
                         )
                     except Exception as e:
                         logger.error(
@@ -1568,18 +1586,20 @@ class BrandScheduler:
                 self._posts_failed += 1
                 self._metrics.record_publish_failure(duration_ms)
 
-                self._dead_letter_queue.push(
-                    brand_id=self.brand.id,
-                    error=f"Steps failed: {failed}",
-                    payload={
-                        "source": source, "today": today, "hour": hour,
-                        "failure_evidence": failure_evidence,
-                    },
-                    workspace_id=getattr(self.brand, "workspace_id", None),
-                )
+                if retryable:
+                    self._dead_letter_queue.push(
+                        brand_id=self.brand.id,
+                        error=f"Steps failed: {failed}",
+                        payload={
+                            "source": source, "today": today, "hour": hour,
+                            "failure_evidence": failure_evidence,
+                        },
+                        workspace_id=getattr(self.brand, "workspace_id", None),
+                    )
 
+                retry_note = "queued for retry" if retryable else "terminal validation failure; retry suppressed"
                 logger.warning(
-                    "[%s] job=%s FAILED — steps=%s evidence=%s (queued for retry)",
+                    "[%s] job=%s FAILED — steps=%s evidence=%s (%s)",
                     self.brand.name,
                     job_id,
                     failed,
@@ -1591,6 +1611,7 @@ class BrandScheduler:
                         }
                         for item in failure_evidence["failed_steps"]
                     ],
+                    retry_note,
                 )
                 return False
 
@@ -1784,23 +1805,27 @@ class BrandScheduler:
                     "duration_ms": round(duration_ms), "job_id": job_id,
                 }
 
+            failure_evidence = result.failure_evidence()
+            retryable = _workflow_failure_is_retryable(failure_evidence)
             if automation_job and self._job_service:
                 try:
+                    automation_job.result = failure_evidence
                     _job_call(
                         self._job_service, "mark_failed",
-                        automation_job, error="Publish failed",
-                        error_code="PUBLISH_FAILED", retryable=True,
+                        automation_job, error="Publish workflow failed",
+                        error_code="WORKFLOW_FAILED", retryable=retryable,
                     )
-                except Exception:
-                    pass
+                except Exception as persist_error:
+                    logger.error("[%s] job=%s — manual failure persistence failed: %s", self.brand.name, job_id, persist_error)
 
             self._metrics.record_publish_failure(duration_ms)
-            self._dead_letter_queue.push(
-                brand_id=self.brand.id,
-                error="Publish step failed",
-                payload={"source": "manual"},
-                workspace_id=getattr(self.brand, "workspace_id", None),
-            )
+            if retryable:
+                self._dead_letter_queue.push(
+                    brand_id=self.brand.id,
+                    error="Publish workflow failed",
+                    payload={"source": "manual", "failure_evidence": failure_evidence},
+                    workspace_id=getattr(self.brand, "workspace_id", None),
+                )
 
             return {"ok": False, "error": "Publish step failed", "job_id": job_id}
 
