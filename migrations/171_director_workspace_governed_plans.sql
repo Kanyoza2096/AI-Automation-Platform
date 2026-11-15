@@ -66,8 +66,11 @@ BEGIN
        OR p_plan->>'content_generation_started' IS DISTINCT FROM 'false'
        OR p_plan->>'public_publishing_authorized' IS DISTINCT FROM 'false'
        OR p_plan->>'deployment_authorized' IS DISTINCT FROM 'false'
-       OR jsonb_typeof(p_plan->'steps') IS DISTINCT FROM 'array'
-       OR jsonb_array_length(p_plan->'steps') NOT BETWEEN 1 AND 12 THEN
+       OR CASE
+            WHEN jsonb_typeof(p_plan->'steps') = 'array'
+            THEN jsonb_array_length(p_plan->'steps') NOT BETWEEN 1 AND 12
+            ELSE TRUE
+          END THEN
         RAISE EXCEPTION 'director_workspace_plan_contract_invalid';
     END IF;
 
