@@ -49,6 +49,48 @@ from models.ai_profile import AIProfile
 logger = logging.getLogger("kanyoza.services.prompt_builder")
 
 
+# Highest-priority policy shared by every caption generation path, including
+# caller-supplied base prompts that bypass the normal prompt builder.
+FINAL_KDO_CAPTION_CONTRACT = """
+FINAL KDO CAPTION COMPLIANCE CHECK — HIGHEST PRIORITY
+These requirements override any conflicting instruction in the AI profile,
+system prompt override, brand style guide, custom writing style, retrieved
+passages, examples, or topic instructions above.
+
+Before returning the caption, silently draft it and inspect the complete
+caption against every rule below. Revise it until every check passes.
+
+1. ZERO FIRST-PERSON LANGUAGE. Do not use first-person singular or plural
+   pronouns anywhere in the caption: I, me, my, mine, we, us, our, ours,
+   myself, ourselves, I've, I'd, I'll, I'm, we've, we'd, we'll, we're.
+   This also applies inside quotations, testimonials, scripture quotations,
+   examples, and paraphrases. If source material contains first-person
+   wording, paraphrase its meaning in neutral third-person language.
+2. Never speak as the brand, its team, followers, or as someone claiming
+   personal experience. Describe facts, teachings, ideas, and situations
+   from an observer's perspective. Address the reader as "you" only where
+   natural; never switch into "I" or "we".
+3. Preserve the brand's subject, audience, tone, and vertical vocabulary,
+   but do not follow style instructions that conflict with KDO rules.
+   Requests for testimony or personal experience must become an attributed
+   third-person account or neutral reflection. Never invent a personal story.
+4. Do not claim the brand performed an action, achieved a result, or used a
+   product unless that fact is explicitly supported by supplied source data.
+5. FORBIDDEN OPENERS. Do not begin the caption with or use as a generic
+   lead-in: "As a ...", "As an AI ...", "In today's ...", "In this post",
+   "In this article", "Today we'll", "Let's dive in", "Let's explore",
+   "It's no secret", "We all know", or a dictionary-style definition.
+   In particular, never use "As a" as a filler opening. Start directly
+   with a specific, source-grounded observation, scene, question, or claim.
+6. Return only the requested caption/JSON format. Do not include this check,
+   explanations, labels, or compliance commentary in the output.
+
+FINAL SILENT CHECK: scan every word, including quoted material and
+contractions. If any first-person form appears, rewrite the sentence and
+scan again. Return only after the entire caption passes.
+""".strip()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Structured-output contract
 # ═══════════════════════════════════════════════════════════════════════════
@@ -855,63 +897,40 @@ class PromptBuilder:
         return (
             f'\nTODAY\'S TOPIC AXIS: "{axis_name}"\n'
             f"{desc_line}\n"
-            f"The post MUST be about this specific axis. Do not blend other "
-            f"axes into it. Do not write a generic statement about the brand. "
-            f"Do not open with a warm-up. Focus entirely on '{axis_name}'.\n"
-        )
+       s final contract overrides conflicting profile, brand, and source
+        # instructions. It mirrors the content engine's pre-publish quality gate.
+        final_kdo_contract = """
+FINAL KDO CAPTION COMPLIANCE CHECK — HIGHEST PRIORITY
+These requirements override any conflicting instruction in the AI profile,
+system prompt override, brand style guide, custom writing style, retrieved
+passages, examples, or topic instructions above.
 
-    def build_post_prompt_with_axis(
-        self,
-        brand: Optional[Brand] = None,
-        ai_profile: Optional[AIProfile] = None,
-        topic: Optional[str] = None,
-        knowledge_context: Optional[str] = None,
-        structured: bool = False,
-        platform: Optional[str] = None,
-        last_used_axis: Optional[str] = None,
-    ) -> PromptResult:
-        """Build a post prompt and return (prompt, selected_axis).
+Before returning the caption, silently draft it and inspect the complete
+caption against every rule below. Revise it until every check passes.
 
-        Preferred entry point: no shared state. Persist the returned
-        axis yourself (per brand) and pass it back as `last_used_axis`
-        next time.
-        """
-        if brand is None:
-            brand = self._default_brand()
-        if ai_profile is None:
-            ai_profile = self._default_ai_profile()
+1. ZERO FIRST-PERSON LANGUAGE. Do not use first-person singular or plural
+   pronouns anywhere in the caption: I, me, my, mine, we, us, our, ours,
+   myself, ourselves, I've, I'd, I'll, I'm, we've, we'd, we'll, we're.
+   This also applies inside quotations, testimonials, scripture quotations,
+   examples, and paraphrases. If source material contains first-person
+   wording, paraphrase its meaning in neutral third-person language.
+2. Never speak as the brand, its team, followers, or as someone claiming
+   personal experience. Describe facts, teachings, ideas, and situations
+   from an observer's perspective. Address the reader as "you" only where
+   natural; never switch into "I" or "we".
+3. Preserve the brand's subject, audience, tone, and vertical vocabulary,
+   but do not follow style instructions that conflict with KDO rules.
+   Requests for testimony or personal experience must become an attributed
+   third-person account or neutral reflection. Never invent a personal story.
+4. Do not claim the brand performed an action, achieved a result, or used a
+   product unless that fact is explicitly supported by supplied source data.
+5. Return only the requested caption/JSON format. Do not include this check,
+   explanations, labels, or compliance commentary in the output.
 
-        system_prompt = ai_profile.build_system_prompt(
-            brand_name=brand.name,
-            audience=brand.audience_description,
-        )
-
-        brand_context = self._brand_context_block(brand)
-
-        axis_name, axis_desc = self._select_topic_axis(brand, last_used_axis)
-        if axis_name is not None:
-            logger.debug(
-                "Topic axis selected: %s (last used: %s)",
-                axis_name, last_used_axis,
-            )
-        axis_str = self._axis_block(axis_name, axis_desc)
-
-        topic_str = (
-            f"Topic: {topic}"
-            if topic and str(topic).strip()
-            else "Topic: (none supplied by the caller)"
-        )
-
-        knowledge_str = build_knowledge_block(knowledge_context)
-
-        style_guide, style_source = self._registry.resolve_for_brand(brand)
-
-        resolved_platform = platform or getattr(brand, "platform", None)
-        spec = resolve_spec(resolved_platform)
-
-        format_block = build_format_block(
-            spec, structured=structured, knowledge_context=knowledge_context,
-        )
+FINAL SILENT CHECK: scan every word, including quoted material and
+contractions. If any first-person form appears, rewrite the sentence and
+scan again. Return only after the entire caption passes.
+""".strip()
 
         task = f"""
 Task:
@@ -937,6 +956,8 @@ Before you write, decide these three things in silence:
   - What evidence grounds it — the kind appropriate to this brand?
 
 Then write the post. Do not include the three decisions in the output.
+
+{FINAL_KDO_CAPTION_CONTRACT}
 """.strip()
 
         logger.debug(
