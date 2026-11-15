@@ -65,10 +65,30 @@ class JobService:
         if not self._event_bus:
             return
         try:
-            if hasattr(self._event_bus, "publish"):
-                result = self._event_bus.publish(event_name, payload)
-                if asyncio.iscoroutine(result):
-                    await result
+            publish = getattr(self._event_bus, "publish", None)
+            if callable(publish):
+                bus_loop = getattr(self._event_bus, "_loop", None)
+                current_loop = asyncio.get_running_loop()
+
+                # The brand scheduler's legacy sync bridge runs JobService in a
+                # worker thread with its own asyncio.run() loop. UnifiedEventBus
+                # queues, worker tasks, and persistence acknowledgement futures
+                # belong to the application loop that started the bus. Submit
+                # publication to that loop rather than awaiting its primitives
+                # from the scheduler's temporary loop.
+                if (
+                    bus_loop is not None
+                    and bus_loop is not current_loop
+                    and bus_loop.is_running()
+                ):
+                    concurrent_future = asyncio.run_coroutine_threadsafe(
+                        publish(event_name, payload), bus_loop
+                    )
+                    await asyncio.wrap_future(concurrent_future)
+                else:
+                    result = publish(event_name, payload)
+                    if asyncio.iscoroutine(result):
+                        await result
             elif hasattr(self._event_bus, "publish_event"):
                 self._event_bus.publish_event(event_name, payload)
         except Exception as exc:
