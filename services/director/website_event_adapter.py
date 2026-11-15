@@ -339,12 +339,12 @@ class DirectorWebsiteEventAdapter:
         ) if context_refreshed and self.website_evaluator else {"status": "not_run"}
 
         logger.info(
-            "Director recorded website event workspace=%s integration=%s type=%s context_refreshed=%s",
+            "Director recorded website event workspace=%s integration=%s type=%s context_refreshed=%s evaluation_status=%s",
             workspace_id,
             integration_id,
             event_type,
             context_refreshed,
-            evaluation_status=evaluation.get("status"),
+            evaluation.get("status"),
         )
         return {
             "accepted": True,
