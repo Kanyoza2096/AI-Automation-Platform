@@ -279,6 +279,11 @@ class Observation:
     workspace_id: Optional[str] = None
     scope_type: str = "platform"
 
+    def __post_init__(self) -> None:
+        if self.workspace_id and self.workspace_id.strip():
+            self.workspace_id = self.workspace_id.strip()
+            self.scope_type = "workspace"
+
 
 @dataclass
 class Task:
@@ -317,6 +322,11 @@ class Task:
     # Timestamp of the observation that justified this task; enables evidence-aware recurrence deduplication.
     evidence_observed_at: Optional[datetime] = None
     condition_fingerprint: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.workspace_id and self.workspace_id.strip():
+            self.workspace_id = self.workspace_id.strip()
+            self.scope_type = "workspace"
 
 
 @dataclass
