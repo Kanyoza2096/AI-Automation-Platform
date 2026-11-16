@@ -161,11 +161,27 @@ def _collaboration_run_status(consultations):
 
 
 
-async def _run_engine_collaboration(gateway, db, workspace_id, objective, engines):
-    """Run bounded read-only peer consultations, then ask Director to synthesize."""
+async def _persist_collaboration_progress(db, workspace_id, run_id, consultations, phase):
+    """Persist an incremental, workspace-scoped snapshot for live read-only observers."""
+    await _db_call(lambda: db.table("director_collaboration_runs").update({
+        "consultations": consultations,
+        "evidence_summary": {"phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()},
+    }).eq("id", run_id).eq("workspace_id", workspace_id).execute())
+
+
+async def _run_engine_collaboration(gateway, db, workspace_id, objective, engines, run_id):
+    """Run bounded read-only peer consultations and persist each live phase."""
     consultations = []
     for engine in engines:
+        consultation_started_at = datetime.now(timezone.utc).isoformat()
+        consultations.append({
+            "engine": engine, "status": "running", "phase": "loading_evidence",
+            "started_at": consultation_started_at,
+        })
+        await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
         evidence_context = await _load_engine_context(db, workspace_id, engine)
+        consultations[-1].update({"phase": "consulting", "sources": evidence_context["sources"], "observed_at": evidence_context["observed_at"]})
+        await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
         evidence_json = json.dumps(evidence_context, ensure_ascii=False, separators=(",", ":"))[:9000]
         consultation_prompt = (
             f"{_ENGINE_GUIDANCE[engine]}\\n\\n"
@@ -190,37 +206,49 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
                 caller="ai_chat",
             )
             if not result.ok:
-                consultations.append({
-                    "engine": engine, "status": "unavailable",
+                consultations[-1].update({
+                    "status": "unavailable", "phase": "unavailable",
                     "reason": "Consultation provider did not return a usable response",
                     "sources": evidence_context["sources"],
                     "observed_at": evidence_context["observed_at"],
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
                 })
+                await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
                 continue
-            consultations.append({
-                "engine": engine, "status": "completed",
+            consultations[-1].update({
+                "status": "completed", "phase": "completed",
                 "consultation": str(result.text or "")[:4500],
                 "provider": result.provider, "model": result.model,
                 "sources": evidence_context["sources"],
                 "observed_at": evidence_context["observed_at"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
             })
+            await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
         except Exception:
             logger.warning("Director collaboration consultation failed for %s", engine, exc_info=True)
-            consultations.append({
-                "engine": engine, "status": "unavailable",
+            consultations[-1].update({
+                "status": "unavailable", "phase": "unavailable",
                 "reason": "Consultation could not be completed",
                 "sources": evidence_context["sources"],
                 "observed_at": evidence_context["observed_at"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
             })
+            await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
 
     consultation_data = [{
         "engine": item["engine"],
         "status": item["status"],
         "consultation": item.get("consultation"),
         "reason": item.get("reason"),
+        "phase": item.get("phase"),
+        "started_at": item.get("started_at"),
+        "completed_at": item.get("completed_at"),
+        "provider": item.get("provider"),
+        "model": item.get("model"),
         "sources": item["sources"],
         "observed_at": item["observed_at"],
     } for item in consultations]
+    await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "synthesizing")
     synthesis_prompt = (
         f"{_ENGINE_GUIDANCE['director']}\\n\\n"
         "You are coordinating a bounded, read-only engine collaboration explicitly requested by the operator. "
@@ -458,7 +486,7 @@ async def ai_chat(
         }).execute())
         try:
             reply, result, collaboration_details = await _run_engine_collaboration(
-                gateway, db, workspace_id, collaboration_objective, collaboration_engines
+                gateway, db, workspace_id, collaboration_objective, collaboration_engines, collaboration_run_id
             )
         except Exception:
             try:
