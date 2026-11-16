@@ -3592,6 +3592,31 @@ class Director:
                 target_param=target_param,
             )
 
+        # Explicit contracts for bounded diagnostics and evidence collection.
+        # Mutating, proposal-backed, placeholder, and externally scoped
+        # capabilities remain without a contract until their full execution
+        # boundary is proven.
+        self.capabilities["run_health_scan"].parameter_schema = {
+            "type": "object", "properties": {}, "required": [], "additionalProperties": False,
+        }
+        self.capabilities["run_guardian_scan"].parameter_schema = {
+            "type": "object", "properties": {}, "required": [], "additionalProperties": False,
+        }
+        self.capabilities["self_diagnostic"].parameter_schema = {
+            "type": "object", "properties": {}, "required": [], "additionalProperties": False,
+        }
+        self.capabilities["calculate_brand_health"].parameter_schema = {
+            "type": "object",
+            "properties": {"brand_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+            "required": ["brand_id"],
+            "additionalProperties": False,
+        }
+        self.capabilities["review_content_quality"].parameter_schema = {
+            "type": "object",
+            "properties": {"brand_id": {"type": "string", "minLength": 1, "maxLength": 128}},
+            "required": ["brand_id"],
+            "additionalProperties": False,
+        }
         self.capabilities["restart_failed_service"] = Capability(
             name="restart_failed_service",
             sector=Sector.HEALTH,
