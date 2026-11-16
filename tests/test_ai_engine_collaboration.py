@@ -79,7 +79,7 @@ def test_collaboration_unavailable_consultation_is_not_a_negative_finding(monkey
 
     class FakeGateway:
         async def complete_async(self, prompt, **kwargs):
-            if kwargs["caller"] == "ai_chat":
+            if kwargs["max_tokens"] == 700:
                 return SimpleNamespace(ok=False, text="", provider=None, model=None)
             return SimpleNamespace(
                 ok=True, text="Synthesis notes unavailable consultation as unknown.",
