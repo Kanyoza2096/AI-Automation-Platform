@@ -62,6 +62,9 @@ from .analysis import (
 from .core import Director, auto_discover_engines
 log = logging.getLogger("kanyoza.director")
 
+class StrategicMissionAdmissionBody(BaseModel):
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    step_parameters: dict[str, dict] = Field(..., min_length=1, max_length=12)
 class StrategicObjectiveBody(BaseModel):
     objective_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     title: str = Field(..., min_length=1, max_length=200)
@@ -324,6 +327,33 @@ def create_app(director: Director):
             plan, max_age_seconds=max_age_seconds
         )
 
+    @app.post("/strategic-plans/{plan_id}/stage")
+    async def stage_strategic_mission(
+        plan_id: str,
+        body: StrategicMissionAdmissionBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Stage an operator-parameterized plan as workspace-owned approval tasks."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = _workspace_id(request)
+        if not workspace_id:
+            raise HTTPException(400, "A trusted workspace context is required")
+        try:
+            return await director.stage_strategic_mission(
+                plan_id=plan_id,
+                workspace_id=workspace_id,
+                idempotency_key=body.idempotency_key,
+                step_parameters=body.step_parameters,
+                actor=_trusted_actor(request),
+            )
+        except KeyError:
+            raise HTTPException(404, "Strategic plan not found")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        except RuntimeError as exc:
+            log.error("Director mission admission unavailable: %s", str(exc)[:200])
+            raise HTTPException(503, "Durable mission admission is unavailable")
     @app.get("/missions/graph")
     async def get_mission_graph(
         request: Request,

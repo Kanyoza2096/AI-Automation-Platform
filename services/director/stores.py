@@ -204,6 +204,39 @@ class AsyncSupabaseStore:
         )
         return result is not None
 
+    async def stage_mission_admission(
+        self, *, workspace_id: str, idempotency_key: str, plan_id: str,
+        mission_id: str, request_fingerprint: str, tasks: list[dict],
+    ) -> Optional[dict]:
+        """Atomically persist a staged mission and its idempotency receipt."""
+        result = await self._execute_with_retry(
+            "stage Director mission admission",
+            lambda: self.supabase.rpc("stage_director_mission", {
+                "p_workspace_id": workspace_id,
+                "p_idempotency_key": idempotency_key,
+                "p_plan_id": plan_id,
+                "p_mission_id": mission_id,
+                "p_request_fingerprint": request_fingerprint,
+                "p_tasks": tasks,
+            }).execute(),
+        )
+        if result is None:
+            return None
+        payload = result.data
+        if isinstance(payload, list) and payload:
+            payload = payload[0]
+        return payload if isinstance(payload, dict) else None
+
+    async def brand_belongs_to_workspace(self, brand_id: str, workspace_id: str) -> bool:
+        """Confirm a brand target is owned by the requesting workspace."""
+        result = await self._execute_with_retry(
+            "verify Director mission brand ownership",
+            lambda: self.supabase.table("brands")
+            .select("id").eq("id", brand_id)
+            .eq("workspace_id", workspace_id).limit(1).execute(),
+        )
+        return bool(result and result.data)
+
     async def get_task(self, task_id: str) -> Optional[dict]:
         result = await self._execute_with_retry(
             "get from director_tasks",

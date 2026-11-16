@@ -262,6 +262,8 @@ class Capability:
     # Closed JSON-Schema-compatible input contract required before mission staging.
     # None deliberately means the capability is not eligible for staging.
     parameter_schema: Optional[Dict[str, Any]] = None
+    # Explicit admission policy; only read-only review operations are enabled initially.
+    mission_staging_mode: str = "disabled"
 
 
 @dataclass

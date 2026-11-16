@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import hashlib
 import json
 import logging
 import os
@@ -1295,6 +1296,171 @@ class Director:
         if not 1 <= limit <= 100:
             raise ValueError("limit must be between 1 and 100")
         return await self.store.list_strategic_plans(limit=limit)
+
+    async def stage_strategic_mission(
+        self, *, plan_id: str, workspace_id: str, idempotency_key: str,
+        step_parameters: Dict[str, Dict[str, Any]], actor: str,
+    ) -> dict:
+        """Stage an operator-parameterized mission; never execute it."""
+        workspace_id = str(workspace_id or "").strip()
+        idempotency_key = str(idempotency_key or "").strip()
+        if not workspace_id or not idempotency_key or len(idempotency_key) > 128:
+            raise ValueError("workspace_and_bounded_idempotency_key_required")
+        if not isinstance(step_parameters, dict) or not step_parameters:
+            raise ValueError("step_parameters_required")
+
+        plan = await self.load_strategic_plan(plan_id)
+        if not isinstance(plan, dict):
+            raise KeyError("strategic_plan_not_found")
+        verification = await self.verify_strategic_plan(plan, max_age_seconds=300)
+        if verification.get("verdict") != "verified_for_governance_review":
+            raise ValueError("strategic_plan_requires_reverification:" + str(verification.get("verdict")))
+
+        steps = plan.get("steps")
+        if not isinstance(steps, list) or not 1 <= len(steps) <= 12:
+            raise ValueError("strategic_plan_step_count_invalid")
+        step_ids = [str(step.get("step_id") or "") for step in steps if isinstance(step, dict)]
+        if len(step_ids) != len(steps) or len(set(step_ids)) != len(step_ids):
+            raise ValueError("strategic_plan_step_ids_invalid")
+        if set(step_parameters) != set(step_ids):
+            raise ValueError("step_parameters_must_match_all_plan_steps")
+
+        catalog = self.capability_catalog()
+        for step in steps:
+            step_id = str(step["step_id"])
+            capability_name = str(step.get("capability") or "")
+            cap = self.capabilities.get(capability_name)
+            item = catalog.get(capability_name) or {}
+            if cap is None or not item.get("mission_staging_ready"):
+                raise ValueError("capability_not_mission_stageable:" + capability_name)
+            if not item.get("runtime_binding_confirmed"):
+                raise ValueError("capability_runtime_binding_unconfirmed:" + capability_name)
+            if item.get("binding_status") not in {"bound", "bound_governed_handoff"}:
+                raise ValueError("capability_binding_not_confirmed:" + capability_name)
+            if (
+                cap.risk != Risk.LOW
+                or cap.proposal_capable
+                or getattr(cap, "mission_staging_mode", "disabled") != "read_only_review"
+                or cap.target_param != "brand_id"
+            ):
+                raise ValueError("capability_risk_or_execution_path_not_allowed:" + capability_name)
+            params = step_parameters.get(step_id)
+            errors = self.validate_capability_parameters(cap.parameter_schema, params)
+            if errors:
+                raise ValueError("invalid_step_parameters:" + step_id + ":" + ",".join(errors))
+            brand_id = params.get("brand_id") if isinstance(params, dict) else None
+            if brand_id:
+                ownership_check = getattr(self.store, "brand_belongs_to_workspace", None)
+                if not callable(ownership_check):
+                    raise RuntimeError("durable_workspace_brand_validation_unavailable")
+                belongs = await ownership_check(str(brand_id), workspace_id)
+                if not belongs:
+                    raise ValueError("brand_not_found_in_workspace:" + step_id)
+
+        step_to_task = {
+            step_id: "dir_mis_" + hashlib.sha256(
+                (workspace_id + "|" + idempotency_key + "|" + step_id).encode("utf-8")
+            ).hexdigest()[:20]
+            for step_id in step_ids
+        }
+        mission_id = "mission_" + hashlib.sha256(
+            (workspace_id + "|" + idempotency_key).encode("utf-8")
+        ).hexdigest()[:20]
+        created_at = now()
+        try:
+            observed_at = datetime.fromisoformat(
+                str(plan.get("source_context_generated_at") or "").replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            observed_at = None
+
+        tasks: list[Task] = []
+        persisted_rows: list[dict] = []
+        for step in steps:
+            step_id = str(step["step_id"])
+            cap = self.capabilities[str(step["capability"])]
+            dependencies = [step_to_task[str(dep)] for dep in (step.get("depends_on") or [])]
+            task = Task(
+                id=step_to_task[step_id],
+                sector=cap.sector,
+                description=(str(step.get("objective") or step.get("target") or step_id)[:500]),
+                capability=cap.name,
+                authority=cap.authority,
+                risk=cap.risk,
+                params=dict(step_parameters[step_id]),
+                status=Status.APPROVAL,
+                created_at=created_at,
+                confidence=0.8,
+                reason=("Operator-staged from strategic plan " + str(plan_id) +
+                        "; " + str(step.get("rationale") or "Review plan evidence before approval"))[:1000],
+                sources=["strategic_plan:" + str(plan_id), "operator:" + str(actor or "operator")[:100]],
+                workspace_id=workspace_id,
+                depends_on=dependencies,
+                mission_id=mission_id,
+                success_criteria=list(step.get("acceptance_criteria") or []),
+                recovery_policy="require_review",
+                evidence_observed_at=observed_at,
+                condition_fingerprint=str(plan.get("source_context_fingerprint") or ""),
+            )
+            tasks.append(task)
+            persisted_rows.append({
+                "id": task.id,
+                "workspace_id": workspace_id,
+                "status": task.status.value,
+                "created_at": iso(task.created_at),
+                "payload": safe(asdict(task)),
+            })
+
+        request_fingerprint = hashlib.sha256(json.dumps({
+            "workspace_id": workspace_id,
+            "plan_id": plan_id,
+            "plan_fingerprint": plan.get("source_context_fingerprint"),
+            "step_parameters": step_parameters,
+            "task_ids": [task.id for task in tasks],
+        }, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+        persist = getattr(self.store, "stage_mission_admission", None)
+        if not callable(persist):
+            raise RuntimeError("durable_mission_admission_store_unavailable")
+        receipt = await persist(
+            workspace_id=workspace_id,
+            idempotency_key=idempotency_key,
+            plan_id=str(plan_id),
+            mission_id=mission_id,
+            request_fingerprint=request_fingerprint,
+            tasks=persisted_rows,
+        )
+        if not isinstance(receipt, dict):
+            raise RuntimeError("mission_admission_persistence_unavailable")
+        if receipt.get("error") == "mission_idempotency_conflict":
+            raise ValueError("mission_idempotency_conflict")
+        if receipt.get("mission_id") != mission_id or receipt.get("task_ids") != [task.id for task in tasks]:
+            raise RuntimeError("mission_admission_receipt_mismatch")
+
+        for task in tasks:
+            self.tasks[task.id] = task
+            _publish_event("task_created", {
+                "task_id": task.id,
+                "mission_id": mission_id,
+                "capability": task.capability,
+                "workspace_id": workspace_id,
+                "status": task.status.value,
+                "source": "strategic_plan_admission",
+            })
+
+        return {
+            "status": "staged_for_approval",
+            "plan_id": str(plan_id),
+            "mission_id": mission_id,
+            "workspace_id": workspace_id,
+            "task_ids": [task.id for task in tasks],
+            "tasks": [safe(asdict(task)) for task in tasks],
+            "replayed": bool(receipt.get("replayed")),
+            "staged_by": str(actor or "operator")[:100],
+            "authority": "none",
+            "execution_permitted": False,
+            "approval_required": True,
+            "governance_required": True,
+        }
 
     async def verify_strategic_plan(self, plan: dict, max_age_seconds: int = 300) -> dict:
         """Verify a stored advisory plan against freshly read Platform State and context."""
@@ -3529,8 +3695,12 @@ class Director:
                 "target_param": cap.target_param,
                 "parameter_schema": cap.parameter_schema,
                 "parameter_contract_bound": isinstance(cap.parameter_schema, dict),
+                "workspace_target_bound": bool(cap.target_param),
+                "mission_staging_mode": str(getattr(cap, "mission_staging_mode", "disabled")),
                 "mission_staging_ready": bool(
                     ready
+                    and getattr(cap, "mission_staging_mode", "disabled") == "read_only_review"
+                    and bool(cap.target_param)
                     and isinstance(cap.parameter_schema, dict)
                     and cap.parameter_schema.get("type") == "object"
                     and isinstance(cap.parameter_schema.get("properties"), dict)
@@ -3617,6 +3787,8 @@ class Director:
             "required": ["brand_id"],
             "additionalProperties": False,
         }
+        self.capabilities["calculate_brand_health"].mission_staging_mode = "read_only_review"
+        self.capabilities["review_content_quality"].mission_staging_mode = "read_only_review"
         self.capabilities["restart_failed_service"] = Capability(
             name="restart_failed_service",
             sector=Sector.HEALTH,
