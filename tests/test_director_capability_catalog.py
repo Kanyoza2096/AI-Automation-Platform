@@ -8,6 +8,8 @@ def test_capability_catalog_exposes_handler_and_governance_gaps():
     catalog = director.capability_catalog()
 
     schedule = catalog["update_brand_posting_schedule"]
+    assert schedule["definition_source"] == "built_in_registry"
+    assert schedule["catalog_type"] == "predefined"
     assert schedule["proposal_capable"] is True
     assert schedule["handler_bound"] is False
     assert schedule["governed_handoff_bound"] is False
@@ -167,3 +169,115 @@ async def test_direct_execute_allows_enabled_auto_capability_with_bound_handler(
     result = await director.execute_capability("run_health_scan", {"scope": "all"})
     assert result["ok"] is True
     assert calls == [{"scope": "all"}]
+
+
+def test_terminal_issue_task_is_not_recreated_for_same_observation():
+    from datetime import datetime, timezone
+    director = Director(supabase_client=None)
+    observed_at = datetime.now(timezone.utc)
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=observed_at,
+    )
+    first.status = Status.FAILED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=observed_at,
+    )
+
+    assert repeated.id == first.id
+    assert len(director.tasks) == 1
+
+
+def test_new_observation_can_create_a_new_task_for_recurring_condition():
+    from datetime import datetime, timezone, timedelta
+    director = Director(supabase_client=None)
+    first_observation = datetime.now(timezone.utc)
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=first_observation,
+    )
+    first.status = Status.FAILED
+
+    second = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=first_observation + timedelta(minutes=2),
+    )
+
+    assert second.id != first.id
+    assert len(director.tasks) == 2
+    assert second.evidence_observed_at > first.evidence_observed_at
+
+
+def test_terminal_task_without_evidence_has_short_repeat_cooldown():
+    from datetime import timedelta
+    director = Director(supabase_client=None)
+    first = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    first.status = Status.COMPLETED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    assert repeated.id == first.id
+
+    first.created_at = first.created_at - timedelta(minutes=16)
+    next_scan = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    assert next_scan.id != first.id
+
+
+def test_terminal_task_is_not_recreated_for_same_condition_across_fresh_observations():
+    from datetime import datetime, timezone, timedelta
+    director = Director(supabase_client=None)
+    params = {"service_name": "worker-a", "type": "failed_service"}
+    fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer")
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params=params, source="health-observer",
+        evidence_observed_at=datetime.now(timezone.utc),
+        condition_fingerprint=fingerprint,
+    )
+    first.status = Status.FAILED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params=params, source="health-observer",
+        evidence_observed_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+        condition_fingerprint=fingerprint,
+    )
+
+    assert repeated.id == first.id
+    assert len(director.tasks) == 1
+
+
+def test_new_condition_identity_can_create_a_distinct_task_after_terminal_outcome():
+    director = Director(supabase_client=None)
+    params = {"service_name": "worker-a", "type": "failed_service"}
+    first_fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer")
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "First observed failure", params=params, source="health-observer",
+        condition_fingerprint=first_fingerprint,
+    )
+    first.status = Status.FAILED
+
+    second_fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer:incident-2")
+    second = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "New incident", params=params, source="health-observer:incident-2",
+        condition_fingerprint=second_fingerprint,
+    )
+
+    assert second.id != first.id
+    assert len(director.tasks) == 2

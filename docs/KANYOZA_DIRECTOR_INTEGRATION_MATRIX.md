@@ -19,6 +19,15 @@
 | Durable task storage | `services/director/stores.py::AsyncSupabaseStore` and `InMemoryStore` | Supabase-backed and process-local stores share a method surface. | Need staging tests for schema, persistence across restart, DB errors, and concurrent updates. |
 | Learning | `services/director/analysis.py::LearningLoop`; `services/director/core.py` outcome paths | Learning signals and outcome statistics are tracked. | Demonstrate that only verified, provenance-backed outcomes become learning evidence. |
 
+
+## Capability catalogue semantics
+
+The current capability catalogue is a predefined, code-registered inventory (`definition_source=built_in_registry`, `catalog_type=predefined`). Runtime binding and readiness are reported separately; a bound handler is not proof that its dependencies or production outcome are verified. Engine observers and their signals can inform planning, but they do not dynamically add new executable capabilities. New capabilities require an explicit implementation, policy definition, handler binding, and verification contract.
+
+## Task recurrence and duplicate suppression
+
+Issue-derived and engine-signal tasks carry a stable condition fingerprint based on capability, normalized parameters, and evidence source. Active tasks continue to deduplicate by capability and parameters. Terminal tasks are reused when the same fingerprint reappears, even if the observer refreshes its timestamp; a distinct incident identity can create a new task. Proposal tasks remain separate by design. Tasks without condition evidence use a short 15-minute terminal-task cooldown. This is duplicate suppression, not autonomous retry: failed or ambiguous executions still require reconciliation and normal approval/idempotency gates.
+
 ## Registered observation targets
 
 `ENGINE_REGISTRY` names runtime-owned targets for content, rendering, conditions, email, engagement, Guardian, Meta Engine, AI Orchestrator, the canonical `brand_scheduler`, job stats, plugin registry, event bus, render queue, image generation, prompt building, and health monitoring. Brand-scoped topic selection is an internal content-workflow component, not a platform singleton or independent Director observation target; its operational evidence belongs to the content workflow. Registration means an observer is attempted; it does not prove health or decision integration. Function/class exports and singleton symbols need per-target contract checks.
