@@ -567,6 +567,9 @@ class GenerateContentStep(Step):
                 repair_prompt = self._build_compliance_repair_prompt(
                     base_prompt, candidate_caption, repair_reason,
                 )
+                context["prompt_sha256"] = hashlib.sha256(
+                    repair_prompt.encode("utf-8")
+                ).hexdigest()
                 repaired_result = await self._engine.generate_post(
                     brand=self._brand,
                     ai_profile=self._ai_profile,
@@ -823,6 +826,9 @@ class ValidateContentStep(Step):
             repair_prompt = GenerateContentStep._build_compliance_repair_prompt(
                 context["base_prompt"], caption, repair_reason,
             )
+            context["prompt_sha256"] = hashlib.sha256(
+                repair_prompt.encode("utf-8")
+            ).hexdigest()
             repaired = await self._content_engine.generate_post(
                 brand=context.get("brand"),
                 ai_profile=self._ai_profile,
@@ -1073,6 +1079,7 @@ class PublishStep(Step):
             risk_level=risk_level, decision_id=decision_id, approved=True,
             automation_job_id=job_id, source=source, image_url=media_url,
             image_bytes=image_bytes, scheduled_post_id=context.get("scheduled_post_id"),
+            correlation_id=context.get("correlation_id"),
             idempotency_key=(
                 f"scheduled:{context.get('scheduled_post_id')}"
                 if context.get("scheduled_post_id") else None
