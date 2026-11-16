@@ -165,6 +165,12 @@ def test_llm_adapter_uses_structured_director_gateway_and_redacts_execution_payl
     assert kwargs["caller"] == "director"
     assert kwargs["workspace_id"] == "platform"
     assert kwargs["required_keys"] == ["summary", "steps"]
+    assert kwargs["response_schema"]["type"] == "object"
+    assert kwargs["response_schema"]["properties"]["steps"]["items"]["required"] == [
+        "step_id", "capability", "sector", "objective", "target",
+        "verification_method", "depends_on", "acceptance_criteria",
+        "deliverables", "rationale", "criterion_refs", "evidence_refs",
+    ]
     assert kwargs["temperature"] == 0.1
     assert kwargs["max_tokens"] == 4096
     assert "do-not-send-this-secret" not in prompt
