@@ -198,7 +198,11 @@ class AsyncSupabaseStore:
             lambda: self.supabase.table("director_tasks").upsert({
                 "id": task.id,
                 "workspace_id": str(task.workspace_id).strip() if task.workspace_id else None,
-                "scope_type": "workspace" if task.workspace_id else "platform",
+                "scope_type": (
+                    "workspace" if task.workspace_id
+                    else task.scope_type if task.scope_type in {"platform", "legacy_unclassified"}
+                    else "platform"
+                ),
                 "payload": json.dumps(safe(asdict(task))),
                 "created_at": iso(task.created_at),
                 "status": task.status.value,
@@ -247,11 +251,24 @@ class AsyncSupabaseStore:
         )
         return dict(result.data[0]) if result and result.data else None
 
-    async def list_tasks(self, limit: int = 200) -> List[dict]:
+    async def list_tasks(
+        self, limit: int = 200, *, workspace_id: Optional[str] = None,
+        scope_type: str = "platform",
+    ) -> List[dict]:
+        """List one ownership scope only; never mix tenant and platform tasks."""
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            raise ValueError("invalid Director task scope")
+        if scope_type == "workspace" and not (workspace_id and workspace_id.strip()):
+            raise ValueError("workspace_id is required for workspace task reads")
+        query = self.supabase.table("director_tasks").select("*")
+        query = query.eq("scope_type", scope_type)
+        if scope_type == "workspace":
+            query = query.eq("workspace_id", workspace_id.strip())
+        elif workspace_id is not None:
+            raise ValueError("workspace_id cannot be combined with a non-workspace scope")
         result = await self._execute_with_retry(
-            "list from director_tasks",
-            lambda: self.supabase.table("director_tasks")
-            .select("*").order("created_at", desc=True).limit(limit).execute(),
+            "list Director tasks by ownership scope",
+            lambda: query.order("created_at", desc=True).limit(limit).execute(),
         )
         return [dict(row) for row in (result.data or [])] if result else []
 
@@ -361,8 +378,12 @@ class AsyncSupabaseStore:
         await self._execute_with_retry(
             "insert into director_observations",
             lambda: self.supabase.table("director_observations").insert({
-                "workspace_id": None,
-                "scope_type": "platform",
+                "workspace_id": str(observation.workspace_id).strip() if observation.workspace_id else None,
+                "scope_type": (
+                    "workspace" if observation.workspace_id
+                    else observation.scope_type if observation.scope_type in {"platform", "legacy_unclassified"}
+                    else "platform"
+                ),
                 "payload": json.dumps(safe(asdict(observation))),
                 "timestamp": iso(observation.timestamp),
             }).execute(),
@@ -505,8 +526,23 @@ class InMemoryStore:
     async def get_task(self, task_id: str) -> Optional[dict]:
         return self.tasks.get(task_id)
 
-    async def list_tasks(self) -> List[dict]:
-        return list(self.tasks.values())
+    async def list_tasks(
+        self, limit: int = 200, *, workspace_id: Optional[str] = None,
+        scope_type: str = "platform",
+    ) -> List[dict]:
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            raise ValueError("invalid Director task scope")
+        if scope_type == "workspace" and not (workspace_id and workspace_id.strip()):
+            raise ValueError("workspace_id is required for workspace task reads")
+        rows = []
+        for row in self.tasks.values():
+            row_scope = row.get("scope_type", "platform")
+            if row_scope != scope_type:
+                continue
+            if scope_type == "workspace" and row.get("workspace_id") != workspace_id.strip():
+                continue
+            rows.append(row)
+        return rows[-limit:]
 
     async def save_decision(self, decision: Decision) -> None:
         self.decisions.append(safe(asdict(decision)))
