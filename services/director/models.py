@@ -278,6 +278,9 @@ class Observation:
     # Observer evidence is platform-wide unless an explicit workspace is supplied.
     workspace_id: Optional[str] = None
     scope_type: str = "platform"
+    contract_version: str = "kdo.observer.v1"
+    health_contract: str = "direct_observation"
+    timestamp_valid: bool = True
 
     def __post_init__(self) -> None:
         if self.workspace_id and self.workspace_id.strip():
