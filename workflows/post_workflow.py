@@ -127,6 +127,69 @@ logger = logging.getLogger(__name__)
 # rejected as truncated.
 _TRAILING_HASHTAGS_RE = re.compile(r"(?:\s*#\w+)+$")
 
+def _build_publish_audit_metadata(
+    context: dict[str, Any],
+    *,
+    decision_id: str | None,
+) -> dict[str, Any]:
+    """Build a JSON-safe, content-minimizing audit envelope for a published post."""
+    content_result = context.get("content_result")
+    if not isinstance(content_result, dict):
+        content_result = {}
+    validation_result = context.get("validation_result")
+    semantic_review = context.get("semantic_review")
+    if not isinstance(semantic_review, dict):
+        semantic_review = {}
+    evidence_validation = context.get("evidence_validation")
+    if not isinstance(evidence_validation, dict):
+        evidence_validation = {}
+    publish_result = context.get("publish_result")
+    if not isinstance(publish_result, dict):
+        publish_result = {}
+
+    validation_status = getattr(validation_result, "status", None)
+    validation_status = getattr(validation_status, "value", validation_status)
+
+    evidence_ids = []
+    for item in context.get("knowledge_evidence") or []:
+        if isinstance(item, dict) and item.get("source_id") is not None:
+            evidence_ids.append(str(item["source_id"]))
+
+    return {
+        "trace_schema_version": 1,
+        "correlation_id": context.get("correlation_id"),
+        "automation_job_id": context.get("job_id"),
+        "scheduled_post_id": context.get("scheduled_post_id"),
+        "source": context.get("source"),
+        "decision_id": decision_id,
+        "prompt_policy_version": context.get("prompt_policy_version"),
+        "prompt_sha256": context.get("prompt_sha256"),
+        "provider": content_result.get("provider"),
+        "model": content_result.get("model"),
+        "evidence_source_ids": evidence_ids,
+        "evidence_validation": {
+            "ok": evidence_validation.get("ok") is True,
+            "supporting_source_ids": evidence_validation.get("supporting_source_ids") or [],
+        },
+        "policy_validation": {
+            "approved": bool(getattr(validation_result, "is_approved", False)),
+            "status": validation_status,
+        },
+        "semantic_review": {
+            "approved": semantic_review.get("approved") is True,
+            "status": semantic_review.get("status"),
+            "request_id": semantic_review.get("request_id"),
+            "provider": semantic_review.get("provider"),
+            "model": semantic_review.get("model"),
+            "supporting_source_ids": semantic_review.get("supporting_source_ids") or [],
+        },
+        "publish_action": {
+            "intent_id": publish_result.get("action_intent_id"),
+            "execution_id": publish_result.get("action_execution_id"),
+        },
+    }
+
+
 
 # ── 1. Select Topic ───────────────────────────────────────────────────
 class SelectTopicStep(Step):
@@ -1245,48 +1308,11 @@ class PublishStep(Step):
         topic = context.get("topic", "") or "Untitled post"
         category = context.get("category") or "general"
 
-        content_result = context.get("content_result") or {}
-        validation_result = context.get("validation_result")
-        semantic_review = context.get("semantic_review") or {}
-        evidence_validation = context.get("evidence_validation") or {}
-        # Audit metadata is deliberately metadata-only: no prompt, caption,
-        # retrieved passage text, model reasoning, or credentials are stored.
-        audit_metadata = {
-            "trace_schema_version": 1,
-            "correlation_id": context.get("correlation_id"),
-            "automation_job_id": context.get("job_id"),
-            "scheduled_post_id": context.get("scheduled_post_id"),
-            "source": context.get("source"),
-            "prompt_policy_version": context.get("prompt_policy_version"),
-            "prompt_sha256": context.get("prompt_sha256"),
-            "provider": content_result.get("provider"),
-            "model": content_result.get("model"),
-            "evidence_source_ids": [
-                str(item.get("source_id"))
-                for item in (context.get("knowledge_evidence") or [])
-                if isinstance(item, dict) and item.get("source_id")
-            ],
-            "evidence_validation": {
-                "ok": evidence_validation.get("ok") is True,
-                "supporting_source_ids": evidence_validation.get("supporting_source_ids") or [],
-            },
-            "policy_validation": {
-                "approved": bool(getattr(validation_result, "is_approved", False)),
-                "status": getattr(getattr(validation_result, "status", None), "value", None),
-            },
-            "semantic_review": {
-                "approved": semantic_review.get("approved") is True,
-                "status": semantic_review.get("status"),
-                "request_id": semantic_review.get("request_id"),
-                "provider": semantic_review.get("provider"),
-                "model": semantic_review.get("model"),
-                "supporting_source_ids": semantic_review.get("supporting_source_ids") or [],
-            },
-            "publish_action": {
-                "intent_id": (context.get("publish_result") or {}).get("action_intent_id"),
-                "execution_id": (context.get("publish_result") or {}).get("action_execution_id"),
-            },
-        }
+        # Metadata contains identifiers and decisions only; never store the prompt,
+        # caption, retrieved passage text, model reasoning, or credentials.
+        audit_metadata = _build_publish_audit_metadata(
+            context, decision_id=decision_id,
+        )
 
         row = {
             "id": ph_id,
