@@ -104,7 +104,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     summary, raw_steps = generated.get("summary"), generated.get("steps")
     if not isinstance(summary, str) or not summary.strip():
         raise StrategicPlanningError("plan_summary_required")
-    if not isinstance(raw_steps, (list, tuple)) or not 1 <= len(raw_steps) <= 12:
+    if not isinstance(raw_steps, (list, tuple)) or not 2 <= len(raw_steps) <= 6:
         raise StrategicPlanningError("plan_step_count_invalid")
 
     allowed = {"step_id", "capability", "sector", "objective", "target",
