@@ -303,6 +303,7 @@ class Task:
     mission_priority: float = 50.0
     # Timestamp of the observation that justified this task; enables evidence-aware recurrence deduplication.
     evidence_observed_at: Optional[datetime] = None
+    condition_fingerprint: Optional[str] = None
 
 
 @dataclass
