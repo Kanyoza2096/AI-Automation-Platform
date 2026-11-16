@@ -156,16 +156,20 @@ class GeminiAIAdapter:
         generation_config: dict[str, Any] = {}
         if isinstance(max_output_tokens, int) and max_output_tokens > 0:
             generation_config["maxOutputTokens"] = max_output_tokens
+        # Model-specific reasoning budgets keep the accuracy/throughput tiers
+        # intentional. These hints do not replace downstream JSON validation.
+        normalized_model = selected_model.lower()
         if structured:
             generation_config["responseMimeType"] = "application/json"
-            if isinstance(response_schema, dict) and response_schema:
+            if (
+                normalized_model == "gemini-4-hydrogen"
+                and isinstance(response_schema, dict)
+                and response_schema
+            ):
                 # Gemini REST generateContent uses responseSchema (camelCase).
                 # The caller owns the schema; never infer one from prose.
                 generation_config["responseSchema"] = response_schema
 
-        # Model-specific reasoning budgets keep the accuracy/throughput tiers
-        # intentional. These hints do not replace downstream JSON validation.
-        normalized_model = selected_model.lower()
         if normalized_model == "gemini-4-hydrogen":
             generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
         elif normalized_model.startswith("gemma-4-"):
