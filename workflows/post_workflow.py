@@ -528,6 +528,13 @@ class GenerateContentStep(Step):
 
         supplied_caption = context.get("scheduled_caption")
 
+        # A failed ContentEngine result must never be reclassified as an
+        # editorial/evidence failure. In particular, an empty gateway response
+        # currently reaches validate_caption_evidence() and is misleadingly
+        # reported as "caption is empty". Keep the original generation reason.
+        # A non-empty caption_quality failure remains eligible for the single
+        # bounded repair below; all other non-publishable results fail closed.
+
         # A single repair is allowed only for generated captions. Never rewrite
         # a caller-supplied scheduled caption, and never loop on a failed repair.
         if supplied_caption is None:
@@ -589,6 +596,65 @@ class GenerateContentStep(Step):
             if supplied_caption is not None
             else str(result.get("caption", ""))
         )
+
+        if not caption_to_check.strip():
+            generation_error = str(result.get("error") or "").strip()
+            generation_code = str(result.get("error_code") or "EMPTY_GENERATION")
+            message = (
+                f"Content generation returned an empty caption "
+                f"(code={generation_code})"
+            )
+            if generation_error:
+                message += f": {generation_error}"
+            if supplied_caption is None:
+                # Unknown/empty provider output is treated as transient so the
+                # scheduler can apply its bounded retry/DLQ policy. It is not a
+                # content-policy rejection and must not be labelled AI_VALIDATION_ERROR.
+                raise StepFailure(
+                    message=message,
+                    code="ai_generation_unavailable",
+                    detail={
+                        "brand_id": getattr(self._brand, "id", None),
+                        "topic": topic,
+                        "reason": generation_error or "empty_generated_caption",
+                        "generation_error_code": generation_code,
+                        "caption_len": 0,
+                    },
+                )
+            raise AIValidationError(
+                message=message,
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "generation_error_code": generation_code,
+                    "caption_len": 0,
+                    "publishable": result.get("publishable"),
+                },
+            )
+
+        # Do not run editorial/evidence validation on a result whose media
+        # pipeline has already declared it non-publishable. Caption-quality
+        # failures with a non-empty draft may use the bounded repair above;
+        # failed image rendering or gateway failures may not.
+        if result.get("publishable") is False:
+            generation_error = str(result.get("error") or result.get("degraded_reason") or "").strip()
+            generation_code = str(result.get("error_code") or "CONTENT_NOT_PUBLISHABLE")
+            raise AIValidationError(
+                message=(
+                    f"ContentEngine returned a non-publishable result "
+                    f"(code={generation_code})"
+                    + (f": {generation_error}" if generation_error else "")
+                ),
+                context={
+                    "brand": self._brand.name,
+                    "topic": topic,
+                    "generation_error_code": generation_code,
+                    "caption_len": len(caption_to_check),
+                    "publishable": False,
+                    "media_status": result.get("media_status"),
+                },
+            )
+
         from services.content_evidence import (
             validate_caption_evidence,
             validate_editorial_specificity,

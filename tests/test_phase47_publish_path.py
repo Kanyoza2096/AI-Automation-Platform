@@ -91,3 +91,40 @@ def test_public_post_and_workflow_enter_governed_publish_boundary():
     assert "run_publish(" in api
     assert "execute_governed_publish(" in workflow
     assert "run_publish(" not in workflow
+
+
+def test_empty_generation_fails_before_editorial_and_evidence_validation():
+    from pathlib import Path
+
+    source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
+    empty_guard = source.index("if not caption_to_check.strip():")
+    evidence_gate = source.index("validate_caption_evidence(", empty_guard)
+    assert empty_guard < evidence_gate
+    assert 'result.get("error_code") or "EMPTY_GENERATION"' in source
+    assert '"generation_error_code": generation_code' in source
+
+
+def test_non_publishable_generation_fails_before_factual_evidence_gate():
+    from pathlib import Path
+
+    source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
+    non_publishable_guard = source.index('if result.get("publishable") is False:', source.index("caption_to_check ="))
+    evidence_gate = source.index("validate_caption_evidence(", non_publishable_guard)
+    assert non_publishable_guard < evidence_gate
+    assert '"CONTENT_NOT_PUBLISHABLE"' in source
+
+
+def test_empty_generated_caption_is_retryable_not_a_validation_rejection():
+    from pathlib import Path
+    from scheduler.brand_scheduler import _workflow_failure_is_retryable
+
+    source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
+    assert 'code="ai_generation_unavailable"' in source
+    failure_evidence = {
+        "failed_steps": [{
+            "step": "generate_content",
+            "error_code": "ai_generation_unavailable",
+            "error": "Content generation returned an empty caption",
+        }]
+    }
+    assert _workflow_failure_is_retryable(failure_evidence) is True
