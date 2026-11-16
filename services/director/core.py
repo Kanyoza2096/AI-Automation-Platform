@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import time
@@ -2004,10 +2005,12 @@ class Director:
                     return existing
                 if existing.status in terminal_statuses:
                     prior_fingerprint = getattr(existing, "condition_fingerprint", None)
-                    if condition_fingerprint and prior_fingerprint == condition_fingerprint:
-                        if source and source not in existing.sources:
-                            existing.sources.append(source)
-                        return existing
+                    if condition_fingerprint:
+                        if prior_fingerprint == condition_fingerprint:
+                            if source and source not in existing.sources:
+                                existing.sources.append(source)
+                            return existing
+                        continue
                     prior_evidence = getattr(existing, "evidence_observed_at", None)
                     if evidence_observed_at is not None and prior_evidence == evidence_observed_at:
                         if source and source not in existing.sources:
@@ -2063,7 +2066,7 @@ class Director:
 
     @staticmethod
     def _condition_fingerprint(capability: str, params: dict, source: Optional[str] = None) -> str:
-        return capability + "|" + repr(sorted((params or {}).items())) + "|" + str(source or "")
+        return capability + "|" + json.dumps(params or {}, sort_keys=True, separators=(",", ":"), default=str) + "|" + str(source or "")
 
     def decide(self) -> List[Task]:
         decisions = []
