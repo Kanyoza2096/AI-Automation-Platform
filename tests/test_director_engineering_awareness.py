@@ -27,6 +27,7 @@ def test_deployment_requires_exact_commit_match_and_live_status():
         "merged_pull_requests": [{
             "merge_commit_sha": "merge-sha",
             "head_sha": "head-sha",
+            "operational_verification_state": "unverified",
         }],
     }]
     deployments = [{
