@@ -299,3 +299,58 @@ def test_flagged_goal_task_is_reused_during_reconciliation_cooldown():
     assert repeated.id == first.id
     assert repeated.status == Status.FLAGGED
     assert len(director.tasks) == 1
+
+
+def test_unknown_engine_capability_is_reported_as_advisory_candidate_not_registered():
+    from datetime import datetime, timezone
+    from services.director.models import Health, Observation
+
+    director = Director(supabase_client=None)
+    signal = {
+        "capability": "coordinate_campaign_calendar",
+        "description": "Coordinate campaign timing across active brands",
+        "params": {"brand_ids": ["brand-a"]},
+    }
+    director.observations["campaign_engine"] = Observation(
+        source="campaign_engine",
+        sector=Sector.CONTENT,
+        status=Health.HEALTHY,
+        metrics={
+            "director_signal_contract": "metrics.director_signals/v1",
+            "director_signals": [signal],
+        },
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    result = director._engine_decision_signals()
+    candidate = result["capability_candidates"][0]
+
+    assert candidate["name"] == "coordinate_campaign_calendar"
+    assert candidate["catalogue_status"] == "not_registered"
+    assert candidate["execution_status"] == "not_executable"
+    assert candidate["review_required"] is True
+    assert result["capability_candidate_policy"]["auto_registered"] is False
+    assert result["capability_candidate_policy"]["auto_enabled"] is False
+    assert "coordinate_campaign_calendar" not in director.capabilities
+
+
+def test_unknown_engine_capability_candidate_requires_declared_signal_contract():
+    from datetime import datetime, timezone
+    from services.director.models import Health, Observation
+
+    director = Director(supabase_client=None)
+    director.observations["uncontracted_engine"] = Observation(
+        source="uncontracted_engine",
+        sector=Sector.CONTENT,
+        status=Health.HEALTHY,
+        metrics={"director_signals": [{
+            "capability": "invented_action",
+            "description": "Uncontracted suggestion",
+        }]},
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    result = director._engine_decision_signals()
+
+    assert result["capability_candidates"] == []
+    assert any(item["reason"] == "unknown_capability" for item in result["rejected"])
