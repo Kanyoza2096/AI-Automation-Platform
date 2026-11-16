@@ -59,7 +59,7 @@ BEGIN
          FOR UPDATE;
         IF existing.request_fingerprint <> p_request_fingerprint
            OR existing.plan_id <> p_plan_id THEN
-            RAISE EXCEPTION 'mission_idempotency_conflict';
+            RETURN jsonb_build_object('error', 'mission_idempotency_conflict');
         END IF;
         RETURN jsonb_build_object(
             'mission_id', existing.mission_id,
