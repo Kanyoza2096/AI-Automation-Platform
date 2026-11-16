@@ -1470,11 +1470,27 @@ class EmitEventStep(Step):
     name = "emit_event"
     continue_on_failure = True
 
-    def __init__(self, bus: "EventBus") -> None:
+    def __init__(
+        self,
+        bus: "EventBus",
+        *,
+        workspace_id: str | None,
+        brand_id: str | None = None,
+    ) -> None:
         self._bus = bus
+        self._workspace_id = str(workspace_id).strip() if workspace_id else None
+        self._brand_id = str(brand_id).strip() if brand_id else None
 
     async def async_run(self, context: dict[str, Any]) -> Any:
         from core.events import PostPublishedEvent
+
+        # A published-post event is tenant data. Never infer its owner from
+        # ambient process state or emit it into an unbound workspace.
+        if not self._workspace_id:
+            logger.error(
+                "PostWorkflow: refusing post.published event without brand workspace_id"
+            )
+            return {"emitted": 0, "error": "workspace_id_required"}
 
         topic = context.get("topic", "")
         if context.get("publish_result", {}).get("queued"):
@@ -1511,7 +1527,14 @@ class EmitEventStep(Step):
                     "caption_preview": caption,
                 }
 
-            await self._bus.publish(event_name, payload, source="workflow")
+            await self._bus.publish(
+                event_name,
+                payload,
+                source="workflow",
+                workspace_id=self._workspace_id,
+                brand_id=self._brand_id,
+                strict_nerve=True,
+            )
             emitted += 1
 
         return {"emitted": emitted}
@@ -1572,6 +1595,10 @@ class PostPublishWorkflow(Workflow):
                 RenderImageStep(content_engine),
                 PublishStep(registry, brand, container=container),
                 RecordAnalyticsStep(analytics_repo),
-                EmitEventStep(bus),
+                EmitEventStep(
+                    bus,
+                    workspace_id=getattr(brand, "workspace_id", None),
+                    brand_id=getattr(brand, "id", None),
+                ),
             ]
         )
