@@ -21,7 +21,7 @@ from services.ai_provider import AIReceipt, AIUsage, request_fingerprint
 
 class GeminiAIAdapter:
     provider = "gemini"
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-3.5-flash-lite"
     DEFAULT_TIMEOUT = 30.0
     DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
