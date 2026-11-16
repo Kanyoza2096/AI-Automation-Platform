@@ -148,3 +148,19 @@ def test_stale_health_observations_are_excluded_from_aggregate():
     assert result["status"] == "unknown"
     assert result["score"] is None
     assert result["stale_observer_count"] == 1
+
+
+def test_health_aggregate_marks_mixed_known_and_unknown_evidence_partial():
+    from services.director import Director
+    from services.director.models import Health, Observation
+
+    director = Director(supabase_client=None)
+    director.observations = {
+        "known": Observation("known", Sector.CONTENT, Health.NOMINAL),
+        "unknown": Observation("unknown", Sector.CONTENT, Health.UNKNOWN),
+    }
+    result = director.health()
+    assert result["status"] == "nominal"
+    assert result["evidence_state"] == "partial"
+    assert result["known_observer_count"] == 1
+    assert result["unknown_observer_count"] == 1
