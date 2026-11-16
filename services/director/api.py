@@ -265,7 +265,10 @@ def create_app(director: Director):
                 )
         try:
             from .engineering_awareness import build_engineering_awareness
-            return await build_engineering_awareness()
+            from .engineering_ledger import persist_engineering_snapshot
+            snapshot = await build_engineering_awareness()
+            snapshot["ledger"] = await persist_engineering_snapshot(snapshot)
+            return snapshot
         except Exception as exc:
             log.exception("Director engineering awareness unavailable")
             raise HTTPException(

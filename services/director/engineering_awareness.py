@@ -61,6 +61,8 @@ def _workflow_summary(value: Any) -> dict | None:
     if not isinstance(run, dict):
         return None
     return {
+        "id": run.get("id"),
+        "run_id": run.get("id"),
         "name": run.get("name") or run.get("display_title") or "Workflow",
         "status": run.get("status") or "unknown",
         "conclusion": run.get("conclusion"),
@@ -100,6 +102,19 @@ async def _load_repository(plugin: Any, full_name: str, cutoff: datetime) -> dic
             continue
         if merged_at < cutoff:
             continue
+        changed_paths = []
+        try:
+            files = await plugin._github_request(
+                f"/repos/{full_name}/pulls/{pr.get('number')}/files?per_page=100"
+            )
+            if isinstance(files, list):
+                changed_paths = [
+                    str(item.get("filename"))[:500]
+                    for item in files if isinstance(item, dict) and item.get("filename")
+                ]
+        except Exception:
+            # PR merge evidence remains valid even when the changed-file listing is unavailable.
+            changed_paths = []
         merged.append({
             "number": pr.get("number"),
             "title": str(pr.get("title") or "Untitled pull request")[:300],
@@ -110,6 +125,7 @@ async def _load_repository(plugin: Any, full_name: str, cutoff: datetime) -> dic
             "head_sha": (pr.get("head") or {}).get("sha") if isinstance(pr.get("head"), dict) else None,
             "base_branch": (pr.get("base") or {}).get("ref") if isinstance(pr.get("base"), dict) else None,
             "changed_files": pr.get("changed_files"),
+            "changed_paths": changed_paths,
             "additions": pr.get("additions"),
             "deletions": pr.get("deletions"),
             "url": pr.get("html_url"),

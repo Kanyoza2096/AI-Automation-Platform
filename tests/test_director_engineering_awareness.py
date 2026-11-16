@@ -61,3 +61,49 @@ def test_deployment_from_another_commit_is_not_attributed():
     pull = repositories[0]["merged_pull_requests"][0]
     assert pull["deployment_state"] == "unverified"
     assert pull["deployment_evidence"] == []
+
+
+def test_ledger_records_merge_deployment_workflow_and_migration_evidence_separately():
+    from services.director.engineering_ledger import events_from_snapshot
+
+    snapshot = {
+        "repositories": [{
+            "repository": "org/repo",
+            "merged_pull_requests": [{
+                "number": 42,
+                "title": "Add migration",
+                "merged_at": "2026-11-16T10:00:00Z",
+                "merge_commit_sha": "abc123",
+                "changed_paths": ["migrations/171_example.sql", "services/director/core.py"],
+                "url": "https://github.com/org/repo/pull/42",
+            }],
+            "latest_workflow": {
+                "id": 99, "status": "completed", "conclusion": "success",
+                "head_sha": "abc123", "updated_at": "2026-11-16T10:01:00Z",
+            },
+        }],
+        "render": {"deployments": [{
+            "deploy_id": "dep-1", "repository": "org/repo",
+            "commit_sha": "abc123", "status": "live",
+        }]},
+    }
+    events = events_from_snapshot(snapshot)
+    by_type = {event["event_type"]: event for event in events}
+    assert set(by_type) == {
+        "pull_request_merged", "database_migration_merged", "workflow_run", "deployment",
+    }
+    assert by_type["database_migration_merged"]["payload"]["migration_state"] == "merged_not_applied"
+    assert by_type["workflow_run"]["payload"]["correlated_to_merge"] is False
+    assert by_type["deployment"]["commit_sha"] == "abc123"
+
+
+def test_ledger_event_keys_are_deterministic_for_idempotent_snapshots():
+    from services.director.engineering_ledger import events_from_snapshot
+
+    snapshot = {"repositories": [{
+        "repository": "org/repo",
+        "merged_pull_requests": [{"number": 42, "merged_at": "2026-11-16T10:00:00Z"}],
+    }], "render": {"deployments": []}}
+    first = events_from_snapshot(snapshot)
+    second = events_from_snapshot(snapshot)
+    assert [event["event_key"] for event in first] == [event["event_key"] for event in second]
