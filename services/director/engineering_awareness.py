@@ -146,6 +146,19 @@ def _service_repository(service: dict) -> str | None:
     return candidate.strip().lower().removesuffix(".git").rstrip("/")
 
 
+def _configured_service_repositories() -> dict[str, str]:
+    """Explicit mapping for Render services whose metadata omits repository URLs.
+
+    Format: KDO_ENGINEERING_RENDER_SERVICE_MAP=service-id=owner/repo,...
+    """
+    result: dict[str, str] = {}
+    for entry in os.getenv("KDO_ENGINEERING_RENDER_SERVICE_MAP", "").split(","):
+        service_id, separator, repository = entry.strip().partition("=")
+        if separator and service_id.strip() and repository.strip() in _repositories():
+            result[service_id.strip()] = repository.strip()
+    return result
+
+
 def _deployment_commit(deploy: dict) -> str | None:
     commit = deploy.get("commit")
     if isinstance(commit, dict):
@@ -192,10 +205,11 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
 
     if not isinstance(service_rows, list):
         service_rows = []
+    configured_map = _configured_service_repositories()
     configured_ids = {
         item.strip() for item in os.getenv("KDO_ENGINEERING_RENDER_SERVICE_IDS", "").split(",")
         if item.strip()
-    }
+    } | set(configured_map)
     normalized_services: list[dict] = []
     for row in service_rows:
         service = _unwrap_provider(row, "service")
@@ -206,6 +220,8 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
              if repo.lower() in (repo_url or "")),
             None,
         )
+        if str(service_id or "") in configured_map:
+            repo_match = configured_map[str(service_id)]
         if configured_ids:
             if str(service_id or "") not in configured_ids:
                 continue
@@ -266,11 +282,7 @@ def _correlate_deployments(repositories: list[dict], deployments: list[dict]) ->
     for repository in repositories:
         repo_name = str(repository.get("repository") or "")
         repo_deployments = [
-            item for item in deployments
-            if item.get("repository") == repo_name
-            or (not item.get("repository") and any(
-                item.get("service_id") for _ in [0]
-            ))
+            item for item in deployments if item.get("repository") == repo_name
         ]
         for pr in repository.get("merged_pull_requests", []):
             candidates = {
