@@ -567,9 +567,6 @@ class GenerateContentStep(Step):
                 repair_prompt = self._build_compliance_repair_prompt(
                     base_prompt, candidate_caption, repair_reason,
                 )
-                context["prompt_sha256"] = hashlib.sha256(
-                    repair_prompt.encode("utf-8")
-                ).hexdigest()
                 repaired_result = await self._engine.generate_post(
                     brand=self._brand,
                     ai_profile=self._ai_profile,
@@ -577,6 +574,9 @@ class GenerateContentStep(Step):
                     base_prompt=repair_prompt,
                 )
                 if repaired_result:
+                    context["prompt_sha256"] = hashlib.sha256(
+                        repair_prompt.encode("utf-8")
+                    ).hexdigest()
                     result = repaired_result
                     logger.info(
                         "PostWorkflow: bounded caption repair returned "
@@ -826,9 +826,6 @@ class ValidateContentStep(Step):
             repair_prompt = GenerateContentStep._build_compliance_repair_prompt(
                 context["base_prompt"], caption, repair_reason,
             )
-            context["prompt_sha256"] = hashlib.sha256(
-                repair_prompt.encode("utf-8")
-            ).hexdigest()
             repaired = await self._content_engine.generate_post(
                 brand=context.get("brand"),
                 ai_profile=self._ai_profile,
@@ -837,6 +834,9 @@ class ValidateContentStep(Step):
             )
             repaired_caption = str((repaired or {}).get("caption") or "").strip()
             if repaired_caption:
+                context["prompt_sha256"] = hashlib.sha256(
+                    repair_prompt.encode("utf-8")
+                ).hexdigest()
                 from services.content_evidence import validate_caption_evidence, validate_editorial_specificity
                 editorial_ok, editorial_reason = validate_editorial_specificity(repaired_caption)
                 evidence_ok, evidence_reason, source_ids = validate_caption_evidence(
