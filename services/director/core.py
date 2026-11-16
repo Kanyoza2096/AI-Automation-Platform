@@ -907,7 +907,7 @@ class Director:
                 fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
                 fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
                 fields["status"] = Status(fields.get("status", Status.PLANNED.value))
-                for key in ("created_at", "executed_at", "approved_at"):
+                for key in ("created_at", "executed_at", "approved_at", "evidence_observed_at"):
                     value = fields.get(key)
                     if isinstance(value, str) and value:
                         fields[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -1978,6 +1978,7 @@ class Director:
         success_criteria: Optional[List[str]] = None,
         impact_score: float = 50.0,
         mission_priority: float = 50.0,
+        evidence_observed_at: Optional[datetime] = None,
     ) -> Task:
         cap = self.capabilities[cap_name]
         normalized_params = params or {}
@@ -1988,15 +1989,28 @@ class Director:
             Status.APPROVED_PENDING_EXECUTION, Status.EXECUTING,
         }
         if not is_proposal_task:
+            terminal_statuses = {
+                Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
+                Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED,
+            }
             for existing in self.tasks.values():
-                if (
-                    existing.status in active_statuses
-                    and existing.capability == cap_name
-                    and existing.params == normalized_params
-                ):
+                same_intent = existing.capability == cap_name and existing.params == normalized_params
+                if not same_intent:
+                    continue
+                if existing.status in active_statuses:
                     if source and source not in existing.sources:
                         existing.sources.append(source)
                     return existing
+                if existing.status in terminal_statuses:
+                    prior_evidence = getattr(existing, "evidence_observed_at", None)
+                    if evidence_observed_at is not None and prior_evidence == evidence_observed_at:
+                        if source and source not in existing.sources:
+                            existing.sources.append(source)
+                        return existing
+                    if evidence_observed_at is None and existing.created_at >= now() - timedelta(minutes=15):
+                        if source and source not in existing.sources:
+                            existing.sources.append(source)
+                        return existing
 
         authority = self.policy.authority(cap)
         task = Task(
@@ -2014,6 +2028,7 @@ class Director:
             success_criteria=list(success_criteria or []),
             impact_score=max(0.0, min(100.0, float(impact_score))),
             mission_priority=max(0.0, min(100.0, float(mission_priority))),
+            evidence_observed_at=evidence_observed_at,
         )
         self.tasks[task.id] = task
         if len(self.tasks) > self.MAX_TASKS:
@@ -2070,7 +2085,7 @@ class Director:
                     decisions.append(self._create_task(
                         Sector.SECURITY, "Prepare security remediation",
                         "prepare_security_remediation", "Security issue observed",
-                        0.97, issue, obs.source,
+                        0.97, issue, obs.source, evidence_observed_at=obs.timestamp,
                     ))
                 elif typ in {"brand_inactive", "engagement_decline"}:
                     decisions.append(self._create_task(
@@ -2081,7 +2096,7 @@ class Director:
                     decisions.append(self._create_task(
                         Sector.CONTENT, "Optimize content schedule",
                         "optimize_content_schedule", "Content gap observed",
-                        0.88, issue, obs.source,
+                        0.88, issue, obs.source, evidence_observed_at=obs.timestamp,
                     ))
         engine_signals = self._engine_decision_signals().get("accepted", [])
         for signal in engine_signals:
@@ -2099,6 +2114,7 @@ class Director:
                 success_criteria=signal["success_criteria"],
                 impact_score=signal["impact_score"],
                 mission_priority=signal["mission_priority"],
+                evidence_observed_at=getattr(self.observations.get(signal["observer"]), "timestamp", None),
             )
             if capability.authority == Authority.AUTO and task.status not in (
                 Status.COMPLETED, Status.VERIFIED, Status.FAILED, Status.CANCELLED,
