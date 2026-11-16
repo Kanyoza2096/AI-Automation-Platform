@@ -3412,6 +3412,8 @@ class Director:
             binding_status = self.capability_binding_report.get(name, "not_run")
             catalog[name] = {
                 "name": name,
+                "definition_source": "built_in_registry",
+                "catalog_type": "predefined",
                 "sector": cap.sector.value,
                 "description": cap.description,
                 "enabled": bool(cap.enabled),
