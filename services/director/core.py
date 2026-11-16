@@ -2130,6 +2130,7 @@ class Director:
                 impact_score=signal["impact_score"],
                 mission_priority=signal["mission_priority"],
                 evidence_observed_at=getattr(self.observations.get(signal["observer"]), "timestamp", None),
+                condition_fingerprint=self._condition_fingerprint(capability.name, signal["params"], "engine_signal:" + str(signal["observer"])),
             )
             if capability.authority == Authority.AUTO and task.status not in (
                 Status.COMPLETED, Status.VERIFIED, Status.FAILED, Status.CANCELLED,
