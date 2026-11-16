@@ -364,7 +364,9 @@ async def ai_chat(
         if content:
             turns.append(f"{role.upper()}: {content[:2000]}")
 
-    collaboration_enabled = bool(context.get("collaboration"))
+    from ai.gateway import get_llm_gateway
+    gateway = get_llm_gateway()
+    collaboration_enabled = context.get("collaboration") is True
     collaboration_engines = []
     collaboration_details = []
     if collaboration_enabled:
