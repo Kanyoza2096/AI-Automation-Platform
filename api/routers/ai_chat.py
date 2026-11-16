@@ -179,8 +179,8 @@ async def _compare_engine_evidence(gateway, workspace_id, objective, consultatio
     evidence_refs = {
         f"{item.get('engine')}:{table}"
         for item in completed
-        for table in ((item.get("sources") or {}).get("tables") or [])
-        if isinstance(table, str)
+        for table, status in ((item.get("sources") or {}).get("status") or {}).items()
+        if isinstance(table, str) and isinstance(status, dict) and status.get("status") == "available"
     }
     if len(completed) < 2:
         return {
@@ -259,7 +259,8 @@ async def _compare_engine_evidence(gateway, workspace_id, objective, consultatio
                 if not isinstance(position, dict) or position.get("engine") not in valid_engines:
                     continue
                 refs = [value for value in position.get("evidence_refs", []) if value in evidence_refs]
-                positions.append({"engine": position["engine"], "position": str(position.get("position") or "")[:500], "evidence_refs": list(dict.fromkeys(refs))[:8]})
+                if refs:
+                    positions.append({"engine": position["engine"], "position": str(position.get("position") or "")[:500], "evidence_refs": list(dict.fromkeys(refs))[:8]})
             if len({position["engine"] for position in positions}) >= 2:
                 disagreements.append({"topic": str(item.get("topic") or "")[:240], "positions": positions, "assessment": str(item.get("assessment") or "")[:700]})
         return {
