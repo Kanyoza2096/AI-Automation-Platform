@@ -180,7 +180,6 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
         })
         await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
         evidence_context = await _load_engine_context(db, workspace_id, engine)
-        evidence_json = json.dumps(evidence_context, ensure_ascii=False, separators=(",", ":"))[:9000]
         consultations[-1].update({"phase": "consulting", "sources": evidence_context["sources"], "observed_at": evidence_context["observed_at"]})
         await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "consulting")
         evidence_json = json.dumps(evidence_context, ensure_ascii=False, separators=(",", ":"))[:9000]
@@ -249,6 +248,7 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
         "sources": item["sources"],
         "observed_at": item["observed_at"],
     } for item in consultations]
+    await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "synthesizing")
     synthesis_prompt = (
         f"{_ENGINE_GUIDANCE['director']}\\n\\n"
         "You are coordinating a bounded, read-only engine collaboration explicitly requested by the operator. "
