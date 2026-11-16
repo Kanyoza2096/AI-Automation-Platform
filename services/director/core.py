@@ -1337,7 +1337,12 @@ class Director:
                 raise ValueError("capability_runtime_binding_unconfirmed:" + capability_name)
             if item.get("binding_status") not in {"bound", "bound_governed_handoff"}:
                 raise ValueError("capability_binding_not_confirmed:" + capability_name)
-            if cap.risk != Risk.LOW or cap.proposal_capable:
+            if (
+                cap.risk != Risk.LOW
+                or cap.proposal_capable
+                or getattr(cap, "mission_staging_mode", "disabled") != "read_only_review"
+                or cap.target_param != "brand_id"
+            ):
                 raise ValueError("capability_risk_or_execution_path_not_allowed:" + capability_name)
             params = step_parameters.get(step_id)
             errors = self.validate_capability_parameters(cap.parameter_schema, params)
@@ -3691,8 +3696,10 @@ class Director:
                 "parameter_schema": cap.parameter_schema,
                 "parameter_contract_bound": isinstance(cap.parameter_schema, dict),
                 "workspace_target_bound": bool(cap.target_param),
+                "mission_staging_mode": str(getattr(cap, "mission_staging_mode", "disabled")),
                 "mission_staging_ready": bool(
                     ready
+                    and getattr(cap, "mission_staging_mode", "disabled") == "read_only_review"
                     and bool(cap.target_param)
                     and isinstance(cap.parameter_schema, dict)
                     and cap.parameter_schema.get("type") == "object"
@@ -3780,6 +3787,8 @@ class Director:
             "required": ["brand_id"],
             "additionalProperties": False,
         }
+        self.capabilities["calculate_brand_health"].mission_staging_mode = "read_only_review"
+        self.capabilities["review_content_quality"].mission_staging_mode = "read_only_review"
         self.capabilities["restart_failed_service"] = Capability(
             name="restart_failed_service",
             sector=Sector.HEALTH,
