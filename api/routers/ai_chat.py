@@ -248,7 +248,8 @@ async def _compare_engine_evidence(gateway, workspace_id, objective, consultatio
                 continue
             engines = [value for value in item.get("engines", []) if value in valid_engines]
             refs = [value for value in item.get("evidence_refs", []) if value in evidence_refs]
-            if len(set(engines)) >= 2 and refs:
+            referenced_engines = {value.split(":", 1)[0] for value in refs}
+            if len(set(engines)) >= 2 and len(referenced_engines.intersection(engines)) >= 2:
                 agreements.append({"claim": str(item.get("claim") or "")[:500], "engines": list(dict.fromkeys(engines)), "evidence_refs": list(dict.fromkeys(refs))[:8]})
         disagreements = []
         for item in (data.get("disagreements") or [])[:8]:
@@ -258,7 +259,7 @@ async def _compare_engine_evidence(gateway, workspace_id, objective, consultatio
             for position in (item.get("positions") or [])[:4]:
                 if not isinstance(position, dict) or position.get("engine") not in valid_engines:
                     continue
-                refs = [value for value in position.get("evidence_refs", []) if value in evidence_refs]
+                refs = [value for value in position.get("evidence_refs", []) if value in evidence_refs and value.startswith(f"{position['engine']}:")]
                 if refs:
                     positions.append({"engine": position["engine"], "position": str(position.get("position") or "")[:500], "evidence_refs": list(dict.fromkeys(refs))[:8]})
             if len({position["engine"] for position in positions}) >= 2:
