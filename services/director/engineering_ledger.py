@@ -163,3 +163,34 @@ async def persist_engineering_snapshot(snapshot: dict, *, client=None, limit: in
             "runtime_verification_is_separate": True,
             "error": type(exc).__name__,
         }
+
+
+async def read_engineering_ledger(*, client=None, limit: int = 100) -> dict:
+    """Read the append-only engineering timeline without contacting GitHub or Render."""
+    try:
+        if client is None:
+            from services.supabase import get_service_client_from_settings
+            client = get_service_client_from_settings()
+        result = await __import__("asyncio").to_thread(
+            lambda: client.table("director_engineering_events")
+            .select("*").order("event_at", desc=True).limit(max(1, min(int(limit), 200))).execute()
+        )
+        rows = [dict(row) for row in (getattr(result, "data", None) or [])]
+        return {
+            "status": "available",
+            "returned_events": len(rows),
+            "events": rows,
+            "append_only": True,
+            "source_refresh_performed": False,
+            "runtime_verification_is_separate": True,
+        }
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "returned_events": 0,
+            "events": [],
+            "append_only": True,
+            "source_refresh_performed": False,
+            "runtime_verification_is_separate": True,
+            "error": type(exc).__name__,
+        }
