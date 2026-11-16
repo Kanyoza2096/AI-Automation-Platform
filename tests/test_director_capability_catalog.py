@@ -233,3 +233,52 @@ def test_terminal_task_without_evidence_has_short_repeat_cooldown():
         params={"scope": "all"},
     )
     assert next_scan.id != first.id
+
+
+def test_terminal_task_is_not_recreated_for_same_condition_across_fresh_observations():
+    from datetime import datetime, timezone, timedelta
+    director = Director(supabase_client=None)
+    params = {"service_name": "worker-a", "type": "failed_service"}
+    fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer")
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params=params, source="health-observer",
+        evidence_observed_at=datetime.now(timezone.utc),
+        condition_fingerprint=fingerprint,
+    )
+    first.status = Status.FAILED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params=params, source="health-observer",
+        evidence_observed_at=datetime.now(timezone.utc) + timedelta(minutes=1),
+        condition_fingerprint=fingerprint,
+    )
+
+    assert repeated.id == first.id
+    assert len(director.tasks) == 1
+
+
+def test_new_condition_identity_can_create_a_distinct_task_after_terminal_outcome():
+    director = Director(supabase_client=None)
+    params = {"service_name": "worker-a", "type": "failed_service"}
+    first_fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer")
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "First observed failure", params=params, source="health-observer",
+        condition_fingerprint=first_fingerprint,
+    )
+    first.status = Status.FAILED
+
+    second_fingerprint = director._condition_fingerprint(
+        "restart_failed_service", {"service_name": "worker-a", "type": "failed_service", "incident_id": "incident-2"},
+        "health-observer",
+    )
+    second = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "New incident", params={"service_name": "worker-a", "type": "failed_service", "incident_id": "incident-2"},
+        source="health-observer", condition_fingerprint=second_fingerprint,
+    )
+
+    assert second.id != first.id
+    assert len(director.tasks) == 2
