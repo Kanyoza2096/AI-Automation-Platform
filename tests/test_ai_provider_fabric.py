@@ -182,6 +182,7 @@ def test_gemini_adapter_forwards_output_token_budget_and_finish_reason():
             }]
         })
     adapter = GeminiAIAdapter(api_key="key", client=client(handler))
+    assert adapter.model == "gemini-3.5-flash-lite"
     receipt = adapter.analyze(user_prompt="Return JSON", correlation_id="budget-2", structured=True, max_output_tokens=654)
     assert receipt.status == "succeeded"
     assert receipt.finish_reason == "length"
