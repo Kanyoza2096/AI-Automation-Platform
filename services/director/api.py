@@ -146,15 +146,21 @@ def create_app(director: Director):
         return bool(proposal is not None and getattr(proposal, "workspace_id", None) == workspace_id)
 
     def _task_in_workspace(task, request) -> bool:
-        """Tasks have no workspace field; scope them through their owning proposal.
+        """Enforce explicit task ownership, retaining legacy proposal scoping.
 
-        Unlinked tasks cannot safely be attributed to a tenant, so they are hidden
-        from tenant contexts instead of being exposed across workspace boundaries.
+        Workspace-owned tasks are never made visible through a proposal from a
+        different workspace. Legacy tasks without workspace_id retain the
+        existing proposal-based visibility rule.
         """
         workspace_id = _workspace_id(request)
         context = getattr(request.state, "request_context", None) if request is not None else None
         if workspace_id is None or getattr(context, "species_privileges", False):
             return True
+        if task is None:
+            return False
+        task_workspace_id = getattr(task, "workspace_id", None)
+        if task_workspace_id:
+            return str(task_workspace_id) == workspace_id
         proposal_id = getattr(task, "proposal_id", None)
         proposal = director.proposals.get(proposal_id) if proposal_id else None
         return _proposal_in_workspace(proposal, request)
