@@ -272,10 +272,10 @@ def test_new_condition_identity_can_create_a_distinct_task_after_terminal_outcom
     )
     first.status = Status.FAILED
 
-    second_fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer")
+    second_fingerprint = director._condition_fingerprint("restart_failed_service", params, "health-observer:incident-2")
     second = director._create_task(
         Sector.HEALTH, "Recover failed service", "restart_failed_service",
-        "New incident", params=params, source="health-observer",
+        "New incident", params=params, source="health-observer:incident-2",
         condition_fingerprint=second_fingerprint,
     )
 
