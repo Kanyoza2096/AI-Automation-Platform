@@ -251,3 +251,16 @@ async def test_strategic_mission_admission_rejects_unlisted_params_and_unowned_b
             plan_id="plan-health-1", workspace_id="workspace-a",
             idempotency_key="operator-request-003", step_parameters={"health": {"brand_id": "other-brand"}}, actor="operator-1",
         )
+
+def test_global_diagnostic_capabilities_cannot_be_staged_as_workspace_missions():
+    director = Director(supabase_client=None)
+    def bound_handler(params):
+        return {"ok": True}
+    for name in ("run_health_scan", "run_guardian_scan", "self_diagnostic"):
+        director.bind_capability(name, bound_handler)
+        director.capability_binding_report[name] = "bound"
+    catalog = director.capability_catalog()
+    for name in ("run_health_scan", "run_guardian_scan", "self_diagnostic"):
+        assert catalog[name]["runtime_binding_confirmed"] is True
+        assert catalog[name]["workspace_target_bound"] is False
+        assert catalog[name]["mission_staging_ready"] is False
