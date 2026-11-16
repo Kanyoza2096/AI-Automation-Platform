@@ -255,7 +255,14 @@ def create_app(director: Director):
     ):
         """Return a read-only, evidence-labelled snapshot of KDO engineering changes."""
         await _require_auth(request, credentials)
-        _require_platform_scope(request)
+        context = getattr(request.state, "request_context", None)
+        if context is not None and not getattr(context, "species_privileges", False):
+            role = str(getattr(context, "role", "") or "").lower()
+            if role != "owner":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Engineering Awareness contains platform repository and deployment metadata and requires workspace owner or platform authority",
+                )
         try:
             from .engineering_awareness import build_engineering_awareness
             return await build_engineering_awareness()
