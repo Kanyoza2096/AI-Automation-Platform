@@ -582,10 +582,34 @@ _DETERMINISTIC_WORKFLOW_FAILURE_CODES = {
 }
 
 
-def _workflow_failure_is_retryable(failure_evidence: dict) -> bool:
-    """Keep deterministic validation rejections out of automatic retry loops."""
+def _is_ai_provider_outage(failure_evidence: dict) -> bool:
+    """Recognize provider availability/quota failures without masking other failures."""
     failed_steps = (failure_evidence or {}).get("failed_steps") or []
-    if not failed_steps:
+    provider_names = ("gemini", "google ai", "cloudflare ai", "openai", "anthropic")
+    availability_terms = (
+        "http 429", "status 429", "http 503", "status 503",
+        "rate limit", "rate-limit", "quota", "resource exhausted",
+        "provider unavailable", "service unavailable", "overloaded",
+    )
+    for step in failed_steps:
+        if not isinstance(step, dict):
+            continue
+        evidence = " ".join(
+            str(step.get(key) or "")
+            for key in ("step", "step_name", "error_code", "error", "message", "details")
+        ).lower()
+        has_provider = any(name in evidence for name in provider_names)
+        has_availability = any(term in evidence for term in availability_terms)
+        is_ai_step = any(term in evidence for term in ("generate", "generation", "llm", "ai_provider"))
+        if has_availability and (has_provider or is_ai_step):
+            return True
+    return False
+
+
+def _workflow_failure_is_retryable(failure_evidence: dict) -> bool:
+    """Keep deterministic validation and provider outages out of retry storms."""
+    failed_steps = (failure_evidence or {}).get("failed_steps") or []
+    if not failed_steps or _is_ai_provider_outage(failure_evidence):
         return False
     return not any(
         str(step.get("error_code") or "").strip() in _DETERMINISTIC_WORKFLOW_FAILURE_CODES
@@ -1525,6 +1549,30 @@ class BrandScheduler:
                 workspace_id = getattr(self.brand, "workspace_id", "")
                 slot_date = today.isoformat()
 
+                # A prior, explicitly classified provider outage opens a durable
+                # brand/workspace cooldown. Check before claiming/creating a slot.
+                if source in {"scheduled", "queued_retry", "dead_letter_retry"}:
+                    try:
+                        provider_cooldown = _job_call(
+                            self._job_service,
+                            "has_recent_provider_outage",
+                            brand_id=str(self.brand.id),
+                            workspace_id=str(workspace_id),
+                            cooldown_seconds=1800,
+                        )
+                    except Exception as gate_error:
+                        logger.error(
+                            "[%s] Provider cooldown lookup failed; failing closed before job creation: %s",
+                            self.brand.name, gate_error,
+                        )
+                        return False
+                    if provider_cooldown:
+                        logger.warning(
+                            "[%s] AI provider cooldown active; scheduled attempt suppressed before job creation",
+                            self.brand.name,
+                        )
+                        return False
+
                 if self._job_service:
                     automation_job, idempotency_key = self._get_or_create_automation_job(
                         brand_id=self.brand.id, workspace_id=workspace_id,
@@ -1740,15 +1788,17 @@ class BrandScheduler:
             else:
                 failed = [s.step_name for s in result.steps if not s.ok]
                 failure_evidence = result.failure_evidence()
+                provider_outage = _is_ai_provider_outage(failure_evidence)
                 retryable = _workflow_failure_is_retryable(failure_evidence)
-                # Persist bounded diagnostics and retry only transient failures.
+                failure_code = "AI_PROVIDER_UNAVAILABLE" if provider_outage else "WORKFLOW_FAILED"
+                # Provider outages are durable terminal evidence, not DLQ work.
                 if automation_job and self._job_service:
                     try:
                         automation_job.result = failure_evidence
                         _job_call(
                             self._job_service, "mark_failed",
                             automation_job, error=f"Steps failed: {failed}",
-                            error_code="WORKFLOW_FAILED", retryable=retryable,
+                            error_code=failure_code, retryable=retryable,
                         )
                     except Exception as e:
                         logger.error(
@@ -1770,7 +1820,7 @@ class BrandScheduler:
                         workspace_id=getattr(self.brand, "workspace_id", None),
                     )
 
-                retry_note = "queued for retry" if retryable else "terminal validation failure; retry suppressed"
+                retry_note = ("provider cooldown opened; retry suppressed" if provider_outage else ("queued for retry" if retryable else "terminal validation failure; retry suppressed"))
                 logger.warning(
                     "[%s] job=%s FAILED — steps=%s evidence=%s (%s)",
                     self.brand.name,
@@ -1790,33 +1840,38 @@ class BrandScheduler:
 
         except Exception as e:
             duration_ms = (time.monotonic() - publish_started) * 1000
+            provider_outage = _is_ai_provider_outage({
+                "failed_steps": [{"step": "ai_generation", "error": str(e)}],
+            })
             if automation_job and self._job_service:
                 try:
                     from core.errors import is_retryable
                     _job_call(
                         self._job_service, "mark_failed",
                         automation_job, error=str(e),
-                        error_code="WORKFLOW_EXCEPTION",
-                        retryable=is_retryable(e),
+                        error_code="AI_PROVIDER_UNAVAILABLE" if provider_outage else "WORKFLOW_EXCEPTION",
+                        retryable=False if provider_outage else is_retryable(e),
                     )
                 except Exception:
                     pass
             self._posts_failed += 1
             self._metrics.record_publish_failure(duration_ms)
 
-            self._dead_letter_queue.push(
-                brand_id=self.brand.id,
-                error=str(e),
-                payload={
-                    "source": source, "today": today, "hour": hour,
-                    "automation_job_id": getattr(automation_job, "job_id", None),
-                },
-                workspace_id=getattr(self.brand, "workspace_id", None),
-            )
+            if not provider_outage:
+                self._dead_letter_queue.push(
+                    brand_id=self.brand.id,
+                    error=str(e),
+                    payload={
+                        "source": source, "today": today, "hour": hour,
+                        "automation_job_id": getattr(automation_job, "job_id", None),
+                    },
+                    workspace_id=getattr(self.brand, "workspace_id", None),
+                )
 
             logger.error(
-                "[%s] job=%s EXCEPTION: %s (queued for retry)",
+                "[%s] job=%s EXCEPTION: %s (%s)",
                 self.brand.name, job_id, e,
+                "provider cooldown opened; retry suppressed" if provider_outage else "queued for retry",
             )
             return False
         finally:
