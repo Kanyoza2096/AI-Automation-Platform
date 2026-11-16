@@ -335,25 +335,59 @@ class MetaEngineV7:
         return reports
 
     @staticmethod
-    def _engine_observations_for_snapshot(snapshot: SystemSnapshot) -> list[dict[str, Any]]:
-        """Return timestamped supervisor observations without claiming ownership."""
+    def _engine_observation_contract_for_snapshot(snapshot: SystemSnapshot) -> dict[str, Any]:
+        """Project timestamped supervisor evidence and report every excluded row."""
         observations = []
-        for name, health in sorted(getattr(snapshot, "engines", {}).items()):
+        rejected = []
+        engines = getattr(snapshot, "engines", {})
+        if not isinstance(engines, dict):
+            return {
+                "contract": "meta_engine.observations/v1",
+                "status": "invalid_source",
+                "source_count": 0,
+                "accepted_count": 0,
+                "rejected_count": 1,
+                "rejected": [{"service_id": None, "reason": "engine_health_map_invalid"}],
+                "observations": [],
+            }
+        for name, health in sorted(engines.items(), key=lambda item: str(item[0])):
+            service_id = str(name or "").strip()
+            if not service_id:
+                rejected.append({"service_id": None, "reason": "service_id_missing"})
+                continue
             checked_at = getattr(health, "checked_at", None)
             if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
+                rejected.append({"service_id": service_id, "reason": "timestamp_missing_or_timezone_naive"})
                 continue
-            status = getattr(
+            raw_status = getattr(
                 getattr(health, "status", None),
                 "value",
-                getattr(health, "status", "unknown"),
+                getattr(health, "status", None),
             )
+            status = str(raw_status or "").strip().lower()
+            if not status:
+                rejected.append({"service_id": service_id, "reason": "status_missing"})
+                continue
             observations.append({
-                "service_id": str(name),
-                "status": str(status or "unknown"),
+                "service_id": service_id,
+                "status": status,
                 "observed_at": checked_at.isoformat(),
                 "source_version": str(getattr(health, "version", "") or "meta-engine-health-v1"),
             })
-        return observations
+        return {
+            "contract": "meta_engine.observations/v1",
+            "status": "complete" if not rejected else "partial",
+            "source_count": len(engines),
+            "accepted_count": len(observations),
+            "rejected_count": len(rejected),
+            "rejected": rejected,
+            "observations": observations,
+        }
+
+    @staticmethod
+    def _engine_observations_for_snapshot(snapshot: SystemSnapshot) -> list[dict[str, Any]]:
+        """Backward-compatible observation projection; diagnostics are exposed separately."""
+        return MetaEngineV7._engine_observation_contract_for_snapshot(snapshot)["observations"]
 
     def check_health(self) -> Dict[str, Any]:
         snapshot = self._current_snapshot
@@ -378,6 +412,7 @@ class MetaEngineV7:
             if state == EngineStatus.OFFLINE.value
         )
         signals = self._director_signals_for_snapshot(snapshot)
+        observation_contract = self._engine_observation_contract_for_snapshot(snapshot)
         return {
             "status": status,
             "available": True,
@@ -386,7 +421,8 @@ class MetaEngineV7:
             "risk_score": snapshot.risk_score,
             "snapshot_status": getattr(snapshot.overall_status, "value", str(snapshot.overall_status)),
             "engine_states": dict(sorted(engine_states.items())),
-            "engine_observations": self._engine_observations_for_snapshot(snapshot),
+            "engine_observations": observation_contract["observations"],
+            "engine_observation_contract": {key: value for key, value in observation_contract.items() if key != "observations"},
             "unknown_engines": unknown_engines,
             "degraded_engines": degraded_engines,
             "offline_engines": offline_engines,
