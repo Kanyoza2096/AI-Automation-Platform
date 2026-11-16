@@ -246,13 +246,19 @@ def test_llm_gateway_rejects_structured_output_truncated_at_token_limit(monkeypa
     assert result.finish_reason == "length"
 
 
-def test_structured_json_prefers_gemini_flash_then_flash_lite_before_cloudflare():
+def test_structured_json_prefers_current_gemini_flash_lite_before_cloudflare():
     routes = select_ai_route("structured_json")
     assert [(route.provider, route.model) for route in routes] == [
-        ("gemini", "gemini-2.5-flash"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-3.5-flash-lite"),
         ("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ]
+
+
+def test_ai_policy_does_not_route_to_deprecated_gemini_25_flash_models():
+    from services.ai_policy import DEFAULT_AI_POLICY
+
+    for routes in DEFAULT_AI_POLICY.values():
+        assert all(route.model not in {"gemini-2.5-flash", "gemini-2.5-flash-lite"} for route in routes)
 
 
 # Persistent engine conversation evidence adapters
