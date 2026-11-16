@@ -277,7 +277,7 @@ async def ai_chat(
 
     context = body.context if isinstance(body.context, dict) else {}
     operation = str(context.get("operation") or "chat").strip().lower()
-    if operation not in {"list", "load", "chat"}:
+    if operation not in {"list", "load", "chat", "collaboration_list", "collaboration_load"}:
         raise HTTPException(status_code=422, detail="Unsupported conversation operation")
     engine = str(context.get("engine") or "general").strip().lower()
     if engine not in _VALID_ENGINES:
@@ -292,6 +292,30 @@ async def ai_chat(
     workspace_id = await require_workspace(request)
     db = _conversation_db()
     conversation_id = str(context.get("conversation_id") or "").strip()
+
+    if operation == "collaboration_list":
+        result = await _db_call(lambda: db.table("director_collaboration_runs")
+            .select("id,conversation_id,objective,requested_engines,status,consultations,synthesis,synthesis_provider,synthesis_model,evidence_summary,started_at,completed_at,created_at")
+            .eq("workspace_id", workspace_id)
+            .order("created_at", desc=True)
+            .limit(30)
+            .execute())
+        return _ok({"collaboration_runs": _rows(result), "persistence": "supabase_workspace_scoped", "execution_authority": "none"})
+
+    if operation == "collaboration_load":
+        run_id = str(context.get("collaboration_id") or "").strip()
+        if not run_id or len(run_id) > 64:
+            raise HTTPException(status_code=422, detail="A valid collaboration_id is required")
+        result = await _db_call(lambda: db.table("director_collaboration_runs")
+            .select("id,conversation_id,objective,requested_engines,status,consultations,synthesis,synthesis_provider,synthesis_model,evidence_summary,started_at,completed_at,created_at")
+            .eq("id", run_id)
+            .eq("workspace_id", workspace_id)
+            .limit(1)
+            .execute())
+        runs = _rows(result)
+        if not runs:
+            raise HTTPException(status_code=404, detail="Collaboration run not found")
+        return _ok({"collaboration_run": runs[0], "persistence": "supabase_workspace_scoped", "execution_authority": "none"})
 
     if operation == "list":
         result = await _db_call(lambda: db.table("ai_conversations")
@@ -381,6 +405,34 @@ async def ai_chat(
         reply, result, collaboration_details = await _run_engine_collaboration(
             gateway, db, workspace_id, collaboration_objective, collaboration_engines
         )
+        collaboration_run_id = str(uuid.uuid4())
+        evidence_summary = {
+            item["engine"]: {
+                "status": item["status"],
+                "sources": item["sources"],
+                "observed_at": item["observed_at"],
+            } for item in collaboration_details
+        }
+        run_status = "partial" if any(
+            item["status"] != "completed" or item["sources"].get("partial") is True
+            for item in collaboration_details
+        ) else "completed"
+        await _db_call(lambda: db.table("director_collaboration_runs").insert({
+            "id": collaboration_run_id,
+            "workspace_id": workspace_id,
+            "conversation_id": conversation_id,
+            "created_by": (auth_user_email_var.get() or "authenticated")[:256],
+            "objective": collaboration_objective[:6000],
+            "requested_engines": collaboration_engines,
+            "status": run_status,
+            "consultations": collaboration_details,
+            "synthesis": str(result.text or "")[:12000],
+            "synthesis_provider": result.provider,
+            "synthesis_model": result.model,
+            "evidence_summary": evidence_summary,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }).execute())
         engine_context = await _load_engine_context(db, workspace_id, "director")
     else:
         engine_context = await _load_engine_context(db, workspace_id, engine)
@@ -446,6 +498,8 @@ async def ai_chat(
             "enabled": collaboration_enabled,
             "coordinator": "director" if collaboration_enabled else None,
             "consulted_engines": collaboration_engines,
+            "run_id": collaboration_run_id if collaboration_enabled else None,
+            "run_status": run_status if collaboration_enabled else None,
             "consultations": [{
                 "engine": item["engine"],
                 "status": item["status"],
