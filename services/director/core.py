@@ -1993,7 +1993,7 @@ class Director:
         if not is_proposal_task:
             terminal_statuses = {
                 Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
-                Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED,
+                Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED, Status.FLAGGED,
             }
             for existing in self.tasks.values():
                 same_intent = existing.capability == cap_name and existing.params == normalized_params
