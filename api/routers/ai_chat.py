@@ -176,7 +176,7 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
                 capability="chat",
                 temperature=getattr(settings, "gemini_chat_temperature", 0.7),
                 max_tokens=700,
-                caller="ai_engine_collaboration",
+                caller="ai_chat",
             )
             if not result.ok:
                 consultations.append({
@@ -232,7 +232,7 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
         capability="chat",
         temperature=getattr(settings, "gemini_chat_temperature", 0.7),
         max_tokens=1600,
-        caller="ai_engine_collaboration_director",
+        caller="ai_chat",
     )
     if not final_result.ok:
         raise HTTPException(status_code=503, detail="Director could not synthesize the engine consultations")
