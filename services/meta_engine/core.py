@@ -335,15 +335,24 @@ class MetaEngineV7:
         return reports
 
     @staticmethod
-    def _engine_observation_contract_for_snapshot(snapshot: SystemSnapshot) -> dict[str, Any]:
-        """Project timestamped supervisor evidence and report every excluded row."""
+    def _engine_observation_contract_for_snapshot(
+        snapshot: SystemSnapshot,
+        now: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Project fresh, timestamped supervisor evidence and report every exclusion."""
         observations = []
         rejected = []
         engines = getattr(snapshot, "engines", {})
+        generated_at = now or datetime.now(timezone.utc)
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=timezone.utc)
+        freshness_seconds = MetaEngineV7.STALE_AFTER_SECONDS
         if not isinstance(engines, dict):
             return {
                 "contract": "meta_engine.observations/v1",
                 "status": "invalid_source",
+                "generated_at": generated_at.isoformat(),
+                "freshness_seconds": freshness_seconds,
                 "source_count": 0,
                 "accepted_count": 0,
                 "rejected_count": 1,
@@ -359,6 +368,17 @@ class MetaEngineV7:
             if not isinstance(checked_at, datetime) or checked_at.tzinfo is None:
                 rejected.append({"service_id": service_id, "reason": "timestamp_missing_or_timezone_naive"})
                 continue
+            age_seconds = (generated_at - checked_at).total_seconds()
+            if age_seconds < 0:
+                rejected.append({"service_id": service_id, "reason": "observation_timestamp_in_future"})
+                continue
+            if age_seconds > freshness_seconds:
+                rejected.append({
+                    "service_id": service_id,
+                    "reason": "observation_stale",
+                    "age_seconds": round(age_seconds, 3),
+                })
+                continue
             raw_status = getattr(
                 getattr(health, "status", None),
                 "value",
@@ -372,11 +392,14 @@ class MetaEngineV7:
                 "service_id": service_id,
                 "status": status,
                 "observed_at": checked_at.isoformat(),
+                "age_seconds": round(age_seconds, 3),
                 "source_version": str(getattr(health, "version", "") or "meta-engine-health-v1"),
             })
         return {
             "contract": "meta_engine.observations/v1",
             "status": "complete" if not rejected else "partial",
+            "generated_at": generated_at.isoformat(),
+            "freshness_seconds": freshness_seconds,
             "source_count": len(engines),
             "accepted_count": len(observations),
             "rejected_count": len(rejected),
