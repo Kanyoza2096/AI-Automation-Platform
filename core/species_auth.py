@@ -250,7 +250,38 @@ class SpeciesAuth:
     def _resolve_workspace_for_email(
         self, client, email: str, user_id: str, requested_workspace_id: Optional[str] = None
     ) -> tuple[str, str]:
-        """Resolve workspace and role from membership/ownership — never client header."""
+        """Resolve workspace authority, giving verified workspace ownership precedence over stale membership roles."""
+        normalized_email = str(email or "").strip().casefold()
+
+        def is_workspace_owner(workspace_id: str) -> bool:
+            # Ownership is an authoritative workspace property. A stale or
+            # accidentally downgraded workspace_members row must not demote
+            # the verified owner to viewer/operator.
+            if not normalized_email or not workspace_id:
+                return False
+            try:
+                result = (
+                    client.table("workspaces")
+                    .select("id, owner_email")
+                    .eq("id", str(workspace_id))
+                    .limit(1)
+                    .execute()
+                )
+                rows = result.data or []
+                return bool(
+                    rows
+                    and str(rows[0].get("owner_email") or "").strip().casefold() == normalized_email
+                )
+            except Exception as exc:
+                logger.debug("workspace ownership lookup failed: %s", exc)
+                return False
+
+        # When a workspace is explicitly selected, check its ownership before
+        # consulting membership. This avoids a stale viewer membership masking
+        # the workspace's canonical owner_email.
+        if requested_workspace_id and is_workspace_owner(requested_workspace_id):
+            return str(requested_workspace_id), "owner"
+
         try:
             if user_id:
                 query = (
@@ -264,20 +295,27 @@ class SpeciesAuth:
                 accepted = [row for row in (mem.data or []) if row.get("accepted_at") is not None]
                 if accepted:
                     accepted.sort(key=lambda row: str(row.get("accepted_at") or ""), reverse=True)
-                    return accepted[0]["workspace_id"], str(accepted[0].get("role") or "viewer")
+                    # Check every accepted membership for canonical ownership
+                    # before accepting any membership role as the final role.
+                    for row in accepted:
+                        workspace_id = str(row.get("workspace_id") or "")
+                        if is_workspace_owner(workspace_id):
+                            return workspace_id, "owner"
+                    return str(accepted[0]["workspace_id"]), str(accepted[0].get("role") or "viewer")
         except Exception as exc:
             logger.debug("workspace_members lookup failed: %s", exc)
 
         try:
-            if email:
-                query = client.table("workspaces").select("id").eq("owner_email", email)
+            if normalized_email:
+                query = client.table("workspaces").select("id, owner_email").eq("owner_email", email.strip())
                 if requested_workspace_id:
                     query = query.eq("id", requested_workspace_id)
                 else:
                     query = query.limit(1)
                 res = query.execute()
-                if res.data:
-                    return res.data[0]["id"], "owner"
+                for row in (res.data or []):
+                    if str(row.get("owner_email") or "").strip().casefold() == normalized_email:
+                        return str(row["id"]), "owner"
         except Exception as exc:
             logger.debug("workspaces owner_email lookup failed: %s", exc)
 
