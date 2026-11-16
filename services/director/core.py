@@ -1981,6 +1981,7 @@ class Director:
         mission_priority: float = 50.0,
         evidence_observed_at: Optional[datetime] = None,
         condition_fingerprint: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> Task:
         cap = self.capabilities[cap_name]
         normalized_params = params or {}
@@ -2039,6 +2040,7 @@ class Director:
             mission_priority=max(0.0, min(100.0, float(mission_priority))),
             evidence_observed_at=evidence_observed_at,
             condition_fingerprint=condition_fingerprint,
+            workspace_id=str(workspace_id).strip() if workspace_id else None,
         )
         self.tasks[task.id] = task
         if len(self.tasks) > self.MAX_TASKS:

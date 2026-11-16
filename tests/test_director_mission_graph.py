@@ -28,6 +28,24 @@ async def test_mission_dependency_is_persisted_and_graph_exposes_edge():
 
 
 @pytest.mark.asyncio
+async def test_workspace_ownership_survives_task_persistence_and_restore():
+    director = Director(supabase_client=None)
+    task = _task("workspace-task")
+    task.workspace_id = "workspace-alpha"
+    task.mission_id = "mission-alpha"
+    await director.store.save_task(task)
+
+    restarted = Director(supabase_client=None)
+    restarted.store = director.store
+    result = await restarted._restore_tasks()
+
+    assert result["restored"] == 1
+    restored = restarted.tasks["workspace-task"]
+    assert restored.workspace_id == "workspace-alpha"
+    assert restored.mission_id == "mission-alpha"
+
+
+@pytest.mark.asyncio
 async def test_mission_dependency_rejects_cycles_and_self_edges():
     director = Director(supabase_client=None)
     director.tasks = {"a": _task("a"), "b": _task("b"), "c": _task("c")}

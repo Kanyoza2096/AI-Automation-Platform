@@ -293,6 +293,9 @@ class Task:
     sources: List[str] = field(default_factory=list)
     correlation_id: str = field(default_factory=generate_correlation_id)
     proposal_id: Optional[str] = None   # v5.5: link back to the proposal
+    # Explicit tenant ownership for operator-authored mission tasks.
+    # Legacy tasks remain unscoped and retain proposal-based visibility rules.
+    workspace_id: Optional[str] = None
     # Optional mission-graph metadata. Empty defaults preserve legacy task behavior.
     depends_on: List[str] = field(default_factory=list)
     mission_id: Optional[str] = None
