@@ -18,7 +18,9 @@ def test_meta_engine_observation_contract_reports_accepted_and_rejected_rows():
         ),
     })
 
-    report = MetaEngineV7._engine_observation_contract_for_snapshot(snapshot)
+    report = MetaEngineV7._engine_observation_contract_for_snapshot(
+        snapshot, now=datetime(2026, 11, 16, 20, 30, tzinfo=timezone.utc)
+    )
 
     assert report["contract"] == "meta_engine.observations/v1"
     assert report["status"] == "partial"
