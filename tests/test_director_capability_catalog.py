@@ -281,3 +281,21 @@ def test_new_condition_identity_can_create_a_distinct_task_after_terminal_outcom
 
     assert second.id != first.id
     assert len(director.tasks) == 2
+
+
+def test_flagged_goal_task_is_reused_during_reconciliation_cooldown():
+    director = Director(supabase_client=None)
+    first = director._create_task(
+        Sector.SECURITY, "Goal-driven: Security posture", "run_guardian_scan",
+        "Goal: Security posture",
+    )
+    first.status = Status.FLAGGED
+
+    repeated = director._create_task(
+        Sector.SECURITY, "Goal-driven: Security posture", "run_guardian_scan",
+        "Goal: Security posture",
+    )
+
+    assert repeated.id == first.id
+    assert repeated.status == Status.FLAGGED
+    assert len(director.tasks) == 1
