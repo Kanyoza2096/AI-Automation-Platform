@@ -71,7 +71,12 @@ DEFAULT_AI_POLICY: Mapping[str, tuple[AIModelRoute, ...]] = {
     # The real defense against Cloudflare's structured failures is the
     # parser-tolerance layer in models/content.py, not the route ordering.
     "structured_json": (
+        # Keep structured planning on Google's models first. Flash Lite is
+        # a lower-cost Gemini route with a separate model quota bucket in
+        # many Google AI Studio projects; it gives Gemini a second chance
+        # during Flash-specific saturation before leaving the provider.
         AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-2.5-flash-lite"),
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ),
     "chat": (
