@@ -132,6 +132,7 @@ class GeminiAIAdapter:
         correlation_id: str,
         structured: bool = False,
         max_output_tokens: Optional[int] = None,
+        response_schema: Optional[dict[str, Any]] = None,
     ) -> AIReceipt:
         selected_model = (model or self.model).strip()
         fingerprint = request_fingerprint(
@@ -157,6 +158,10 @@ class GeminiAIAdapter:
             generation_config["maxOutputTokens"] = max_output_tokens
         if structured:
             generation_config["responseMimeType"] = "application/json"
+            if isinstance(response_schema, dict) and response_schema:
+                # Gemini REST generateContent uses responseSchema (camelCase).
+                # The caller owns the schema; never infer one from prose.
+                generation_config["responseSchema"] = response_schema
 
         # Model-specific reasoning budgets keep the accuracy/throughput tiers
         # intentional. These hints do not replace downstream JSON validation.
