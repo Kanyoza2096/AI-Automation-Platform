@@ -354,3 +354,37 @@ def test_unknown_engine_capability_candidate_requires_declared_signal_contract()
 
     assert result["capability_candidates"] == []
     assert any(item["reason"] == "unknown_capability" for item in result["rejected"])
+
+
+def test_capability_parameter_contract_fails_closed_when_missing_or_open():
+    assert Director.validate_capability_parameters(None, {}) == ["parameter_schema_missing"]
+    open_schema = {"type": "object", "properties": {"brand_id": {"type": "string"}}}
+    assert Director.validate_capability_parameters(open_schema, {"brand_id": "b1"}) == [
+        "parameter_schema_must_close_object"
+    ]
+
+
+def test_capability_parameter_contract_rejects_unknown_and_invalid_inputs():
+    schema = {
+        "type": "object",
+        "properties": {
+            "brand_id": {"type": "string", "minLength": 3, "maxLength": 40},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+        },
+        "required": ["brand_id"],
+        "additionalProperties": False,
+    }
+    assert Director.validate_capability_parameters(schema, {"brand_id": "brand-1", "limit": 5}) == []
+    errors = Director.validate_capability_parameters(
+        schema, {"brand_id": "x", "limit": True, "unexpected": "value"}
+    )
+    assert "parameter_too_short:brand_id" in errors
+    assert "parameter_type_invalid:limit" in errors
+    assert "parameter_not_allowed:unexpected" in errors
+
+
+def test_catalog_marks_capabilities_without_closed_parameter_contract_not_stageable():
+    director = Director(supabase_client=None)
+    catalog = director.capability_catalog()
+    assert catalog["run_health_scan"]["parameter_contract_bound"] is False
+    assert catalog["run_health_scan"]["mission_staging_ready"] is False

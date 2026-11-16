@@ -259,6 +259,9 @@ class Capability:
     # delegate to the canonical Action Kernel and return its receipt contract;
     # the ordinary handler is deliberately not a fallback for approved proposals.
     governed_handoff: Optional[Callable[..., Any]] = None
+    # Closed JSON-Schema-compatible input contract required before mission staging.
+    # None deliberately means the capability is not eligible for staging.
+    parameter_schema: Optional[Dict[str, Any]] = None
 
 
 @dataclass
