@@ -3033,17 +3033,23 @@ class Director:
             if status not in {"nominal", "healthy", "ok", "ready"}
         )
         known_count = sum(item["known_observers"] for item in sectors.values())
+        unknown_evidence_count = sum(item["unknown_observers"] for item in sectors.values())
+        evidence_state = (
+            "unknown" if not known_count
+            else "partial" if unknown_evidence_count
+            else "available"
+        )
         return {
             "contract_version": "kdo.health.aggregate.v1",
             "status": self._status_label(overall).value if overall is not None else "unknown",
             "score": round(overall, 1) if overall is not None else None,
-            "evidence_state": "available" if known_count else "unknown",
+            "evidence_state": evidence_state,
             "freshness_window_seconds": max_age_seconds,
             "known_observer_count": known_count,
             "observer_count": len(self.observers),
             "observed_record_count": len(self.observations),
             "stale_observer_count": stale_count,
-            "unknown_observer_count": status_counts.get("unknown", 0) + stale_count,
+            "unknown_observer_count": unknown_evidence_count,
             "sectors": sectors,
             "status_counts": dict(status_counts),
             "non_nominal_observer_count": non_nominal_count,
