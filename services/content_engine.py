@@ -176,12 +176,12 @@ _FORBIDDEN_CLOSES = (
 # useful technical questions elsewhere in the caption remain possible.
 _GENERIC_ASSUMPTIVE_CLOSE_PATTERNS = (
     re.compile(
-        r"^what\\b.{0,140}\\b(?:have|has)\\s+(?:you|your team)\\s+"
-        r"(?:implemented|deployed|adopted|built|configured|measured|operated)\\b",
+        r"^what\b.{0,140}\b(?:have|has)\s+(?:you|your team)\s+"
+        r"(?:implemented|deployed|adopted|built|configured|measured|operated)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"^what\\b.{0,140}\\bin your production environment\\b",
+        r"^what\b.{0,140}\bin your production environment\b",
         re.IGNORECASE,
     ),
 )
