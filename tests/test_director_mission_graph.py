@@ -180,10 +180,10 @@ def _stageable_health_plan():
         "source_context_generated_at": "2026-11-16T08:00:00+00:00",
         "steps": [{
             "step_id": "health",
-            "capability": "run_health_scan",
-            "sector": "health",
-            "objective": "Inspect current service health",
-            "target": "Workspace health registry",
+            "capability": "calculate_brand_health",
+            "sector": "brands",
+            "objective": "Assess the selected workspace brand",
+            "target": "Workspace-owned brand health",
             "rationale": "Collect current evidence",
             "depends_on": [],
             "acceptance_criteria": ["Every returned service has a reported status."],
@@ -194,8 +194,10 @@ def _stageable_health_plan():
 @pytest.mark.asyncio
 async def test_strategic_mission_admission_stages_workspace_tasks_without_execution(monkeypatch):
     director = Director(supabase_client=None)
-    director.bind_capability("run_health_scan", lambda params: {"ok": True})
-    director.capability_binding_report["run_health_scan"] = "bound"
+    def bound_brand_health(params):
+        return {"ok": True}
+    director.bind_capability("calculate_brand_health", bound_brand_health)
+    director.capability_binding_report["calculate_brand_health"] = "bound"
     director.store = _MissionAdmissionStore()
     monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
     async def verified(plan, max_age_seconds=300):
@@ -204,7 +206,7 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
 
     result = await director.stage_strategic_mission(
         plan_id="plan-health-1", workspace_id="workspace-a",
-        idempotency_key="operator-request-001", step_parameters={"health": {}}, actor="operator-1",
+        idempotency_key="operator-request-001", step_parameters={"health": {"brand_id": "brand-owned"}}, actor="operator-1",
     )
 
     task = director.tasks[result["task_ids"][0]]
@@ -215,7 +217,8 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
     assert task.workspace_id == "workspace-a"
     assert task.mission_id == result["mission_id"]
     assert task.status == Status.APPROVAL
-    assert task.params == {}
+    assert task.params == {"brand_id": "brand-owned"}
+    assert "operator:operator-1" in task.sources
 
     replay = await director.stage_strategic_mission(
         plan_id="plan-health-1", workspace_id="workspace-a",
