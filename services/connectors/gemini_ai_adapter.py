@@ -157,6 +157,14 @@ class GeminiAIAdapter:
             generation_config["maxOutputTokens"] = max_output_tokens
         if structured:
             generation_config["responseMimeType"] = "application/json"
+
+        # Model-specific reasoning budgets keep the accuracy/throughput tiers
+        # intentional. These hints do not replace downstream JSON validation.
+        normalized_model = selected_model.lower()
+        if normalized_model == "gemini-4-hydrogen":
+            generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
+        elif normalized_model.startswith("gemma-4-"):
+            generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
         if generation_config:
             body["generationConfig"] = generation_config
         if system_prompt.strip():
