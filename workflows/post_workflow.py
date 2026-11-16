@@ -606,6 +606,21 @@ class GenerateContentStep(Step):
             )
             if generation_error:
                 message += f": {generation_error}"
+            if supplied_caption is None:
+                # Unknown/empty provider output is treated as transient so the
+                # scheduler can apply its bounded retry/DLQ policy. It is not a
+                # content-policy rejection and must not be labelled AI_VALIDATION_ERROR.
+                raise StepFailure(
+                    message=message,
+                    code="ai_generation_unavailable",
+                    detail={
+                        "brand_id": getattr(self._brand, "id", None),
+                        "topic": topic,
+                        "reason": generation_error or "empty_generated_caption",
+                        "generation_error_code": generation_code,
+                        "caption_len": 0,
+                    },
+                )
             raise AIValidationError(
                 message=message,
                 context={
