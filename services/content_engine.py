@@ -171,6 +171,21 @@ _FORBIDDEN_CLOSES = (
     "at the end of the day",
 )
 
+# Generic practitioner questions that assume an implementation history or
+# production access. These are checked only against the final sentence so
+# useful technical questions elsewhere in the caption remain possible.
+_GENERIC_ASSUMPTIVE_CLOSE_PATTERNS = (
+    re.compile(
+        r"^what\\b.{0,140}\\b(?:have|has)\\s+(?:you|your team)\\s+"
+        r"(?:implemented|deployed|adopted|built|configured|measured|operated)\\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^what\\b.{0,140}\\bin your production environment\\b",
+        re.IGNORECASE,
+    ),
+)
+
 # v15.9.1 — first-person gate. Word-boundary regex so "I" matches
 # standalone "I" but not "INTEGRATION"; "us" matches "us" but not "used".
 _FIRST_PERSON_PATTERNS = (
@@ -1011,6 +1026,13 @@ class ContentEngine:
         for closer in _FORBIDDEN_CLOSES:
             if lower.rstrip("?.! ").endswith(closer.rstrip("?.! ")):
                 return False, f"forbidden close: {closer!r}"
+
+        # Reject generic engagement questions that presume the reader has
+        # implemented or operated the system. Only inspect the final sentence.
+        final_sentence = re.split(r"(?<=[.!?])\\s+", caption.strip())[-1].strip()
+        for pattern in _GENERIC_ASSUMPTIVE_CLOSE_PATTERNS:
+            if pattern.search(final_sentence):
+                return False, f"assumptive_generic_close: {pattern.pattern}"
 
         # v15.9.1 — Word-count bound replaces the sentence-count bound.
         words = caption.split()
