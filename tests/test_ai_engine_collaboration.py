@@ -57,9 +57,9 @@ def test_director_collaboration_runs_read_only_consults_then_synthesis(monkeypat
     )
 
     assert len(calls) == 3
-    assert calls[0][1]["caller"] == "ai_engine_collaboration"
-    assert calls[1][1]["caller"] == "ai_engine_collaboration"
-    assert calls[2][1]["caller"] == "ai_engine_collaboration_director"
+    assert calls[0][1]["caller"] == "ai_chat"
+    assert calls[1][1]["caller"] == "ai_chat"
+    assert calls[2][1]["caller"] == "ai_chat"
     assert "Guardian consultation" in reply
     assert "Ai Brain consultation" in reply
     assert "advisory from ai_engine_collaboration_director" in reply
@@ -79,7 +79,7 @@ def test_collaboration_unavailable_consultation_is_not_a_negative_finding(monkey
 
     class FakeGateway:
         async def complete_async(self, prompt, **kwargs):
-            if kwargs["caller"] == "ai_engine_collaboration":
+            if kwargs["caller"] == "ai_chat":
                 return SimpleNamespace(ok=False, text="", provider=None, model=None)
             return SimpleNamespace(
                 ok=True, text="Synthesis notes unavailable consultation as unknown.",
