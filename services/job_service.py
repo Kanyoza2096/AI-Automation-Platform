@@ -321,6 +321,53 @@ class JobService:
             logger.error("Failed to find job by idempotency key: %s", e)
             return None
 
+    async def has_recent_provider_outage(
+        self,
+        brand_id: str,
+        workspace_id: str,
+        cooldown_seconds: int = 1800,
+    ) -> bool:
+        """Return whether this exact tenant brand has a recent provider outage.
+
+        Only the dedicated AI_PROVIDER_UNAVAILABLE failure code opens this
+        cooldown. Database errors propagate so callers can fail closed.
+        """
+        if not brand_id or not workspace_id:
+            raise ValueError("brand_id and workspace_id are required")
+        client = self._require_client()
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: (
+                    client.table(self._table)
+                    .select("created_at,last_error_code")
+                    .eq("brand_id", brand_id)
+                    .eq("workspace_id", workspace_id)
+                    .eq("status", JobStatus.FAILED.value)
+                    .eq("last_error_code", "AI_PROVIDER_UNAVAILABLE")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                ),
+            )
+            rows = result.data or []
+            if not rows:
+                return False
+            raw_created = rows[0].get("created_at")
+            if not raw_created:
+                return True
+            created = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age_seconds = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
+            return age_seconds < max(0, int(cooldown_seconds))
+        except Exception as exc:
+            raise DatabaseQueryError(
+                message=f"Failed to inspect provider cooldown for brand: {brand_id}",
+                cause=exc,
+            )
+
     async def find_by_brand(
         self,
         brand_id: str,
