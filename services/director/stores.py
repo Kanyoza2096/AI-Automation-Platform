@@ -197,6 +197,8 @@ class AsyncSupabaseStore:
             "insert into director_tasks",
             lambda: self.supabase.table("director_tasks").upsert({
                 "id": task.id,
+                "workspace_id": str(task.workspace_id).strip() if task.workspace_id else None,
+                "scope_type": "workspace" if task.workspace_id else "platform",
                 "payload": json.dumps(safe(asdict(task))),
                 "created_at": iso(task.created_at),
                 "status": task.status.value,
@@ -359,6 +361,8 @@ class AsyncSupabaseStore:
         await self._execute_with_retry(
             "insert into director_observations",
             lambda: self.supabase.table("director_observations").insert({
+                "workspace_id": None,
+                "scope_type": "platform",
                 "payload": json.dumps(safe(asdict(observation))),
                 "timestamp": iso(observation.timestamp),
             }).execute(),
