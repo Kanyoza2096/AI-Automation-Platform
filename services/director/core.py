@@ -1426,6 +1426,8 @@ class Director:
         )
         if not isinstance(receipt, dict):
             raise RuntimeError("mission_admission_persistence_unavailable")
+        if receipt.get("error") == "mission_idempotency_conflict":
+            raise ValueError("mission_idempotency_conflict")
         if receipt.get("mission_id") != mission_id or receipt.get("task_ids") != [task.id for task in tasks]:
             raise RuntimeError("mission_admission_receipt_mismatch")
 
