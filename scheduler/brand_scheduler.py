@@ -982,6 +982,30 @@ class BrandScheduler:
                     continue
 
                 if today_date is not None and hour_int is not None and self._job_service:
+                    # Do not let legacy DLQ entries create a fresh slot before
+                    # the normal workflow gate gets a chance to inspect cooldown.
+                    try:
+                        cooldown_active = _job_call(
+                            self._job_service,
+                            "has_recent_provider_outage",
+                            brand_id=str(self.brand.id),
+                            workspace_id=str(getattr(self.brand, "workspace_id", "") or ""),
+                            cooldown_seconds=1800,
+                        )
+                    except Exception as gate_error:
+                        logger.error(
+                            "[%s] Provider cooldown lookup failed during DLQ recovery; retaining entry without retry: %s",
+                            self.brand.name, gate_error,
+                        )
+                        continue
+                    if cooldown_active:
+                        self._dead_letter_queue.ack(entry.get("id"))
+                        logger.info(
+                            "[%s] Acknowledged stale DLQ retry during active provider cooldown; failed-job evidence remains durable",
+                            self.brand.name,
+                        )
+                        continue
+
                     _, slot_signal = self._get_or_create_automation_job(
                         brand_id=self.brand.id,
                         workspace_id=getattr(self.brand, "workspace_id", ""),
