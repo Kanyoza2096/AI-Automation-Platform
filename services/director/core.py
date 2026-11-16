@@ -3688,8 +3688,10 @@ class Director:
                 "target_param": cap.target_param,
                 "parameter_schema": cap.parameter_schema,
                 "parameter_contract_bound": isinstance(cap.parameter_schema, dict),
+                "workspace_target_bound": bool(cap.target_param),
                 "mission_staging_ready": bool(
                     ready
+                    and bool(cap.target_param)
                     and isinstance(cap.parameter_schema, dict)
                     and cap.parameter_schema.get("type") == "object"
                     and isinstance(cap.parameter_schema.get("properties"), dict)
