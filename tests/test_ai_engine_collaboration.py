@@ -62,7 +62,7 @@ def test_director_collaboration_runs_read_only_consults_then_synthesis(monkeypat
     assert calls[2][1]["caller"] == "ai_chat"
     assert "Guardian consultation" in reply
     assert "Ai Brain consultation" in reply
-    assert "advisory from ai_engine_collaboration_director" in reply
+    assert "advisory from ai_chat" in reply
     assert [item["engine"] for item in consultations] == ["guardian", "ai_brain"]
     assert all(item["status"] == "completed" for item in consultations)
     assert result.provider == "test-provider"
