@@ -1,7 +1,8 @@
 """Read-only engineering change intelligence for the Director.
 
-This first slice observes canonical GitHub evidence only. It does not create
-plans, tasks, approvals, deployments, commits, or execution authority.
+The service correlates canonical GitHub merge evidence with Render deployment
+records. It deliberately does not infer deployment from a merge or operational
+success from a deployment. Runtime acceptance remains a separate evidence gate.
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ DEFAULT_REPOSITORIES = (
 )
 MAX_REPOSITORIES = 10
 MAX_MERGED_PRS_PER_REPOSITORY = 15
+MAX_RENDER_SERVICES = 30
+MAX_DEPLOYS_PER_SERVICE = 10
 LOOKBACK_DAYS = 30
 
 
@@ -39,6 +42,13 @@ def _repositories() -> list[str]:
 
 def _is_error(value: Any) -> bool:
     return isinstance(value, dict) and bool(value.get("error"))
+
+
+def _unwrap_provider(value: Any, key: str) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    nested = value.get(key)
+    return nested if isinstance(nested, dict) else value
 
 
 def _workflow_summary(value: Any) -> dict | None:
@@ -106,7 +116,9 @@ async def _load_repository(plugin: Any, full_name: str, cutoff: datetime) -> dic
             "evidence_source": "github_pull_request",
             "implementation_state": "merged",
             "deployment_state": "unverified",
+            "deployment_evidence": [],
             "operational_verification_state": "unverified",
+            "operational_verification_reason": "A runtime acceptance signal is required; merge and deployment records are insufficient.",
         })
         if len(merged) >= MAX_MERGED_PRS_PER_REPOSITORY:
             break
@@ -123,8 +135,166 @@ async def _load_repository(plugin: Any, full_name: str, cutoff: datetime) -> dic
     }
 
 
+def _service_repository(service: dict) -> str | None:
+    details = service.get("serviceDetails") or service.get("service_details") or {}
+    candidate = (
+        service.get("repo") or service.get("repoUrl") or service.get("repo_url")
+        or (details.get("repo") if isinstance(details, dict) else None)
+    )
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+    return candidate.strip().lower().removesuffix(".git").rstrip("/")
+
+
+def _deployment_commit(deploy: dict) -> str | None:
+    commit = deploy.get("commit")
+    if isinstance(commit, dict):
+        value = commit.get("id") or commit.get("sha") or commit.get("commitId")
+    else:
+        value = commit
+    value = value or deploy.get("commitId") or deploy.get("commit_id")
+    return str(value).strip().lower() if value else None
+
+
+def _deployment_status(deploy: dict) -> str:
+    raw = str(deploy.get("status") or deploy.get("deployStatus") or "unknown").lower()
+    if raw in {"live", "succeeded", "success"}:
+        return "live"
+    if raw in {"build_failed", "update_failed", "pre_deploy_failed", "failed", "canceled", "cancelled", "deactivated"}:
+        return "failed"
+    if raw in {"build_in_progress", "pre_deploy_in_progress", "update_in_progress", "created", "pending"}:
+        return "in_progress"
+    return raw or "unknown"
+
+
+async def _load_render_evidence(repositories: list[str]) -> dict:
+    if not os.getenv("RENDER_API_KEY", "").strip():
+        return {
+            "status": "unavailable",
+            "source": "render_api",
+            "message": "Render API credentials are not configured; deployment state remains unverified.",
+            "services": [],
+            "deployments": [],
+        }
+
+    try:
+        from services.connectors.enterprise_registry import create_enterprise_adapter
+        adapter = create_enterprise_adapter("render", allow_mutations=False)
+        service_rows = await asyncio.to_thread(adapter.list_services, limit=MAX_RENDER_SERVICES)
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "source": "render_api",
+            "message": f"Render service inventory unavailable ({type(exc).__name__}).",
+            "services": [],
+            "deployments": [],
+        }
+
+    if not isinstance(service_rows, list):
+        service_rows = []
+    configured_ids = {
+        item.strip() for item in os.getenv("KDO_ENGINEERING_RENDER_SERVICE_IDS", "").split(",")
+        if item.strip()
+    }
+    normalized_services: list[dict] = []
+    for row in service_rows:
+        service = _unwrap_provider(row, "service")
+        service_id = service.get("id")
+        repo_url = _service_repository(service)
+        repo_match = next(
+            (repo for repo in repositories
+             if repo.lower() in (repo_url or "")),
+            None,
+        )
+        if configured_ids:
+            if str(service_id or "") not in configured_ids:
+                continue
+        elif not repo_match:
+            continue
+        normalized_services.append({
+            "service_id": str(service_id) if service_id else None,
+            "name": service.get("name") or service.get("serviceName") or "Render service",
+            "repository": repo_match,
+            "repo_url": repo_url,
+            "service_status": service.get("suspended") or service.get("status") or "unknown",
+        })
+
+    deploy_results = await asyncio.gather(
+        *(
+            asyncio.to_thread(adapter.list_deploys, item["service_id"], limit=MAX_DEPLOYS_PER_SERVICE)
+            for item in normalized_services if item.get("service_id")
+        ),
+        return_exceptions=True,
+    )
+    deployments: list[dict] = []
+    service_errors: list[str] = []
+    service_items = [item for item in normalized_services if item.get("service_id")]
+    for service, result in zip(service_items, deploy_results):
+        if isinstance(result, Exception):
+            service_errors.append(service["name"])
+            continue
+        rows = result if isinstance(result, list) else []
+        for row in rows:
+            deploy = _unwrap_provider(row, "deploy")
+            deployments.append({
+                "service_id": service["service_id"],
+                "service_name": service["name"],
+                "repository": service["repository"],
+                "deploy_id": deploy.get("id"),
+                "commit_sha": _deployment_commit(deploy),
+                "status": _deployment_status(deploy),
+                "created_at": deploy.get("createdAt") or deploy.get("created_at"),
+                "finished_at": deploy.get("finishedAt") or deploy.get("finished_at"),
+                "url": deploy.get("dashboardUrl") or deploy.get("url"),
+                "evidence_source": "render_deployment",
+            })
+
+    return {
+        "status": "available" if normalized_services or not service_errors else "partial",
+        "source": "render_api",
+        "message": (
+            "No Render services could be safely matched to the configured repositories. Configure KDO_ENGINEERING_RENDER_SERVICE_IDS if service metadata does not expose repository URLs."
+            if not normalized_services else None
+        ),
+        "services": normalized_services,
+        "deployments": deployments,
+        "service_errors": service_errors,
+    }
+
+
+def _correlate_deployments(repositories: list[dict], deployments: list[dict]) -> None:
+    for repository in repositories:
+        repo_name = str(repository.get("repository") or "")
+        repo_deployments = [
+            item for item in deployments
+            if item.get("repository") == repo_name
+            or (not item.get("repository") and any(
+                item.get("service_id") for _ in [0]
+            ))
+        ]
+        for pr in repository.get("merged_pull_requests", []):
+            candidates = {
+                str(value).lower()
+                for value in (pr.get("merge_commit_sha"), pr.get("head_sha"))
+                if value
+            }
+            matches = [
+                item for item in repo_deployments
+                if item.get("commit_sha") and item["commit_sha"] in candidates
+            ]
+            pr["deployment_evidence"] = matches
+            if any(item.get("status") == "live" for item in matches):
+                pr["deployment_state"] = "deployed"
+            elif any(item.get("status") == "in_progress" for item in matches):
+                pr["deployment_state"] = "in_progress"
+            elif any(item.get("status") == "failed" for item in matches):
+                pr["deployment_state"] = "deployment_failed"
+            else:
+                pr["deployment_state"] = "unverified"
+
+
 async def build_engineering_awareness(*, plugin: Any = None, now: datetime | None = None) -> dict:
-    """Build a bounded snapshot from GitHub; never mutates external state."""
+    """Build a bounded evidence snapshot; every provider operation is read-only."""
     if plugin is None:
         from plugins.github_connector.plugin import (
             github_connector_plugin,
@@ -134,6 +304,14 @@ async def build_engineering_awareness(*, plugin: Any = None, now: datetime | Non
 
     observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     repositories = _repositories()
+    authority = {
+        "read_only": True,
+        "plans_created": False,
+        "tasks_created": False,
+        "execution_authorized": False,
+        "repository_mutations": False,
+        "deployments_triggered": False,
+    }
     if not getattr(plugin, "github_token", ""):
         return {
             "status": "unavailable",
@@ -141,13 +319,9 @@ async def build_engineering_awareness(*, plugin: Any = None, now: datetime | Non
             "observed_at": observed_at.isoformat(),
             "message": "GitHub connector token is not configured; no engineering changes were inferred.",
             "repositories": [],
-            "summary": {"repositories_configured": len(repositories), "repositories_available": 0, "merged_changes": 0},
-            "evidence_policy": {
-                "merged": "A GitHub pull request with merged_at is implementation evidence.",
-                "deployed": "Not established by this source.",
-                "operationally_verified": "Not established by this source.",
-            },
-            "authority": {"read_only": True, "plans_created": False, "tasks_created": False, "execution_authorized": False},
+            "render": {"status": "not_evaluated", "deployments": [], "services": []},
+            "summary": {"repositories_configured": len(repositories), "repositories_available": 0, "merged_changes": 0, "deployed_changes": 0, "operationally_verified_changes": 0},
+            "authority": authority,
         }
 
     if not repositories:
@@ -157,8 +331,9 @@ async def build_engineering_awareness(*, plugin: Any = None, now: datetime | Non
             "observed_at": observed_at.isoformat(),
             "message": "No engineering repositories are configured.",
             "repositories": [],
-            "summary": {"repositories_configured": 0, "repositories_available": 0, "merged_changes": 0},
-            "authority": {"read_only": True, "plans_created": False, "tasks_created": False, "execution_authorized": False},
+            "render": {"status": "not_evaluated", "deployments": [], "services": []},
+            "summary": {"repositories_configured": 0, "repositories_available": 0, "merged_changes": 0, "deployed_changes": 0, "operationally_verified_changes": 0},
+            "authority": authority,
         }
 
     cutoff = observed_at - timedelta(days=LOOKBACK_DAYS)
@@ -179,29 +354,41 @@ async def build_engineering_awareness(*, plugin: Any = None, now: datetime | Non
         else:
             normalized.append(result)
 
+    render = await _load_render_evidence(repositories)
+    _correlate_deployments(normalized, render.get("deployments", []))
     available = sum(1 for item in normalized if item["status"] == "available")
     merged_count = sum(len(item["merged_pull_requests"]) for item in normalized)
+    deployed_count = sum(
+        1 for item in normalized for pr in item["merged_pull_requests"]
+        if pr.get("deployment_state") == "deployed"
+    )
     return {
         "status": "available" if available else "unavailable",
-        "source": "github_api",
+        "source": "github_api+render_api",
         "observed_at": observed_at.isoformat(),
         "lookback_days": LOOKBACK_DAYS,
         "repositories": normalized,
+        "render": render,
         "summary": {
             "repositories_configured": len(repositories),
             "repositories_available": available,
             "merged_changes": merged_count,
+            "render_services_matched": len(render.get("services", [])),
+            "render_deployments_observed": len(render.get("deployments", [])),
+            "deployed_changes": deployed_count,
+            "operationally_verified_changes": 0,
         },
         "evidence_policy": {
-            "merged": "A GitHub pull request with merged_at is implementation evidence.",
-            "deployed": "Unverified. A GitHub merge or workflow run is not proof of a Render deployment.",
-            "operationally_verified": "Unverified. Requires a separate runtime acceptance signal.",
-            "workflow": "Latest repository workflow is reported independently and is not attributed to a specific merge unless commit identity is independently matched.",
+            "implemented": "Repository contents or a commit establish source implementation; this snapshot lists merged pull requests only.",
+            "merged": "A GitHub pull request with merged_at is authoritative merge evidence.",
+            "deployed": "A Render deployment is correlated only when its commit SHA exactly matches the PR merge commit or head commit and Render reports the deployment live.",
+            "operationally_verified": "Always unverified in this first slice. Requires a separate, capability-specific runtime acceptance signal.",
+            "workflow": "The latest repository workflow is reported independently and is not attributed to a specific merge without exact commit correlation.",
         },
-        "authority": {
-            "read_only": True,
-            "plans_created": False,
-            "tasks_created": False,
-            "execution_authorized": False,
-        },
+        "limitations": [
+            "This is an on-demand snapshot, not yet a durable chronological engineering ledger.",
+            "Render services without repository metadata require explicit KDO_ENGINEERING_RENDER_SERVICE_IDS configuration.",
+            "Operational verification is deliberately not inferred from GitHub or Render status.",
+        ],
+        "authority": authority,
     }
