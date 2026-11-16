@@ -247,10 +247,11 @@ def test_llm_gateway_rejects_structured_output_truncated_at_token_limit(monkeypa
     assert result.finish_reason == "length"
 
 
-def test_structured_json_prefers_current_gemini_flash_lite_before_cloudflare():
+def test_structured_json_uses_hydrogen_gemma_then_cloudflare_fallback():
     routes = select_ai_route("structured_json")
     assert [(route.provider, route.model) for route in routes] == [
-        ("gemini", "gemini-3.5-flash-lite"),
+        ("gemini", "gemini-4-hydrogen"),
+        ("gemini", "gemma-4-31b-it"),
         ("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ]
 
@@ -342,3 +343,60 @@ def test_engine_context_prompt_has_temporal_and_uncertainty_guardrails():
     assert "Conversation history is the persisted recent dialogue" in source
     assert "ask one concise clarifying question" in source
     assert '.eq("engine", engine)' in source
+
+
+
+def test_gemini_hydrogen_and_gemma_apply_model_specific_thinking_levels():
+    from services.connectors.gemini_ai_adapter import GeminiAIAdapter
+
+    observed = []
+
+    def handler(request):
+        observed.append(json.loads(request.content)["generationConfig"])
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"parts": [{"text": '{"ok":true}'}]}}]
+        })
+
+    hydrogen = GeminiAIAdapter(api_key="key", model="gemini-4-hydrogen", client=client(handler))
+    gemma = GeminiAIAdapter(api_key="key", model="gemma-4-31b-it", client=client(handler))
+    schema = {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}, "required": ["ok"]}
+    assert hydrogen.analyze(user_prompt="Return JSON", correlation_id="hydrogen", structured=True, response_schema=schema).status == "succeeded"
+    assert gemma.analyze(user_prompt="Return JSON", correlation_id="gemma", structured=True).status == "succeeded"
+    assert observed[0]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert observed[1]["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    assert observed[0]["responseMimeType"] == "application/json"
+    assert observed[0]["responseSchema"] == schema
+    assert observed[1]["responseMimeType"] == "application/json"
+    assert "responseSchema" not in observed[1]
+
+
+
+def test_complete_structured_forwards_native_response_schema_to_gemini(monkeypatch):
+    from ai.gateway import LLMGateway
+    from services.ai_provider import AIReceipt
+
+    observed = {}
+
+    class FakeAdapter:
+        def analyze(self, **kwargs):
+            observed.update(kwargs)
+            return AIReceipt(
+                status="succeeded", provider="gemini", model="gemini-4-hydrogen",
+                raw_output='{"ok":true}', structured_output={"ok": True}, usage=None,
+                correlation_id=kwargs["correlation_id"], request_fingerprint="f",
+            )
+        def close(self):
+            pass
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("services.connectors.ai_registry.create_ai_provider_adapter", lambda *a, **k: FakeAdapter())
+    monkeypatch.setattr(
+        "services.ai_policy.select_ai_route",
+        lambda task: (type("Route", (), {"provider": "gemini", "model": "gemini-4-hydrogen"})(),),
+    )
+    schema = {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}, "required": ["ok"]}
+    result = LLMGateway().complete_structured(
+        "Return a JSON object", caller="director", required_keys=["ok"], response_schema=schema
+    )
+    assert result.ok is True
+    assert observed["response_schema"] == schema

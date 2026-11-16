@@ -7,23 +7,18 @@ in order. The first response that passes the capability's validation wins.
 Rationale for the ordering:
   - Cloudflare Workers AI remains the primary provider for chat and
     classification workloads where its optimized models are appropriate.
-  - Gemini 3.5 Flash-Lite is the preferred Google model for structured JSON
-    generation. Google AI Studio's current model catalogue lists
-    gemini-3.5-flash-lite and marks gemini-2.5-flash deprecated.
+  - Gemini 4 Hydrogen is the primary structured JSON route for accuracy and
+    schema-oriented generation; the adapter applies a low thinking level.
+  - Gemma 4 31B IT is the second Google route for higher-volume overflow;
+    the adapter requests minimal thinking and KDO still validates every result.
   - Cloudflare Llama 3.1 8B FP8 remains the final structured-output fallback.
-    Every structured response must still pass KDO's JSON/schema validation.
-  - Gemini 2.5 Flash is no longer selected by this policy. Gemini 2.5
-    Flash-Lite remains available to some existing API users, but is not
-    selected for new routing because Google recommends newer models.
+  - Gemini 3.5 Flash-Lite remains available for other capabilities and as a
+    known-compatible model, but is no longer the structured_json primary.
+  - Gemini 2.5 Flash is not selected by this policy.
 
-Gemma note:
-  - Do not confuse Google's Gemma family with Gemini 4. Google's current
-    AI Studio model catalogue lists Gemini 4 Carbon, Argon and Hydrogen,
-    while Gemma is a separate model family.
-  - A second Google-hosted Gemma route is intentionally not activated until
-    its exact API endpoint/model identifier and structured-output support
-    are confirmed. The string "gemma-4" alone is not enough to establish
-    compatibility with the Gemini generateContent adapter.
+Gemma and Gemini are separate model families. The configured Gemma model ID
+is sent through the Google Generative Language API adapter; provider-side
+availability and quota are account-dependent and are not assumed by policy.
 
 If a provider becomes unavailable, the AI fabric advances through the
 configured chain. The gateway retains provider/model provenance.
@@ -62,13 +57,12 @@ DEFAULT_AI_POLICY: Mapping[str, tuple[AIModelRoute, ...]] = {
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
         AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
-    # Structured planning uses Google's current Flash-Lite model first.
-    # The final Cloudflare fallback is accepted only when the returned
-    # content passes the same strict JSON/schema checks as every provider.
-    # A separate Google Gemma route remains disabled pending confirmation
-    # of its exact endpoint and structured-output contract.
+    # Accuracy-first Google model, high-volume Google fallback, then
+    # independent Cloudflare fallback. All outputs remain subject to the
+    # same downstream parse and required-key/schema validation.
     "structured_json": (
-        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
+        AIModelRoute("gemini", "gemini-4-hydrogen"),
+        AIModelRoute("gemini", "gemma-4-31b-it"),
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ),
     "chat": (
