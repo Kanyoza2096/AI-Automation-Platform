@@ -282,6 +282,12 @@ async def ai_chat(
     engine = str(context.get("engine") or "general").strip().lower()
     if engine not in _VALID_ENGINES:
         raise HTTPException(status_code=422, detail="Unsupported conversation engine")
+    collaboration_enabled = context.get("collaboration") is True
+    collaboration_engines = []
+    if collaboration_enabled:
+        if operation != "chat" or engine != "director":
+            raise HTTPException(status_code=422, detail="Only a Director chat can coordinate engine collaboration")
+        collaboration_engines = _normalize_collaboration_engines(context.get("collaboration_engines"))
 
     workspace_id = await require_workspace(request)
     db = _conversation_db()
@@ -366,13 +372,8 @@ async def ai_chat(
 
     from ai.gateway import get_llm_gateway
     gateway = get_llm_gateway()
-    collaboration_enabled = context.get("collaboration") is True
-    collaboration_engines = []
     collaboration_details = []
     if collaboration_enabled:
-        if engine != "director":
-            raise HTTPException(status_code=422, detail="Only Director can coordinate engine collaboration")
-        collaboration_engines = _normalize_collaboration_engines(context.get("collaboration_engines"))
         reply, result, collaboration_details = await _run_engine_collaboration(
             gateway, db, workspace_id, body.message, collaboration_engines
         )
@@ -393,8 +394,6 @@ async def ai_chat(
         + f"USER: {body.message}\\nASSISTANT:"
     )
 
-    from ai.gateway import get_llm_gateway
-    gateway = get_llm_gateway()
     if not collaboration_enabled:
         result = await gateway.complete_async(
             prompt,
