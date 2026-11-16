@@ -248,6 +248,29 @@ def create_app(director: Director):
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         return director.organism_state(max_age_seconds=max_age_seconds)
 
+    @app.get("/engineering-awareness")
+    async def get_engineering_awareness(
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Return a read-only, evidence-labelled snapshot of KDO engineering changes."""
+        await _require_auth(request, credentials)
+        _require_platform_scope(request)
+        try:
+            from .engineering_awareness import build_engineering_awareness
+            return await build_engineering_awareness()
+        except Exception as exc:
+            log.exception("Director engineering awareness unavailable")
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "ENGINEERING_AWARENESS_UNAVAILABLE",
+                    "message": "Engineering change evidence could not be loaded.",
+                    "retryable": True,
+                    "side_effects": False,
+                },
+            ) from exc
+
     @app.get("/decision-context")
     async def get_decision_context(
         request: Request,
