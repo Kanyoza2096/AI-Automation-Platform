@@ -146,3 +146,105 @@ async def test_restore_flags_in_flight_task_to_prevent_duplicate_side_effect():
     assert restored.result["status"] == "reconciliation_required"
     persisted = await restarted.store.get_task("ambiguous")
     assert persisted["status"] == Status.FLAGGED.value
+
+
+class _MissionAdmissionStore:
+    def __init__(self):
+        self.receipts = {}
+        self.brand_checks = []
+
+    async def stage_mission_admission(self, **kwargs):
+        key = (kwargs["workspace_id"], kwargs["idempotency_key"])
+        prior = self.receipts.get(key)
+        if prior:
+            if prior["fingerprint"] != kwargs["request_fingerprint"]:
+                raise ValueError("mission_idempotency_conflict")
+            return {"mission_id": prior["mission_id"], "task_ids": prior["task_ids"], "replayed": True}
+        ids = [row["id"] for row in kwargs["tasks"]]
+        self.receipts[key] = {
+            "fingerprint": kwargs["request_fingerprint"],
+            "mission_id": kwargs["mission_id"],
+            "task_ids": ids,
+        }
+        return {"mission_id": kwargs["mission_id"], "task_ids": ids, "replayed": False}
+
+    async def brand_belongs_to_workspace(self, brand_id, workspace_id):
+        self.brand_checks.append((brand_id, workspace_id))
+        return brand_id == "brand-owned" and workspace_id == "workspace-a"
+
+
+def _stageable_health_plan():
+    return {
+        "plan_id": "plan-health-1",
+        "source_context_fingerprint": "context-fingerprint-1",
+        "source_context_generated_at": "2026-11-16T08:00:00+00:00",
+        "steps": [{
+            "step_id": "health",
+            "capability": "run_health_scan",
+            "sector": "health",
+            "objective": "Inspect current service health",
+            "target": "Workspace health registry",
+            "rationale": "Collect current evidence",
+            "depends_on": [],
+            "acceptance_criteria": ["Every returned service has a reported status."],
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_strategic_mission_admission_stages_workspace_tasks_without_execution(monkeypatch):
+    director = Director(supabase_client=None)
+    director.bind_capability("run_health_scan", lambda params: {"ok": True})
+    director.capability_binding_report["run_health_scan"] = "bound"
+    director.store = _MissionAdmissionStore()
+    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
+    async def verified(plan, max_age_seconds=300):
+        return {"verdict": "verified_for_governance_review"}
+    monkeypatch.setattr(director, "verify_strategic_plan", verified)
+
+    result = await director.stage_strategic_mission(
+        plan_id="plan-health-1", workspace_id="workspace-a",
+        idempotency_key="operator-request-001", step_parameters={"health": {}}, actor="operator-1",
+    )
+
+    task = director.tasks[result["task_ids"][0]]
+    assert result["status"] == "staged_for_approval"
+    assert result["authority"] == "none"
+    assert result["execution_permitted"] is False
+    assert result["approval_required"] is True
+    assert task.workspace_id == "workspace-a"
+    assert task.mission_id == result["mission_id"]
+    assert task.status == Status.APPROVAL
+    assert task.params == {}
+
+    replay = await director.stage_strategic_mission(
+        plan_id="plan-health-1", workspace_id="workspace-a",
+        idempotency_key="operator-request-001", step_parameters={"health": {}}, actor="operator-1",
+    )
+    assert replay["replayed"] is True
+    assert replay["task_ids"] == result["task_ids"]
+
+
+@pytest.mark.asyncio
+async def test_strategic_mission_admission_rejects_unlisted_params_and_unowned_brand(monkeypatch):
+    director = Director(supabase_client=None)
+    director.bind_capability("calculate_brand_health", lambda params: {"ok": True})
+    director.capability_binding_report["calculate_brand_health"] = "bound"
+    director.store = _MissionAdmissionStore()
+    plan = _stageable_health_plan()
+    plan["steps"][0].update(capability="calculate_brand_health", sector="brands")
+    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: plan)
+    async def verified(plan, max_age_seconds=300):
+        return {"verdict": "verified_for_governance_review"}
+    monkeypatch.setattr(director, "verify_strategic_plan", verified)
+
+    with pytest.raises(ValueError, match="invalid_step_parameters"):
+        await director.stage_strategic_mission(
+            plan_id="plan-health-1", workspace_id="workspace-a",
+            idempotency_key="operator-request-002", step_parameters={"health": {"brand_id": "brand-owned", "extra": 1}}, actor="operator-1",
+        )
+    with pytest.raises(ValueError, match="brand_not_found_in_workspace"):
+        await director.stage_strategic_mission(
+            plan_id="plan-health-1", workspace_id="workspace-a",
+            idempotency_key="operator-request-003", step_parameters={"health": {"brand_id": "other-brand"}}, actor="operator-1",
+        )
