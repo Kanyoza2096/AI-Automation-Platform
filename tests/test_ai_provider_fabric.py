@@ -253,3 +253,65 @@ def test_structured_json_prefers_gemini_flash_then_flash_lite_before_cloudflare(
         ("gemini", "gemini-2.5-flash-lite"),
         ("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ]
+
+
+# Persistent engine conversation evidence adapters
+def test_director_context_keeps_available_evidence_when_one_source_fails(monkeypatch):
+    import asyncio
+    from api.routers import ai_chat
+
+    class Result:
+        def __init__(self, data): self.data = data
+
+    class Query:
+        def __init__(self, table): self.table = table
+        def select(self, columns): return self
+        def eq(self, key, value):
+            assert key == "workspace_id" and value == "workspace-a"
+            return self
+        def order(self, column, desc=False): return self
+        def limit(self, value): return self
+        def execute(self):
+            if self.table == "director_decisions":
+                raise RuntimeError("simulated unavailable source")
+            return Result([{"id": "task-1", "status": "approval_required"}])
+
+    class DB:
+        def table(self, name): return Query(name)
+
+    async def inline_db_call(operation): return operation()
+    monkeypatch.setattr(ai_chat, "_db_call", inline_db_call)
+    result = asyncio.run(ai_chat._load_engine_context(DB(), "workspace-a", "director"))
+    assert result["freshness"] == "queried_for_this_message"
+    assert result["sources"]["partial"] is True
+    assert result["sources"]["unavailable_tables"] == ["director_decisions"]
+    assert result["sources"]["status"]["director_tasks"]["status"] == "available"
+    assert result["sources"]["status"]["director_decisions"]["status"] == "unavailable"
+    assert result["evidence"]["workspace_tasks"][0]["id"] == "task-1"
+    assert result["evidence"]["workspace_decisions"] == []
+
+
+def test_empty_engine_evidence_is_distinguished_from_unavailable(monkeypatch):
+    import asyncio
+    from api.routers import ai_chat
+
+    class Result:
+        data = []
+
+    class Query:
+        def select(self, columns): return self
+        def eq(self, key, value): return self
+        def order(self, column, desc=False): return self
+        def limit(self, value): return self
+        def execute(self): return Result()
+
+    class DB:
+        def table(self, name): return Query()
+
+    async def inline_db_call(operation): return operation()
+    monkeypatch.setattr(ai_chat, "_db_call", inline_db_call)
+    result = asyncio.run(ai_chat._load_engine_context(DB(), "workspace-b", "council"))
+    assert result["sources"]["partial"] is False
+    assert result["sources"]["status"]["council_decisions"] == {"status": "empty", "records": 0}
+    assert result["sources"]["unavailable_tables"] == []
+    assert result["execution_authority"] == "none"
