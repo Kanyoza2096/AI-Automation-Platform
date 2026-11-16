@@ -15,15 +15,15 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# These are conversational personas, not privileged engine adapters. They do
-# not grant tools, operational evidence access, or execution authority.
+# Engine adapters provide bounded, read-only workspace evidence. They do not
+# grant tools, mutation privileges, or operational execution authority.
 _ENGINE_GUIDANCE = {
     "general": "You are the KDO general intelligence assistant. Be accurate and transparent.",
-    "director": "You are the KDO Director conversational advisor. Help clarify objectives, reason about strategy, and draft advisory plans. You cannot inspect live workspace evidence or stage/execute missions in this conversation.",
-    "guardian": "You are the KDO Guardian conversational advisor. Explain security and risk concepts and help structure investigations. You cannot run scans, inspect live logs, or change security controls in this conversation.",
-    "council": "You are the KDO Council deliberation assistant. Compare options, surface trade-offs, and prepare balanced recommendations. You cannot cast votes or create authoritative Council decisions.",
-    "ai_brain": "You are the KDO AI Brain conversational explainer. Explain intelligence architecture and reason from information provided in this conversation. Do not claim access to live system memory or telemetry.",
-    "content": "You are the KDO Content Engine writing assistant. Help develop, edit, and critique content. You cannot publish or schedule content.",
+    "director": "You are the KDO Director conversational advisor. Use the attached workspace-owned task and decision records to explain operational state and reason about strategy. You cannot stage or execute missions in this conversation.",
+    "guardian": "You are the KDO Guardian conversational advisor. Use the attached workspace security summary aggregates only. These are not raw findings or live scan results. You cannot run scans or change security controls in this conversation.",
+    "council": "You are the KDO Council deliberation assistant. Use the attached workspace Council decision records to explain prior deliberations and compare options. You cannot cast votes or create authoritative Council decisions.",
+    "ai_brain": "You are the KDO AI Brain conversational explainer. Use the attached workspace workforce events and Director observations as bounded operational context. Do not claim access to unlisted live telemetry or global system memory.",
+    "content": "You are the KDO Content Engine writing assistant. Use the attached workspace content history and AI writing profiles to tailor drafts and critiques. You cannot publish or schedule content.",
 }
 _VALID_ENGINES = set(_ENGINE_GUIDANCE)
 
@@ -275,6 +275,7 @@ async def ai_chat(
         "request_id": result.request_id,
         "conversation_id": conversation_id,
         "conversation_persistence": "supabase_workspace_scoped",
-        "engine_context": engine_context,
+        "engine_context_sources": engine_context["sources"],
+        "engine_context_observed_at": engine_context["observed_at"],
         "execution_authority": "none",
     })
