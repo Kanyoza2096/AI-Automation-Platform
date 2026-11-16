@@ -265,8 +265,9 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
                 "evidence_source": "render_deployment",
             })
 
+    render_status = "available" if normalized_services else ("unavailable" if service_errors else "unmatched")
     return {
-        "status": "available" if normalized_services or not service_errors else "partial",
+        "status": render_status,
         "source": "render_api",
         "message": (
             "No Render services could be safely matched to the configured repositories. Configure KDO_ENGINEERING_RENDER_SERVICE_IDS if service metadata does not expose repository URLs."
