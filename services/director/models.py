@@ -275,6 +275,14 @@ class Observation:
     issues: List[Dict[str, Any]] = field(default_factory=list)
     message: str = ""
     timestamp: datetime = field(default_factory=now)
+    # Observer evidence is platform-wide unless an explicit workspace is supplied.
+    workspace_id: Optional[str] = None
+    scope_type: str = "platform"
+
+    def __post_init__(self) -> None:
+        if self.workspace_id and self.workspace_id.strip():
+            self.workspace_id = self.workspace_id.strip()
+            self.scope_type = "workspace"
 
 
 @dataclass
@@ -301,6 +309,8 @@ class Task:
     # Explicit tenant ownership for operator-authored mission tasks.
     # Legacy tasks remain unscoped and retain proposal-based visibility rules.
     workspace_id: Optional[str] = None
+    # Preserve explicit database ownership when restoring/updating legacy rows.
+    scope_type: str = "platform"
     # Optional mission-graph metadata. Empty defaults preserve legacy task behavior.
     depends_on: List[str] = field(default_factory=list)
     mission_id: Optional[str] = None
@@ -312,6 +322,11 @@ class Task:
     # Timestamp of the observation that justified this task; enables evidence-aware recurrence deduplication.
     evidence_observed_at: Optional[datetime] = None
     condition_fingerprint: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.workspace_id and self.workspace_id.strip():
+            self.workspace_id = self.workspace_id.strip()
+            self.scope_type = "workspace"
 
 
 @dataclass

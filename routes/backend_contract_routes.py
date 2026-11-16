@@ -195,11 +195,28 @@ async def tasks(request: Request, limit: int = Query(200, ge=1, le=1000)):
     d = _director()
     if d is None:
         raise HTTPException(503, "Director unavailable")
+    identity = _identity(request)
+    is_platform_operator = bool(getattr(identity, "is_species", False))
+    workspace_id = _workspace(request)
+    if not is_platform_operator and not workspace_id:
+        raise HTTPException(403, detail="Workspace identity required for Director task access")
     store = getattr(d, "store", None)
     if store is not None and hasattr(store, "list_tasks"):
-        rows = await store.list_tasks(limit=limit) if "limit" in inspect.signature(store.list_tasks).parameters else await store.list_tasks()
+        if "scope_type" in inspect.signature(store.list_tasks).parameters:
+            rows = await store.list_tasks(
+                limit=limit,
+                workspace_id=None if is_platform_operator else workspace_id,
+                scope_type="platform" if is_platform_operator else "workspace",
+            )
+        else:
+            raise HTTPException(503, detail="Director task store does not support scoped reads")
     else:
-        rows = list(getattr(d, "tasks", {}).values())
+        rows = [
+            task for task in getattr(d, "tasks", {}).values()
+            if (getattr(task, "scope_type", "platform") == "platform" if is_platform_operator
+                else getattr(task, "scope_type", "platform") == "workspace"
+                and getattr(task, "workspace_id", None) == workspace_id)
+        ]
     return {"tasks": [_jsonable(x) for x in rows[-limit:]], "count": min(len(rows), limit)}
 
 

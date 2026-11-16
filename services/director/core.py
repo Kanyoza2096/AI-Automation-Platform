@@ -904,6 +904,11 @@ class Director:
                 if not isinstance(raw, dict) or not raw.get("id"):
                     errors += 1
                     continue
+                # Ownership lives in the row metadata as well as the task payload.
+                # Carry it into the model so reconciliation writes cannot silently
+                # promote legacy_unclassified records into platform state.
+                if isinstance(record, dict) and record.get("scope_type"):
+                    raw["scope_type"] = record["scope_type"]
                 fields = {key: raw[key] for key in Task.__dataclass_fields__ if key in raw}
                 fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
                 fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
