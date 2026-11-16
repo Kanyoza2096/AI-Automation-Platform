@@ -388,3 +388,43 @@ def test_catalog_marks_capabilities_without_closed_parameter_contract_not_stagea
     catalog = director.capability_catalog()
     assert catalog["run_health_scan"]["parameter_contract_bound"] is False
     assert catalog["run_health_scan"]["mission_staging_ready"] is False
+
+
+def test_only_bounded_diagnostic_capabilities_receive_closed_mission_contracts():
+    director = Director(supabase_client=None)
+    catalog = director.capability_catalog()
+
+    for name in (
+        "run_health_scan",
+        "run_guardian_scan",
+        "self_diagnostic",
+        "calculate_brand_health",
+        "review_content_quality",
+    ):
+        assert catalog[name]["parameter_contract_bound"] is True
+        assert catalog[name]["mission_staging_ready"] is False
+
+    for name in (
+        "update_brand_posting_schedule",
+        "scale_worker_pool",
+        "restart_failed_service",
+        "quarantine_security_issue",
+        "prepare_security_remediation",
+    ):
+        assert catalog[name]["parameter_contract_bound"] is False
+        assert catalog[name]["mission_staging_ready"] is False
+
+
+def test_diagnostic_mission_contracts_validate_only_declared_inputs():
+    director = Director(supabase_client=None)
+    health_schema = director.capabilities["run_health_scan"].parameter_schema
+    brand_schema = director.capabilities["calculate_brand_health"].parameter_schema
+
+    assert Director.validate_capability_parameters(health_schema, {}) == []
+    assert Director.validate_capability_parameters(health_schema, {"scope": "all"}) == [
+        "parameter_not_allowed:scope"
+    ]
+    assert Director.validate_capability_parameters(brand_schema, {"brand_id": "brand-1"}) == []
+    assert "required_parameter_missing:brand_id" in Director.validate_capability_parameters(
+        brand_schema, {}
+    )
