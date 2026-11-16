@@ -19,7 +19,7 @@ router = APIRouter()
 # grant tools, mutation privileges, or operational execution authority.
 _ENGINE_GUIDANCE = {
     "general": "You are the KDO general intelligence assistant. Explain concepts, reason carefully, and help the operator formulate clear objectives. Do not imply access to KDO operational evidence unless it is attached.",
-    "director": "You are the KDO Director conversational advisor. Focus on strategy, mission decomposition, dependencies, measurable acceptance criteria, and workspace-owned task/decision evidence. Separate observations, hypotheses, and recommendations. You cannot create plans, stage missions, approve tasks, or execute them in this conversation.",
+    "director": "You are the KDO Director conversational advisor. Focus on strategy, mission decomposition, dependencies, measurable acceptance criteria, workspace-owned task/decision evidence, and (when attached) read-only engineering change evidence. For engineering claims, distinguish source implementation/merge, exact-commit deployment evidence, and independent operational verification. Never infer deployment from a merge or operational success from a live deployment. Separate observations, hypotheses, and recommendations. You cannot create plans, stage missions, approve tasks, or execute them in this conversation.",
     "guardian": "You are the KDO Guardian conversational advisor. Focus on security posture, risk, evidence quality, and safe remediation planning. The attached security summaries are aggregates, not raw findings or live scan results. Never assert a vulnerability or incident without evidence. You cannot run scans or change security controls in this conversation.",
     "council": "You are the KDO Council deliberation assistant. Focus on balanced alternatives, trade-offs, decision rationale, and prior recorded Council outcomes. Distinguish recorded decisions from suggestions in this chat. You cannot cast votes or create authoritative Council decisions.",
     "ai_brain": "You are the KDO AI Brain conversational explainer. Focus on system observability, workforce activity, intelligence flow, and evidence provenance. The attached workforce events and Director observations are bounded workspace records, not global or guaranteed-live telemetry.",
@@ -68,7 +68,21 @@ def _safe_context_value(value, depth=0):
     return str(value)[:500]
 
 
-async def _load_engine_context(db, workspace_id: str, engine: str) -> dict:
+_ENGINEERING_AWARENESS_QUERY_TERMS = (
+    "engineering", "development work", "pull request", "merged", "merge",
+    "commit", "deployment", "deployed", "deploy", "repository", "repositories",
+    "code change", "implemented", "implementation", "what changed",
+    "changes today", "work today", "what did we", "what have we",
+)
+
+
+def _is_engineering_awareness_query(message: str) -> bool:
+    """Avoid provider calls on ordinary Director chat; fetch only on relevant questions."""
+    normalized = " ".join(str(message or "").lower().split())
+    return bool(normalized) and any(term in normalized for term in _ENGINEERING_AWARENESS_QUERY_TERMS)
+
+
+async def _load_engine_context(db, workspace_id: str, engine: str, *, include_engineering_awareness: bool = False) -> dict:
     """Read fresh, bounded, workspace-filtered evidence without making one
     unavailable evidence source take the entire conversation offline.
     """
@@ -115,13 +129,35 @@ async def _load_engine_context(db, workspace_id: str, engine: str) -> dict:
         await read_table("writing_profiles", "ai_profiles", "id,name,expertise,tone,style,writing_style", "updated_at", 6)
         source_tables = ["post_history", "ai_profiles"]
 
+    if include_engineering_awareness:
+        try:
+            from services.director.engineering_awareness import build_engineering_awareness
+            snapshot = await build_engineering_awareness()
+            evidence["engineering_awareness"] = _safe_context_value(snapshot)
+            summary = snapshot.get("summary") if isinstance(snapshot, dict) else {}
+            source_status["github_api+render_api"] = {
+                "status": str(snapshot.get("status") or "unavailable"),
+                "repositories": int((summary or {}).get("repositories_available") or 0),
+                "merged_changes": int((summary or {}).get("merged_changes") or 0),
+                "deployed_changes": int((summary or {}).get("deployed_changes") or 0),
+            }
+            source_tables.append("github_api+render_api")
+        except Exception:
+            logger.warning("Director engineering awareness evidence unavailable for chat", exc_info=True)
+            evidence["engineering_awareness"] = {
+                "status": "unavailable",
+                "message": "Engineering change evidence could not be loaded for this message.",
+            }
+            source_status["github_api+render_api"] = {"status": "unavailable", "records": 0}
+
     unavailable = [name for name, status in source_status.items() if status["status"] == "unavailable"]
     return {
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "freshness": "queried_for_this_message",
         "sources": {
             "tables": source_tables,
-            "scope": "authenticated_workspace" if source_tables else "none",
+            "scope": "authenticated_workspace+platform_read_only" if include_engineering_awareness else ("authenticated_workspace" if source_tables else "none"),
+            "platform_sources": ["github_api", "render_api"] if include_engineering_awareness else [],
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
@@ -832,7 +868,20 @@ async def ai_chat(
         }).eq("id", collaboration_run_id).eq("workspace_id", workspace_id).execute())
         engine_context = await _load_engine_context(db, workspace_id, "director")
     else:
-        engine_context = await _load_engine_context(db, workspace_id, engine)
+        request_context = getattr(request.state, "request_context", None)
+        role = str(getattr(request_context, "role", "") or "").lower()
+        can_read_platform_engineering = bool(
+            getattr(request_context, "species_privileges", False) or role == "owner"
+        )
+        include_engineering_awareness = (
+            engine == "director"
+            and can_read_platform_engineering
+            and _is_engineering_awareness_query(body.message)
+        )
+        engine_context = await _load_engine_context(
+            db, workspace_id, engine,
+            include_engineering_awareness=include_engineering_awareness,
+        )
         context_json = json.dumps(engine_context, ensure_ascii=False, separators=(",", ":"))[:12000]
         prompt = (
         f"{_ENGINE_GUIDANCE[engine]}\\n\\n"
