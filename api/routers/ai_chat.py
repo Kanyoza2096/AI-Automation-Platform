@@ -415,10 +415,33 @@ async def ai_chat(
             [f"OPERATOR: {str(item.get('content') or '')[:1200]}" for item in prior if item.get("role") == "user"]
             + [f"OPERATOR: {body.message}"]
         )[:6000]
-        reply, result, collaboration_details = await _run_engine_collaboration(
-            gateway, db, workspace_id, collaboration_objective, collaboration_engines
-        )
         collaboration_run_id = str(uuid.uuid4())
+        collaboration_started_at = datetime.now(timezone.utc).isoformat()
+        await _db_call(lambda: db.table("director_collaboration_runs").insert({
+            "id": collaboration_run_id,
+            "workspace_id": workspace_id,
+            "conversation_id": conversation_id,
+            "created_by": (auth_user_email_var.get() or "authenticated")[:256],
+            "objective": collaboration_objective[:6000],
+            "requested_engines": collaboration_engines,
+            "status": "running",
+            "consultations": [],
+            "evidence_summary": {},
+            "started_at": collaboration_started_at,
+        }).execute())
+        try:
+            reply, result, collaboration_details = await _run_engine_collaboration(
+                gateway, db, workspace_id, collaboration_objective, collaboration_engines
+            )
+        except Exception:
+            try:
+                await _db_call(lambda: db.table("director_collaboration_runs").update({
+                    "status": "failed",
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", collaboration_run_id).eq("workspace_id", workspace_id).execute())
+            except Exception:
+                logger.exception("Unable to persist failed Director collaboration run %s", collaboration_run_id)
+            raise
         evidence_summary = {
             item["engine"]: {
                 "status": item["status"],
@@ -427,22 +450,15 @@ async def ai_chat(
             } for item in collaboration_details
         }
         run_status = _collaboration_run_status(collaboration_details)
-        await _db_call(lambda: db.table("director_collaboration_runs").insert({
-            "id": collaboration_run_id,
-            "workspace_id": workspace_id,
-            "conversation_id": conversation_id,
-            "created_by": (auth_user_email_var.get() or "authenticated")[:256],
-            "objective": collaboration_objective[:6000],
-            "requested_engines": collaboration_engines,
+        await _db_call(lambda: db.table("director_collaboration_runs").update({
             "status": run_status,
             "consultations": collaboration_details,
             "synthesis": str(result.text or "")[:12000],
             "synthesis_provider": result.provider,
             "synthesis_model": result.model,
             "evidence_summary": evidence_summary,
-            "started_at": datetime.now(timezone.utc).isoformat(),
             "completed_at": datetime.now(timezone.utc).isoformat(),
-        }).execute())
+        }).eq("id", collaboration_run_id).eq("workspace_id", workspace_id).execute())
         engine_context = await _load_engine_context(db, workspace_id, "director")
     else:
         engine_context = await _load_engine_context(db, workspace_id, engine)
