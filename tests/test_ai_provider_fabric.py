@@ -168,6 +168,64 @@ def test_cloudflare_adapter_forwards_output_token_budget():
     assert receipt.status == "succeeded"
 
 
+def test_gemini_adapter_translates_json_schema_to_native_response_schema():
+    from services.connectors.gemini_ai_adapter import GeminiAIAdapter
+
+    source_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "steps"],
+        "properties": {
+            "summary": {"type": "string"},
+            "steps": {
+                "type": "array", "minItems": 1, "maxItems": 6,
+                "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["step_id", "depends_on"],
+                    "properties": {
+                        "step_id": {"type": "string"},
+                        "depends_on": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
+        },
+    }
+    observed = {}
+
+    def handler(request):
+        observed.update(json.loads(request.content)["generationConfig"])
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"parts": [{"text": '{"summary":"ok","steps":[]}'}]}}]
+        })
+
+    adapter = GeminiAIAdapter(api_key="key", model="gemini-4-hydrogen", client=client(handler))
+    receipt = adapter.analyze(
+        user_prompt="Return the Director plan", correlation_id="director-schema",
+        structured=True, response_schema=source_schema,
+    )
+    assert receipt.status == "succeeded"
+    assert observed["responseMimeType"] == "application/json"
+    assert observed["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert observed["responseSchema"] == {
+        "type": "OBJECT",
+        "required": ["summary", "steps"],
+        "properties": {
+            "summary": {"type": "STRING"},
+            "steps": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "required": ["step_id", "depends_on"],
+                    "properties": {
+                        "step_id": {"type": "STRING"},
+                        "depends_on": {"type": "ARRAY", "items": {"type": "STRING"}},
+                    },
+                },
+            },
+        },
+    }
+
+
 def test_gemini_adapter_forwards_output_token_budget_and_finish_reason():
     from services.connectors.gemini_ai_adapter import GeminiAIAdapter
 
