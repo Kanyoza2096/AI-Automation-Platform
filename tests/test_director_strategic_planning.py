@@ -201,3 +201,34 @@ def test_llm_adapter_fails_closed_when_gateway_is_unavailable():
 def test_llm_adapter_requires_structured_gateway():
     with pytest.raises(StrategicPlanningError, match="configured_llm_gateway_required"):
         make_llm_strategic_planner(None)
+
+
+def test_provider_failure_is_not_classified_as_invalid_objective():
+    from services.director.planning import StrategicPlannerUnavailable
+
+    director = Director(
+        supabase_client=None,
+        strategic_planner=lambda **kwargs: (_ for _ in ()).throw(
+            ValueError("provider quota exhausted")
+        ),
+    )
+
+    with pytest.raises(StrategicPlannerUnavailable, match="strategic_planner_provider_unavailable"):
+        director.plan_objective(objective())
+
+
+def test_llm_adapter_reports_provider_failure_as_unavailable_not_validation_error():
+    from services.director.planning import StrategicPlannerUnavailable
+
+    class RateLimitedGateway:
+        def complete_structured(self, prompt, **kwargs):
+            return SimpleNamespace(
+                ok=False, mode=SimpleNamespace(value="degraded"),
+                reason="Cloudflare AI HTTP 429", provider="cloudflare_ai",
+            )
+
+    director = Director(supabase_client=None)
+    adapter = make_llm_strategic_planner(RateLimitedGateway())
+
+    with pytest.raises(StrategicPlannerUnavailable, match="llm_strategic_planner_unavailable"):
+        adapter(objective=objective(), context=director.strategic_context())
