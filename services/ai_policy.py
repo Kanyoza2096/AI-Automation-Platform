@@ -2,26 +2,31 @@
 
 Provider selection is policy, not application/provider coupling.
 Each task declares an ordered chain of routes. The AI fabric tries them
-in order; the first that succeeds wins.
+in order. The first response that passes the capability's validation wins.
 
 Rationale for the ordering:
-  - Cloudflare Workers AI is the default primary provider for CHAT and
-    classification tasks: it has been operationally reliable and has a
-    separate quota pool from Google.
-  - Gemini 2.5 Flash is primary for structured_json. Cloudflare's
-    Llama 3.3 70B (FP8) has failed the JSON schema contract twice in
-    production with structured_parse_failed — HTTP 200 with content
-    that parse_structured_json cannot extract. Gemini has been
-    reliable on the same prompts. Cloudflare's 8B FP8 remains as
-    fallback for cost/speed, but is not assumed to succeed where the
-    70B failed.
-  - Small tasks (classification, chat) use Cloudflare's optimized 8B FP8.
-  - Large tasks (content generation) use Cloudflare's 70B FP8, with
-    Gemini as the fallback.
+  - Cloudflare Workers AI remains the primary provider for chat and
+    classification workloads where its optimized models are appropriate.
+  - Gemini 3.5 Flash-Lite is the preferred Google model for structured JSON
+    generation. Google AI Studio's current model catalogue lists
+    gemini-3.5-flash-lite and marks gemini-2.5-flash deprecated.
+  - Cloudflare Llama 3.1 8B FP8 remains the final structured-output fallback.
+    Every structured response must still pass KDO's JSON/schema validation.
+  - Gemini 2.5 Flash is no longer selected by this policy. Gemini 2.5
+    Flash-Lite remains available to some existing API users, but is not
+    selected for new routing because Google recommends newer models.
 
-If Cloudflare becomes unavailable for chat, or Gemini becomes
-unreliable for structured output, flip the affected ordering by
-editing this file — the gateways read the policy at call time.
+Gemma note:
+  - Do not confuse Google's Gemma family with Gemini 4. Google's current
+    AI Studio model catalogue lists Gemini 4 Carbon, Argon and Hydrogen,
+    while Gemma is a separate model family.
+  - A second Google-hosted Gemma route is intentionally not activated until
+    its exact API endpoint/model identifier and structured-output support
+    are confirmed. The string "gemma-4" alone is not enough to establish
+    compatibility with the Gemini generateContent adapter.
+
+If a provider becomes unavailable, the AI fabric advances through the
+configured chain. The gateway retains provider/model provenance.
 """
 
 from __future__ import annotations
@@ -36,52 +41,39 @@ class AIModelRoute:
 
 
 # Ordered fallback chains per task. First entry is the preferred provider;
-# subsequent entries are fallbacks. Every chain must include at least one
-# route. Providers must be registered in services/connectors/ai_registry.py.
+# subsequent entries are fallbacks. Providers must be registered in
+# services/connectors/ai_registry.py.
 #
-# Model ID notes:
-#  - Base unquantized model IDs (e.g. "@cf/meta/llama-3.1-8b-instruct" without
-#    a quant suffix) have been deprecated upstream and return HTTP 410 Gone.
-#    Active workloads use the "-fp8-fast" quantized variants, which are on
-#    Cloudflare's active catalog and are the recommended replacements.
-#  - "-fp8" alone (without "-fast") is NOT a valid model ID on Workers AI.
-#    The "-fast" suffix is required. Confirmed against the live catalog.
+# Cloudflare Workers AI model IDs must use the active quantized variants.
 DEFAULT_AI_POLICY: Mapping[str, tuple[AIModelRoute, ...]] = {
     "classification": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
-        AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
     "summarization": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
-        AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
     "interpretation": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
-        AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
     "content_generation": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
-        AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
-    # structured_json: Gemini primary. Cloudflare's Llama 3.3 70B FP8 has
-    # failed the schema contract twice in production with
-    # structured_parse_failed. Gemini 2.5 Flash has been reliable on the
-    # same prompts. Cloudflare's 8B FP8 is the fallback: cheaper and
-    # faster, but not assumed to be more schema-reliable than the 70B.
-    # The real defense against Cloudflare's structured failures is the
-    # parser-tolerance layer in models/content.py, not the route ordering.
+    # Structured planning uses Google's current Flash-Lite model first.
+    # The final Cloudflare fallback is accepted only when the returned
+    # content passes the same strict JSON/schema checks as every provider.
+    # A separate Google Gemma route remains disabled pending confirmation
+    # of its exact endpoint and structured-output contract.
     "structured_json": (
-        # Keep structured planning on Google's models first. Flash Lite is
-        # a lower-cost Gemini route with a separate model quota bucket in
-        # many Google AI Studio projects; it gives Gemini a second chance
-        # during Flash-specific saturation before leaving the provider.
-        AIModelRoute("gemini", "gemini-2.5-flash"),
-        AIModelRoute("gemini", "gemini-2.5-flash-lite"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
     ),
     "chat": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
-        AIModelRoute("gemini", "gemini-2.5-flash"),
+        AIModelRoute("gemini", "gemini-3.5-flash-lite"),
     ),
 }
 
