@@ -60,6 +60,7 @@ from .analysis import (
     ENGINE_REGISTRY,
 )
 from .core import Director, auto_discover_engines
+from .planning import StrategicPlannerUnavailable
 log = logging.getLogger("kanyoza.director")
 
 class StrategicMissionAdmissionBody(BaseModel):
@@ -272,6 +273,16 @@ def create_app(director: Director):
             plan = await director.create_strategic_plan(
                 body.dict(exclude_none=True)
             )
+        except StrategicPlannerUnavailable as exc:
+            # Provider failures occur before persistence. Return an explicit
+            # no-side-effect retry contract so KCPG can safely reconcile the
+            # transaction instead of treating the 503 as an unknown outcome.
+            raise HTTPException(503, detail={
+                "code": "STRATEGIC_PLANNER_UNAVAILABLE",
+                "message": str(exc)[:200],
+                "retryable": True,
+                "side_effects": False,
+            })
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except RuntimeError as exc:
