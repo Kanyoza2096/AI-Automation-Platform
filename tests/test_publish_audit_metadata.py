@@ -94,3 +94,29 @@ def test_publish_audit_schema_migration_is_additive_and_idempotent():
     assert "ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb" in migration
     assert "CREATE INDEX IF NOT EXISTS post_history_decision_id_idx" in migration
     assert "CREATE INDEX IF NOT EXISTS post_history_correlation_id_idx" in migration
+
+
+def test_publish_step_forwards_correlation_id_to_governed_action():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "workflows"
+        / "post_workflow.py"
+    ).read_text(encoding="utf-8")
+    publish_call = source.split("result = await execute_governed_publish(", 1)[1].split(
+        "\n        )", 1
+    )[0]
+
+    assert 'correlation_id=context.get("correlation_id")' in publish_call
+    assert "automation_job_id=job_id" in publish_call
+
+
+def test_post_history_write_includes_audit_columns():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "workflows"
+        / "post_workflow.py"
+    ).read_text(encoding="utf-8")
+    history_write = source.split("async def _write_post_history", 1)[1]
+
+    assert '"decision_id": decision_id' in history_write
+    assert '"metadata": audit_metadata' in history_write
