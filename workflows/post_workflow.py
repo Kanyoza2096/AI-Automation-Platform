@@ -95,6 +95,7 @@ V1.6  — Async-native steps.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import uuid
@@ -379,6 +380,9 @@ class GenerateContentStep(Step):
         )
 
     async def async_run(self, context: dict[str, Any]) -> Any:
+        # One opaque identifier follows this execution through generation,
+        # validation, governed delivery, and the durable post_history record.
+        context.setdefault("correlation_id", uuid.uuid4().hex)
         topic = context.get("topic", "")
         knowledge_context = context.get("knowledge_context", "")
 
@@ -411,6 +415,11 @@ class GenerateContentStep(Step):
             if not isinstance(base_prompt, str) or not base_prompt.strip():
                 raise ValueError("PromptBuilder returned an empty prompt")
             context["base_prompt"] = base_prompt
+            # Store only a digest, never the full prompt or retrieved passages.
+            context["prompt_sha256"] = hashlib.sha256(
+                base_prompt.encode("utf-8")
+            ).hexdigest()
+            context["prompt_policy_version"] = "kdo-caption-contract-v1"
 
             # Capture IMMEDIATELY — build_post_prompt is synchronous and
             # the builder instance is shared, so nothing may be awaited
@@ -1236,6 +1245,49 @@ class PublishStep(Step):
         topic = context.get("topic", "") or "Untitled post"
         category = context.get("category") or "general"
 
+        content_result = context.get("content_result") or {}
+        validation_result = context.get("validation_result")
+        semantic_review = context.get("semantic_review") or {}
+        evidence_validation = context.get("evidence_validation") or {}
+        # Audit metadata is deliberately metadata-only: no prompt, caption,
+        # retrieved passage text, model reasoning, or credentials are stored.
+        audit_metadata = {
+            "trace_schema_version": 1,
+            "correlation_id": context.get("correlation_id"),
+            "automation_job_id": context.get("job_id"),
+            "scheduled_post_id": context.get("scheduled_post_id"),
+            "source": context.get("source"),
+            "prompt_policy_version": context.get("prompt_policy_version"),
+            "prompt_sha256": context.get("prompt_sha256"),
+            "provider": content_result.get("provider"),
+            "model": content_result.get("model"),
+            "evidence_source_ids": [
+                str(item.get("source_id"))
+                for item in (context.get("knowledge_evidence") or [])
+                if isinstance(item, dict) and item.get("source_id")
+            ],
+            "evidence_validation": {
+                "ok": evidence_validation.get("ok") is True,
+                "supporting_source_ids": evidence_validation.get("supporting_source_ids") or [],
+            },
+            "policy_validation": {
+                "approved": bool(getattr(validation_result, "is_approved", False)),
+                "status": getattr(getattr(validation_result, "status", None), "value", None),
+            },
+            "semantic_review": {
+                "approved": semantic_review.get("approved") is True,
+                "status": semantic_review.get("status"),
+                "request_id": semantic_review.get("request_id"),
+                "provider": semantic_review.get("provider"),
+                "model": semantic_review.get("model"),
+                "supporting_source_ids": semantic_review.get("supporting_source_ids") or [],
+            },
+            "publish_action": {
+                "intent_id": (context.get("publish_result") or {}).get("action_intent_id"),
+                "execution_id": (context.get("publish_result") or {}).get("action_execution_id"),
+            },
+        }
+
         row = {
             "id": ph_id,
             "topic": topic,
@@ -1248,6 +1300,8 @@ class PublishStep(Step):
             "created_at": now_iso,
             "brand_id": getattr(self._brand, "id", None),
             "workspace_id": workspace_id,
+            "decision_id": decision_id,
+            "metadata": audit_metadata,
         }
 
         try:
