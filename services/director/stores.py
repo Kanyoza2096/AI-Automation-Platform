@@ -403,11 +403,24 @@ class AsyncSupabaseStore:
             }).execute(),
         )
 
-    async def list_observations(self, limit: int = 100) -> List[dict]:
+    async def list_observations(
+        self, limit: int = 100, *, workspace_id: Optional[str] = None,
+        scope_type: str = "platform",
+    ) -> List[dict]:
+        """List observations from exactly one ownership scope."""
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            raise ValueError("invalid Director observation scope")
+        if scope_type == "workspace" and not (workspace_id and workspace_id.strip()):
+            raise ValueError("workspace_id is required for workspace observation reads")
+        if scope_type != "workspace" and workspace_id is not None:
+            raise ValueError("workspace_id cannot be combined with a non-workspace scope")
+        query = self.supabase.table("director_observations").select("*")
+        query = query.eq("scope_type", scope_type)
+        if scope_type == "workspace":
+            query = query.eq("workspace_id", workspace_id.strip())
         result = await self._execute_with_retry(
-            "list from director_observations",
-            lambda: self.supabase.table("director_observations")
-            .select("*").order("timestamp", desc=True).limit(limit).execute(),
+            "list Director observations by ownership scope",
+            lambda: query.order("timestamp", desc=True).limit(limit).execute(),
         )
         return [dict(row) for row in (result.data or [])] if result else []
 
@@ -588,8 +601,25 @@ class InMemoryStore:
     async def save_observation(self, observation: Observation) -> None:
         self.observations.append(safe(asdict(observation)))
 
-    async def list_observations(self, limit: int = 100) -> List[dict]:
-        return list(self.observations)[-limit:]
+    async def list_observations(
+        self, limit: int = 100, *, workspace_id: Optional[str] = None,
+        scope_type: str = "platform",
+    ) -> List[dict]:
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            raise ValueError("invalid Director observation scope")
+        if scope_type == "workspace" and not (workspace_id and workspace_id.strip()):
+            raise ValueError("workspace_id is required for workspace observation reads")
+        if scope_type != "workspace" and workspace_id is not None:
+            raise ValueError("workspace_id cannot be combined with a non-workspace scope")
+        rows = []
+        for row in self.observations:
+            row_scope = row.get("scope_type", "platform")
+            if row_scope != scope_type:
+                continue
+            if scope_type == "workspace" and row.get("workspace_id") != workspace_id.strip():
+                continue
+            rows.append(row)
+        return rows[-limit:]
 
     async def save_approval(self, task_id: str, approved: bool, actor: str) -> None:
         if len(self.approvals) >= self.MAX_APPROVALS:
