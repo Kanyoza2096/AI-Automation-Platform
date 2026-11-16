@@ -26,37 +26,54 @@ def _engines():
 
 @router.get("/status")
 async def meta_status():
+    """Return authoritative Meta Engine health and its evidence-quality contract."""
     try:
         from services.meta_engine import meta_engine
-        status = meta_engine.get_status() if hasattr(meta_engine, "get_status") else None
-        if isinstance(status, dict):
-            engines = []
-            raw_engines = status.get("engines") or getattr(meta_engine, "_engines", {}) or {}
-            if isinstance(raw_engines, dict):
-                for eid, eng in raw_engines.items():
-                    st = getattr(eng, "status", None)
-                    if hasattr(st, "value"):
-                        st = st.value
-                    engines.append({"id": str(eid), "status": str(st or status.get("overall", "unknown")).lower()})
-            if not engines:
-                engines = _engines()
-            return {
-                "ok": True,
-                "status": str(status.get("overall", status.get("status", "unknown"))).lower(),
-                "health_score": status.get("health_score"),
-                "risk_score": status.get("risk_score"),
-                "engines": engines,
-                "source": "meta_engine",
-            }
+        checker = getattr(meta_engine, "check_health", None)
+        if not callable(checker):
+            raise RuntimeError("meta_engine_health_provider_unavailable")
+        health = checker()
+        if not isinstance(health, dict):
+            raise RuntimeError("meta_engine_health_payload_invalid")
+        engine_states = health.get("engine_states")
+        if not isinstance(engine_states, dict):
+            engine_states = {}
+        engines = [
+            {"id": str(engine_id), "status": str(engine_status or "unknown").lower()}
+            for engine_id, engine_status in sorted(engine_states.items())
+        ]
+        return {
+            "ok": bool(health.get("available", False)),
+            "status": str(health.get("status", "unknown")).lower(),
+            "health_score": health.get("health_score"),
+            "risk_score": health.get("risk_score"),
+            "engines": engines,
+            "engine_observations": health.get("engine_observations", []),
+            "engine_observation_contract": health.get("engine_observation_contract", {
+                "contract": "meta_engine.observations/v1",
+                "status": "unavailable",
+                "reason": "observation_contract_missing",
+            }),
+            "unknown_engines": health.get("unknown_engines", []),
+            "degraded_engines": health.get("degraded_engines", []),
+            "offline_engines": health.get("offline_engines", []),
+            "source": "meta_engine.check_health",
+        }
     except Exception as exc:
         logger.warning("Meta status unavailable: %s", type(exc).__name__)
-    return {
-        "ok": False,
-        "status": "unavailable",
-        "engines": _engines(),
-        "message": "No authoritative Meta Engine status provider is bound to this compatibility surface.",
-        "source": "none",
-    }
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "engines": [],
+            "engine_observations": [],
+            "engine_observation_contract": {
+                "contract": "meta_engine.observations/v1",
+                "status": "unavailable",
+                "reason": "authoritative_health_provider_unavailable",
+            },
+            "message": "No authoritative Meta Engine health evidence is available.",
+            "source": "none",
+        }
 
 
 @router.get("/engines")
