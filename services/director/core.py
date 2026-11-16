@@ -1388,7 +1388,7 @@ class Director:
                 confidence=0.8,
                 reason=("Operator-staged from strategic plan " + str(plan_id) +
                         "; " + str(step.get("rationale") or "Review plan evidence before approval"))[:1000],
-                sources=["strategic_plan:" + str(plan_id)],
+                sources=["strategic_plan:" + str(plan_id), "operator:" + str(actor or "operator")[:100]],
                 workspace_id=workspace_id,
                 depends_on=dependencies,
                 mission_id=mission_id,
