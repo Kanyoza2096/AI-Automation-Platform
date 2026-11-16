@@ -109,6 +109,7 @@ class AIChatRequest(BaseModel):
     """A03: Prompt injection guard at the validation layer."""
     message: str = Field(..., min_length=1, max_length=MAX_AI_PROMPT_LENGTH)
     history: list[dict] = Field(default_factory=list, max_length=50)
+    context: dict = Field(default_factory=dict)
 
     @field_validator("message")
     @classmethod
