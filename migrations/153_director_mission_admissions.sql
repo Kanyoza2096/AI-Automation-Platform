@@ -39,7 +39,8 @@ BEGIN
        OR p_plan_id IS NULL OR length(trim(p_plan_id)) = 0
        OR p_mission_id IS NULL OR length(trim(p_mission_id)) = 0
        OR p_request_fingerprint IS NULL OR length(trim(p_request_fingerprint)) = 0
-       OR jsonb_typeof(p_tasks) <> 'array'
+       OR p_tasks IS NULL
+       OR jsonb_typeof(p_tasks) IS DISTINCT FROM 'array'
        OR jsonb_array_length(p_tasks) < 1 OR jsonb_array_length(p_tasks) > 12 THEN
         RAISE EXCEPTION 'mission_admission_input_invalid';
     END IF;
@@ -71,14 +72,14 @@ BEGIN
 
     FOR task_row IN SELECT value FROM jsonb_array_elements(p_tasks)
     LOOP
-        IF task_row->>'workspace_id' <> p_workspace_id
-           OR task_row->>'status' <> 'approval_required'
-           OR jsonb_typeof(task_row->'payload') <> 'object'
+        IF task_row->>'workspace_id' IS DISTINCT FROM p_workspace_id
+           OR task_row->>'status' IS DISTINCT FROM 'approval_required'
+           OR jsonb_typeof(task_row->'payload') IS DISTINCT FROM 'object'
            OR COALESCE(task_row->>'id', '') = ''
-           OR task_row->'payload'->>'id' <> task_row->>'id'
-           OR task_row->'payload'->>'workspace_id' <> p_workspace_id
-           OR task_row->'payload'->>'status' <> 'approval_required'
-           OR task_row->'payload'->>'mission_id' <> p_mission_id THEN
+           OR task_row->'payload'->>'id' IS DISTINCT FROM task_row->>'id'
+           OR task_row->'payload'->>'workspace_id' IS DISTINCT FROM p_workspace_id
+           OR task_row->'payload'->>'status' IS DISTINCT FROM 'approval_required'
+           OR task_row->'payload'->>'mission_id' IS DISTINCT FROM p_mission_id THEN
             RAISE EXCEPTION 'mission_task_contract_invalid';
         END IF;
 
@@ -113,6 +114,6 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM PUBLIC;
-REVOKE ALL ON FUNCTION stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM anon;
-REVOKE ALL ON FUNCTION stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM authenticated;
+REVOKE ALL ON FUNCTION public.stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM anon;
+REVOKE ALL ON FUNCTION public.stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.stage_director_mission(TEXT, TEXT, TEXT, TEXT, TEXT, JSONB) TO service_role;
