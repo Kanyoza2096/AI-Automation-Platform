@@ -903,7 +903,7 @@ async def ai_chat(
             capability="chat",
             temperature=getattr(settings, "gemini_chat_temperature", 0.7),
             max_tokens=2048,
-            caller="ai_conversation",
+            caller="ai_chat",
         )
         if not result.ok:
             raise HTTPException(status_code=503, detail="AI conversation provider temporarily unavailable")
