@@ -1979,6 +1979,7 @@ class Director:
         impact_score: float = 50.0,
         mission_priority: float = 50.0,
         evidence_observed_at: Optional[datetime] = None,
+        condition_fingerprint: Optional[str] = None,
     ) -> Task:
         cap = self.capabilities[cap_name]
         normalized_params = params or {}
@@ -2002,6 +2003,11 @@ class Director:
                         existing.sources.append(source)
                     return existing
                 if existing.status in terminal_statuses:
+                    prior_fingerprint = getattr(existing, "condition_fingerprint", None)
+                    if condition_fingerprint and prior_fingerprint == condition_fingerprint:
+                        if source and source not in existing.sources:
+                            existing.sources.append(source)
+                        return existing
                     prior_evidence = getattr(existing, "evidence_observed_at", None)
                     if evidence_observed_at is not None and prior_evidence == evidence_observed_at:
                         if source and source not in existing.sources:
@@ -2029,6 +2035,7 @@ class Director:
             impact_score=max(0.0, min(100.0, float(impact_score))),
             mission_priority=max(0.0, min(100.0, float(mission_priority))),
             evidence_observed_at=evidence_observed_at,
+            condition_fingerprint=condition_fingerprint,
         )
         self.tasks[task.id] = task
         if len(self.tasks) > self.MAX_TASKS:
@@ -2053,6 +2060,10 @@ class Director:
         })
         self._record_decision(f"Planned: {desc}", reason, task, outcome="planned", stage="planning")
         return task
+
+    @staticmethod
+    def _condition_fingerprint(capability: str, params: dict, source: Optional[str] = None) -> str:
+        return capability + "|" + repr(sorted((params or {}).items())) + "|" + str(source or "")
 
     def decide(self) -> List[Task]:
         decisions = []
@@ -2080,23 +2091,27 @@ class Director:
                     decisions.append(self._create_task(
                         Sector.HEALTH, "Recover failed service", "restart_failed_service",
                         "Recoverable service failure", 0.9, issue, obs.source,
+                        condition_fingerprint=self._condition_fingerprint("restart_failed_service", issue, obs.source),
                     ))
                 elif typ in {"security_issue", "vulnerability", "credential_exposure"}:
                     decisions.append(self._create_task(
                         Sector.SECURITY, "Prepare security remediation",
                         "prepare_security_remediation", "Security issue observed",
                         0.97, issue, obs.source, evidence_observed_at=obs.timestamp,
+                        condition_fingerprint=self._condition_fingerprint("prepare_security_remediation", issue, obs.source),
                     ))
                 elif typ in {"brand_inactive", "engagement_decline"}:
                     decisions.append(self._create_task(
                         Sector.BRANDS, "Queue brand revival", "queue_brand_revival",
                         "Brand performance declined", 0.87, issue, obs.source,
+                        condition_fingerprint=self._condition_fingerprint("queue_brand_revival", issue, obs.source),
                     ))
                 elif typ in {"content_gap", "schedule_gap"}:
                     decisions.append(self._create_task(
                         Sector.CONTENT, "Optimize content schedule",
                         "optimize_content_schedule", "Content gap observed",
                         0.88, issue, obs.source, evidence_observed_at=obs.timestamp,
+                        condition_fingerprint=self._condition_fingerprint("optimize_content_schedule", issue, obs.source),
                     ))
         engine_signals = self._engine_decision_signals().get("accepted", [])
         for signal in engine_signals:
