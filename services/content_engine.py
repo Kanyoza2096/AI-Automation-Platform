@@ -1029,7 +1029,7 @@ class ContentEngine:
 
         # Reject generic engagement questions that presume the reader has
         # implemented or operated the system. Only inspect the final sentence.
-        final_sentence = re.split(r"(?<=[.!?])\\s+", caption.strip())[-1].strip()
+        final_sentence = re.split(r"(?<=[.!?])\s+", caption.strip())[-1].strip()
         for pattern in _GENERIC_ASSUMPTIVE_CLOSE_PATTERNS:
             if pattern.search(final_sentence):
                 return False, f"assumptive_generic_close: {pattern.pattern}"
