@@ -359,9 +359,44 @@ def test_gemini_hydrogen_and_gemma_apply_model_specific_thinking_levels():
 
     hydrogen = GeminiAIAdapter(api_key="key", model="gemini-4-hydrogen", client=client(handler))
     gemma = GeminiAIAdapter(api_key="key", model="gemma-4-31b-it", client=client(handler))
-    assert hydrogen.analyze(user_prompt="Return JSON", correlation_id="hydrogen", structured=True).status == "succeeded"
+    schema = {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}, "required": ["ok"]}
+    assert hydrogen.analyze(user_prompt="Return JSON", correlation_id="hydrogen", structured=True, response_schema=schema).status == "succeeded"
     assert gemma.analyze(user_prompt="Return JSON", correlation_id="gemma", structured=True).status == "succeeded"
     assert observed[0]["thinkingConfig"] == {"thinkingLevel": "low"}
     assert observed[1]["thinkingConfig"] == {"thinkingLevel": "minimal"}
     assert observed[0]["responseMimeType"] == "application/json"
+    assert observed[0]["responseSchema"] == schema
     assert observed[1]["responseMimeType"] == "application/json"
+    assert "responseSchema" not in observed[1]
+
+
+
+def test_complete_structured_forwards_native_response_schema_to_gemini(monkeypatch):
+    from ai.gateway import LLMGateway
+    from services.ai_provider import AIReceipt
+
+    observed = {}
+
+    class FakeAdapter:
+        def analyze(self, **kwargs):
+            observed.update(kwargs)
+            return AIReceipt(
+                status="succeeded", provider="gemini", model="gemini-4-hydrogen",
+                raw_output='{"ok":true}', structured_output={"ok": True}, usage=None,
+                correlation_id=kwargs["correlation_id"], request_fingerprint="f",
+            )
+        def close(self):
+            pass
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr("services.connectors.ai_registry.create_ai_provider_adapter", lambda *a, **k: FakeAdapter())
+    monkeypatch.setattr(
+        "services.ai_policy.select_ai_route",
+        lambda task: (type("Route", (), {"provider": "gemini", "model": "gemini-4-hydrogen"})(),),
+    )
+    schema = {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}, "required": ["ok"]}
+    result = LLMGateway().complete_structured(
+        "Return a JSON object", caller="director", required_keys=["ok"], response_schema=schema
+    )
+    assert result.ok is True
+    assert observed["response_schema"] == schema
