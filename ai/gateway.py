@@ -467,6 +467,7 @@ class LLMGateway:
         max_tokens: int,
         capability: str,
         workspace_id: str,
+        response_schema: Optional[Dict[str, Any]] = None,
     ) -> IntelligenceResult:
         start = time.monotonic()
         correlation_id = uuid.uuid4().hex[:16]
@@ -576,6 +577,7 @@ class LLMGateway:
                         model=kwargs.get("model", selected_model),
                         structured=capability in ("structured_json", "structured"),
                         max_output_tokens=max_tokens,
+                        response_schema=response_schema,
                     )
                 finally:
                     adapter.close()
@@ -870,6 +872,7 @@ class LLMGateway:
         max_tokens: int = 1024,
         estimate_tokens: Optional[int] = None,
         caller: str = "unknown",
+        response_schema: Optional[Dict[str, Any]] = None,
     ) -> IntelligenceResult:
         """
         Synchronous completion. Never raises for provider failure.
@@ -953,6 +956,7 @@ class LLMGateway:
                 max_tokens=max_tokens,
                 capability=capability,
                 workspace_id=workspace_id,
+                response_schema=response_schema,
             )
         else:
             result = self._call_orchestrator(
@@ -988,6 +992,7 @@ class LLMGateway:
         max_tokens: int = 1024,
         required_keys: Optional[List[str]] = None,
         caller: str = "unknown",
+        response_schema: Optional[Dict[str, Any]] = None,
     ) -> IntelligenceResult:
         """
         Request structured JSON. Critical engines should use this, not free prose.
@@ -1017,6 +1022,7 @@ class LLMGateway:
             temperature=temperature,
             max_tokens=max_tokens,
             caller=caller,
+            response_schema=response_schema,
         )
         if not result.ok:
             return result
