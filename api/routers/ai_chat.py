@@ -374,8 +374,9 @@ async def ai_chat(
     gateway = get_llm_gateway()
     collaboration_details = []
     if collaboration_enabled:
+        collaboration_objective = "\\n".join(turns + [f"USER: {body.message}"])[:6000]
         reply, result, collaboration_details = await _run_engine_collaboration(
-            gateway, db, workspace_id, body.message, collaboration_engines
+            gateway, db, workspace_id, collaboration_objective, collaboration_engines
         )
         engine_context = await _load_engine_context(db, workspace_id, "director")
     else:
