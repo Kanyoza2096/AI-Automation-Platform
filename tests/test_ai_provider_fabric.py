@@ -244,3 +244,12 @@ def test_llm_gateway_rejects_structured_output_truncated_at_token_limit(monkeypa
     assert result.ok is False
     assert result.reason == "structured_output_truncated"
     assert result.finish_reason == "length"
+
+
+def test_structured_json_prefers_gemini_flash_then_flash_lite_before_cloudflare():
+    routes = select_ai_route("structured_json")
+    assert [(route.provider, route.model) for route in routes] == [
+        ("gemini", "gemini-2.5-flash"),
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
+    ]
