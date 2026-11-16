@@ -237,6 +237,7 @@ async def _compare_engine_evidence(gateway, workspace_id, objective, consultatio
             max_tokens=1400,
             required_keys=["agreements", "disagreements", "unresolved_questions", "limitations"],
             caller="director",
+            response_schema=schema,
         )
         if not result.ok or not isinstance(result.data, dict):
             return {"status": "unavailable", "agreements": [], "disagreements": [],
@@ -341,6 +342,7 @@ async def _build_director_recommendation(gateway, workspace_id, objective, consu
             max_tokens=1600,
             required_keys=["headline", "recommendation", "priority_actions", "supporting_engines", "risks", "unresolved_questions", "success_criteria", "constraints"],
             caller="director",
+            response_schema=schema,
         )
         if not result.ok or not isinstance(result.data, dict):
             return {"status": "unavailable", "headline": "Recommendation unavailable",
