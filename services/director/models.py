@@ -301,6 +301,8 @@ class Task:
     # Advisory ranking inputs. They never grant execution authority.
     impact_score: float = 50.0
     mission_priority: float = 50.0
+    # Timestamp of the observation that justified this task; enables evidence-aware recurrence deduplication.
+    evidence_observed_at: Optional[datetime] = None
 
 
 @dataclass
