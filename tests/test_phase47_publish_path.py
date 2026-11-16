@@ -112,3 +112,19 @@ def test_non_publishable_generation_fails_before_factual_evidence_gate():
     evidence_gate = source.index("validate_caption_evidence(", non_publishable_guard)
     assert non_publishable_guard < evidence_gate
     assert '"CONTENT_NOT_PUBLISHABLE"' in source
+
+
+def test_empty_generated_caption_is_retryable_not_a_validation_rejection():
+    from pathlib import Path
+    from scheduler.brand_scheduler import _workflow_failure_is_retryable
+
+    source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
+    assert 'code="ai_generation_unavailable"' in source
+    failure_evidence = {
+        "failed_steps": [{
+            "step": "generate_content",
+            "error_code": "ai_generation_unavailable",
+            "error": "Content generation returned an empty caption",
+        }]
+    }
+    assert _workflow_failure_is_retryable(failure_evidence) is True
