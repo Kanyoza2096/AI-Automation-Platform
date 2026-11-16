@@ -10,6 +10,10 @@ class StrategicPlanningError(ValueError):
     """A proposed strategic plan failed its contract or evidence checks."""
 
 
+class StrategicPlannerUnavailable(RuntimeError):
+    """The planning provider could not produce a response; this is not bad input."""
+
+
 def _fingerprint(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -87,7 +91,14 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         if isinstance(item, dict) and isinstance(item.get("name"), str)
     }
 
-    generated = generator(objective=normalized_objective, context=context)
+    try:
+        generated = generator(objective=normalized_objective, context=context)
+    except StrategicPlannerUnavailable:
+        raise
+    except Exception as exc:
+        # Provider/network/quota failures must not be mislabeled as invalid
+        # operator input. The API maps this typed failure to HTTP 503.
+        raise StrategicPlannerUnavailable("strategic_planner_provider_unavailable") from exc
     if not isinstance(generated, Mapping) or set(generated) - {"summary", "steps"}:
         raise StrategicPlanningError("planner_output_invalid")
     summary, raw_steps = generated.get("summary"), generated.get("steps")
@@ -454,7 +465,7 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
             suffix = f":{mode or 'unknown'}:{safe_reason}:{safe_provider}"
             if finish_reason:
                 suffix += f":finish_reason_{finish_reason[:32]}"
-            raise StrategicPlanningError(("llm_strategic_planner_unavailable" + suffix)[:200])
+            raise StrategicPlannerUnavailable(("llm_strategic_planner_unavailable" + suffix)[:200])
         data = getattr(result, "data", None)
         if not isinstance(data, Mapping):
             raise StrategicPlanningError("llm_strategic_planner_output_invalid")
