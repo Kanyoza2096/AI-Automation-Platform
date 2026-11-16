@@ -193,16 +193,23 @@ class AsyncSupabaseStore:
 
     async def save_task(self, task: Task) -> bool:
         """Persist a task and report whether the write was acknowledged."""
+        workspace_id = str(task.workspace_id).strip() if task.workspace_id else None
+        scope_type = "workspace" if workspace_id else task.scope_type
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            log.error("Director DB: refusing task with invalid ownership scope")
+            return False
+        if scope_type == "workspace" and not workspace_id:
+            log.error("Director DB: refusing workspace task without workspace_id")
+            return False
+        if scope_type != "workspace" and workspace_id:
+            log.error("Director DB: refusing non-workspace task with workspace_id")
+            return False
         result = await self._execute_with_retry(
             "insert into director_tasks",
             lambda: self.supabase.table("director_tasks").upsert({
                 "id": task.id,
-                "workspace_id": str(task.workspace_id).strip() if task.workspace_id else None,
-                "scope_type": (
-                    "workspace" if task.workspace_id
-                    else task.scope_type if task.scope_type in {"platform", "legacy_unclassified"}
-                    else "platform"
-                ),
+                "workspace_id": workspace_id,
+                "scope_type": scope_type,
                 "payload": json.dumps(safe(asdict(task))),
                 "created_at": iso(task.created_at),
                 "status": task.status.value,
@@ -375,15 +382,22 @@ class AsyncSupabaseStore:
         return plans
 
     async def save_observation(self, observation: Observation) -> None:
+        workspace_id = str(observation.workspace_id).strip() if observation.workspace_id else None
+        scope_type = "workspace" if workspace_id else observation.scope_type
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            log.error("Director DB: refusing observation with invalid ownership scope")
+            return
+        if scope_type == "workspace" and not workspace_id:
+            log.error("Director DB: refusing workspace observation without workspace_id")
+            return
+        if scope_type != "workspace" and workspace_id:
+            log.error("Director DB: refusing non-workspace observation with workspace_id")
+            return
         await self._execute_with_retry(
             "insert into director_observations",
             lambda: self.supabase.table("director_observations").insert({
-                "workspace_id": str(observation.workspace_id).strip() if observation.workspace_id else None,
-                "scope_type": (
-                    "workspace" if observation.workspace_id
-                    else observation.scope_type if observation.scope_type in {"platform", "legacy_unclassified"}
-                    else "platform"
-                ),
+                "workspace_id": workspace_id,
+                "scope_type": scope_type,
                 "payload": json.dumps(safe(asdict(observation))),
                 "timestamp": iso(observation.timestamp),
             }).execute(),
@@ -520,7 +534,13 @@ class InMemoryStore:
             ]
             for tid in completed[:100]:
                 del self.tasks[tid]
-        self.tasks[task.id] = safe(asdict(task))
+        record = safe(asdict(task))
+        record["scope_type"] = "workspace" if task.workspace_id else task.scope_type
+        if record["scope_type"] not in {"platform", "workspace", "legacy_unclassified"}:
+            return False
+        if record["scope_type"] == "workspace" and not task.workspace_id:
+            return False
+        self.tasks[task.id] = record
         return True
 
     async def get_task(self, task_id: str) -> Optional[dict]:
