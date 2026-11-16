@@ -367,7 +367,10 @@ async def _run_engine_followups(gateway, db, workspace_id, objective, engines, c
         except Exception:
             logger.warning("Director engine follow-up failed for %s -> %s", source_engine, target_engine, exc_info=True)
             exchange.update({"status": "unavailable", "answered_at": datetime.now(timezone.utc).isoformat()})
-            source.setdefault("follow_up_questions", []).append(exchange)
+        if exchange not in source.setdefault("follow_up_questions", []):
+            source["follow_up_questions"].append(exchange)
+        if exchange.get("question") and exchange not in target.setdefault("follow_up_responses", []):
+            target["follow_up_responses"].append(exchange)
         exchanges.append(exchange)
         await _persist_collaboration_progress(db, workspace_id, run_id, consultations, "follow_up")
     return exchanges
