@@ -577,7 +577,11 @@ class LLMGateway:
                         model=kwargs.get("model", selected_model),
                         structured=capability in ("structured_json", "structured"),
                         max_output_tokens=max_tokens,
-                        response_schema=response_schema,
+                        **(
+                            {"response_schema": response_schema}
+                            if provider_name == "gemini" and response_schema
+                            else {}
+                        ),
                     )
                 finally:
                     adapter.close()
