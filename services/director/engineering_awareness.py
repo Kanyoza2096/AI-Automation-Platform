@@ -217,7 +217,7 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
         repo_url = _service_repository(service)
         repo_match = next(
             (repo for repo in repositories
-             if repo.lower() in (repo_url or "")),
+             if (repo_url or "").endswith("/" + repo.lower())),
             None,
         )
         if str(service_id or "") in configured_map:
@@ -265,7 +265,12 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
                 "evidence_source": "render_deployment",
             })
 
-    render_status = "available" if normalized_services else ("unavailable" if service_errors else "unmatched")
+    render_status = (
+        "partial" if normalized_services and service_errors
+        else "available" if normalized_services
+        else "unavailable" if service_errors
+        else "unmatched"
+    )
     return {
         "status": render_status,
         "source": "render_api",
