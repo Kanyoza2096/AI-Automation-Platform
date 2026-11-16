@@ -293,6 +293,8 @@ async def ai_chat(
     engine = str(context.get("engine") or "general").strip().lower()
     if engine not in _VALID_ENGINES:
         raise HTTPException(status_code=422, detail="Unsupported conversation engine")
+    if operation in {"collaboration_list", "collaboration_load"} and engine != "director":
+        raise HTTPException(status_code=422, detail="Collaboration records are available only through the Director engine")
     collaboration_enabled = context.get("collaboration") is True
     collaboration_engines = []
     if collaboration_enabled:
