@@ -73,7 +73,11 @@ BEGIN
         IF task_row->>'workspace_id' <> p_workspace_id
            OR task_row->>'status' <> 'approval_required'
            OR jsonb_typeof(task_row->'payload') <> 'object'
-           OR COALESCE(task_row->>'id', '') = '' THEN
+           OR COALESCE(task_row->>'id', '') = ''
+           OR task_row->'payload'->>'id' <> task_row->>'id'
+           OR task_row->'payload'->>'workspace_id' <> p_workspace_id
+           OR task_row->'payload'->>'status' <> 'approval_required'
+           OR task_row->'payload'->>'mission_id' <> p_mission_id THEN
             RAISE EXCEPTION 'mission_task_contract_invalid';
         END IF;
 
