@@ -94,3 +94,57 @@ def test_discovery_report_exposes_import_failure(monkeypatch):
     report = director.status()["diagnostics"]["engine_discovery"]
     assert report["import_failure_count"] == 1
     assert report["import_failures"][0]["observer"] == "engine"
+
+
+def test_ready_status_is_normalized_to_nominal():
+    from services.director.analysis import FunctionObserver
+
+    class Engine:
+        def get_status(self):
+            return {"status": "ready"}
+
+    observation = FunctionObserver("engine", Sector.CONTENT, lambda: {
+        "status": "ready", "health_contract": "get_status",
+    }).observe()
+    assert observation.status.value == "nominal"
+    assert observation.contract_version == "kdo.observer.v1"
+    assert observation.health_contract == "get_status"
+
+
+def test_invalid_source_timestamp_is_not_accepted_as_fresh_evidence():
+    from services.director.analysis import FunctionObserver
+
+    observation = FunctionObserver("engine", Sector.CONTENT, lambda: {
+        "status": "healthy", "observed_at": "not-a-timestamp",
+    }).observe()
+    assert observation.timestamp_valid is False
+
+
+def test_unknown_observers_do_not_create_a_synthetic_health_score():
+    from services.director import Director
+    from services.director.models import Health, Observation
+
+    director = Director(supabase_client=None)
+    director.observations = {
+        "unknown": Observation("unknown", Sector.CONTENT, Health.UNKNOWN),
+    }
+    result = director.health()
+    assert result["status"] == "unknown"
+    assert result["score"] is None
+    assert result["known_observer_count"] == 0
+
+
+def test_stale_health_observations_are_excluded_from_aggregate():
+    from datetime import timedelta
+    from services.director import Director
+    from services.director.models import Health, Observation
+    from services.director.utils import now
+
+    director = Director(supabase_client=None)
+    director.observations = {
+        "stale": Observation("stale", Sector.CONTENT, Health.NOMINAL, timestamp=now() - timedelta(hours=1)),
+    }
+    result = director.health()
+    assert result["status"] == "unknown"
+    assert result["score"] is None
+    assert result["stale_observer_count"] == 1
