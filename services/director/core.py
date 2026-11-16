@@ -2327,6 +2327,7 @@ class Director:
         now_utc = datetime.now(timezone.utc)
         max_age = max(1, int(max_age_seconds))
         accepted, rejected = [], []
+        candidate_signals = defaultdict(lambda: {"observers": set(), "sectors": set(), "descriptions": set(), "observations": 0})
         coverage = []
         fresh_statuses_by_sector: Dict[str, set] = defaultdict(set)
         fresh_observations = {}
@@ -2405,6 +2406,20 @@ class Director:
                     capability = self.capabilities.get(cap_name)
                     if not cap_name or capability is None:
                         reason = "unknown_capability"
+                        # Preserve only a bounded, sanitized advisory candidate.
+                        # Unknown names never enter the executable capability registry.
+                        if (
+                            cap_name and len(cap_name) <= 80
+                            and all(char.isalnum() or char in "._-" for char in cap_name)
+                            and declared_contract == "metrics.director_signals/v1"
+                        ):
+                            candidate = candidate_signals[cap_name]
+                            candidate["observers"].add(observer_name)
+                            candidate["sectors"].add(source_sector)
+                            candidate["observations"] += 1
+                            description = signal.get("description", "") if isinstance(signal, dict) else ""
+                            if isinstance(description, str) and description.strip():
+                                candidate["descriptions"].add(description.strip()[:180])
                     elif not capability.enabled:
                         reason = "capability_disabled"
                     elif capability.sector != getattr(obs, "sector", None):
@@ -2467,9 +2482,30 @@ class Director:
                     "rationale": str(signal.get("rationale", "Engine recommendation; not independently verified."))[:500],
                     "observed_at": iso(stamp),
                 })
+        advisory_candidates = [
+            {
+                "name": name,
+                "observers": sorted(item["observers"]),
+                "sectors": sorted(item["sectors"]),
+                "descriptions": sorted(item["descriptions"])[:3],
+                "observation_count": item["observations"],
+                "catalogue_status": "not_registered",
+                "execution_status": "not_executable",
+                "review_required": True,
+            }
+            for name, item in sorted(candidate_signals.items())
+        ]
         return {
             "accepted": accepted,
             "rejected": rejected,
+            "capability_candidates": advisory_candidates,
+            "capability_candidate_policy": {
+                "source": "fresh_healthy_declared_engine_signal_contract",
+                "auto_registered": False,
+                "auto_enabled": False,
+                "executable": False,
+                "human_review_required": True,
+            },
             "coverage": coverage,
             "coverage_summary": {
                 "observer_count": len(coverage),
