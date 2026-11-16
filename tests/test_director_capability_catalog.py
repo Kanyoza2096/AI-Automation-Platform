@@ -8,6 +8,8 @@ def test_capability_catalog_exposes_handler_and_governance_gaps():
     catalog = director.capability_catalog()
 
     schedule = catalog["update_brand_posting_schedule"]
+    assert schedule["definition_source"] == "built_in_registry"
+    assert schedule["catalog_type"] == "predefined"
     assert schedule["proposal_capable"] is True
     assert schedule["handler_bound"] is False
     assert schedule["governed_handoff_bound"] is False
