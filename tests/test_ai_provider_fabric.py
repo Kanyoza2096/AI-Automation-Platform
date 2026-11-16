@@ -315,3 +315,23 @@ def test_empty_engine_evidence_is_distinguished_from_unavailable(monkeypatch):
     assert result["sources"]["status"]["council_decisions"] == {"status": "empty", "records": 0}
     assert result["sources"]["unavailable_tables"] == []
     assert result["execution_authority"] == "none"
+
+
+def test_engine_guidance_sets_distinct_operational_boundaries():
+    from api.routers.ai_chat import _ENGINE_GUIDANCE
+
+    assert "cannot create plans" in _ENGINE_GUIDANCE["director"]
+    assert "aggregates" in _ENGINE_GUIDANCE["guardian"]
+    assert "cannot cast votes" in _ENGINE_GUIDANCE["council"]
+    assert "not global" in _ENGINE_GUIDANCE["ai_brain"]
+    assert "cannot publish" in _ENGINE_GUIDANCE["content"]
+
+
+def test_engine_context_prompt_has_temporal_and_uncertainty_guardrails():
+    from pathlib import Path
+
+    source = Path("api/routers/ai_chat.py").read_text()
+    assert "Treat record timestamps as historical event times" in source
+    assert "Conversation history is the persisted recent dialogue" in source
+    assert "ask one concise clarifying question" in source
+    assert '.eq("engine", engine)' in source
