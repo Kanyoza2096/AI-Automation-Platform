@@ -1009,9 +1009,7 @@ class FunctionObserver:
         try:
             result = self.fn() or {}
         except Exception as exc:
-            # A failed probe is missing evidence, not proof that the observed
-            # engine itself is critical. UNKNOWN is excluded from automated
-            # diagnosis until a source reports an explicit condition.
+            # Probe failure is missing evidence, not proof that the engine is critical.
             return Observation(
                 self.name, self.sector, Health.UNKNOWN,
                 issues=[{
@@ -1019,20 +1017,39 @@ class FunctionObserver:
                     "error": sanitize_error_message(exc),
                     "evidence_confidence": "low",
                 }],
+                health_contract="probe_failure",
             )
 
         if isinstance(result, Observation):
             return result
+        if not isinstance(result, dict):
+            result = {}
 
-        status_str = str(result.get("status", "unknown")).lower()
+        status_str = str(result.get("status", "unknown")).strip().lower()
         status_map = {
             "ok": Health.NOMINAL,
             "healthy": Health.NOMINAL,
             "nominal": Health.NOMINAL,
+            "ready": Health.NOMINAL,
+            "up": Health.NOMINAL,
             "degraded": Health.DEGRADED,
+            "warning": Health.DEGRADED,
             "critical": Health.CRITICAL,
+            "failed": Health.CRITICAL,
             "offline": Health.OFFLINE,
+            "down": Health.OFFLINE,
         }
+        observed_at = result.get("observed_at") or result.get("timestamp")
+        timestamp = now()
+        timestamp_valid = True
+        if observed_at is not None:
+            try:
+                timestamp = (
+                    observed_at if isinstance(observed_at, datetime)
+                    else datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+                )
+            except (TypeError, ValueError):
+                timestamp_valid = False
 
         return Observation(
             self.name,
@@ -1041,6 +1058,10 @@ class FunctionObserver:
             result.get("metrics", {}),
             result.get("issues", []),
             result.get("message", ""),
+            timestamp=timestamp,
+            health_contract=str(result.get("health_contract") or "explicit_status"),
+            contract_version=str(result.get("contract_version") or "kdo.observer.v1"),
+            timestamp_valid=timestamp_valid,
         )
 
 

@@ -286,7 +286,9 @@ def _make_observer(engine_name: str, engine_obj: Any) -> Callable:
                 continue
             if isinstance(result, dict):
                 return {
+                    "contract_version": "kdo.observer.v1",
                     "status": reported_status(result),
+                    "observed_at": result.get("observed_at") or result.get("timestamp"),
                     "metrics": result,
                     "health_contract": method_name,
                 }
@@ -298,11 +300,14 @@ def _make_observer(engine_name: str, engine_obj: Any) -> Callable:
                 result = None
             if isinstance(result, dict):
                 return {
+                    "contract_version": "kdo.observer.v1",
                     "status": "unknown",
+                    "observed_at": result.get("observed_at") or result.get("timestamp"),
                     "metrics": result,
                     "health_contract": "stats_only",
                 }
         return {
+            "contract_version": "kdo.observer.v1",
             "status": "unknown",
             "metrics": {"engine": engine_name, "health_contract": "missing"},
             "health_contract": "missing",
@@ -1143,7 +1148,7 @@ class Director:
 
         for name, obs in observations.items():
             stamp = getattr(obs, "timestamp", None)
-            if not isinstance(stamp, datetime):
+            if not isinstance(stamp, datetime) or not getattr(obs, "timestamp_valid", True):
                 rejected.append({"observer": name, "reason": "invalid_timestamp"})
                 continue
             if stamp.tzinfo is None:
@@ -2966,54 +2971,90 @@ class Director:
         }
 
     def health(self) -> dict:
+        """Aggregate only fresh, explicit health evidence; unknown is not a score."""
         weights = {
             Health.NOMINAL: 100, Health.DEGRADED: 70, Health.CRITICAL: 25,
-            Health.OFFLINE: 0, Health.UNKNOWN: 50,
+            Health.OFFLINE: 0,
         }
+        max_age_seconds = 300
+        current = now()
         groups: Dict[str, List[Observation]] = {}
         for obs in self.observations.values():
             groups.setdefault(obs.sector.value, []).append(obs)
         sectors = {}
         scores = []
-        for sn, ol in groups.items():
-            score = sum(weights[o.status] for o in ol) / len(ol)
-            scores.append(score)
-            sectors[sn] = {
-                "status": self._status_label(score).value,
-                "score": round(score, 1),
-                "issues": sum(len(o.issues) for o in ol),
-                "reported_issue_records": sum(len(o.issues) for o in ol),
-                "non_nominal_observers": sum(
-                    1 for o in ol
-                    if str(getattr(o.status, "value", o.status)).lower()
-                    not in {"nominal", "healthy", "ok", "ready"}
-                ),
-                "unknown_observers": sum(
-                    1 for o in ol
-                    if str(getattr(o.status, "value", o.status)).lower() == "unknown"
-                ),
-                "observers": len(ol),
+        stale_count = 0
+        for sector_name, observations in groups.items():
+            known = []
+            unknown_count = 0
+            for observation in observations:
+                status = observation.status
+                if status == Health.UNKNOWN:
+                    unknown_count += 1
+                    continue
+                stamp = getattr(observation, "timestamp", None)
+                if not isinstance(stamp, datetime) or not getattr(observation, "timestamp_valid", True):
+                    stale_count += 1
+                    unknown_count += 1
+                    continue
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                age = (current - stamp.astimezone(timezone.utc)).total_seconds()
+                if age < -5 or age > max_age_seconds:
+                    stale_count += 1
+                    unknown_count += 1
+                    continue
+                known.append(observation)
+            score = (
+                sum(weights[item.status] for item in known) / len(known)
+                if known else None
+            )
+            if score is not None:
+                scores.append(score)
+            sectors[sector_name] = {
+                "status": self._status_label(score).value if score is not None else "unknown",
+                "score": round(score, 1) if score is not None else None,
+                "issues": sum(len(item.issues) for item in observations),
+                "reported_issue_records": sum(len(item.issues) for item in observations),
+                "non_nominal_observers": sum(1 for item in known if item.status != Health.NOMINAL),
+                "unknown_observers": unknown_count,
+                "known_observers": len(known),
+                "observers": len(observations),
+                "evidence_state": "available" if known else "unknown",
             }
-        overall = sum(scores) / len(scores) if scores else 50
+        overall = sum(scores) / len(scores) if scores else None
         status_counts = Counter(
-            str(getattr(o.status, "value", o.status)).lower()
-            for o in self.observations.values()
+            str(getattr(item.status, "value", item.status)).lower()
+            for item in self.observations.values()
         )
-        issue_count = sum(len(o.issues) for o in self.observations.values())
+        issue_count = sum(len(item.issues) for item in self.observations.values())
         non_nominal_count = sum(
             count for status, count in status_counts.items()
             if status not in {"nominal", "healthy", "ok", "ready"}
         )
+        known_count = sum(item["known_observers"] for item in sectors.values())
+        unknown_evidence_count = sum(item["unknown_observers"] for item in sectors.values())
+        evidence_state = (
+            "unknown" if not known_count
+            else "partial" if unknown_evidence_count
+            else "available"
+        )
         return {
-            "status": self._status_label(overall).value,
-            "score": round(overall, 1),
-            "sectors": sectors,
+            "contract_version": "kdo.health.aggregate.v1",
+            "status": self._status_label(overall).value if overall is not None else "unknown",
+            "score": round(overall, 1) if overall is not None else None,
+            "evidence_state": evidence_state,
+            "freshness_window_seconds": max_age_seconds,
+            "known_observer_count": known_count,
             "observer_count": len(self.observers),
+            "observed_record_count": len(self.observations),
+            "stale_observer_count": stale_count,
+            "unknown_observer_count": unknown_evidence_count,
+            "sectors": sectors,
             "status_counts": dict(status_counts),
             "non_nominal_observer_count": non_nominal_count,
-            "unknown_observer_count": status_counts.get("unknown", 0),
             "issue_count": issue_count,
-            "timestamp": iso(now()),
+            "timestamp": iso(current),
         }
 
     def _status_label(self, score: float) -> Health:
