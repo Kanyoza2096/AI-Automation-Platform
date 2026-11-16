@@ -19,6 +19,55 @@ import httpx
 from services.ai_provider import AIReceipt, AIUsage, request_fingerprint
 
 
+def _to_gemini_response_schema(schema: Any) -> Optional[dict[str, Any]]:
+    """Translate the JSON-Schema subset used by Director into Gemini Schema.
+
+    Gemini's responseSchema uses uppercase type names and does not accept
+    JSON-Schema-only keywords such as additionalProperties/minItems/maxItems.
+    Those constraints remain enforced by Director's deterministic validator.
+    """
+    if not isinstance(schema, dict):
+        return None
+
+    type_names = {
+        "object": "OBJECT", "array": "ARRAY", "string": "STRING",
+        "number": "NUMBER", "integer": "INTEGER", "boolean": "BOOLEAN",
+    }
+    result: dict[str, Any] = {}
+    schema_type = schema.get("type")
+    if isinstance(schema_type, str):
+        mapped = type_names.get(schema_type.lower())
+        if mapped:
+            result["type"] = mapped
+
+    for key in ("description", "format", "nullable", "enum"):
+        if key in schema and isinstance(schema[key], (str, bool, list)):
+            result[key] = schema[key]
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        converted = {
+            str(name): _to_gemini_response_schema(value)
+            for name, value in properties.items()
+            if isinstance(name, str) and isinstance(value, dict)
+        }
+        result["properties"] = {
+            name: value for name, value in converted.items() if value is not None
+        }
+
+    required = schema.get("required")
+    if isinstance(required, list) and all(isinstance(item, str) for item in required):
+        result["required"] = required
+
+    items = schema.get("items")
+    if isinstance(items, dict):
+        converted_items = _to_gemini_response_schema(items)
+        if converted_items is not None:
+            result["items"] = converted_items
+
+    return result if result.get("type") else None
+
+
 class GeminiAIAdapter:
     provider = "gemini"
     DEFAULT_MODEL = "gemini-3.5-flash-lite"
@@ -168,7 +217,7 @@ class GeminiAIAdapter:
             ):
                 # Gemini REST generateContent uses responseSchema (camelCase).
                 # The caller owns the schema; never infer one from prose.
-                generation_config["responseSchema"] = response_schema
+                generation_config["responseSchema"] = _to_gemini_response_schema(response_schema)
 
         if normalized_model == "gemini-4-hydrogen":
             generation_config["thinkingConfig"] = {"thinkingLevel": "low"}

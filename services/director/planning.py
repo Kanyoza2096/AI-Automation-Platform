@@ -104,7 +104,7 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
     summary, raw_steps = generated.get("summary"), generated.get("steps")
     if not isinstance(summary, str) or not summary.strip():
         raise StrategicPlanningError("plan_summary_required")
-    if not isinstance(raw_steps, (list, tuple)) or not 1 <= len(raw_steps) <= 12:
+    if not isinstance(raw_steps, (list, tuple)) or not 2 <= len(raw_steps) <= 6:
         raise StrategicPlanningError("plan_step_count_invalid")
 
     allowed = {"step_id", "capability", "sector", "objective", "target",
@@ -453,6 +453,7 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
             max_tokens=4096,
             required_keys=["summary", "steps"],
             caller="director",
+            response_schema=schema,
         )
         if not getattr(result, "ok", False):
             mode = getattr(getattr(result, "mode", None), "value", getattr(result, "mode", None))
