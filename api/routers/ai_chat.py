@@ -267,6 +267,33 @@ def _rows(result):
     return list(getattr(result, "data", None) or [])
 
 
+@router.get("/director/collaborations")
+async def list_director_collaborations(
+    request: Request,
+    _auth: bool = Depends(require_auth),
+):
+    """Read-only, workspace-scoped Director collaboration history.
+
+    This endpoint is intentionally separate from operator-level AI chat so
+    viewer sessions can inspect audit records without receiving chat/write
+    authority.
+    """
+    workspace_id = await require_workspace(request)
+    db = _conversation_db()
+    result = await _db_call(lambda: db.table("director_collaboration_runs")
+        .select("id,conversation_id,objective,requested_engines,status,consultations,synthesis,synthesis_provider,synthesis_model,evidence_summary,started_at,completed_at,created_at")
+        .eq("workspace_id", workspace_id)
+        .order("created_at", desc=True)
+        .limit(30)
+        .execute())
+    return _ok({
+        "collaboration_runs": _rows(result),
+        "persistence": "supabase_workspace_scoped",
+        "execution_authority": "none",
+        "read_only": True,
+    })
+
+
 @router.post("/ai/chat")
 async def ai_chat(
     body: AIChatRequest,
