@@ -76,11 +76,11 @@ async def _load_engine_context(db, workspace_id: str, engine: str) -> dict:
     source_status = {}
 
     async def read_table(key: str, table: str, columns: str, time_column: str, limit: int):
-        query = (db.table(table).select(columns)
-            .eq("workspace_id", workspace_id)
-            .order(time_column, desc=True)
-            .limit(limit))
         try:
+            query = (db.table(table).select(columns)
+                .eq("workspace_id", workspace_id)
+                .order(time_column, desc=True)
+                .limit(limit))
             result = await _db_call(lambda: query.execute())
             rows = _safe_context_value(_rows(result))
             evidence[key] = rows
@@ -129,6 +129,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str) -> dict:
         "evidence": evidence,
         "execution_authority": "none",
     }
+
 
 def _rows(result):
     return list(getattr(result, "data", None) or [])
