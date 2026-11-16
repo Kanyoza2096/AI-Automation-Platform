@@ -281,6 +281,39 @@ def create_app(director: Director):
                 },
             ) from exc
 
+    @app.get("/engineering-awareness/ledger")
+    async def get_engineering_awareness_ledger(
+        request: Request,
+        limit: int = 100,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Read persisted engineering history without contacting source providers."""
+        await _require_auth(request, credentials)
+        if limit < 1 or limit > 200:
+            raise HTTPException(400, "limit must be between 1 and 200")
+        context = getattr(request.state, "request_context", None)
+        if context is not None and not getattr(context, "species_privileges", False):
+            role = str(getattr(context, "role", "") or "").lower()
+            if role != "owner":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Engineering ledger contains platform metadata and requires workspace owner or platform authority",
+                )
+        try:
+            from .engineering_ledger import read_engineering_ledger
+            return await read_engineering_ledger(limit=limit)
+        except Exception as exc:
+            log.exception("Director engineering ledger unavailable")
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "ENGINEERING_LEDGER_UNAVAILABLE",
+                    "message": "Persisted engineering history could not be loaded.",
+                    "retryable": True,
+                    "side_effects": False,
+                },
+            ) from exc
+
     @app.get("/decision-context")
     async def get_decision_context(
         request: Request,
