@@ -3399,6 +3399,66 @@ class Director:
         name = str(getattr(handler, "__name__", ""))
         return not name.startswith("placeholder_") and name != "<lambda>"
 
+    @staticmethod
+    def validate_capability_parameters(parameter_schema: Optional[dict], params: Any) -> List[str]:
+        """Validate operator-supplied mission inputs against a closed object schema.
+
+        This intentionally supports a small deterministic JSON Schema subset.
+        Unsupported or open-ended schemas fail closed rather than guessing.
+        """
+        if not isinstance(parameter_schema, dict):
+            return ["parameter_schema_missing"]
+        if parameter_schema.get("type") != "object":
+            return ["parameter_schema_must_be_object"]
+        properties = parameter_schema.get("properties")
+        if not isinstance(properties, dict):
+            return ["parameter_schema_properties_invalid"]
+        if parameter_schema.get("additionalProperties") is not False:
+            return ["parameter_schema_must_close_object"]
+        if not isinstance(params, dict):
+            return ["parameters_must_be_object"]
+
+        errors: List[str] = []
+        required = parameter_schema.get("required", [])
+        if not isinstance(required, list) or any(not isinstance(key, str) for key in required):
+            return ["parameter_schema_required_invalid"]
+        for key in required:
+            if key not in properties:
+                errors.append(f"schema_required_property_undefined:{key}")
+            elif key not in params:
+                errors.append(f"required_parameter_missing:{key}")
+
+        for key, value in params.items():
+            spec = properties.get(key)
+            if not isinstance(spec, dict):
+                errors.append(f"parameter_not_allowed:{key}")
+                continue
+            kind = spec.get("type")
+            valid = (
+                (kind == "string" and isinstance(value, str))
+                or (kind == "boolean" and isinstance(value, bool))
+                or (kind == "integer" and isinstance(value, int) and not isinstance(value, bool))
+                or (kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool))
+                or (kind == "array" and isinstance(value, list))
+                or (kind == "object" and isinstance(value, dict))
+            )
+            if not valid:
+                errors.append(f"parameter_type_invalid:{key}")
+                continue
+            if "enum" in spec and value not in spec["enum"]:
+                errors.append(f"parameter_value_not_allowed:{key}")
+            if isinstance(value, str):
+                if len(value) < int(spec.get("minLength", 0)):
+                    errors.append(f"parameter_too_short:{key}")
+                if len(value) > int(spec.get("maxLength", 10000)):
+                    errors.append(f"parameter_too_long:{key}")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if "minimum" in spec and value < spec["minimum"]:
+                    errors.append(f"parameter_below_minimum:{key}")
+                if "maximum" in spec and value > spec["maximum"]:
+                    errors.append(f"parameter_above_maximum:{key}")
+        return errors
+
     def capability_catalog(self) -> Dict[str, Dict[str, Any]]:
         catalog: Dict[str, Dict[str, Any]] = {}
         for name, cap in sorted(self.capabilities.items()):
@@ -3467,6 +3527,15 @@ class Director:
                 },
                 "risk": cap.risk.value,
                 "target_param": cap.target_param,
+                "parameter_schema": cap.parameter_schema,
+                "parameter_contract_bound": isinstance(cap.parameter_schema, dict),
+                "mission_staging_ready": bool(
+                    ready
+                    and isinstance(cap.parameter_schema, dict)
+                    and cap.parameter_schema.get("type") == "object"
+                    and isinstance(cap.parameter_schema.get("properties"), dict)
+                    and cap.parameter_schema.get("additionalProperties") is False
+                ),
                 "proposal_capable": bool(cap.proposal_capable),
                 "handler_bound": handler_bound,
                 "handler_name": handler_name or None,
