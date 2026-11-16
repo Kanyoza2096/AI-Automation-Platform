@@ -167,3 +167,69 @@ async def test_direct_execute_allows_enabled_auto_capability_with_bound_handler(
     result = await director.execute_capability("run_health_scan", {"scope": "all"})
     assert result["ok"] is True
     assert calls == [{"scope": "all"}]
+
+
+def test_terminal_issue_task_is_not_recreated_for_same_observation():
+    from datetime import datetime, timezone
+    director = Director(supabase_client=None)
+    observed_at = datetime.now(timezone.utc)
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=observed_at,
+    )
+    first.status = Status.FAILED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=observed_at,
+    )
+
+    assert repeated.id == first.id
+    assert len(director.tasks) == 1
+
+
+def test_new_observation_can_create_a_new_task_for_recurring_condition():
+    from datetime import datetime, timezone, timedelta
+    director = Director(supabase_client=None)
+    first_observation = datetime.now(timezone.utc)
+    first = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=first_observation,
+    )
+    first.status = Status.FAILED
+
+    second = director._create_task(
+        Sector.HEALTH, "Recover failed service", "restart_failed_service",
+        "Recoverable service failure", params={"service_name": "worker-a"},
+        source="health-observer", evidence_observed_at=first_observation + timedelta(minutes=2),
+    )
+
+    assert second.id != first.id
+    assert len(director.tasks) == 2
+    assert second.evidence_observed_at > first.evidence_observed_at
+
+
+def test_terminal_task_without_evidence_has_short_repeat_cooldown():
+    from datetime import timedelta
+    director = Director(supabase_client=None)
+    first = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    first.status = Status.COMPLETED
+
+    repeated = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    assert repeated.id == first.id
+
+    first.created_at = first.created_at - timedelta(minutes=16)
+    next_scan = director._create_task(
+        Sector.HEALTH, "Run health scan", "run_health_scan", "health score low",
+        params={"scope": "all"},
+    )
+    assert next_scan.id != first.id
