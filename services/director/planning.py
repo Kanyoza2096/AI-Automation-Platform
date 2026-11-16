@@ -453,6 +453,7 @@ def make_llm_strategic_planner(gateway: Any) -> Callable[..., dict[str, Any]]:
             max_tokens=4096,
             required_keys=["summary", "steps"],
             caller="director",
+            response_schema=schema,
         )
         if not getattr(result, "ok", False):
             mode = getattr(getattr(result, "mode", None), "value", getattr(result, "mode", None))
