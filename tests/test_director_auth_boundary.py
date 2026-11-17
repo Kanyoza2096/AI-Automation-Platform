@@ -295,7 +295,7 @@ def test_legacy_scheduler_cannot_execute_approved_proposal_task(monkeypatch):
         return {"ok": True}
 
     d.capabilities[task.capability].handler = forbidden_handler
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
 
     assert calls == []
     assert result.status == Status.APPROVAL
@@ -330,7 +330,7 @@ def test_proposal_scheduler_uses_governed_handoff_without_legacy_fallback():
     d.capabilities[task.capability].governed_handoff = governed_handoff
     d.capabilities[task.capability].handler = forbidden_legacy_handler
 
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert calls == [(task.id, "governed-once", "trusted-actor")]
     assert result.status == Status.COMPLETED
     assert result.result["execution_id"] == "exec-123"
@@ -357,7 +357,7 @@ def test_proposal_scheduler_keeps_ambiguous_governed_result_pending():
         return {"ok": False, "status": "approval_required", "execution_id": ""}
 
     d.capabilities[task.capability].governed_handoff = ambiguous_handoff
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert result.status == Status.APPROVAL
     assert result.error == "governed_handoff_not_confirmed:approval_required"
     assert d.proposals["governed-ambiguous"].status == ProposalStatus.APPROVED
@@ -383,7 +383,7 @@ def test_proposal_scheduler_does_not_claim_success_without_canonical_receipt_ids
         return {"ok": True, "status": "succeeded", "output": {"message": "looks good"}}
 
     d.capabilities[task.capability].governed_handoff = receiptless_handoff
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert result.status == Status.APPROVAL
     assert result.error == "governed_handoff_not_confirmed:missing_canonical_receipt_ids"
 
