@@ -133,6 +133,8 @@ def test_director_decision_context_exposes_reconciled_supervisor_evidence(monkey
     assert payload["supervisor_evidence_reconciliation"]["status"] == "partial"
     assert payload["supervisor_evidence_reconciliation"]["counts"]["unmatched"] == 2
     assert payload["supervisor_evidence_reconciliation"]["grants_execution_authority"] is False
+    assert "observer_discovery" in payload
+    assert payload["observer_discovery"]["grants_execution_authority"] is False
     assert any(item["kind"] == "supervisor_reported_engine_status" for item in payload["facts"])
 
 
@@ -280,5 +282,5 @@ def test_decision_context_exposes_observer_discovery_diagnostics():
     evidence = director._observer_discovery_evidence()
     assert evidence["registry_entries"] == 17
     assert evidence["import_failure_count"] == 1
-    assert evidence["unsupported_exports"][0]["observer"] == "engagement_tracker"
+    assert evidence["entries"]["unsupported_exports"][0]["observer"] == "engagement_tracker"
     assert evidence["grants_execution_authority"] is False
