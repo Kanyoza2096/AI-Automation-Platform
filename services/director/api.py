@@ -582,7 +582,10 @@ def create_app(director: Director):
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
         try:
-            return safe(asdict(director.approve(task_id, _trusted_actor(request, body.actor))))
+            return safe(asdict(director.approve(
+                task_id, _trusted_actor(request, body.actor),
+                workspace_id=_workspace_id(request),
+            )))
         except KeyError:
             raise HTTPException(404, "Task not found")
         except ValueError as e:
@@ -600,7 +603,10 @@ def create_app(director: Director):
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
         try:
-            return safe(asdict(director.reject(task_id, _trusted_actor(request, body.actor), body.reason)))
+            return safe(asdict(director.reject(
+                task_id, _trusted_actor(request, body.actor), body.reason,
+                workspace_id=_workspace_id(request),
+            )))
         except KeyError:
             raise HTTPException(404, "Task not found")
 
