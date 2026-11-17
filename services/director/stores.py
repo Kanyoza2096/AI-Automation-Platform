@@ -529,9 +529,13 @@ class AsyncSupabaseStore:
     # LEARNING SIGNALS
     # ──────────────────────────────────────────────────────────────────
 
-    async def save_learning(self, entry: dict) -> bool:
-        """Persist verified learning and report whether the write was acknowledged."""
+    async def save_learning(self, entry: dict, *, workspace_id: Optional[str] = None) -> bool:
+        """Persist verified learning within exactly one ownership scope."""
         if not isinstance(entry, dict):
+            return False
+        workspace_id = str(workspace_id).strip() if workspace_id else None
+        entry_workspace_id = str(entry.get("workspace_id") or "").strip() or None
+        if entry_workspace_id != workspace_id:
             return False
         context = entry.get("context")
         if (
@@ -548,6 +552,7 @@ class AsyncSupabaseStore:
             lambda: self.supabase.table("director_learnings").upsert({
                 "id": entry["id"],
                 "payload": safe(entry),
+                "workspace_id": workspace_id,
                 "timestamp": iso_now(),
             }).execute(),
         )
@@ -555,6 +560,35 @@ class AsyncSupabaseStore:
             return False
         await self._prune_recent_records("director_learnings", self.MAX_PERSISTED_LEARNINGS)
         return True
+
+    async def list_platform_learnings_since(self, since: datetime, limit: int = 5000) -> List[dict]:
+        """Load only platform learning rows; tenant rows are never replayed here."""
+        result = await self._execute_with_retry(
+            "list platform Director learning (since)",
+            lambda: self.supabase.table("director_learnings")
+            .select("id, payload, timestamp")
+            .gte("timestamp", iso(since))
+            .is_("workspace_id", "null")
+            .order("timestamp", desc=False)
+            .limit(limit)
+            .execute(),
+        )
+        if not result or not result.data:
+            return []
+        out: List[dict] = []
+        for row in result.data:
+            payload = row.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    continue
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload.setdefault("id", row.get("id"))
+                payload.setdefault("workspace_id", None)
+                out.append(payload)
+        return out
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         result = await self._execute_with_retry(
@@ -568,6 +602,8 @@ class AsyncSupabaseStore:
         self,
         since: datetime,
         limit: int = 5000,
+        *,
+        workspace_id: Optional[str] = None,
     ) -> List[dict]:
         """Load learning signals newer than `since`, in chronological order.
 
@@ -585,6 +621,7 @@ class AsyncSupabaseStore:
             lambda: self.supabase.table("director_learnings")
             .select("id, payload, timestamp")
             .gte("timestamp", iso(since))
+            .eq("workspace_id", str(workspace_id).strip())
             .order("timestamp", desc=False)  # chronological
             .limit(limit)
             .execute(),
@@ -741,10 +778,13 @@ class InMemoryStore:
     async def get_approval(self, task_id: str) -> Optional[dict]:
         return self.approvals.get(task_id)
 
-    async def save_learning(self, entry: dict) -> bool:
+    async def save_learning(self, entry: dict, *, workspace_id: Optional[str] = None) -> bool:
         context = entry.get("context") if isinstance(entry, dict) else None
+        expected_workspace_id = str(workspace_id).strip() if workspace_id else None
+        entry_workspace_id = str(entry.get("workspace_id") or "").strip() or None if isinstance(entry, dict) else None
         if (
             not isinstance(entry, dict)
+            or entry_workspace_id != expected_workspace_id
             or entry.get("verification_status") != "verified"
             or not isinstance(context, dict)
             or context.get("status") != "verified"
@@ -752,7 +792,7 @@ class InMemoryStore:
             or not entry.get("id")
         ):
             return False
-        self.learnings.append(entry)
+        self.learnings.append(dict(entry))
         return True
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
@@ -762,6 +802,8 @@ class InMemoryStore:
         self,
         since: datetime,
         limit: int = 5000,
+        *,
+        workspace_id: Optional[str] = None,
     ) -> List[dict]:
         """In-memory equivalent of AsyncSupabaseStore.list_learnings_since.
 
@@ -773,9 +815,11 @@ class InMemoryStore:
         """
         cutoff = iso(since)
         out: List[dict] = []
+        expected_workspace_id = str(workspace_id).strip() if workspace_id else None
         for entry in self.learnings:
+            entry_workspace_id = str(entry.get("workspace_id") or "").strip() or None
             ts = entry.get("timestamp")
-            if ts is None or str(ts) >= cutoff:
+            if entry_workspace_id == expected_workspace_id and (ts is None or str(ts) >= cutoff):
                 out.append(entry)
         return out[-limit:]
 
