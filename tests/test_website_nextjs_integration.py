@@ -251,3 +251,11 @@ def test_website_provider_contract_rejects_oversized_article():
     from domain.publishing.provider_contract import validate_request
     assert validate_request('website', text='A valid article') is None
     assert validate_request('website', text='x' * 50001)['error_code'] == 'content_too_long'
+
+
+def test_brand_scheduler_resolves_website_as_primary_platform():
+    from models.social_account import Platform
+    from scheduler.brand_scheduler import _brand_publish_platform
+    assert _brand_publish_platform(SimpleNamespace(platform=Platform.WEBSITE, metadata={})) == 'website'
+    assert _brand_publish_platform(SimpleNamespace(platform=None, metadata={'primary_platform':'website'})) == 'website'
+    assert _brand_publish_platform(SimpleNamespace(platform=None, metadata={})) == 'facebook'
