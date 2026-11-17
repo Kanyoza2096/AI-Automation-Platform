@@ -2722,6 +2722,7 @@ class Director:
                 continue
             facts.append({
                 "kind": "source_reported_status",
+                "service_id": evidence_ref,
                 "observer": evidence_ref,
                 "source": item["source"],
                 "sector": sector,
