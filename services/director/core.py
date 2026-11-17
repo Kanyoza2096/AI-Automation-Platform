@@ -479,7 +479,12 @@ class Director:
         self.capability_binding_report: Dict[str, str] = {}
         self.capability_binding_at: Optional[str] = None
         self._authority_fence = None
+        # Platform and workspace tasks are held in separate registries.
+        # The scheduler and platform diagnostics intentionally consume only
+        # self.tasks; tenant tasks require an explicit workspace lookup.
         self.tasks: Dict[str, Task] = {}
+        self.workspace_tasks: Dict[str, Dict[str, Task]] = {}
+        self.workspace_observations: Dict[str, Dict[str, Observation]] = {}
         self.goals: Dict[str, Goal] = {}
 
         self.history: deque = deque(maxlen=5000)
@@ -1494,7 +1499,7 @@ class Director:
             raise RuntimeError("mission_admission_receipt_mismatch")
 
         for task in tasks:
-            self.tasks[task.id] = task
+            self.workspace_tasks.setdefault(workspace_id, {})[task.id] = task
             _publish_event("task_created", {
                 "task_id": task.id,
                 "mission_id": mission_id,
@@ -1539,11 +1544,37 @@ class Director:
             "tasks": [safe(asdict(t)) for t in tasks],
         }
 
-    async def add_task_dependency(self, task_id: str, dependency_id: str) -> dict:
+    def get_task(self, task_id: str, *, workspace_id: Optional[str] = None) -> Optional[Task]:
+        """Look up a task only inside the caller's explicit ownership scope."""
+        if workspace_id:
+            return self.workspace_tasks.get(str(workspace_id).strip(), {}).get(task_id)
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        if (
+            getattr(task, "scope_type", "platform") != "platform"
+            or getattr(task, "workspace_id", None)
+        ):
+            return None
+        return task
+
+    def tasks_for_scope(self, *, workspace_id: Optional[str] = None) -> list[Task]:
+        """Return tasks from exactly one ownership registry."""
+        if workspace_id:
+            return list(self.workspace_tasks.get(str(workspace_id).strip(), {}).values())
+        return [
+            task for task in self.tasks.values()
+            if getattr(task, "scope_type", "platform") == "platform"
+            and not getattr(task, "workspace_id", None)
+        ]
+
+    async def add_task_dependency(
+        self, task_id: str, dependency_id: str, *, workspace_id: Optional[str] = None,
+    ) -> dict:
         if task_id == dependency_id:
             raise ValueError("a task cannot depend on itself")
-        task = self.tasks.get(task_id)
-        dependency = self.tasks.get(dependency_id)
+        task = self.get_task(task_id, workspace_id=workspace_id)
+        dependency = self.get_task(dependency_id, workspace_id=workspace_id)
         if task is None or dependency is None:
             raise KeyError("task and dependency must both exist")
         def ownership_scope(candidate: Task) -> tuple[str, str]:
@@ -1577,7 +1608,7 @@ class Director:
             if current in visited:
                 continue
             visited.add(current)
-            current_task = self.tasks.get(current)
+            current_task = self.get_task(current, workspace_id=workspace_id)
             if current_task is not None:
                 stack.extend(getattr(current_task, "depends_on", []) or [])
         task.depends_on.append(dependency_id)
@@ -1589,10 +1620,13 @@ class Director:
         await self.store.save_task(dependency)
         return {"task_id": task_id, "depends_on": list(task.depends_on), "mission_id": task.mission_id, "changed": True}
 
-    async def evaluate_task_success_criteria(self, task_id: str, max_age_seconds: int = 300) -> dict:
+    async def evaluate_task_success_criteria(
+        self, task_id: str, max_age_seconds: int = 300, *,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
         if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or not 1 <= max_age_seconds <= 86400:
             raise ValueError("max_age_seconds must be an integer between 1 and 86400")
-        task = self.tasks.get(task_id)
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise KeyError("task not found")
         criteria = list(getattr(task, "success_criteria", []) or [])
@@ -1617,7 +1651,11 @@ class Director:
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "invalid_structured_criterion"})
                 continue
-            obs = self.observations.get(observer_name.strip())
+            observations = (
+                self.workspace_observations.get(str(workspace_id).strip(), {})
+                if workspace_id else self.observations
+            )
+            obs = observations.get(observer_name.strip())
             if obs is None:
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "observer_missing", "observer": observer_name})
@@ -1691,7 +1729,8 @@ class Director:
                     return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": True, "persistence": "failed"}
                 if outcome == "verified":
                     try:
-                        await self._record_verified_learning(task)
+                        if workspace_id is None:
+                            await self._record_verified_learning(task)
                     except Exception as exc:
                         log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
@@ -1705,8 +1744,11 @@ class Director:
         includes tasks explicitly owned by that exact workspace; legacy and
         other-workspace tasks are excluded.
         """
+        scoped_tasks = {
+            task.id: task for task in self.tasks_for_scope(workspace_id=workspace_id)
+        }
         selected = {
-            tid: task for tid, task in self.tasks.items()
+            tid: task for tid, task in scoped_tasks.items()
             if (
                 (
                     getattr(task, "scope_type", "platform") == "workspace"
@@ -1740,19 +1782,8 @@ class Director:
     def assess_task_recovery(
         self, task_id: str, *, workspace_id: Optional[str] = None,
     ) -> dict:
-        task = self.tasks.get(task_id)
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
-            raise KeyError("task not found")
-        if workspace_id:
-            if (
-                getattr(task, "scope_type", "platform") != "workspace"
-                or str(getattr(task, "workspace_id", "") or "").strip() != str(workspace_id).strip()
-            ):
-                raise KeyError("task not found")
-        elif (
-            getattr(task, "scope_type", "platform") != "platform"
-            or getattr(task, "workspace_id", None)
-        ):
             raise KeyError("task not found")
 
         status = task.status.value if hasattr(task.status, "value") else str(task.status)
@@ -1761,24 +1792,7 @@ class Director:
         unsuccessful_dependencies = []
         pending_dependencies = []
         for dependency_id in list(getattr(task, "depends_on", []) or []):
-            dependency = self.tasks.get(dependency_id)
-            dependency_in_scope = bool(
-                dependency is not None
-                and (
-                    (
-                        workspace_id
-                        and getattr(dependency, "scope_type", "platform") == "workspace"
-                        and str(getattr(dependency, "workspace_id", "") or "").strip() == str(workspace_id).strip()
-                    )
-                    or (
-                        not workspace_id
-                        and getattr(dependency, "scope_type", "platform") == "platform"
-                        and not getattr(dependency, "workspace_id", None)
-                    )
-                )
-            )
-            if not dependency_in_scope:
-                dependency = None
+            dependency = self.get_task(dependency_id, workspace_id=workspace_id)
             if dependency is None:
                 missing_dependencies.append(dependency_id)
                 dependencies.append({"task_id": dependency_id, "status": "missing"})
@@ -2526,8 +2540,8 @@ class Director:
         self, task_id: str, actor: str = "admin", *,
         workspace_id: Optional[str] = None,
     ) -> Task:
-        task = self.tasks.get(task_id)
-        if task is None or not self._task_matches_scope(task, workspace_id):
+        task = self.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise KeyError(f"Task {task_id} not found")
         if task.status not in (Status.APPROVAL, Status.FLAGGED):
             raise ValueError("Task is not awaiting approval")
