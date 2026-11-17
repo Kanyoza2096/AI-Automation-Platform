@@ -529,10 +529,10 @@ class AsyncSupabaseStore:
     # LEARNING SIGNALS
     # ──────────────────────────────────────────────────────────────────
 
-    async def save_learning(self, entry: dict) -> None:
-        """Persist verified learning only, keeping the free-tier table bounded."""
+    async def save_learning(self, entry: dict) -> bool:
+        """Persist verified learning and report whether the write was acknowledged."""
         if not isinstance(entry, dict):
-            return
+            return False
         context = entry.get("context")
         if (
             entry.get("verification_status") != "verified"
@@ -542,7 +542,7 @@ class AsyncSupabaseStore:
             or not entry.get("id")
         ):
             log.info("Director DB: rejected non-verified learning record")
-            return
+            return False
         result = await self._execute_with_retry(
             "insert verified Director learning",
             lambda: self.supabase.table("director_learnings").upsert({
@@ -552,8 +552,9 @@ class AsyncSupabaseStore:
             }).execute(),
         )
         if result is None:
-            return
+            return False
         await self._prune_recent_records("director_learnings", self.MAX_PERSISTED_LEARNINGS)
+        return True
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         result = await self._execute_with_retry(
@@ -728,8 +729,19 @@ class InMemoryStore:
     async def get_approval(self, task_id: str) -> Optional[dict]:
         return self.approvals.get(task_id)
 
-    async def save_learning(self, entry: dict) -> None:
+    async def save_learning(self, entry: dict) -> bool:
+        context = entry.get("context") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or entry.get("verification_status") != "verified"
+            or not isinstance(context, dict)
+            or context.get("status") != "verified"
+            or entry.get("outcome") != "success"
+            or not entry.get("id")
+        ):
+            return False
         self.learnings.append(entry)
+        return True
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         return list(self.learnings)[-limit:]
