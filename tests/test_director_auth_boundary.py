@@ -414,3 +414,69 @@ def test_workspace_owner_cannot_read_platform_engineering_metadata(monkeypatch):
 
     assert awareness.status_code == 403
     assert ledger.status_code == 403
+
+
+def test_director_super_admin_can_list_signals_across_workspaces(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    d.signals["signal-a"] = DirectorSignal(
+        id="signal-a", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="a",
+        workspace_id="ws-a", confidence=0.9, rationale="test", payload={},
+    )
+    d.signals["signal-b"] = DirectorSignal(
+        id="signal-b", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="b",
+        workspace_id="ws-b", confidence=0.9, rationale="test", payload={},
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", role="owner", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert {item["id"] for item in response.json()["signals"]} == {"signal-a", "signal-b"}
+
+
+def test_director_workspace_signal_list_remains_isolated(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    for signal_id, workspace_id in (("signal-a", "ws-a"), ("signal-b", "ws-b")):
+        d.signals[signal_id] = DirectorSignal(
+            id=signal_id, detector="test", sector=Sector.CONTENT,
+            signal_type="test", subject_type="workspace", subject_id=signal_id,
+            workspace_id=workspace_id, confidence=0.9, rationale="test", payload={},
+        )
+    app = _workspace_context_app(monkeypatch, "ws-a", role="owner")
+    # Bind this test's populated Director to the app.
+    from services.director import create_app
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", role="owner", species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["signals"]] == ["signal-a"]
