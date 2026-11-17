@@ -1546,15 +1546,19 @@ class Director:
         dependency = self.tasks.get(dependency_id)
         if task is None or dependency is None:
             raise KeyError("task and dependency must both exist")
-        task_scope = (
-            "workspace", str(getattr(task, "workspace_id", "") or "").strip()
-        ) if getattr(task, "workspace_id", None) else ("platform", "")
-        dependency_scope = (
-            "workspace", str(getattr(dependency, "workspace_id", "") or "").strip()
-        ) if getattr(dependency, "workspace_id", None) else ("platform", "")
-        if task_scope != dependency_scope or (
-            task_scope[0] == "workspace" and not task_scope[1]
-        ):
+        def ownership_scope(candidate: Task) -> tuple[str, str]:
+            scope_type = getattr(candidate, "scope_type", "platform")
+            workspace_id = str(getattr(candidate, "workspace_id", "") or "").strip()
+            if scope_type == "workspace" and workspace_id:
+                return ("workspace", workspace_id)
+            if scope_type == "platform" and not workspace_id:
+                return ("platform", "")
+            # Invalid or legacy-unclassified ownership must never form edges.
+            return ("invalid", str(candidate.id))
+
+        task_scope = ownership_scope(task)
+        dependency_scope = ownership_scope(dependency)
+        if task_scope != dependency_scope or task_scope[0] == "invalid":
             raise ValueError("cross_scope_dependency_not_allowed")
         if task.status not in (Status.PLANNED, Status.APPROVAL, Status.APPROVED):
             raise ValueError("dependencies can only be changed before execution")
