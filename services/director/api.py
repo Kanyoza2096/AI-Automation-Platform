@@ -473,7 +473,7 @@ def create_app(director: Director):
         await _require_auth(request, credentials)
         graph = director.mission_graph(
             mission_id=mission_id,
-            workspace_id=_workspace_id(request),
+            workspace_id=_task_ownership_workspace_id(request),
         )
         # The Director constructs the graph from one ownership scope; this
         # endpoint does not filter a mixed global graph after construction.
@@ -488,14 +488,17 @@ def create_app(director: Director):
     ):
         """Add a prerequisite edge; both tasks must be visible in this workspace."""
         await _require_auth(request, credentials)
-        task = director.tasks.get(task_id)
-        dependency = director.tasks.get(dependency_id)
+        workspace_id = _task_ownership_workspace_id(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        dependency = director.get_task(dependency_id, workspace_id=workspace_id)
         if task is None or dependency is None:
             raise HTTPException(404, "task or dependency not found")
         if not _task_in_workspace(task, request) or not _task_in_workspace(dependency, request):
             raise HTTPException(404, "task or dependency not found")
         try:
-            return await director.add_task_dependency(task_id, dependency_id)
+            return await director.add_task_dependency(
+                task_id, dependency_id, workspace_id=workspace_id,
+            )
         except KeyError:
             raise HTTPException(404, "task or dependency not found")
         except ValueError as exc:
@@ -514,12 +517,13 @@ def create_app(director: Director):
     ):
         """Return scoped recovery guidance; this endpoint never retries tasks."""
         await _require_auth(request, credentials)
-        task = director.tasks.get(task_id)
-        if task is None or not _task_in_workspace(task, request):
+        workspace_id = _task_ownership_workspace_id(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise HTTPException(404, "task not found")
         try:
             return director.assess_task_recovery(
-                task_id, workspace_id=_workspace_id(request),
+                task_id, workspace_id=workspace_id,
             )
         except KeyError:
             raise HTTPException(404, "task not found")
@@ -535,11 +539,15 @@ def create_app(director: Director):
         await _require_auth(request, credentials, write=True)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        task = director.tasks.get(task_id)
-        if task is None or not _task_in_workspace(task, request):
+        workspace_id = _task_ownership_workspace_id(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise HTTPException(404, "task not found")
         try:
-            return await director.evaluate_task_success_criteria(task_id, max_age_seconds=max_age_seconds)
+            return await director.evaluate_task_success_criteria(
+                task_id, max_age_seconds=max_age_seconds,
+                workspace_id=workspace_id,
+            )
         except KeyError:
             raise HTTPException(404, "task not found")
         except ValueError as exc:
@@ -557,12 +565,8 @@ def create_app(director: Director):
         _require_platform_scope(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        task = director.tasks.get(task_id)
-        if (
-            task is None
-            or getattr(task, "workspace_id", None)
-            or getattr(task, "scope_type", "platform") != "platform"
-        ):
+        task = director.get_task(task_id)
+        if task is None:
             raise HTTPException(404, "platform task not found")
         try:
             return await director.evaluate_task_success_criteria(task_id, max_age_seconds=max_age_seconds)
@@ -574,14 +578,17 @@ def create_app(director: Director):
     @app.get("/tasks")
     async def get_tasks(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
-        return [safe(asdict(t)) for t in director.tasks.values() if _task_in_workspace(t, request)]
+        return [safe(asdict(t)) for t in director.tasks_for_scope(
+            workspace_id=_task_ownership_workspace_id(request),
+        )]
 
     @app.get("/approvals")
     async def get_approvals(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
         return [
-            safe(asdict(t)) for t in director.tasks.values()
-            if t.status == Status.APPROVAL and _task_in_workspace(t, request)
+            safe(asdict(t)) for t in director.tasks_for_scope(
+                workspace_id=_task_ownership_workspace_id(request),
+            ) if t.status == Status.APPROVAL
         ]
 
     @app.post("/tasks/{task_id}/approve")
@@ -592,8 +599,10 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        task = director.tasks.get(task_id)
-        if task is not None and not _task_in_workspace(task, request):
+        task = director.get_task(
+            task_id, workspace_id=_task_ownership_workspace_id(request),
+        )
+        if task is None:
             raise HTTPException(404, "Task not found")
         try:
             return safe(asdict(director.approve(
