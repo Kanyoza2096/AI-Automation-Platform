@@ -163,3 +163,33 @@ def test_outcome_reconciliation_api_requires_authentication(monkeypatch):
 
     response = client.post("/tasks/task-criteria/verify-outcome")
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_post_completion_verification_emits_learning_once_only_after_verified_outcome():
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    director.tasks[task.id] = task
+
+    director.observations["event_bus"] = make_observation({}, status=Health.DEGRADED)
+    ineffective = await director.evaluate_task_success_criteria(task.id)
+    assert ineffective["outcome"] == "ineffective"
+    assert len(director.store.learnings) == 0
+
+    task.status = Status.COMPLETED
+    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    verified = await director.evaluate_task_success_criteria(task.id)
+    assert verified["outcome"] == "verified"
+    assert task.status == Status.VERIFIED
+    assert len(director.store.learnings) == 1
+    assert director.store.learnings[0]["task_id"] == task.id
+    assert director.store.learnings[0]["verification_status"] == "verified"
+    assert director.store.learnings[0]["context"]["status"] == Status.VERIFIED.value
+
+    # A repeated verification must not train the same task twice.
+    repeated = await director.evaluate_task_success_criteria(task.id)
+    assert repeated["outcome"] == "verified"
+    assert len(director.store.learnings) == 1

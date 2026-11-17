@@ -523,6 +523,9 @@ class Director:
         self.recovery_coordinator = CorrelatedRecovery()
 
         self.learning_loop = LearningLoop()
+        # One verified learning signal per task in this process. The durable
+        # learning row also uses a deterministic task-derived ID for replay safety.
+        self._learning_recorded_task_ids: set = set()
         self.adaptive_thresholds = AdaptiveThresholds()
 
         self.current_root_cause: Optional[RootCauseAnalysis] = None
@@ -957,6 +960,12 @@ class Director:
         if not signals:
             log.info("Learning replay: no historical signals within %d days", lookback_days)
             return
+        # Restore task-level idempotency alongside the adaptive model so a
+        # repeated verification after restart cannot emit a second signal.
+        for signal in signals:
+            task_id = signal.get("task_id") if isinstance(signal, dict) else None
+            if isinstance(task_id, str) and task_id:
+                self._learning_recorded_task_ids.add(task_id)
         try:
             replayed = self.learning_loop.rebuild_from_signals(signals)
             if replayed == len(signals):
@@ -1640,6 +1649,11 @@ class Director:
                 except Exception as exc:
                     log.exception("Failed to persist task outcome reconciliation: %s", sanitize_error_message(exc))
                     return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": True, "persistence": "failed"}
+                if outcome == "verified":
+                    try:
+                        await self._record_verified_learning(task)
+                    except Exception as exc:
+                        log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
 
     def mission_graph(self, mission_id: Optional[str] = None) -> dict:
@@ -2151,11 +2165,8 @@ class Director:
 
         finally:
             duration = (time.monotonic() - start) * 1000
-            target = self._extract_target(task)
             try:
-                signal = self.learning_loop.record_outcome(task, duration, target=target)
-                if signal is not None:
-                    self._learn(task, signal=signal)
+                await self._record_verified_learning(task, duration)
             except Exception as exc:
                 log.exception(
                     "Director: failed to record learning signal for %s: %s",
@@ -3567,16 +3578,37 @@ class Director:
         else:
             loop.create_task(self.store.save_decision(d))
 
-    def _learn(self, task: Task, signal: Optional[LearningSignal] = None) -> None:
+    async def _learn(self, task: Task, signal: Optional[LearningSignal] = None) -> bool:
         # Learning is deliberately narrower than execution telemetry. Only
         # VERIFIED signals emitted by the outcome-verification path are eligible.
         if signal is None or task.status != Status.VERIFIED:
-            return
+            return False
+        if task.id in self._learning_recorded_task_ids:
+            return False
         entry = safe(asdict(signal))
-        entry["id"] = f"learn_{uuid.uuid4().hex[:16]}"
+        # Stable task identity makes retries/re-verification idempotent in the
+        # durable store as well as in this Director process.
+        task_digest = hashlib.sha256(task.id.encode("utf-8")).hexdigest()[:24]
+        entry["id"] = f"learn_{task_digest}"
         entry["task_id"] = task.id
         entry["verification_status"] = "verified"
-        asyncio.create_task(self.store.save_learning(entry))
+        self._learning_recorded_task_ids.add(task.id)
+        try:
+            await self.store.save_learning(entry)
+        except Exception:
+            self._learning_recorded_task_ids.discard(task.id)
+            raise
+        return True
+
+    async def _record_verified_learning(self, task: Task, duration_ms: float = 0.0) -> bool:
+        """Record learning only after a task has authoritative VERIFIED status."""
+        if task.status != Status.VERIFIED or task.id in self._learning_recorded_task_ids:
+            return False
+        target = self._extract_target(task)
+        signal = self.learning_loop.record_outcome(task, duration_ms, target=target)
+        if signal is None:
+            return False
+        return await self._learn(task, signal=signal)
 
     def _drain_events(self) -> None:
         if not self._event_queue:
