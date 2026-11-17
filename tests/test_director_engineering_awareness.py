@@ -14,6 +14,8 @@ def test_render_deployment_status_is_normalized():
     assert _deployment_status({"status": "live"}) == "live"
     assert _deployment_status({"status": "build_in_progress"}) == "in_progress"
     assert _deployment_status({"status": "build_failed"}) == "failed"
+    assert _deployment_status({"status": "deactivated"}) == "superseded"
+    assert _deployment_status({"status": "canceled"}) == "cancelled"
     assert _deployment_status({"status": "unknown-provider-state"}) == "unknown-provider-state"
 
 
