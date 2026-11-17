@@ -678,3 +678,27 @@ def test_workspace_proposal_approval_creates_task_in_same_workspace_registry():
     assert task.scope_type == "workspace"
     assert task.id not in director.tasks
     assert director.workspace_tasks["workspace-a"][task.id] is task
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_executor_requires_explicit_scope_and_never_uses_legacy_handler():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    task.id = "workspace-execution-guard"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    handler_calls = []
+
+    async def forbidden_handler(params):
+        handler_calls.append(params)
+        return {"ok": True}
+
+    director.capabilities[task.capability].handler = forbidden_handler
+
+    with pytest.raises(KeyError, match="not found"):
+        await director._execute_async(task.id)
+
+    deferred = await director._execute_async(task.id, workspace_id="workspace-a")
+
+    assert deferred.status == Status.APPROVAL
+    assert deferred.error == "canonical_governed_handoff_required"
+    assert handler_calls == []
