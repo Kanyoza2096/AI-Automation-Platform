@@ -3073,7 +3073,7 @@ class Director:
                 "score": round(score, 1) if score is not None else None,
                 "issues": sum(len(item.issues) for item in observations),
                 "reported_issue_records": sum(len(item.issues) for item in observations),
-                "non_nominal_observers": sum(1 for item in known if item.status != Health.NOMINAL),
+                "non_nominal_observers": sum(1 for item in observations if item.status != Health.NOMINAL),
                 "unknown_observers": unknown_count,
                 "known_observers": len(known),
                 "observers": len(observations),
@@ -3589,10 +3589,11 @@ class Director:
             },
             confidence_basis={
                 "value_source": "unavailable",
-                "calibration": "not_calibrated",
+                "calibration": "not_evidence_calibrated",
                 "reason": "No validated decision-outcome calibration dataset is available.",
                 "input_task_confidence": task.confidence,
                 "evidence_source_count": len(evidence_sources),
+                "fresh_evidence_source_count": fresh_evidence_count,
                 "fresh_known_evidence_source_count": fresh_evidence_count,
             },
         )
