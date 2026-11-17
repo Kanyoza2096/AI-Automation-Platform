@@ -84,9 +84,9 @@ def test_article_publish_cannot_run_without_quality_gates():
 
 def test_scheduler_routes_metadata_website_brand_to_article_platform():
     brand = SimpleNamespace(platform=None, metadata={"primary_platform": "website"})
-    assert _brand_content_platform(brand) == "website"
+    assert _brand_publish_platform(brand) == "website"
 
 
 def test_scheduler_preserves_social_platform_default():
     brand = SimpleNamespace(platform=None, metadata={})
-    assert _brand_content_platform(brand) == "facebook"
+    assert _brand_publish_platform(brand) == "facebook"
