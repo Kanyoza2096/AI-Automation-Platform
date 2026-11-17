@@ -498,7 +498,7 @@ def create_app(director: Director):
     ):
         """Add a prerequisite edge; both tasks must be visible in this workspace."""
         await _require_auth(request, credentials)
-        workspace_id = _task_ownership_workspace_id(request)
+        workspace_id = await _load_task_scope(request)
         task = director.get_task(task_id, workspace_id=workspace_id)
         dependency = director.get_task(dependency_id, workspace_id=workspace_id)
         if task is None or dependency is None:
@@ -588,16 +588,18 @@ def create_app(director: Director):
     @app.get("/tasks")
     async def get_tasks(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        workspace_id = await _load_task_scope(request)
         return [safe(asdict(t)) for t in director.tasks_for_scope(
-            workspace_id=_task_ownership_workspace_id(request),
+            workspace_id=workspace_id,
         )]
 
     @app.get("/approvals")
     async def get_approvals(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        workspace_id = await _load_task_scope(request)
         return [
             safe(asdict(t)) for t in director.tasks_for_scope(
-                workspace_id=_task_ownership_workspace_id(request),
+                workspace_id=workspace_id,
             ) if t.status == Status.APPROVAL
         ]
 
@@ -617,7 +619,7 @@ def create_app(director: Director):
         try:
             return safe(asdict(director.approve(
                 task_id, _trusted_actor(request, body.actor),
-                workspace_id=_task_ownership_workspace_id(request),
+                workspace_id=await _load_task_scope(request),
             )))
         except KeyError:
             raise HTTPException(404, "Task not found")
@@ -633,7 +635,7 @@ def create_app(director: Director):
     ):
         await _require_auth(request, credentials, write=True)
         task = director.get_task(
-            task_id, workspace_id=_task_ownership_workspace_id(request),
+            task_id, workspace_id=await _load_task_scope(request),
         )
         if task is None:
             raise HTTPException(404, "Task not found")
