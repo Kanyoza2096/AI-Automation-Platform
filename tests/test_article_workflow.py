@@ -90,3 +90,48 @@ def test_scheduler_routes_metadata_website_brand_to_article_platform():
 def test_scheduler_preserves_social_platform_default():
     brand = SimpleNamespace(platform=None, metadata={})
     assert _brand_publish_platform(brand) == "facebook"
+
+
+
+def test_article_workflow_dry_run_excludes_publish_step():
+    from workflows.article_workflow import ArticlePublishWorkflow, PreviewArticleStep
+
+    workflow = ArticlePublishWorkflow(
+        brand=SimpleNamespace(id="brand-1", name="GrowthBridge", workspace_id="ws-1"),
+        dry_run=True,
+    )
+    step_names = [step.name for step in workflow._steps]
+    assert workflow.name == "article_preview"
+    assert step_names == [
+        "select_topic", "knowledge_context", "generate_article",
+        "validate_article", "article_preview",
+    ]
+    assert not any(isinstance(step, PublishArticleStep) for step in workflow._steps)
+    assert isinstance(workflow._steps[-1], PreviewArticleStep)
+
+
+def test_article_preview_requires_validation_and_independent_review():
+    from workflows.article_workflow import PreviewArticleStep
+
+    context = _article_context()
+    context["article_validation"] = {"approved": True, "citations": ["kb-1"]}
+    context["article_review"] = {
+        "approved": True, "status": "approved", "reason": "all claims supported",
+    }
+    result = asyncio.run(PreviewArticleStep().async_run(context))
+    assert result["mode"] == "preview_only"
+    assert result["publishable"] is False
+    assert result["title"] == context["article"]["title"]
+    assert result["citations"] == ["kb-1"]
+    assert "publish_result" not in context
+    assert "publish_results" not in context
+
+
+def test_article_preview_fails_closed_without_semantic_review():
+    from workflows.article_workflow import PreviewArticleStep
+
+    context = _article_context()
+    context["article_validation"] = {"approved": True, "citations": ["kb-1"]}
+    with pytest.raises(StepFailure) as exc:
+        asyncio.run(PreviewArticleStep().async_run(context))
+    assert exc.value.code == "article_preview_review_missing"
