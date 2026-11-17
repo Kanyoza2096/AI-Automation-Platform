@@ -379,7 +379,7 @@ class LLMGateway:
         return {
             "account_id": os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
             "token": os.getenv("CLOUDFLARE_API_TOKEN", ""),
-            "model": os.getenv("CLOUDFLARE_AI_MODEL", model),
+            "model": model,
             "timeout": float(os.getenv("CLOUDFLARE_AI_TIMEOUT", "30")),
         }
 
@@ -468,6 +468,7 @@ class LLMGateway:
         capability: str,
         workspace_id: str,
         response_schema: Optional[Dict[str, Any]] = None,
+        required_keys: Optional[List[str]] = None,
     ) -> IntelligenceResult:
         start = time.monotonic()
         correlation_id = uuid.uuid4().hex[:16]
@@ -621,6 +622,26 @@ class LLMGateway:
                         provider_name, selected_model, finish_reason,
                     )
                     continue
+
+                if capability in ("structured_json", "structured") and required_keys:
+                    candidate = getattr(receipt, "structured_output", None)
+                    if not isinstance(candidate, dict):
+                        candidate = parse_structured_json(raw_output)
+                    missing = (
+                        [key for key in required_keys if key not in candidate]
+                        if isinstance(candidate, dict) else list(required_keys)
+                    )
+                    if missing:
+                        last_error = (
+                            "structured_parse_failed" if not isinstance(candidate, dict)
+                            else f"missing_keys:{','.join(missing)}"
+                        )
+                        logger.warning(
+                            "AI fabric: %s returned invalid structured shape "
+                            "(model=%s reason=%s) — trying next route",
+                            provider_name, selected_model, last_error,
+                        )
+                        continue
 
                 latency = (time.monotonic() - start) * 1000
                 if len(attempted) > 1:
@@ -881,6 +902,7 @@ class LLMGateway:
         estimate_tokens: Optional[int] = None,
         caller: str = "unknown",
         response_schema: Optional[Dict[str, Any]] = None,
+        required_keys: Optional[List[str]] = None,
     ) -> IntelligenceResult:
         """
         Synchronous completion. Never raises for provider failure.
@@ -965,6 +987,7 @@ class LLMGateway:
                 capability=capability,
                 workspace_id=workspace_id,
                 response_schema=response_schema,
+                required_keys=required_keys,
             )
         else:
             result = self._call_orchestrator(
@@ -1031,6 +1054,7 @@ class LLMGateway:
             max_tokens=max_tokens,
             caller=caller,
             response_schema=response_schema,
+            required_keys=required_keys,
         )
         if not result.ok:
             return result

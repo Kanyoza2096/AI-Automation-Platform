@@ -310,7 +310,7 @@ def test_structured_json_uses_hydrogen_gemma_then_cloudflare_fallback():
     assert [(route.provider, route.model) for route in routes] == [
         ("gemini", "gemini-4-hydrogen"),
         ("gemini", "gemma-4-31b-it"),
-        ("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
+        ("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
     ]
 
 
@@ -458,3 +458,67 @@ def test_complete_structured_forwards_native_response_schema_to_gemini(monkeypat
     )
     assert result.ok is True
     assert observed["response_schema"] == schema
+
+
+def test_cloudflare_route_model_is_not_overridden_by_legacy_global_setting(monkeypatch):
+    from ai.gateway import LLMGateway
+
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setenv("CLOUDFLARE_AI_MODEL", "@cf/meta/llama-3.1-8b-instruct-fp8-fast")
+    kwargs = LLMGateway._cf_kwargs("@cf/meta/llama-3.3-70b-instruct-fp8-fast")
+    assert kwargs["model"] == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+def test_structured_gateway_skips_provider_with_invalid_article_shape(monkeypatch):
+    from ai.gateway import LLMGateway
+    from services.ai_provider import AIReceipt
+
+    observed = []
+
+    class FakeAdapter:
+        def __init__(self, provider, **kwargs):
+            self.provider = provider
+
+        def analyze(self, **kwargs):
+            observed.append(self.provider)
+            if self.provider == "gemini":
+                raw = '{"title":"Only a title"}'
+                data = {"title": "Only a title"}
+                model = "gemini-test"
+            else:
+                raw = '{"title":"A complete title","excerpt":"A sufficiently descriptive article excerpt.","body":"A full article body.","citations":["kb-1"]}'
+                data = {"title": "A complete title", "excerpt": "A sufficiently descriptive article excerpt.", "body": "A full article body.", "citations": ["kb-1"]}
+                model = "llama-test"
+            return AIReceipt(
+                status="succeeded", provider=self.provider, model=model,
+                raw_output=raw, structured_output=data, usage=None,
+                correlation_id=kwargs["correlation_id"], request_fingerprint="f",
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setattr(
+        "services.connectors.ai_registry.create_ai_provider_adapter",
+        lambda provider, **kwargs: FakeAdapter(provider, **kwargs),
+    )
+    monkeypatch.setattr(
+        "services.ai_policy.select_ai_route",
+        lambda task: (
+            type("Route", (), {"provider": "gemini", "model": "gemini-test"})(),
+            type("Route", (), {"provider": "cloudflare_ai", "model": "llama-test"})(),
+        ),
+    )
+
+    result = LLMGateway().complete_structured(
+        "Generate an article",
+        caller="content",
+        required_keys=["title", "excerpt", "body", "citations"],
+    )
+    assert result.ok is True
+    assert result.data["citations"] == ["kb-1"]
+    assert observed == ["gemini", "cloudflare_ai"]

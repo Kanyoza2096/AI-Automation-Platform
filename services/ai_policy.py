@@ -63,7 +63,7 @@ DEFAULT_AI_POLICY: Mapping[str, tuple[AIModelRoute, ...]] = {
     "structured_json": (
         AIModelRoute("gemini", "gemini-4-hydrogen"),
         AIModelRoute("gemini", "gemma-4-31b-it"),
-        AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),
+        AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
     ),
     "chat": (
         AIModelRoute("cloudflare_ai", "@cf/meta/llama-3.1-8b-instruct-fp8-fast"),

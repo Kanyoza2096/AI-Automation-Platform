@@ -122,6 +122,12 @@ on:
       - "scripts/audit_route_wiring.py"
       - "tests/test_route_wiring_audit.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
+      # Structured article-generation provider fallback and schema validation.
+      - "ai/gateway.py"
+      - "services/ai_policy.py"
+      - "tests/test_ai_provider_fabric.py"
+      - "workflows/article_workflow.py"
+      - "tests/test_article_workflow.py"
       # Authenticated, workspace-scoped long-form article preview endpoint.
       - "api/routers/workflows.py"
       - "workflows/article_workflow.py"
@@ -508,6 +514,8 @@ jobs:
             tests/engineering_vertical/test_phase16_12_container_worker.py \
             tests/engineering_vertical/test_phase16_13_pipeline_composition.py \
             tests/engineering_vertical/test_phase16_8_console.py \
+            tests/test_ai_provider_fabric.py \
+            tests/test_article_workflow.py \
             tests/test_growthbridge_article_console.py \
             tests/test_auth_dependency_direct_call.py \
             tests/engineering_vertical/test_staging_lifecycle.py \
