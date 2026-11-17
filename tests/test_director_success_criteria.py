@@ -299,7 +299,7 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     workspace_task.id = "workspace-harness-task"
     workspace_task.workspace_id = "workspace-test"
     workspace_task.scope_type = "workspace"
-    director.tasks[workspace_task.id] = workspace_task
+    director.workspace_tasks.setdefault("workspace-test", {})[workspace_task.id] = workspace_task
 
     tenant_app = create_app(director)
     _install_tenant_context(tenant_app)
@@ -323,7 +323,7 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     assert hidden_workspace_task.status_code == 404
 
     # Workspace verification remains available for the matching tenant task.
-    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    director.workspace_observations.setdefault("workspace-test", {})["event_bus"] = make_observation({}, status=Health.NOMINAL)
     tenant_verified = tenant_client.post(
         f"/tasks/{workspace_task.id}/verify-outcome", headers=headers,
     )
@@ -395,11 +395,9 @@ def test_mission_graph_isolated_by_workspace_and_platform_scope():
     workspace_b_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
     workspace_b_task.id = "workspace-b-task"
     workspace_b_task.mission_id = "shared-mission"
-    director.tasks.update({
-        platform_task.id: platform_task,
-        workspace_a_task.id: workspace_a_task,
-        workspace_b_task.id: workspace_b_task,
-    })
+    director.tasks[platform_task.id] = platform_task
+    director.workspace_tasks["workspace-a"] = {workspace_a_task.id: workspace_a_task}
+    director.workspace_tasks["workspace-b"] = {workspace_b_task.id: workspace_b_task}
 
     platform_graph = director.mission_graph(mission_id="shared-mission")
     workspace_a_graph = director.mission_graph(
@@ -423,16 +421,14 @@ async def test_dependency_rejects_cross_workspace_and_platform_edges():
     workspace_b_task.id = "workspace-b-task"
     platform_task = make_task([], status=Status.APPROVAL)
     platform_task.id = "platform-task"
-    director.tasks.update({
-        workspace_a_task.id: workspace_a_task,
-        workspace_b_task.id: workspace_b_task,
-        platform_task.id: platform_task,
-    })
+    director.workspace_tasks["workspace-a"] = {workspace_a_task.id: workspace_a_task}
+    director.workspace_tasks["workspace-b"] = {workspace_b_task.id: workspace_b_task}
+    director.tasks[platform_task.id] = platform_task
 
     with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
-        await director.add_task_dependency("workspace-a-task", "workspace-b-task")
+        await director.add_task_dependency("workspace-a-task", "workspace-b-task", workspace_id="workspace-a")
     with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
-        await director.add_task_dependency("workspace-a-task", "platform-task")
+        await director.add_task_dependency("workspace-a-task", "platform-task", workspace_id="workspace-a")
 
 
 def test_recovery_assessment_hides_cross_workspace_dependency_state():
@@ -442,10 +438,8 @@ def test_recovery_assessment_hides_cross_workspace_dependency_state():
     task.depends_on = ["workspace-b-secret"]
     other_workspace_task = make_task([], status=Status.FAILED, workspace_id="workspace-b")
     other_workspace_task.id = "workspace-b-secret"
-    director.tasks.update({
-        task.id: task,
-        other_workspace_task.id: other_workspace_task,
-    })
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.workspace_tasks["workspace-b"] = {other_workspace_task.id: other_workspace_task}
 
     assessment = director.assess_task_recovery(
         task.id, workspace_id="workspace-a",
@@ -460,7 +454,7 @@ def test_recovery_assessment_hides_cross_workspace_dependency_state():
 def test_platform_recovery_cannot_read_workspace_task():
     director = Director(supabase_client=None)
     task = make_task([], status=Status.BLOCKED, workspace_id="workspace-a")
-    director.tasks[task.id] = task
+    director.workspace_tasks["workspace-a"] = {task.id: task}
 
     with pytest.raises(KeyError, match="task not found"):
         director.assess_task_recovery(task.id)
@@ -474,11 +468,9 @@ def test_approval_mutations_require_exact_task_ownership_scope():
     workspace_b.id = "approval-workspace-b"
     platform = make_task([], status=Status.APPROVAL)
     platform.id = "approval-platform"
-    director.tasks.update({
-        workspace_a.id: workspace_a,
-        workspace_b.id: workspace_b,
-        platform.id: platform,
-    })
+    director.workspace_tasks["workspace-a"] = {workspace_a.id: workspace_a}
+    director.workspace_tasks["workspace-b"] = {workspace_b.id: workspace_b}
+    director.tasks[platform.id] = platform
 
     with pytest.raises(KeyError, match="not found"):
         director.approve(workspace_a.id)
@@ -508,11 +500,9 @@ def test_approval_api_uses_authenticated_workspace_and_platform_scope(monkeypatc
     workspace_b.id = "approval-api-b"
     platform = make_task([], status=Status.APPROVAL)
     platform.id = "approval-api-platform"
-    director.tasks.update({
-        workspace_a.id: workspace_a,
-        workspace_b.id: workspace_b,
-        platform.id: platform,
-    })
+    director.workspace_tasks["workspace-a"] = {workspace_a.id: workspace_a}
+    director.workspace_tasks["workspace-b"] = {workspace_b.id: workspace_b}
+    director.tasks[platform.id] = platform
     headers = {"Authorization": "Bearer approval-scope-token"}
 
     tenant_app = create_app(director)
