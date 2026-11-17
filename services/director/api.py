@@ -112,10 +112,9 @@ def create_app(director: Director):
             return False
         context = getattr(request.state, "request_context", None)
         identity = getattr(request.state, "auth_identity", None)
-        if context is not None and getattr(context, "workspace_id", None):
-            # A workspace context is not proof of authentication by itself.
-            # Canonical middleware binds both objects after validating the
-            # credential; fail closed if the trusted identity is absent/invalid.
+        if context is not None:
+            # Canonical middleware binds the identity to any trusted context,
+            # including unscoped platform identities. Context alone never authenticates.
             return bool(identity is not None and getattr(identity, "valid", False))
 
         master_token = (os.getenv("MASTER_API_TOKEN", "") or "").strip()
@@ -221,11 +220,9 @@ def create_app(director: Director):
         """Require a trusted platform identity for shared Director state."""
         context = getattr(request.state, "request_context", None) if request is not None else None
         if context is None:
-            from fastapi import HTTPException
-            raise HTTPException(
-                status_code=403,
-                detail="Platform identity required for this Director operation",
-            )
+            # _require_auth has already validated the dedicated master/service
+            # credential when canonical request context is absent.
+            return
         is_platform_operator = (
             bool(getattr(context, "species_privileges", False))
             or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
