@@ -2237,6 +2237,11 @@ class Director:
             cap = self.capabilities.get(task.capability)
             governed_handoff = getattr(cap, "governed_handoff", None) if cap else None
             proposal = self.proposals.get(task.proposal_id)
+            if proposal is not None:
+                proposal_workspace_id = str(getattr(proposal, "workspace_id", "") or "").strip()
+                task_workspace_id = str(getattr(task, "workspace_id", "") or "").strip()
+                if proposal_workspace_id != task_workspace_id:
+                    proposal = None
             if not callable(governed_handoff) or proposal is None:
                 task.status = Status.APPROVAL
                 task.error = "canonical_governed_handoff_required"
