@@ -195,9 +195,16 @@ def create_app(director: Director):
         return _proposal_in_workspace(proposal, request)
 
     def _deny_workspace_global_read(request) -> None:
-        """Prevent tenant identities from reading shared platform telemetry."""
+        """Require platform authority for shared platform telemetry.
+
+        An unscoped request context is not proof of platform authority. Only a
+        canonical platform-operator identity or an authenticated dedicated
+        master/service credential (which has no request context) may read it.
+        """
         context = getattr(request.state, "request_context", None) if request is not None else None
-        if context is None or not getattr(context, "workspace_id", None):
+        if context is None:
+            # The route has already called _require_auth; without canonical
+            # context that path accepts only the configured master/service token.
             return
         is_platform_operator = (
             bool(getattr(context, "species_privileges", False))
