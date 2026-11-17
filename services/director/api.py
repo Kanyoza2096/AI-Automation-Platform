@@ -152,8 +152,25 @@ def create_app(director: Director):
         return _workspace_id(request)
 
     async def _load_task_scope(request):
-        """Load only the authenticated workspace's tasks before scoped access."""
+        """Load only the authenticated workspace's tasks before scoped access.
+
+        A canonical identity without a workspace is not implicitly a platform
+        identity. Only explicit platform operators may resolve the platform
+        task registry; context-free master/service credentials are validated
+        by _require_auth before reaching this loader.
+        """
+        context = getattr(request.state, "request_context", None) if request is not None else None
         workspace_id = _task_ownership_workspace_id(request)
+        if context is not None and workspace_id is None:
+            is_platform_operator = (
+                bool(getattr(context, "species_privileges", False))
+                or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+            )
+            if not is_platform_operator:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Platform task scope requires platform operator privileges",
+                )
         if workspace_id:
             try:
                 await director.restore_workspace_tasks(workspace_id)
