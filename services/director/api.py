@@ -169,7 +169,11 @@ def create_app(director: Director):
         """
         workspace_id = _workspace_id(request)
         context = getattr(request.state, "request_context", None) if request is not None else None
-        if workspace_id is None or getattr(context, "species_privileges", False):
+        if (
+            workspace_id is None
+            or getattr(context, "species_privileges", False)
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        ):
             return True
         if task is None:
             return False
@@ -615,7 +619,7 @@ def create_app(director: Director):
         try:
             return safe(asdict(director.reject(
                 task_id, _trusted_actor(request, body.actor), body.reason,
-                workspace_id=_workspace_id(request),
+                workspace_id=_task_ownership_workspace_id(request),
             )))
         except KeyError:
             raise HTTPException(404, "Task not found")
