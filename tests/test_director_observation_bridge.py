@@ -223,3 +223,62 @@ def test_declared_observer_without_comparable_fact_is_not_marked_healthy():
     assert guardian["director_registry_status"] == "declared"
     assert guardian["coverage_status"] == "declared_no_comparable_evidence"
     assert guardian["result"] == "unmatched"
+
+
+
+def test_nominal_status_pair_is_classified_as_agreement_not_unknown():
+    evidence = project_meta_health_evidence({
+        **_health(),
+        "engine_observations": [
+            {"service_id": "condition_engine", "status": "nominal", "observed_at": "2026-11-17T03:00:00+00:00"}
+        ],
+        "engine_observation_contract": {
+            "contract": "meta_engine.observations/v1",
+            "status": "complete",
+            "source_count": 1,
+            "accepted_count": 1,
+            "rejected_count": 0,
+            "freshness_seconds": 3600,
+            "generated_at": "2026-11-17T03:00:12+00:00",
+            "rejected": [],
+        },
+    })
+    result = reconcile_supervisor_evidence({
+        "facts": [{
+            "kind": "source_reported_status",
+            "service_id": "condition_engine",
+            "observer": "condition_engine",
+            "status": "nominal",
+        }],
+        "unknowns": [],
+        "conflicts": [],
+    }, evidence)
+    comparison = result["supervisor_evidence_reconciliation"]["comparisons"][0]
+    assert comparison["result"] == "agreement"
+    assert comparison["status_classes"] == {"supervisor": "healthy", "director": "healthy"}
+    assert comparison["matching_fact_count"] == 1
+    assert comparison["matching_unknown_count"] == 0
+
+
+def test_decision_context_exposes_observer_discovery_diagnostics():
+    from services.director import Director
+
+    director = Director(supabase_client=None)
+    director.engine_discovery_report = {
+        "registry_entries": 17,
+        "discovered": [{"observer": "content_engine", "module": "services.content_engine"}],
+        "missing_exports": [],
+        "import_failures": [{"observer": "card_renderer", "module": "services.card_renderer", "reason": "import_failed"}],
+        "factory_failures": [],
+        "unsupported_exports": [{"observer": "engagement_tracker", "module": "services.engagement_tracker", "reason": "live_instance_required"}],
+        "discovered_count": 1,
+        "missing_export_count": 0,
+        "import_failure_count": 1,
+        "factory_failure_count": 0,
+        "unsupported_export_count": 1,
+    }
+    evidence = director._observer_discovery_evidence()
+    assert evidence["registry_entries"] == 17
+    assert evidence["import_failure_count"] == 1
+    assert evidence["unsupported_exports"][0]["observer"] == "engagement_tracker"
+    assert evidence["grants_execution_authority"] is False
