@@ -283,6 +283,7 @@ async def _load_render_evidence(repositories: list[str]) -> dict:
                 "status": _deployment_status(deploy),
                 "created_at": deploy.get("createdAt") or deploy.get("created_at"),
                 "finished_at": deploy.get("finishedAt") or deploy.get("finished_at"),
+                "updated_at": deploy.get("updatedAt") or deploy.get("updated_at"),
                 "url": deploy.get("dashboardUrl") or deploy.get("url"),
                 "evidence_source": "render_deployment",
             })
