@@ -433,3 +433,34 @@ async def test_dependency_rejects_cross_workspace_and_platform_edges():
         await director.add_task_dependency("workspace-a-task", "workspace-b-task")
     with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
         await director.add_task_dependency("workspace-a-task", "platform-task")
+
+
+def test_recovery_assessment_hides_cross_workspace_dependency_state():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.BLOCKED, workspace_id="workspace-a")
+    task.id = "workspace-a-blocked"
+    task.depends_on = ["workspace-b-secret"]
+    other_workspace_task = make_task([], status=Status.FAILED, workspace_id="workspace-b")
+    other_workspace_task.id = "workspace-b-secret"
+    director.tasks.update({
+        task.id: task,
+        other_workspace_task.id: other_workspace_task,
+    })
+
+    assessment = director.assess_task_recovery(
+        task.id, workspace_id="workspace-a",
+    )
+
+    assert assessment["dependencies"] == [
+        {"task_id": "workspace-b-secret", "status": "missing"},
+    ]
+    assert "workspace-b" not in str(assessment)
+
+
+def test_platform_recovery_cannot_read_workspace_task():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.BLOCKED, workspace_id="workspace-a")
+    director.tasks[task.id] = task
+
+    with pytest.raises(KeyError, match="task not found"):
+        director.assess_task_recovery(task.id)
