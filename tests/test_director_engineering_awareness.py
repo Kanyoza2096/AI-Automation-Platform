@@ -109,3 +109,30 @@ def test_ledger_event_keys_are_deterministic_for_idempotent_snapshots():
     first = events_from_snapshot(snapshot)
     second = events_from_snapshot(snapshot)
     assert [event["event_key"] for event in first] == [event["event_key"] for event in second]
+
+
+
+def test_deployment_ledger_records_distinct_state_transitions_idempotently():
+    from services.director.engineering_ledger import events_from_snapshot
+
+    def snapshot(status, updated_at):
+        return {
+            "repositories": [],
+            "render": {"deployments": [{
+                "deploy_id": "dep-lifecycle",
+                "repository": "org/repo",
+                "commit_sha": "abc123",
+                "status": status,
+                "created_at": "2026-11-17T04:00:00Z",
+                "updated_at": updated_at,
+            }]},
+        }
+
+    building = events_from_snapshot(snapshot("in_progress", "2026-11-17T04:01:00Z"))[0]
+    building_repeat = events_from_snapshot(snapshot("in_progress", "2026-11-17T04:01:00Z"))[0]
+    live = events_from_snapshot(snapshot("live", "2026-11-17T04:02:00Z"))[0]
+
+    assert building["event_key"] == building_repeat["event_key"]
+    assert building["event_key"] != live["event_key"]
+    assert building["payload"]["status"] == "in_progress"
+    assert live["payload"]["status"] == "live"

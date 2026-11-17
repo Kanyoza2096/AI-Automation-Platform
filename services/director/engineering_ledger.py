@@ -101,7 +101,10 @@ def events_from_snapshot(snapshot: dict) -> list[dict]:
         if not isinstance(deployment, dict) or not deployment.get("deploy_id"):
             continue
         deploy_id = str(deployment["deploy_id"])
-        key = f"render:deployment:{deploy_id}"
+        status = str(deployment.get("status") or "unknown").lower()
+        updated_at = _event_time(deployment.get("updated_at"))
+        state_version = updated_at or _event_time(deployment.get("finished_at") or deployment.get("created_at")) or "unknown"
+        key = f"render:deployment:{deploy_id}:{status}:{state_version}"
         events[key] = {
             "event_key": key,
             "event_type": "deployment",
@@ -115,7 +118,8 @@ def events_from_snapshot(snapshot: dict) -> list[dict]:
                 "deploy_id": deploy_id,
                 "service_id": deployment.get("service_id"),
                 "service_name": deployment.get("service_name"),
-                "status": deployment.get("status"),
+                "status": status,
+                "updated_at": updated_at,
                 "url": deployment.get("url"),
             },
         }
