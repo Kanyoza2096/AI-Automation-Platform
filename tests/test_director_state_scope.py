@@ -79,7 +79,7 @@ def test_unverified_legacy_learning_does_not_qualify_for_replay():
         "id": "legacy-learning",
         "task_id": "legacy-task",
         "capability": "review_content_quality",
-        "sector": "self",
+        "sector": "self_improvement",
         "outcome": "success",
         "context": {"status": "completed"},
     }
