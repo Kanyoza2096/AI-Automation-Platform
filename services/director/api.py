@@ -61,7 +61,7 @@ from .analysis import (
 )
 from .core import Director, auto_discover_engines
 from .planning import StrategicPlannerUnavailable
-from .observation_bridge import read_meta_health_evidence
+from .observation_bridge import read_meta_health_evidence, reconcile_supervisor_evidence
 log = logging.getLogger("kanyoza.director")
 
 class StrategicMissionAdmissionBody(BaseModel):
@@ -268,7 +268,12 @@ def create_app(director: Director):
             from .engineering_awareness import build_engineering_awareness
             from .engineering_ledger import persist_engineering_snapshot
             snapshot = await build_engineering_awareness()
-            snapshot["supervisor_observation_evidence"] = read_meta_health_evidence()
+            supervisor_evidence = read_meta_health_evidence()
+            snapshot["supervisor_observation_evidence"] = supervisor_evidence
+            decision_context = director.decision_context(max_age_seconds=300)
+            snapshot["supervisor_evidence_reconciliation"] = reconcile_supervisor_evidence(
+                decision_context, supervisor_evidence
+            )["supervisor_evidence_reconciliation"]
             snapshot["ledger"] = await persist_engineering_snapshot(snapshot)
             return snapshot
         except Exception as exc:
@@ -327,8 +332,8 @@ def create_app(director: Director):
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         context = director.decision_context(max_age_seconds=max_age_seconds)
-        context["supervisor_observation_evidence"] = read_meta_health_evidence()
-        return context
+        supervisor_evidence = read_meta_health_evidence()
+        return reconcile_supervisor_evidence(context, supervisor_evidence)
 
     @app.post("/strategic-plans")
     async def create_strategic_plan(
