@@ -61,6 +61,7 @@ from .analysis import (
 )
 from .core import Director, auto_discover_engines
 from .planning import StrategicPlannerUnavailable
+from .observation_bridge import read_meta_health_evidence
 log = logging.getLogger("kanyoza.director")
 
 class StrategicMissionAdmissionBody(BaseModel):
@@ -267,6 +268,7 @@ def create_app(director: Director):
             from .engineering_awareness import build_engineering_awareness
             from .engineering_ledger import persist_engineering_snapshot
             snapshot = await build_engineering_awareness()
+            snapshot["supervisor_observation_evidence"] = read_meta_health_evidence()
             snapshot["ledger"] = await persist_engineering_snapshot(snapshot)
             return snapshot
         except Exception as exc:
@@ -324,7 +326,9 @@ def create_app(director: Director):
         await _require_auth(request, credentials)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        return director.decision_context(max_age_seconds=max_age_seconds)
+        context = director.decision_context(max_age_seconds=max_age_seconds)
+        context["supervisor_observation_evidence"] = read_meta_health_evidence()
+        return context
 
     @app.post("/strategic-plans")
     async def create_strategic_plan(
