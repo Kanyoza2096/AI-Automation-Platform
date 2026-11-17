@@ -152,6 +152,16 @@ def create_app(director: Director):
             return None
         return _workspace_id(request)
 
+    async def _load_task_scope(request):
+        """Load only the authenticated workspace's tasks before scoped access."""
+        workspace_id = await _load_task_scope(request)
+        if workspace_id:
+            try:
+                await director.restore_workspace_tasks(workspace_id)
+            except RuntimeError:
+                raise HTTPException(503, "Workspace task state is temporarily unavailable")
+        return workspace_id
+
     def _proposal_in_workspace(proposal, request) -> bool:
         workspace_id = _workspace_id(request)
         if workspace_id is None or getattr(
@@ -473,7 +483,7 @@ def create_app(director: Director):
         await _require_auth(request, credentials)
         graph = director.mission_graph(
             mission_id=mission_id,
-            workspace_id=_task_ownership_workspace_id(request),
+            workspace_id=await _load_task_scope(request),
         )
         # The Director constructs the graph from one ownership scope; this
         # endpoint does not filter a mixed global graph after construction.
@@ -600,7 +610,7 @@ def create_app(director: Director):
     ):
         await _require_auth(request, credentials, write=True)
         task = director.get_task(
-            task_id, workspace_id=_task_ownership_workspace_id(request),
+            task_id, workspace_id=await _load_task_scope(request),
         )
         if task is None:
             raise HTTPException(404, "Task not found")
