@@ -178,15 +178,24 @@ def create_app(director: Director):
         return fallback
 
     def _require_platform_scope(request) -> None:
-        """Block tenant principals from mutating Director's shared singleton state."""
+        """Require a trusted platform identity for shared Director state."""
         context = getattr(request.state, "request_context", None) if request is not None else None
-        if context is not None and getattr(context, "workspace_id", None):
-            if not getattr(context, "species_privileges", False):
-                from fastapi import HTTPException
-                raise HTTPException(
-                    status_code=403,
-                    detail="This Director operation changes platform-wide state and requires platform operator privileges",
-                )
+        if context is None:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail="Platform identity required for this Director operation",
+            )
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        if not is_platform_operator:
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=403,
+                detail="This Director operation changes platform-wide state and requires platform operator privileges",
+            )
 
     async def _require_auth(request, credentials=None, *, write: bool = False) -> None:
         if not _authenticate(credentials, request):

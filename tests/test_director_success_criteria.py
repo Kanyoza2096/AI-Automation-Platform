@@ -201,12 +201,13 @@ def _install_platform_context(app):
     @app.middleware("http")
     async def platform_context(request, call_next):
         request.state.request_context = SimpleNamespace(
-            workspace_id=None,
+            workspace_id="admin-home-workspace",
             principal_id="platform-test-super-admin",
             role="owner",
-            species_privileges=True,
+            species_privileges=False,
+            platform_role="super_admin",
         )
-        request.state.auth_identity = SimpleNamespace(valid=True)
+        request.state.auth_identity = SimpleNamespace(valid=True, is_species=False, platform_role="super_admin")
         return await call_next(request)
 
 
@@ -220,8 +221,9 @@ def _install_tenant_context(app, workspace_id="workspace-test", role="owner"):
             principal_id="tenant-test-owner",
             role=role,
             species_privileges=False,
+            platform_role="",
         )
-        request.state.auth_identity = SimpleNamespace(valid=True)
+        request.state.auth_identity = SimpleNamespace(valid=True, is_species=False, platform_role="")
         return await call_next(request)
 
 
