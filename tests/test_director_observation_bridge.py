@@ -98,3 +98,39 @@ def test_reconciliation_does_not_claim_independence_for_agreement():
     assert reconciliation["status"] == "agreement"
     assert reconciliation["counts"]["agreements"] == 2
     assert reconciliation["independence_established"] is False
+
+
+
+def test_director_decision_context_exposes_reconciled_supervisor_evidence(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+    from services.director import Director, create_app
+    import services.director.api as director_api
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "master-test-token")
+    monkeypatch.setenv("PYTHON_SERVICE_TOKEN", "service-test-token")
+    expected = project_meta_health_evidence(_health())
+    monkeypatch.setattr(director_api, "read_meta_health_evidence", lambda: expected)
+
+    app = create_app(Director(supabase_client=None))
+
+    @app.middleware("http")
+    async def canonical_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-test", role="owner", species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/decision-context",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["supervisor_observation_evidence"]["source"] == "meta_engine.check_health"
+    assert payload["supervisor_evidence_reconciliation"]["status"] == "partial"
+    assert payload["supervisor_evidence_reconciliation"]["counts"]["unmatched"] == 2
+    assert payload["supervisor_evidence_reconciliation"]["grants_execution_authority"] is False
+    assert any(item["kind"] == "supervisor_reported_engine_status" for item in payload["facts"])
