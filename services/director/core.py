@@ -2341,19 +2341,17 @@ class Director:
             Status.PLANNED, Status.APPROVAL, Status.APPROVED,
             Status.APPROVED_PENDING_EXECUTION, Status.EXECUTING,
         }
+        requested_workspace_id = str(workspace_id).strip() if workspace_id else None
+        task_registry = (
+            self.workspace_tasks.setdefault(requested_workspace_id, {})
+            if requested_workspace_id else self.tasks
+        )
         if not is_proposal_task:
             terminal_statuses = {
                 Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
                 Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED, Status.FLAGGED,
             }
-            requested_workspace_id = str(workspace_id).strip() if workspace_id else None
-            for existing in self.tasks.values():
-                existing_workspace_id = (
-                    str(getattr(existing, "workspace_id", "")).strip()
-                    if getattr(existing, "workspace_id", None) else None
-                )
-                if existing_workspace_id != requested_workspace_id:
-                    continue
+            for existing in task_registry.values():
                 same_intent = existing.capability == cap_name and existing.params == normalized_params
                 if not same_intent:
                     continue
@@ -2399,21 +2397,21 @@ class Director:
             condition_fingerprint=condition_fingerprint,
             workspace_id=str(workspace_id).strip() if workspace_id else None,
         )
-        self.tasks[task.id] = task
-        if len(self.tasks) > self.MAX_TASKS:
+        task_registry[task.id] = task
+        if len(task_registry) > self.MAX_TASKS:
             removable = [
-                tid for tid, t in self.tasks.items()
+                tid for tid, t in task_registry.items()
                 if t.status in (
                     Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
                     Status.FAILED, Status.CANCELLED,
                 )
             ]
             for tid in removable[:500]:
-                del self.tasks[tid]
-        if len(self.tasks) > self.MAX_TASKS:
-            oldest = sorted(self.tasks.items(), key=lambda x: x[1].created_at)[:500]
+                del task_registry[tid]
+        if len(task_registry) > self.MAX_TASKS:
+            oldest = sorted(task_registry.items(), key=lambda x: x[1].created_at)[:500]
             for tid, _ in oldest:
-                del self.tasks[tid]
+                del task_registry[tid]
         _publish_event("task_created", {
             "task_id": task.id,
             "description": desc,
