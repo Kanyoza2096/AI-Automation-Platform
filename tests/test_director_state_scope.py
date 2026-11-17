@@ -113,3 +113,108 @@ def test_learning_without_task_identity_cannot_restore_idempotency():
     }
 
     assert Director._is_replayable_learning_signal(verified_without_task) is False
+
+
+class _FakeResponse:
+    def __init__(self, data=None):
+        self.data = data or []
+
+
+class _FakeObservationQuery:
+    def __init__(self, client, operation="select", values=None):
+        self.client = client
+        self.operation = operation
+        self.values = values or {}
+
+    def select(self, *_args):
+        self.operation = "select"
+        return self
+
+    def eq(self, key, value):
+        self.values[key] = value
+        return self
+
+    def contains(self, key, value):
+        self.values[key] = value
+        return self
+
+    def is_(self, key, value):
+        self.values[key] = value
+        return self
+
+    def limit(self, *_args):
+        return self
+
+    def update(self, values):
+        self.operation = "update"
+        self.values.update(values)
+        return self
+
+    def insert(self, values):
+        self.operation = "insert"
+        self.values.update(values)
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, *_args):
+        return self
+
+    def execute(self):
+        self.client.calls.append((self.operation, dict(self.values)))
+        if self.operation == "select":
+            return _FakeResponse(self.client.existing_rows)
+        return _FakeResponse([{"id": 42}])
+
+
+class _FakeObservationSupabase:
+    def __init__(self, existing_rows=None):
+        self.existing_rows = existing_rows or []
+        self.calls = []
+
+    def table(self, _name):
+        return _FakeObservationQuery(self)
+
+
+@pytest.mark.asyncio
+async def test_save_observation_uses_database_generated_bigint_id():
+    from services.director.stores import AsyncSupabaseStore
+
+    client = _FakeObservationSupabase()
+    store = AsyncSupabaseStore(client)
+    observation = Observation(
+        source="test-monitor",
+        sector=Sector.INFRA,
+        status=Health.NOMINAL,
+    )
+
+    await store.save_observation(observation)
+
+    insert_calls = [values for operation, values in client.calls if operation == "insert"]
+    assert len(insert_calls) == 1
+    assert "id" not in insert_calls[0]
+    assert insert_calls[0]["payload"]["observation_fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_save_observation_updates_existing_numeric_database_id():
+    from services.director.stores import AsyncSupabaseStore
+
+    client = _FakeObservationSupabase(existing_rows=[{"id": 42}])
+    store = AsyncSupabaseStore(client)
+    observation = Observation(
+        source="test-monitor",
+        sector=Sector.INFRA,
+        status=Health.NOMINAL,
+    )
+
+    await store.save_observation(observation)
+
+    update_calls = [values for operation, values in client.calls if operation == "update"]
+    assert len(update_calls) == 1
+    assert any(
+        operation == "eq" and values.get("id") == 42
+        for operation, values in client.calls
+    )
+    assert "id" not in update_calls[0]
