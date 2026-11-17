@@ -47,7 +47,6 @@ import asyncio
 import json
 import logging
 import random
-import uuid
 import hashlib
 from collections import deque
 from dataclasses import asdict
