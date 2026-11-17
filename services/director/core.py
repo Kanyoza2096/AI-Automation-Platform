@@ -485,6 +485,7 @@ class Director:
         self.tasks: Dict[str, Task] = {}
         self.workspace_tasks: Dict[str, Dict[str, Task]] = {}
         self.workspace_observations: Dict[str, Dict[str, Observation]] = {}
+        self._restored_workspace_task_scopes: set[str] = set()
         self.goals: Dict[str, Goal] = {}
 
         self.history: deque = deque(maxlen=5000)
@@ -1543,6 +1544,73 @@ class Director:
             "strategic_context": strategic_context,
             "tasks": [safe(asdict(t)) for t in tasks],
         }
+
+    async def restore_workspace_tasks(self, workspace_id: str) -> dict:
+        """Restore one explicitly requested workspace without enumerating tenants."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        if workspace_id in self._restored_workspace_task_scopes:
+            return {"restored": 0, "already_loaded": True, "errors": 0}
+        try:
+            records = await self.store.list_tasks(
+                workspace_id=workspace_id, scope_type="workspace",
+            )
+        except Exception as exc:
+            log.warning(
+                "Director workspace task restore failed for scoped request: %s",
+                sanitize_error_message(exc),
+            )
+            raise RuntimeError("workspace_task_restore_unavailable") from exc
+
+        restored = flagged = errors = 0
+        registry = self.workspace_tasks.setdefault(workspace_id, {})
+        for record in records or []:
+            try:
+                raw = record.get("payload", record) if isinstance(record, dict) else record
+                if isinstance(raw, str):
+                    import json
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw.get("id"):
+                    errors += 1
+                    continue
+                if isinstance(record, dict) and record.get("scope_type"):
+                    raw["scope_type"] = record["scope_type"]
+                fields = {key: raw[key] for key in Task.__dataclass_fields__ if key in raw}
+                fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
+                fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
+                fields["status"] = Status(fields.get("status", Status.PLANNED.value))
+                for key in ("created_at", "executed_at", "approved_at", "evidence_observed_at"):
+                    value = fields.get(key)
+                    if isinstance(value, str) and value:
+                        fields[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                task = Task(**fields)
+                if (
+                    task.scope_type != "workspace"
+                    or str(task.workspace_id or "").strip() != workspace_id
+                ):
+                    errors += 1
+                    continue
+                if task.status == Status.EXECUTING:
+                    task.status = Status.FLAGGED
+                    task.error = "restart_reconciliation_required: execution outcome is ambiguous"
+                    task.result = {
+                        "status": "reconciliation_required",
+                        "reason": "Director restarted while task was executing; automatic retry suppressed",
+                    }
+                    flagged += 1
+                    await self.store.save_task(task)
+                registry[task.id] = task
+                restored += 1
+            except Exception as exc:
+                errors += 1
+                log.warning(
+                    "Skipping invalid workspace Director task: %s",
+                    sanitize_error_message(exc),
+                )
+        self._restored_workspace_task_scopes.add(workspace_id)
+        return {"restored": restored, "flagged_for_reconciliation": flagged, "errors": errors}
 
     def get_task(self, task_id: str, *, workspace_id: Optional[str] = None) -> Optional[Task]:
         """Look up a task only inside the caller's explicit ownership scope."""
