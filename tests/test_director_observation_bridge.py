@@ -134,3 +134,39 @@ def test_director_decision_context_exposes_reconciled_supervisor_evidence(monkey
     assert payload["supervisor_evidence_reconciliation"]["counts"]["unmatched"] == 2
     assert payload["supervisor_evidence_reconciliation"]["grants_execution_authority"] is False
     assert any(item["kind"] == "supervisor_reported_engine_status" for item in payload["facts"])
+
+
+def test_reconciliation_matches_explicit_unknowns_by_exact_service_identity():
+    evidence = project_meta_health_evidence(_health())
+    context = {
+        "facts": [],
+        "unknowns": [
+            {"kind": "observation_not_current", "observer": "guardian", "freshness": "stale"},
+            {"kind": "source_status_unknown", "observer": "scheduler"},
+        ],
+        "conflicts": [],
+    }
+    result = reconcile_supervisor_evidence(context, evidence)
+    reconciliation = result["supervisor_evidence_reconciliation"]
+    assert reconciliation["counts"]["unknown"] == 2
+    assert reconciliation["counts"]["unmatched"] == 0
+    assert all(
+        item["director_evidence_state"] == "explicit_unknown"
+        for item in reconciliation["comparisons"]
+    )
+    assert reconciliation["status"] == "partial"
+
+
+def test_reconciliation_does_not_match_on_provenance_source_alone():
+    evidence = project_meta_health_evidence(_health())
+    context = {
+        "facts": [
+            {"kind": "source_reported_status", "observer": "different-service", "source": "guardian", "status": "healthy"}
+        ],
+        "unknowns": [],
+        "conflicts": [],
+    }
+    result = reconcile_supervisor_evidence(context, evidence)
+    reconciliation = result["supervisor_evidence_reconciliation"]
+    assert reconciliation["counts"]["unmatched"] == 2
+    assert reconciliation["counts"]["agreements"] == 0
