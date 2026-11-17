@@ -739,3 +739,38 @@ async def test_workspace_governed_handoff_rejects_foreign_proposal_reference():
     assert result.error == "canonical_governed_handoff_required"
     assert result.result["reason"] == "proposal_not_found"
     assert handoff_calls == []
+
+
+def test_workspace_identity_cannot_read_shared_director_telemetry(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "telemetry-scope-token")
+    director = Director(supabase_client=None)
+    director.observations["platform-secret-observer"] = make_observation(
+        {"internal": {"customer_count": 999}},
+    )
+    tenant_app = create_app(director)
+    _install_tenant_context(tenant_app, workspace_id="workspace-a")
+    tenant = TestClient(tenant_app)
+    headers = {"Authorization": "Bearer telemetry-scope-token"}
+
+    for path in (
+        "/organism/state",
+        "/engines",
+        "/diagnostics",
+        "/decisions",
+        "/alerts",
+        "/outlook",
+        "/summary",
+        "/initiatives",
+        "/correlations",
+        "/learning/report",
+    ):
+        response = tenant.get(path, headers=headers)
+        assert response.status_code == 403, (path, response.status_code)
+
+    platform_app = create_app(director)
+    _install_platform_context(platform_app)
+    platform = TestClient(platform_app)
+    assert platform.get("/engines", headers=headers).status_code == 200
