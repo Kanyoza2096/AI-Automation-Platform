@@ -766,6 +766,14 @@ def test_workspace_identity_cannot_read_shared_director_telemetry(monkeypatch):
         "/initiatives",
         "/correlations",
         "/learning/report",
+        "/decision-context",
+        "/briefing",
+        "/capabilities",
+        "/ooda/state",
+        "/ooda/world-model",
+        "/meta/status",
+        "/meta/topology",
+        "/meta/learning/report",
     ):
         response = tenant.get(path, headers=headers)
         assert response.status_code == 403, (path, response.status_code)
