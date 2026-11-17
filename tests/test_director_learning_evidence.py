@@ -56,12 +56,12 @@ def test_authoritatively_ineffective_outcome_counts_as_verified_failure():
     assert signal is not None
     assert signal.outcome == "failure"
     assert signal.context["status"] == Status.INEFFECTIVE.value
-    assert signal.context["error_class"] == "OUTCOME_NOT_VERIFIED"
+    assert signal.context["error_class"] == "AUTHORITATIVE_STATE_MISMATCH"
     assert loop.verification_stats["run_health_scan"]["ineffective"] == 1
     assert loop.capability_stats["run_health_scan"]["failures"] == 1
     assert loop.capability_stats["run_health_scan"]["successes"] == 0
     assert loop.target_failure_counts["run_health_scan:worker-pool-a"] == 1
-    assert loop.target_last_error["run_health_scan:worker-pool-a"] == "OUTCOME_NOT_VERIFIED"
+    assert loop.target_last_error["run_health_scan:worker-pool-a"] == "AUTHORITATIVE_STATE_MISMATCH"
     assert loop.get_success_rate("run_health_scan") == 0.0
 
 
