@@ -101,3 +101,5 @@ jobs:
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
             tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
+
+# Temporary no-behavior-change trigger for staging-baseline CI comparison (2026-11-17).
