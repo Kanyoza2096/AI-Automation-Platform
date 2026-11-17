@@ -1204,18 +1204,31 @@ class Director:
                 root_cause.root_cause, root_cause.affected_services,
             )
             log.info("📋 RECOVERY PLAN: %s", plan["id"])
+            recovery_params = {
+                "service_name": root_cause.root_cause,
+                "affected_services": root_cause.affected_services,
+                "recovery_plan_id": plan["id"],
+            }
+            recovery_criteria = [
+                {
+                    "observer": service_name,
+                    "metric_path": "$status",
+                    "operator": "equals",
+                    "expected": Health.NOMINAL.value,
+                }
+                for service_name in root_cause.affected_services
+                if service_name in trusted_observations
+            ]
             self._create_task(
                 Sector.HEALTH,
                 f"Fix root cause: {root_cause.root_cause}",
                 "restart_failed_service",
                 f"Root cause affects {len(root_cause.affected_services)} services",
                 0.95,
-                {
-                    "service_name": root_cause.root_cause,
-                    "affected_services": root_cause.affected_services,
-                    "recovery_plan_id": plan["id"],
-                },
+                recovery_params,
                 root_cause.root_cause,
+                success_criteria=recovery_criteria,
+                evidence_observed_at=root_cause.timestamp,
             )
             self._send_diagnostic_alert()
 
@@ -1569,21 +1582,30 @@ class Director:
             stamp_utc = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
             age = (datetime.now(timezone.utc) - stamp_utc).total_seconds()
             status = getattr(getattr(obs, "status", None), "value", getattr(obs, "status", None))
-            if age < -30 or age > max_age_seconds or str(status).lower() not in {"nominal", "healthy", "ok", "ready"}:
+            normalized_status = str(status).lower()
+            status_criterion = metric_path == "$status"
+            if (
+                age < -30 or age > max_age_seconds
+                or normalized_status in {"", "none", "unknown"}
+                or (not status_criterion and normalized_status not in {"nominal", "healthy", "ok", "ready"})
+            ):
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "observer_not_fresh_and_healthy", "observer": observer_name, "age_seconds": round(age, 3), "reported_status": status})
                 continue
-            value: Any = getattr(obs, "metrics", {}) or {}
-            path_parts = metric_path.split(".")
-            try:
-                for part in path_parts:
-                    if not part or not isinstance(value, dict) or part not in value:
-                        raise KeyError(part)
-                    value = value[part]
-            except KeyError:
-                unknown = True
-                results.append({"index": index, "outcome": "unknown", "reason": "metric_missing", "observer": observer_name, "metric_path": metric_path})
-                continue
+            if status_criterion:
+                value: Any = normalized_status
+            else:
+                value = getattr(obs, "metrics", {}) or {}
+                path_parts = metric_path.split(".")
+                try:
+                    for part in path_parts:
+                        if not part or not isinstance(value, dict) or part not in value:
+                            raise KeyError(part)
+                        value = value[part]
+                except KeyError:
+                    unknown = True
+                    results.append({"index": index, "outcome": "unknown", "reason": "metric_missing", "observer": observer_name, "metric_path": metric_path})
+                    continue
             expected = criterion.get("expected")
             try:
                 if operator == "exists":
