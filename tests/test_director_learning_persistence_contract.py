@@ -4,7 +4,6 @@ The fake Supabase transport models acknowledged PostgREST writes and reads while
 retaining rows across Director instances. This exercises AsyncSupabaseStore and
 Director's real learning/replay methods without touching a live database.
 """
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +28,6 @@ class FakeQuery:
         self.filters = []
         self.sort_desc = False
         self.row_limit = None
-        self.row_range = None
         self.ids = None
 
     def upsert(self, payload, **kwargs):
