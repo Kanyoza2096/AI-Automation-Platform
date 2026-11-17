@@ -479,7 +479,14 @@ class Director:
         self.capability_binding_report: Dict[str, str] = {}
         self.capability_binding_at: Optional[str] = None
         self._authority_fence = None
+        # Platform and workspace tasks are held in separate registries.
+        # The scheduler and platform diagnostics intentionally consume only
+        # self.tasks; tenant tasks require an explicit workspace lookup.
         self.tasks: Dict[str, Task] = {}
+        self.workspace_tasks: Dict[str, Dict[str, Task]] = {}
+        self.workspace_observations: Dict[str, Dict[str, Observation]] = {}
+        self._restored_workspace_task_scopes: set[str] = set()
+        self._restored_workspace_observation_scopes: set[str] = set()
         self.goals: Dict[str, Goal] = {}
 
         self.history: deque = deque(maxlen=5000)
@@ -523,9 +530,13 @@ class Director:
         self.recovery_coordinator = CorrelatedRecovery()
 
         self.learning_loop = LearningLoop()
-        # One verified learning signal per task in this process. The durable
-        # learning row also uses a deterministic task-derived ID for replay safety.
+        # Tenant adaptive state is isolated per trusted workspace identity.
+        self._workspace_learning_loops: Dict[str, LearningLoop] = {}
+        # Idempotency keys are scoped independently; workspace task IDs can
+        # never suppress or replace platform learning records.
         self._learning_recorded_task_ids: set = set()
+        self._workspace_learning_recorded_task_ids: Dict[str, set] = {}
+        self._restored_workspace_learning_scopes: set = set()
         self.adaptive_thresholds = AdaptiveThresholds()
 
         self.current_root_cause: Optional[RootCauseAnalysis] = None
@@ -946,6 +957,19 @@ class Director:
         log.info("Director task restore: %s", summary)
         return summary
 
+    def _learning_loop_for_scope(self, workspace_id: Optional[str] = None) -> LearningLoop:
+        """Return the adaptive learner for exactly one ownership scope."""
+        workspace_id = str(workspace_id).strip() if workspace_id else None
+        if workspace_id is None:
+            return self.learning_loop
+        return self._workspace_learning_loops.setdefault(workspace_id, LearningLoop())
+
+    def _learning_ids_for_scope(self, workspace_id: Optional[str] = None) -> set:
+        workspace_id = str(workspace_id).strip() if workspace_id else None
+        if workspace_id is None:
+            return self._learning_recorded_task_ids
+        return self._workspace_learning_recorded_task_ids.setdefault(workspace_id, set())
+
     @staticmethod
     def _sector_is_valid(value: Any) -> bool:
         try:
@@ -955,7 +979,9 @@ class Director:
             return False
 
     @staticmethod
-    def _is_replayable_learning_signal(signal: Any) -> bool:
+    def _is_replayable_learning_signal(
+        signal: Any, *, workspace_id: Optional[str] = None,
+    ) -> bool:
         """Accept only complete, independently verified learning records.
 
         Legacy task IDs must not be marked as learned during startup merely
@@ -972,13 +998,15 @@ class Director:
             and context.get("status") == Status.VERIFIED.value
             and signal.get("capability")
             and Director._sector_is_valid(signal.get("sector"))
+            and (str(signal.get("workspace_id") or "").strip() or None)
+                == (str(workspace_id).strip() if workspace_id else None)
         )
 
     async def _replay_learning_history(self) -> None:
         lookback_days = 30
         since = now() - timedelta(days=lookback_days)
         try:
-            signals = await self.store.list_learnings_since(since=since, limit=1000)
+            signals = await self.store.list_platform_learnings_since(since=since, limit=1000)
         except Exception as exc:
             log.warning(
                 "Learning replay: failed to load signals: %s",
@@ -993,10 +1021,10 @@ class Director:
         # suppress a later legitimate verification for the same task.
         eligible = [
             signal for signal in signals
-            if self._is_replayable_learning_signal(signal)
+            if self._is_replayable_learning_signal(signal, workspace_id=None)
         ]
         for signal in eligible:
-            self._learning_recorded_task_ids.add(signal["task_id"])
+            self._learning_ids_for_scope(None).add(signal["task_id"])
 
         try:
             replayed = self.learning_loop.rebuild_from_signals(eligible)
@@ -1104,6 +1132,7 @@ class Director:
             confidence=proposal.confidence,
             params=proposal.params,
             source=f"proposal:{proposal.id}",
+            workspace_id=getattr(proposal, "workspace_id", None),
         )
         task.proposal_id = proposal.id
         task.approved_by = actor
@@ -1494,7 +1523,7 @@ class Director:
             raise RuntimeError("mission_admission_receipt_mismatch")
 
         for task in tasks:
-            self.tasks[task.id] = task
+            self.workspace_tasks.setdefault(workspace_id, {})[task.id] = task
             _publish_event("task_created", {
                 "task_id": task.id,
                 "mission_id": mission_id,
@@ -1539,13 +1568,231 @@ class Director:
             "tasks": [safe(asdict(t)) for t in tasks],
         }
 
-    async def add_task_dependency(self, task_id: str, dependency_id: str) -> dict:
+    async def _replay_workspace_learning_history(self, workspace_id: str) -> dict:
+        """Replay only verified signals owned by one explicitly requested workspace."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        loop = self._learning_loop_for_scope(workspace_id)
+        recorded_ids = self._learning_ids_for_scope(workspace_id)
+        if workspace_id in self._restored_workspace_learning_scopes:
+            return {"replayed": 0, "already_loaded": True}
+        since = now() - timedelta(days=30)
+        try:
+            signals = await self.store.list_learnings_since(
+                since=since, limit=1000, workspace_id=workspace_id,
+            )
+            eligible = [
+                signal for signal in signals
+                if self._is_replayable_learning_signal(signal, workspace_id=workspace_id)
+            ]
+            for signal in eligible:
+                recorded_ids.add(signal["task_id"])
+            replayed = loop.rebuild_from_signals(eligible) if eligible else 0
+            self._restored_workspace_learning_scopes.add(workspace_id)
+            return {"replayed": replayed, "loaded": len(signals)}
+        except Exception as exc:
+            log.warning(
+                "Workspace learning replay is temporarily unavailable for scoped workspace: %s",
+                sanitize_error_message(exc),
+            )
+            # Learning is adaptive context, not an authorization dependency.
+            # Keep task/evidence reads available and retry replay on a later
+            # request because this scope is deliberately not marked restored.
+            return {"replayed": 0, "loaded": 0, "unavailable": True}
+
+    async def restore_workspace_tasks(self, workspace_id: str) -> dict:
+        """Restore one explicitly requested workspace without enumerating tenants."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        if workspace_id in self._restored_workspace_task_scopes:
+            learning = await self._replay_workspace_learning_history(workspace_id)
+            return {"restored": 0, "already_loaded": True, "errors": 0, "learning": learning}
+        try:
+            records = await self.store.list_tasks(
+                workspace_id=workspace_id, scope_type="workspace",
+            )
+        except Exception as exc:
+            log.warning(
+                "Director workspace task restore failed for scoped request: %s",
+                sanitize_error_message(exc),
+            )
+            raise RuntimeError("workspace_task_restore_unavailable") from exc
+
+        restored = flagged = errors = 0
+        registry = self.workspace_tasks.setdefault(workspace_id, {})
+        for record in records or []:
+            try:
+                raw = record.get("payload", record) if isinstance(record, dict) else record
+                if isinstance(raw, str):
+                    import json
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw.get("id"):
+                    errors += 1
+                    continue
+                if isinstance(record, dict) and record.get("scope_type"):
+                    raw["scope_type"] = record["scope_type"]
+                fields = {key: raw[key] for key in Task.__dataclass_fields__ if key in raw}
+                fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
+                fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
+                fields["status"] = Status(fields.get("status", Status.PLANNED.value))
+                for key in ("created_at", "executed_at", "approved_at", "evidence_observed_at"):
+                    value = fields.get(key)
+                    if isinstance(value, str) and value:
+                        fields[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                task = Task(**fields)
+                if (
+                    task.scope_type != "workspace"
+                    or str(task.workspace_id or "").strip() != workspace_id
+                ):
+                    errors += 1
+                    continue
+                if task.status == Status.EXECUTING:
+                    task.status = Status.FLAGGED
+                    task.error = "restart_reconciliation_required: execution outcome is ambiguous"
+                    task.result = {
+                        "status": "reconciliation_required",
+                        "reason": "Director restarted while task was executing; automatic retry suppressed",
+                    }
+                    flagged += 1
+                    await self.store.save_task(task)
+                registry[task.id] = task
+                restored += 1
+            except Exception as exc:
+                errors += 1
+                log.warning(
+                    "Skipping invalid workspace Director task: %s",
+                    sanitize_error_message(exc),
+                )
+        learning = await self._replay_workspace_learning_history(workspace_id)
+        self._restored_workspace_task_scopes.add(workspace_id)
+        return {
+            "restored": restored,
+            "flagged_for_reconciliation": flagged,
+            "errors": errors,
+            "learning": learning,
+        }
+
+    async def restore_workspace_observations(self, workspace_id: str) -> dict:
+        """Restore evidence only for one trusted workspace scope."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        if workspace_id in self._restored_workspace_observation_scopes:
+            return {"restored": 0, "already_loaded": True, "errors": 0}
+        try:
+            records = await self.store.list_observations(
+                workspace_id=workspace_id, scope_type="workspace",
+            )
+        except Exception as exc:
+            log.warning(
+                "Director workspace observation restore failed: %s",
+                sanitize_error_message(exc),
+            )
+            raise RuntimeError("workspace_observation_restore_unavailable") from exc
+
+        restored = errors = 0
+        registry = self.workspace_observations.setdefault(workspace_id, {})
+        for record in records or []:
+            try:
+                raw = record.get("payload", record) if isinstance(record, dict) else record
+                if isinstance(raw, str):
+                    import json
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw.get("source"):
+                    errors += 1
+                    continue
+                if isinstance(record, dict) and record.get("scope_type"):
+                    raw["scope_type"] = record["scope_type"]
+                fields = {
+                    key: raw[key] for key in Observation.__dataclass_fields__
+                    if key in raw
+                }
+                fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                fields["status"] = Health(fields.get("status", Health.UNKNOWN.value))
+                stamp = fields.get("timestamp")
+                if isinstance(stamp, str) and stamp:
+                    fields["timestamp"] = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                observation = Observation(**fields)
+                if (
+                    observation.scope_type != "workspace"
+                    or str(observation.workspace_id or "").strip() != workspace_id
+                ):
+                    errors += 1
+                    continue
+                registry[observation.source] = observation
+                restored += 1
+            except Exception as exc:
+                errors += 1
+                log.warning(
+                    "Skipping invalid workspace Director observation: %s",
+                    sanitize_error_message(exc),
+                )
+        self._restored_workspace_observation_scopes.add(workspace_id)
+        return {"restored": restored, "errors": errors}
+
+    def get_task(self, task_id: str, *, workspace_id: Optional[str] = None) -> Optional[Task]:
+        """Look up a task only inside the caller's explicit ownership scope."""
+        if workspace_id:
+            workspace_id = str(workspace_id).strip()
+            task = self.workspace_tasks.get(workspace_id, {}).get(task_id)
+            if (
+                task is None
+                or getattr(task, "scope_type", "platform") != "workspace"
+                or str(getattr(task, "workspace_id", "") or "").strip() != workspace_id
+            ):
+                return None
+            return task
+        task = self.tasks.get(task_id)
+        if task is None:
+            return None
+        if (
+            getattr(task, "scope_type", "platform") != "platform"
+            or getattr(task, "workspace_id", None)
+        ):
+            return None
+        return task
+
+    def tasks_for_scope(self, *, workspace_id: Optional[str] = None) -> list[Task]:
+        """Return tasks from exactly one ownership registry."""
+        if workspace_id:
+            workspace_id = str(workspace_id).strip()
+            return [
+                task for task in self.workspace_tasks.get(workspace_id, {}).values()
+                if getattr(task, "scope_type", "platform") == "workspace"
+                and str(getattr(task, "workspace_id", "") or "").strip() == workspace_id
+            ]
+        return [
+            task for task in self.tasks.values()
+            if getattr(task, "scope_type", "platform") == "platform"
+            and not getattr(task, "workspace_id", None)
+        ]
+
+    async def add_task_dependency(
+        self, task_id: str, dependency_id: str, *, workspace_id: Optional[str] = None,
+    ) -> dict:
         if task_id == dependency_id:
             raise ValueError("a task cannot depend on itself")
-        task = self.tasks.get(task_id)
-        dependency = self.tasks.get(dependency_id)
+        task = self.get_task(task_id, workspace_id=workspace_id)
+        dependency = self.get_task(dependency_id, workspace_id=workspace_id)
         if task is None or dependency is None:
             raise KeyError("task and dependency must both exist")
+        def ownership_scope(candidate: Task) -> tuple[str, str]:
+            scope_type = getattr(candidate, "scope_type", "platform")
+            workspace_id = str(getattr(candidate, "workspace_id", "") or "").strip()
+            if scope_type == "workspace" and workspace_id:
+                return ("workspace", workspace_id)
+            if scope_type == "platform" and not workspace_id:
+                return ("platform", "")
+            # Invalid or legacy-unclassified ownership must never form edges.
+            return ("invalid", str(candidate.id))
+
+        task_scope = ownership_scope(task)
+        dependency_scope = ownership_scope(dependency)
+        if task_scope != dependency_scope or task_scope[0] == "invalid":
+            raise ValueError("cross_scope_dependency_not_allowed")
         if task.status not in (Status.PLANNED, Status.APPROVAL, Status.APPROVED):
             raise ValueError("dependencies can only be changed before execution")
         if dependency_id in (getattr(task, "depends_on", []) or []):
@@ -1563,7 +1810,7 @@ class Director:
             if current in visited:
                 continue
             visited.add(current)
-            current_task = self.tasks.get(current)
+            current_task = self.get_task(current, workspace_id=workspace_id)
             if current_task is not None:
                 stack.extend(getattr(current_task, "depends_on", []) or [])
         task.depends_on.append(dependency_id)
@@ -1575,10 +1822,13 @@ class Director:
         await self.store.save_task(dependency)
         return {"task_id": task_id, "depends_on": list(task.depends_on), "mission_id": task.mission_id, "changed": True}
 
-    async def evaluate_task_success_criteria(self, task_id: str, max_age_seconds: int = 300) -> dict:
+    async def evaluate_task_success_criteria(
+        self, task_id: str, max_age_seconds: int = 300, *,
+        workspace_id: Optional[str] = None,
+    ) -> dict:
         if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int) or not 1 <= max_age_seconds <= 86400:
             raise ValueError("max_age_seconds must be an integer between 1 and 86400")
-        task = self.tasks.get(task_id)
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise KeyError("task not found")
         criteria = list(getattr(task, "success_criteria", []) or [])
@@ -1603,7 +1853,16 @@ class Director:
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "invalid_structured_criterion"})
                 continue
-            obs = self.observations.get(observer_name.strip())
+            observations = (
+                self.workspace_observations.get(str(workspace_id).strip(), {})
+                if workspace_id else self.observations
+            )
+            obs = observations.get(observer_name.strip())
+            if workspace_id and obs is not None and (
+                getattr(obs, "scope_type", "platform") != "workspace"
+                or str(getattr(obs, "workspace_id", "") or "").strip() != str(workspace_id).strip()
+            ):
+                obs = None
             if obs is None:
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "observer_missing", "observer": observer_name})
@@ -1677,15 +1936,39 @@ class Director:
                     return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": True, "persistence": "failed"}
                 if outcome == "verified":
                     try:
-                        await self._record_verified_learning(task)
+                        if workspace_id is None:
+                            await self._record_verified_learning(task)
                     except Exception as exc:
                         log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
 
-    def mission_graph(self, mission_id: Optional[str] = None) -> dict:
+    def mission_graph(
+        self, mission_id: Optional[str] = None, *, workspace_id: Optional[str] = None,
+    ) -> dict:
+        """Build a graph from one ownership scope only.
+
+        With no workspace_id, expose platform tasks only. A workspace graph
+        includes tasks explicitly owned by that exact workspace; legacy and
+        other-workspace tasks are excluded.
+        """
+        scoped_tasks = {
+            task.id: task for task in self.tasks_for_scope(workspace_id=workspace_id)
+        }
         selected = {
-            tid: task for tid, task in self.tasks.items()
-            if mission_id is None or getattr(task, "mission_id", None) == mission_id
+            tid: task for tid, task in scoped_tasks.items()
+            if (
+                (
+                    getattr(task, "scope_type", "platform") == "workspace"
+                    and str(getattr(task, "workspace_id", "") or "").strip() == str(workspace_id or "").strip()
+                    and bool(workspace_id)
+                )
+                or (
+                    not workspace_id
+                    and getattr(task, "scope_type", "platform") == "platform"
+                    and not getattr(task, "workspace_id", None)
+                )
+            )
+            and (mission_id is None or getattr(task, "mission_id", None) == mission_id)
         }
         nodes = []
         edges = []
@@ -1700,11 +1983,20 @@ class Director:
                 "mission_priority": float(getattr(task, "mission_priority", 50.0)),
             })
             for dep_id in getattr(task, "depends_on", []) or []:
-                edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in self.tasks})
-        return {"version": 1, "storage_scope": "current_memory_with_startup_restore", "mission_id": mission_id, "nodes": nodes, "edges": edges}
+                edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in selected})
+        storage_scope = (
+            "workspace_memory_only_until_scoped_restore"
+            if workspace_id else "platform_current_memory_with_startup_restore"
+        )
+        return {
+            "version": 1, "storage_scope": storage_scope,
+            "mission_id": mission_id, "nodes": nodes, "edges": edges,
+        }
 
-    def assess_task_recovery(self, task_id: str) -> dict:
-        task = self.tasks.get(task_id)
+    def assess_task_recovery(
+        self, task_id: str, *, workspace_id: Optional[str] = None,
+    ) -> dict:
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise KeyError("task not found")
 
@@ -1714,7 +2006,7 @@ class Director:
         unsuccessful_dependencies = []
         pending_dependencies = []
         for dependency_id in list(getattr(task, "depends_on", []) or []):
-            dependency = self.tasks.get(dependency_id)
+            dependency = self.get_task(dependency_id, workspace_id=workspace_id)
             if dependency is None:
                 missing_dependencies.append(dependency_id)
                 dependencies.append({"task_id": dependency_id, "status": "missing"})
@@ -1831,6 +2123,14 @@ class Director:
             Status.INEFFECTIVE, Status.BLOCKED,
         }
         for tid, task in list(self.tasks.items()):
+            # The platform scheduler must never execute tenant-owned or
+            # ambiguously scoped tasks, even if they appear in the legacy
+            # shared registry during migration.
+            if (
+                getattr(task, "scope_type", "platform") != "platform"
+                or getattr(task, "workspace_id", None)
+            ):
+                continue
             if task.status not in (Status.PLANNED, Status.APPROVED) or tid in self._executing:
                 continue
             dependencies = list(getattr(task, "depends_on", []) or [])
@@ -1936,10 +2236,42 @@ class Director:
             return None
         return str(value)
 
-    async def _execute_async(self, task_id: str) -> Task:
-        task = self.tasks.get(task_id)
-        if not task:
-            raise KeyError(f"Task {task_id} not found")
+    async def _execute_async(
+        self, task_id: str, *, workspace_id: Optional[str] = None,
+    ) -> Task:
+        if workspace_id:
+            # A workspace scheduler must supply its trusted workspace scope.
+            # Only an explicitly owned workspace task can be selected here.
+            task = self.get_task(task_id, workspace_id=workspace_id)
+            if task is None:
+                raise KeyError(f"Task {task_id} not found")
+        else:
+            # The legacy/platform scheduler can see only the platform registry.
+            # Retain a guard for old tenant rows that may still be in this map.
+            task = self.tasks.get(task_id)
+            if not task:
+                raise KeyError(f"Task {task_id} not found")
+            if (
+                getattr(task, "scope_type", "platform") != "platform"
+                or getattr(task, "workspace_id", None)
+            ):
+                log.warning(
+                    "Platform execution refused for non-platform task %s",
+                    task_id,
+                )
+                return task
+
+        # Workspace tasks may use only the proposal-backed governed handoff.
+        # They never fall through to the legacy capability handler.
+        if workspace_id and not task.proposal_id:
+            task.status = Status.APPROVAL
+            task.error = "canonical_governed_handoff_required"
+            task.result = {
+                "status": "deferred",
+                "reason": "workspace_tasks_require_proposal_backed_governed_handoff",
+            }
+            await self.store.save_task(task)
+            return task
 
         runnable_states = {Status.PLANNED, Status.APPROVED, Status.APPROVED_PENDING_EXECUTION}
         if task.status not in runnable_states:
@@ -1966,6 +2298,11 @@ class Director:
             cap = self.capabilities.get(task.capability)
             governed_handoff = getattr(cap, "governed_handoff", None) if cap else None
             proposal = self.proposals.get(task.proposal_id)
+            if proposal is not None:
+                proposal_workspace_id = str(getattr(proposal, "workspace_id", "") or "").strip()
+                task_workspace_id = str(getattr(task, "workspace_id", "") or "").strip()
+                if proposal_workspace_id != task_workspace_id:
+                    proposal = None
             if not callable(governed_handoff) or proposal is None:
                 task.status = Status.APPROVAL
                 task.error = "canonical_governed_handoff_required"
@@ -2225,12 +2562,17 @@ class Director:
             Status.PLANNED, Status.APPROVAL, Status.APPROVED,
             Status.APPROVED_PENDING_EXECUTION, Status.EXECUTING,
         }
+        requested_workspace_id = str(workspace_id).strip() if workspace_id else None
+        task_registry = (
+            self.workspace_tasks.setdefault(requested_workspace_id, {})
+            if requested_workspace_id else self.tasks
+        )
         if not is_proposal_task:
             terminal_statuses = {
                 Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
                 Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED, Status.FLAGGED,
             }
-            for existing in self.tasks.values():
+            for existing in task_registry.values():
                 same_intent = existing.capability == cap_name and existing.params == normalized_params
                 if not same_intent:
                     continue
@@ -2276,21 +2618,21 @@ class Director:
             condition_fingerprint=condition_fingerprint,
             workspace_id=str(workspace_id).strip() if workspace_id else None,
         )
-        self.tasks[task.id] = task
-        if len(self.tasks) > self.MAX_TASKS:
+        task_registry[task.id] = task
+        if len(task_registry) > self.MAX_TASKS:
             removable = [
-                tid for tid, t in self.tasks.items()
+                tid for tid, t in task_registry.items()
                 if t.status in (
                     Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
                     Status.FAILED, Status.CANCELLED,
                 )
             ]
             for tid in removable[:500]:
-                del self.tasks[tid]
-        if len(self.tasks) > self.MAX_TASKS:
-            oldest = sorted(self.tasks.items(), key=lambda x: x[1].created_at)[:500]
+                del task_registry[tid]
+        if len(task_registry) > self.MAX_TASKS:
+            oldest = sorted(task_registry.items(), key=lambda x: x[1].created_at)[:500]
             for tid, _ in oldest:
-                del self.tasks[tid]
+                del task_registry[tid]
         _publish_event("task_created", {
             "task_id": task.id,
             "description": desc,
@@ -2422,8 +2764,20 @@ class Director:
             + mission_priority * 0.25
         )
 
-    def approve(self, task_id: str, actor: str = "admin") -> Task:
-        task = self.tasks.get(task_id)
+    @staticmethod
+    def _task_matches_scope(task: Task, workspace_id: Optional[str]) -> bool:
+        """Require explicit ownership for every approval mutation."""
+        scope_type = getattr(task, "scope_type", "platform")
+        task_workspace_id = str(getattr(task, "workspace_id", "") or "").strip()
+        if workspace_id:
+            return scope_type == "workspace" and task_workspace_id == str(workspace_id).strip()
+        return scope_type == "platform" and not task_workspace_id
+
+    def approve(
+        self, task_id: str, actor: str = "admin", *,
+        workspace_id: Optional[str] = None,
+    ) -> Task:
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise KeyError(f"Task {task_id} not found")
         if task.status not in (Status.APPROVAL, Status.FLAGGED):
@@ -2433,8 +2787,11 @@ class Director:
         task.approved_by = actor
         return task
 
-    def reject(self, task_id: str, actor: str = "admin", reason: str = "") -> Task:
-        task = self.tasks.get(task_id)
+    def reject(
+        self, task_id: str, actor: str = "admin", reason: str = "", *,
+        workspace_id: Optional[str] = None,
+    ) -> Task:
+        task = self.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise KeyError(f"Task {task_id} not found")
         task.status = Status.CANCELLED
@@ -3609,17 +3966,28 @@ class Director:
         # VERIFIED signals emitted by the outcome-verification path are eligible.
         if signal is None or task.status != Status.VERIFIED:
             return False
-        if task.id in self._learning_recorded_task_ids:
+        workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
+        scope_type = getattr(task, "scope_type", "platform")
+        if scope_type == "workspace" and not workspace_id:
+            return False
+        if scope_type == "platform" and workspace_id:
+            return False
+        if scope_type not in {"platform", "workspace"}:
+            return False
+        recorded_ids = self._learning_ids_for_scope(workspace_id)
+        if task.id in recorded_ids:
             return False
         entry = safe(asdict(signal))
-        # Stable task identity makes retries/re-verification idempotent in the
-        # durable store as well as in this Director process.
-        task_digest = hashlib.sha256(task.id.encode("utf-8")).hexdigest()[:24]
+        # Include the ownership scope in the stable identity. A task in one
+        # tenant cannot collide with or suppress a platform learning row.
+        identity = f"{workspace_id or 'platform'}:{task.id}"
+        task_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
         entry["id"] = f"learn_{task_digest}"
         entry["task_id"] = task.id
+        entry["workspace_id"] = workspace_id
         entry["verification_status"] = "verified"
         try:
-            persisted = await self.store.save_learning(entry)
+            persisted = await self.store.save_learning(entry, workspace_id=workspace_id)
         except Exception:
             raise
         if persisted is not True:
@@ -3628,21 +3996,30 @@ class Director:
                 task.id,
             )
             return False
-        self._learning_recorded_task_ids.add(task.id)
+        recorded_ids.add(task.id)
         return True
 
     async def _record_verified_learning(self, task: Task, duration_ms: float = 0.0) -> bool:
         """Record learning only after a task has authoritative VERIFIED status."""
-        if task.status != Status.VERIFIED or task.id in self._learning_recorded_task_ids:
+        workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
+        if task.status != Status.VERIFIED or task.id in self._learning_ids_for_scope(workspace_id):
             return False
+        scope_type = getattr(task, "scope_type", "platform")
+        if scope_type == "workspace" and not workspace_id:
+            return False
+        if scope_type == "platform" and workspace_id:
+            return False
+        if scope_type not in {"platform", "workspace"}:
+            return False
+        loop = self._learning_loop_for_scope(workspace_id)
         target = self._extract_target(task)
-        signal = self.learning_loop.prepare_outcome(task, duration_ms, target=target)
+        signal = loop.prepare_outcome(task, duration_ms, target=target)
         if signal is None:
             return False
         persisted = await self._learn(task, signal=signal)
         if not persisted:
             return False
-        self.learning_loop.apply_outcome(task, signal, target=target)
+        loop.apply_outcome(task, signal, target=target)
         return True
 
     def _drain_events(self) -> None:

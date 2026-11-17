@@ -295,7 +295,7 @@ def test_legacy_scheduler_cannot_execute_approved_proposal_task(monkeypatch):
         return {"ok": True}
 
     d.capabilities[task.capability].handler = forbidden_handler
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
 
     assert calls == []
     assert result.status == Status.APPROVAL
@@ -330,7 +330,7 @@ def test_proposal_scheduler_uses_governed_handoff_without_legacy_fallback():
     d.capabilities[task.capability].governed_handoff = governed_handoff
     d.capabilities[task.capability].handler = forbidden_legacy_handler
 
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert calls == [(task.id, "governed-once", "trusted-actor")]
     assert result.status == Status.COMPLETED
     assert result.result["execution_id"] == "exec-123"
@@ -357,7 +357,7 @@ def test_proposal_scheduler_keeps_ambiguous_governed_result_pending():
         return {"ok": False, "status": "approval_required", "execution_id": ""}
 
     d.capabilities[task.capability].governed_handoff = ambiguous_handoff
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert result.status == Status.APPROVAL
     assert result.error == "governed_handoff_not_confirmed:approval_required"
     assert d.proposals["governed-ambiguous"].status == ProposalStatus.APPROVED
@@ -383,7 +383,7 @@ def test_proposal_scheduler_does_not_claim_success_without_canonical_receipt_ids
         return {"ok": True, "status": "succeeded", "output": {"message": "looks good"}}
 
     d.capabilities[task.capability].governed_handoff = receiptless_handoff
-    result = asyncio.run(d._execute_async(task.id))
+    result = asyncio.run(d._execute_async(task.id, workspace_id="ws-a"))
     assert result.status == Status.APPROVAL
     assert result.error == "governed_handoff_not_confirmed:missing_canonical_receipt_ids"
 
@@ -402,3 +402,249 @@ def test_proposal_capability_has_explicit_governed_handoff_slot():
     # An ordinary handler is not evidence of canonical governed execution.
     assert capability.governed_handoff is None
     assert capability.handler is handler
+
+
+def test_workspace_owner_cannot_read_platform_engineering_metadata(monkeypatch):
+    app = _workspace_context_app(monkeypatch, "ws-a", role="owner")
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+
+    awareness = client.get("/engineering-awareness", headers=headers)
+    ledger = client.get("/engineering-awareness/ledger", headers=headers)
+
+    assert awareness.status_code == 403
+    assert ledger.status_code == 403
+
+
+def test_director_super_admin_can_list_signals_across_workspaces(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    d.signals["signal-a"] = DirectorSignal(
+        id="signal-a", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="a",
+        workspace_id="ws-a", confidence=0.9, rationale="test", payload={},
+    )
+    d.signals["signal-b"] = DirectorSignal(
+        id="signal-b", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="b",
+        workspace_id="ws-b", confidence=0.9, rationale="test", payload={},
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", role="owner", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 2
+    assert {item["id"] for item in response.json()["signals"]} == {"signal-a", "signal-b"}
+
+
+def test_director_workspace_signal_list_remains_isolated(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    for signal_id, workspace_id in (("signal-a", "ws-a"), ("signal-b", "ws-b")):
+        d.signals[signal_id] = DirectorSignal(
+            id=signal_id, detector="test", sector=Sector.CONTENT,
+            signal_type="test", subject_type="workspace", subject_id=signal_id,
+            workspace_id=workspace_id, confidence=0.9, rationale="test", payload={},
+        )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", role="owner", species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert [item["id"] for item in response.json()["signals"]] == ["signal-a"]
+
+
+def test_director_unscoped_non_platform_identity_cannot_list_all_signals(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    d.signals["signal-a"] = DirectorSignal(
+        id="signal-a", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="a",
+        workspace_id="ws-a", confidence=0.9, rationale="test", payload={},
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 403
+
+
+
+def test_director_unscoped_non_platform_identity_cannot_read_global_telemetry(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/organism/state", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 403
+
+
+def test_unscoped_canonical_super_admin_can_read_global_telemetry(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/organism/state", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+
+
+def test_unscoped_canonical_non_platform_identity_cannot_access_platform_task_scope(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+    assert client.get("/tasks", headers=headers).status_code == 403
+    assert client.get("/missions/graph", headers=headers).status_code == 403
+
+
+def test_unscoped_canonical_super_admin_can_access_platform_task_scope(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+    assert client.get("/tasks", headers=headers).status_code == 200
+    assert client.get("/missions/graph", headers=headers).status_code == 200
+
+
+def test_unscoped_canonical_non_platform_identity_cannot_read_or_mutate_proposals(monkeypatch):
+    from services.director.models import Proposal, ProposalStatus, Risk, Sector
+    from services.director import Director, create_app
+
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def unscoped_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, principal_id="ordinary-user-123",
+            role="viewer", species_privileges=False, platform_role="",
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.proposals["tenant-proposal"] = Proposal(
+        id="tenant-proposal", workspace_id="ws-private", sector=Sector.CONTENT,
+        title="private", rationale="test", capability="self_diagnostic",
+        params={}, target_param_value=None, expected_benefit="test",
+        estimated_cost="0", risk=Risk.LOW, confidence=0.9, signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+
+    listed = client.get("/proposals", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["proposals"] == []
+
+    assert client.get("/proposals/tenant-proposal", headers=headers).status_code == 404
+    rejected = client.post(
+        "/proposals/tenant-proposal/approve",
+        headers=headers,
+        json={"actor": "forged"},
+    )
+    # The viewer role is denied by write authorization before proposal lookup.
+    assert rejected.status_code == 403
+    assert d.proposals["tenant-proposal"].approved_by is None
+
+
+def test_unscoped_canonical_super_admin_can_read_platform_proposals(monkeypatch):
+    from services.director.models import Proposal, ProposalStatus, Risk, Sector
+    from services.director import Director, create_app
+
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, principal_id="platform-admin",
+            role="owner", species_privileges=False, platform_role="super_admin",
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.proposals["platform-proposal"] = Proposal(
+        id="platform-proposal", workspace_id=None, sector=Sector.CONTENT,
+        title="platform", rationale="test", capability="self_diagnostic",
+        params={}, target_param_value=None, expected_benefit="test",
+        estimated_cost="0", risk=Risk.LOW, confidence=0.9, signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    response = TestClient(app).get(
+        "/proposals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["proposals"]] == ["platform-proposal"]

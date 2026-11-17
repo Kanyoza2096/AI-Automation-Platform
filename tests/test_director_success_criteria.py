@@ -3,21 +3,48 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.director import Director
-from services.director.models import Authority, Health, Observation, Risk, Sector, Status, Task
+from services.director.models import Authority, Health, Observation, Proposal, ProposalStatus, Risk, Sector, Status, Task
 
 
-def make_task(criteria, status=Status.COMPLETED):
+def make_task(criteria, status=Status.COMPLETED, *, workspace_id=None):
     return Task(
         id="task-criteria", sector=Sector.BRANDS, description="Verify brand outcome",
         capability="self_diagnostic", authority=Authority.SUGGEST, risk=Risk.LOW,
         status=status, success_criteria=criteria, result={"ok": True},
+        workspace_id=workspace_id,
     )
 
+@pytest.mark.asyncio
+async def test_platform_scheduler_skips_workspace_owned_task_in_legacy_registry():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    director.tasks[task.id] = task
 
-def make_observation(metrics, *, age_seconds=0, status=Health.NOMINAL):
+    await director._execute_due_async()
+
+    assert task.status == Status.APPROVED
+    assert task.executed_at is None
+
+
+@pytest.mark.asyncio
+async def test_direct_platform_executor_refuses_workspace_owned_task():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    director.tasks[task.id] = task
+
+    returned = await director._execute_async(task.id)
+
+    assert returned is task
+    assert task.status == Status.APPROVED
+    assert task.executed_at is None
+
+
+
+def make_observation(metrics, *, age_seconds=0, status=Health.NOMINAL, workspace_id=None):
     return Observation(
         source="test-authoritative-observer", sector=Sector.BRANDS, status=status,
         metrics=metrics, timestamp=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        workspace_id=workspace_id,
     )
 
 
@@ -273,7 +300,7 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     workspace_task.id = "workspace-harness-task"
     workspace_task.workspace_id = "workspace-test"
     workspace_task.scope_type = "workspace"
-    director.tasks[workspace_task.id] = workspace_task
+    director.workspace_tasks.setdefault("workspace-test", {})[workspace_task.id] = workspace_task
 
     tenant_app = create_app(director)
     _install_tenant_context(tenant_app)
@@ -297,7 +324,9 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     assert hidden_workspace_task.status_code == 404
 
     # Workspace verification remains available for the matching tenant task.
-    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    director.workspace_observations.setdefault("workspace-test", {})["event_bus"] = make_observation(
+        {}, status=Health.NOMINAL, workspace_id="workspace-test",
+    )
     tenant_verified = tenant_client.post(
         f"/tasks/{workspace_task.id}/verify-outcome", headers=headers,
     )
@@ -356,3 +385,498 @@ def test_platform_verification_harness_runs_ineffective_to_verified_and_deduplic
     assert repeated.json()["outcome"] == "verified"
     assert len(director.store.learnings) == 1
     assert task.status == Status.VERIFIED
+
+
+def test_mission_graph_isolated_by_workspace_and_platform_scope():
+    director = Director(supabase_client=None)
+    platform_task = make_task([], status=Status.APPROVED)
+    platform_task.id = "platform-task"
+    platform_task.mission_id = "shared-mission"
+    workspace_a_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a_task.id = "workspace-a-task"
+    workspace_a_task.mission_id = "shared-mission"
+    workspace_b_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b_task.id = "workspace-b-task"
+    workspace_b_task.mission_id = "shared-mission"
+    director.tasks[platform_task.id] = platform_task
+    director.workspace_tasks["workspace-a"] = {workspace_a_task.id: workspace_a_task}
+    director.workspace_tasks["workspace-b"] = {workspace_b_task.id: workspace_b_task}
+
+    platform_graph = director.mission_graph(mission_id="shared-mission")
+    workspace_a_graph = director.mission_graph(
+        mission_id="shared-mission", workspace_id="workspace-a",
+    )
+    workspace_b_graph = director.mission_graph(
+        mission_id="shared-mission", workspace_id="workspace-b",
+    )
+
+    assert {node["task_id"] for node in platform_graph["nodes"]} == {"platform-task"}
+    assert {node["task_id"] for node in workspace_a_graph["nodes"]} == {"workspace-a-task"}
+    assert {node["task_id"] for node in workspace_b_graph["nodes"]} == {"workspace-b-task"}
+
+
+@pytest.mark.asyncio
+async def test_dependency_rejects_cross_workspace_and_platform_edges():
+    director = Director(supabase_client=None)
+    workspace_a_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a_task.id = "workspace-a-task"
+    workspace_b_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b_task.id = "workspace-b-task"
+    platform_task = make_task([], status=Status.APPROVAL)
+    platform_task.id = "platform-task"
+    director.workspace_tasks["workspace-a"] = {workspace_a_task.id: workspace_a_task}
+    director.workspace_tasks["workspace-b"] = {workspace_b_task.id: workspace_b_task}
+    director.tasks[platform_task.id] = platform_task
+
+    # Out-of-scope IDs are indistinguishable from missing tasks to the caller.
+    with pytest.raises(KeyError):
+        await director.add_task_dependency("workspace-a-task", "workspace-b-task", workspace_id="workspace-a")
+    with pytest.raises(KeyError):
+        await director.add_task_dependency("workspace-a-task", "platform-task", workspace_id="workspace-a")
+
+
+def test_recovery_assessment_hides_cross_workspace_dependency_state():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.BLOCKED, workspace_id="workspace-a")
+    task.id = "workspace-a-blocked"
+    task.depends_on = ["workspace-b-secret"]
+    other_workspace_task = make_task([], status=Status.FAILED, workspace_id="workspace-b")
+    other_workspace_task.id = "workspace-b-secret"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.workspace_tasks["workspace-b"] = {other_workspace_task.id: other_workspace_task}
+
+    assessment = director.assess_task_recovery(
+        task.id, workspace_id="workspace-a",
+    )
+
+    assert assessment["dependencies"] == [
+        {"task_id": "workspace-b-secret", "status": "missing"},
+    ]
+    assert all(item["status"] != Status.FAILED.value for item in assessment["dependencies"])
+
+
+def test_platform_recovery_cannot_read_workspace_task():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.BLOCKED, workspace_id="workspace-a")
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+
+    with pytest.raises(KeyError, match="task not found"):
+        director.assess_task_recovery(task.id)
+
+
+def test_approval_mutations_require_exact_task_ownership_scope():
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "approval-workspace-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "approval-workspace-b"
+    platform = make_task([], status=Status.APPROVAL)
+    platform.id = "approval-platform"
+    director.workspace_tasks["workspace-a"] = {workspace_a.id: workspace_a}
+    director.workspace_tasks["workspace-b"] = {workspace_b.id: workspace_b}
+    director.tasks[platform.id] = platform
+
+    with pytest.raises(KeyError, match="not found"):
+        director.approve(workspace_a.id)
+    with pytest.raises(KeyError, match="not found"):
+        director.approve(workspace_b.id, workspace_id="workspace-a")
+    with pytest.raises(KeyError, match="not found"):
+        director.reject(workspace_a.id, workspace_id="workspace-b")
+
+    approved = director.approve(workspace_a.id, workspace_id="workspace-a")
+    rejected = director.reject(workspace_b.id, workspace_id="workspace-b", reason="not approved")
+    platform_approved = director.approve(platform.id)
+
+    assert approved.status == Status.APPROVED
+    assert rejected.status == Status.CANCELLED
+    assert platform_approved.status == Status.APPROVED
+
+
+def test_approval_api_uses_authenticated_workspace_and_platform_scope(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "approval-scope-token")
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "approval-api-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "approval-api-b"
+    platform = make_task([], status=Status.APPROVAL)
+    platform.id = "approval-api-platform"
+    director.workspace_tasks["workspace-a"] = {workspace_a.id: workspace_a}
+    director.workspace_tasks["workspace-b"] = {workspace_b.id: workspace_b}
+    director.tasks[platform.id] = platform
+    headers = {"Authorization": "Bearer approval-scope-token"}
+
+    tenant_app = create_app(director)
+    _install_tenant_context(tenant_app, workspace_id="workspace-a")
+    tenant_client = TestClient(tenant_app)
+    assert tenant_client.post(
+        f"/tasks/{workspace_b.id}/approve", headers=headers,
+    ).status_code == 404
+    approved = tenant_client.post(
+        f"/tasks/{workspace_a.id}/approve", headers=headers,
+    )
+    assert approved.status_code == 200
+    assert workspace_a.status == Status.APPROVED
+
+    platform_app = create_app(director)
+    _install_platform_context(platform_app)
+    platform_client = TestClient(platform_app)
+    platform_approved = platform_client.post(
+        f"/tasks/{platform.id}/approve", headers=headers,
+    )
+    assert platform_approved.status_code == 200
+    assert platform.status == Status.APPROVED
+
+
+def test_workspace_task_creation_uses_separate_registry_and_deduplicates_per_workspace():
+    director = Director(supabase_client=None)
+    first = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-a",
+    )
+    repeated_same_workspace = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "repeat workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-a",
+    )
+    same_intent_other_workspace = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "different workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-b",
+    )
+
+    assert first.id == repeated_same_workspace.id
+    assert same_intent_other_workspace.id != first.id
+    assert first.id not in director.tasks
+    assert same_intent_other_workspace.id not in director.tasks
+    assert director.get_task(first.id, workspace_id="workspace-a") is first
+    assert director.get_task(first.id, workspace_id="workspace-b") is None
+
+
+def test_workspace_verification_never_falls_back_to_platform_observations():
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "domain", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }], workspace_id="workspace-a")
+    task.id = "workspace-evidence-task"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.observations["domain"] = make_observation({}, status=Health.NOMINAL)
+
+    import asyncio
+    result = asyncio.run(director.evaluate_task_success_criteria(
+        task.id, workspace_id="workspace-a",
+    ))
+
+    assert result["outcome"] == "unknown"
+    assert result["criteria"][0]["reason"] == "observer_missing"
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_restore_loads_only_explicit_workspace_scope():
+    source = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "persisted-workspace-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "persisted-workspace-b"
+    assert await source.store.save_task(workspace_a)
+    assert await source.store.save_task(workspace_b)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    summary = await restored.restore_workspace_tasks("workspace-a")
+
+    assert summary["restored"] == 1
+    assert restored.get_task(workspace_a.id, workspace_id="workspace-a") is not None
+    assert restored.get_task(workspace_b.id, workspace_id="workspace-a") is None
+    assert workspace_b.id not in restored.workspace_tasks.get("workspace-a", {})
+    assert workspace_a.id not in restored.tasks
+
+
+@pytest.mark.asyncio
+async def test_workspace_observation_restore_is_exactly_scoped():
+    source = Director(supabase_client=None)
+    workspace_a_observation = make_observation(
+        {"tenant": {"value": "a"}}, workspace_id="workspace-a",
+    )
+    workspace_a_observation.source = "tenant-observer"
+    workspace_b_observation = make_observation(
+        {"tenant": {"value": "b"}}, workspace_id="workspace-b",
+    )
+    workspace_b_observation.source = "tenant-observer"
+    platform_observation = make_observation({"platform": {"value": True}})
+    platform_observation.source = "platform-observer"
+    assert await source.store.save_observation(workspace_a_observation)
+    assert await source.store.save_observation(workspace_b_observation)
+    assert await source.store.save_observation(platform_observation)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    summary = await restored.restore_workspace_observations("workspace-a")
+
+    assert summary["restored"] == 1
+    assert set(restored.workspace_observations["workspace-a"]) == {"tenant-observer"}
+    assert restored.workspace_observations["workspace-a"]["tenant-observer"].workspace_id == "workspace-a"
+    assert "workspace-b" not in restored.workspace_observations
+    assert restored.observations == {}
+
+
+def test_workspace_task_api_lazily_restores_only_authenticated_workspace(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "workspace-restore-token")
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "restored-api-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "restored-api-b"
+
+    import asyncio
+    asyncio.run(director.store.save_task(workspace_a))
+    asyncio.run(director.store.save_task(workspace_b))
+
+    app = create_app(director)
+    _install_tenant_context(app, workspace_id="workspace-a")
+    client = TestClient(app)
+    response = client.get(
+        "/tasks", headers={"Authorization": "Bearer workspace-restore-token"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["restored-api-a"]
+    assert "workspace-b" not in director.workspace_tasks
+
+
+def test_workspace_proposal_approval_creates_task_in_same_workspace_registry():
+    director = Director(supabase_client=None)
+    proposal = Proposal(
+        id="workspace-proposal",
+        workspace_id="workspace-a",
+        sector=Sector.BRANDS,
+        title="Review brand health",
+        rationale="A workspace-owned review proposal",
+        capability="self_diagnostic",
+        params={"brand_id": "brand-a"},
+        target_param_value="brand-a",
+        expected_benefit="Improved visibility",
+        estimated_cost="0",
+        risk=Risk.LOW,
+        confidence=0.9,
+        signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    director.proposals[proposal.id] = proposal
+
+    task = director.approve_proposal(proposal.id, actor="workspace-owner")
+
+    assert task.workspace_id == "workspace-a"
+    assert task.scope_type == "workspace"
+    assert task.id not in director.tasks
+    assert director.workspace_tasks["workspace-a"][task.id] is task
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_executor_requires_explicit_scope_and_never_uses_legacy_handler():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    task.id = "workspace-execution-guard"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    handler_calls = []
+
+    async def forbidden_handler(params):
+        handler_calls.append(params)
+        return {"ok": True}
+
+    director.capabilities[task.capability].handler = forbidden_handler
+
+    with pytest.raises(KeyError, match="not found"):
+        await director._execute_async(task.id)
+
+    deferred = await director._execute_async(task.id, workspace_id="workspace-a")
+
+    assert deferred.status == Status.APPROVAL
+    assert deferred.error == "canonical_governed_handoff_required"
+    assert handler_calls == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_governed_handoff_rejects_foreign_proposal_reference():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    task.id = "workspace-task-foreign-proposal"
+    task.proposal_id = "foreign-proposal"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.proposals["foreign-proposal"] = Proposal(
+        id="foreign-proposal",
+        workspace_id="workspace-b",
+        sector=Sector.BRANDS,
+        title="Foreign proposal",
+        rationale="must not be linked",
+        capability="self_diagnostic",
+        params={},
+        target_param_value=None,
+        expected_benefit="none",
+        estimated_cost="0",
+        risk=Risk.LOW,
+        confidence=0.9,
+        signal_ids=[],
+    )
+    handoff_calls = []
+
+    async def forbidden_handoff(**kwargs):
+        handoff_calls.append(kwargs)
+        return {"ok": True, "status": "succeeded", "execution_id": "x", "intent_id": "y"}
+
+    director.capabilities[task.capability].governed_handoff = forbidden_handoff
+    result = await director._execute_async(task.id, workspace_id="workspace-a")
+
+    assert result.status == Status.APPROVAL
+    assert result.error == "canonical_governed_handoff_required"
+    assert result.result["reason"] == "proposal_not_found"
+    assert handoff_calls == []
+
+
+def test_workspace_identity_cannot_read_shared_director_telemetry(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "telemetry-scope-token")
+    director = Director(supabase_client=None)
+    director.observations["platform-secret-observer"] = make_observation(
+        {"internal": {"customer_count": 999}},
+    )
+    tenant_app = create_app(director)
+    _install_tenant_context(tenant_app, workspace_id="workspace-a")
+    tenant = TestClient(tenant_app)
+    headers = {"Authorization": "Bearer telemetry-scope-token"}
+
+    for path in (
+        "/organism/state",
+        "/engines",
+        "/diagnostics",
+        "/decisions",
+        "/alerts",
+        "/outlook",
+        "/summary",
+        "/initiatives",
+        "/correlations",
+        "/learning/report",
+        "/decision-context",
+        "/briefing",
+        "/capabilities",
+        "/ooda/state",
+        "/ooda/world-model",
+        "/meta/status",
+        "/meta/topology",
+        "/meta/learning/report",
+        "/daily-briefing",
+    ):
+        response = tenant.get(path, headers=headers)
+        assert response.status_code == 403, (path, response.status_code)
+
+    platform_app = create_app(director)
+    _install_platform_context(platform_app)
+    platform = TestClient(platform_app)
+    assert platform.get("/engines", headers=headers).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_workspace_verified_learning_isolated_from_platform_and_other_workspaces():
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.VERIFIED, workspace_id="workspace-a")
+    workspace_a.id = "shared-task-id"
+    workspace_b = make_task([], status=Status.VERIFIED, workspace_id="workspace-b")
+    workspace_b.id = "shared-task-id"
+
+    assert await director._record_verified_learning(workspace_a)
+    assert await director._record_verified_learning(workspace_b)
+
+    assert len(director._learning_loop_for_scope("workspace-a").signals) == 1
+    assert len(director._learning_loop_for_scope("workspace-b").signals) == 1
+    assert director.learning_loop.signals == []
+    assert director._learning_ids_for_scope("workspace-a") == {"shared-task-id"}
+    assert director._learning_ids_for_scope("workspace-b") == {"shared-task-id"}
+    assert director._learning_ids_for_scope(None) == set()
+
+    rows = list(director.store.learnings)
+    assert len(rows) == 2
+    assert {row["workspace_id"] for row in rows} == {"workspace-a", "workspace-b"}
+    assert len({row["id"] for row in rows}) == 2
+
+
+@pytest.mark.asyncio
+async def test_workspace_learning_replay_loads_only_exact_workspace_rows():
+    source = Director(supabase_client=None)
+    for workspace_id in ("workspace-a", "workspace-b"):
+        task = make_task([], status=Status.VERIFIED, workspace_id=workspace_id)
+        task.id = "same-task-id"
+        assert await source._record_verified_learning(task)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    result = await restored._replay_workspace_learning_history("workspace-a")
+
+    assert result["replayed"] == 1
+    assert len(restored._learning_loop_for_scope("workspace-a").signals) == 1
+    assert "workspace-b" not in restored._workspace_learning_loops
+    assert restored.learning_loop.signals == []
+
+    platform_rows = await restored.store.list_platform_learnings_since(
+        since=datetime.now(timezone.utc) - timedelta(days=30), limit=100,
+    )
+    assert platform_rows == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_restore_survives_temporary_learning_store_failure():
+    from services.director.stores import InMemoryStore
+
+    class LearningUnavailableStore(InMemoryStore):
+        async def list_learnings_since(self, since, limit=5000, *, workspace_id=None):
+            raise RuntimeError("learning storage unavailable")
+
+    director = Director(supabase_client=None)
+    director.store = LearningUnavailableStore()
+
+    result = await director.restore_workspace_tasks("workspace-a")
+
+    assert result["restored"] == 0
+    assert result["learning"]["unavailable"] is True
+    assert "workspace-a" in director._restored_workspace_task_scopes
+    assert "workspace-a" not in director._restored_workspace_learning_scopes
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_detection_stays_within_exact_workspace_scope():
+    director = Director(supabase_client=None)
+    task_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    task_a.id = "workspace-a-task-a"
+    task_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    task_b.id = "workspace-a-task-b"
+    task_c = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    task_c.id = "workspace-b-task-c"
+    task_b.depends_on = [task_c.id]  # A foreign ID must not be traversed.
+    director.workspace_tasks = {
+        "workspace-a": {task_a.id: task_a, task_b.id: task_b},
+        "workspace-b": {task_c.id: task_c},
+    }
+
+    # An in-scope path back to task A is rejected as a cycle.
+    task_b.depends_on = [task_a.id]
+    with pytest.raises(ValueError, match="cycle"):
+        await director.add_task_dependency(
+            task_a.id, task_b.id, workspace_id="workspace-a",
+        )
+
+    # A stale foreign dependency reference is ignored, not traversed.
+    task_b.depends_on = [task_c.id]
+    result = await director.add_task_dependency(
+        task_a.id, task_b.id, workspace_id="workspace-a",
+    )
+    assert result["changed"] is True
+    assert task_a.depends_on == [task_b.id]

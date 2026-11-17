@@ -112,10 +112,9 @@ def create_app(director: Director):
             return False
         context = getattr(request.state, "request_context", None)
         identity = getattr(request.state, "auth_identity", None)
-        if context is not None and getattr(context, "workspace_id", None):
-            # A workspace context is not proof of authentication by itself.
-            # Canonical middleware binds both objects after validating the
-            # credential; fail closed if the trusted identity is absent/invalid.
+        if context is not None:
+            # Canonical middleware binds the identity to any trusted context,
+            # including unscoped platform identities. Context alone never authenticates.
             return bool(identity is not None and getattr(identity, "valid", False))
 
         master_token = (os.getenv("MASTER_API_TOKEN", "") or "").strip()
@@ -142,13 +141,61 @@ def create_app(director: Director):
         workspace_id = getattr(context, "workspace_id", None) if context is not None else None
         return str(workspace_id) if workspace_id else None
 
-    def _proposal_in_workspace(proposal, request) -> bool:
-        workspace_id = _workspace_id(request)
-        if workspace_id is None or getattr(
-            getattr(request.state, "request_context", None), "species_privileges", False
+    def _task_ownership_workspace_id(request):
+        """Resolve approval scope from trusted identity, not the request path."""
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        if context is not None and (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
         ):
+            return None
+        return _workspace_id(request)
+
+    async def _load_task_scope(request):
+        """Load only the authenticated workspace's tasks before scoped access.
+
+        A canonical identity without a workspace is not implicitly a platform
+        identity. Only explicit platform operators may resolve the platform
+        task registry; context-free master/service credentials are validated
+        by _require_auth before reaching this loader.
+        """
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        workspace_id = _task_ownership_workspace_id(request)
+        if context is not None and workspace_id is None:
+            is_platform_operator = (
+                bool(getattr(context, "species_privileges", False))
+                or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+            )
+            if not is_platform_operator:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Platform task scope requires platform operator privileges",
+                )
+        if workspace_id:
+            try:
+                await director.restore_workspace_tasks(workspace_id)
+                await director.restore_workspace_observations(workspace_id)
+            except RuntimeError:
+                raise HTTPException(503, "Workspace task or evidence state is temporarily unavailable")
+        return workspace_id
+
+    def _proposal_in_workspace(proposal, request) -> bool:
+        """Expose proposals only to their owning workspace or platform operators."""
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        # Context-free access is permitted only after _require_auth validates a
+        # dedicated master/service credential.
+        if context is None:
             return True
-        return bool(proposal is not None and getattr(proposal, "workspace_id", None) == workspace_id)
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        if is_platform_operator:
+            return True
+        workspace_id = _workspace_id(request)
+        if not workspace_id:
+            return False
+        return bool(proposal is not None and str(getattr(proposal, "workspace_id", "") or "") == workspace_id)
 
     def _task_in_workspace(task, request) -> bool:
         """Enforce explicit task ownership, retaining legacy proposal scoping.
@@ -159,7 +206,11 @@ def create_app(director: Director):
         """
         workspace_id = _workspace_id(request)
         context = getattr(request.state, "request_context", None) if request is not None else None
-        if workspace_id is None or getattr(context, "species_privileges", False):
+        if (
+            workspace_id is None
+            or getattr(context, "species_privileges", False)
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        ):
             return True
         if task is None:
             return False
@@ -169,6 +220,28 @@ def create_app(director: Director):
         proposal_id = getattr(task, "proposal_id", None)
         proposal = director.proposals.get(proposal_id) if proposal_id else None
         return _proposal_in_workspace(proposal, request)
+
+    def _deny_workspace_global_read(request) -> None:
+        """Require platform authority for shared platform telemetry.
+
+        An unscoped request context is not proof of platform authority. Only a
+        canonical platform-operator identity or an authenticated dedicated
+        master/service credential (which has no request context) may read it.
+        """
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        if context is None:
+            # The route has already called _require_auth; without canonical
+            # context that path accepts only the configured master/service token.
+            return
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        if not is_platform_operator:
+            raise HTTPException(
+                status_code=403,
+                detail="This endpoint exposes platform-wide Director state",
+            )
 
     def _trusted_actor(request, fallback: str = "admin") -> str:
         context = getattr(request.state, "request_context", None) if request is not None else None
@@ -181,11 +254,9 @@ def create_app(director: Director):
         """Require a trusted platform identity for shared Director state."""
         context = getattr(request.state, "request_context", None) if request is not None else None
         if context is None:
-            from fastapi import HTTPException
-            raise HTTPException(
-                status_code=403,
-                detail="Platform identity required for this Director operation",
-            )
+            # _require_auth has already validated the dedicated master/service
+            # credential when canonical request context is absent.
+            return
         is_platform_operator = (
             bool(getattr(context, "species_privileges", False))
             or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
@@ -244,6 +315,7 @@ def create_app(director: Director):
     @app.get("/status")
     async def get_status(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        # Health/status is a deliberately sanitized availability endpoint.
         return director.status()
 
     @app.get("/organism/state")
@@ -254,6 +326,7 @@ def create_app(director: Director):
     ):
         """Expose current observations with explicit provenance and freshness."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         return director.organism_state(max_age_seconds=max_age_seconds)
@@ -265,14 +338,7 @@ def create_app(director: Director):
     ):
         """Return a read-only, evidence-labelled snapshot of KDO engineering changes."""
         await _require_auth(request, credentials)
-        context = getattr(request.state, "request_context", None)
-        if context is not None and not getattr(context, "species_privileges", False):
-            role = str(getattr(context, "role", "") or "").lower()
-            if role != "owner":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Engineering Awareness contains platform repository and deployment metadata and requires workspace owner or platform authority",
-                )
+        _deny_workspace_global_read(request)
         try:
             from .engineering_awareness import build_engineering_awareness
             from .engineering_ledger import persist_engineering_snapshot
@@ -305,16 +371,9 @@ def create_app(director: Director):
     ):
         """Read persisted engineering history without contacting source providers."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if limit < 1 or limit > 200:
             raise HTTPException(400, "limit must be between 1 and 200")
-        context = getattr(request.state, "request_context", None)
-        if context is not None and not getattr(context, "species_privileges", False):
-            role = str(getattr(context, "role", "") or "").lower()
-            if role != "owner":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Engineering ledger contains platform metadata and requires workspace owner or platform authority",
-                )
         try:
             from .engineering_ledger import read_engineering_ledger
             return await read_engineering_ledger(limit=limit)
@@ -338,6 +397,7 @@ def create_app(director: Director):
     ):
         """Return the evidence context used to explain Director planning."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         context = director.decision_context(max_age_seconds=max_age_seconds)
@@ -457,16 +517,12 @@ def create_app(director: Director):
     ):
         """Expose the current Director task graph, scoped to the caller."""
         await _require_auth(request, credentials)
-        graph = director.mission_graph(mission_id=mission_id)
-        visible_ids = {
-            node["task_id"] for node in graph["nodes"]
-            if _task_in_workspace(director.tasks.get(node["task_id"]), request)
-        }
-        graph["nodes"] = [node for node in graph["nodes"] if node["task_id"] in visible_ids]
-        graph["edges"] = [
-            edge for edge in graph["edges"]
-            if edge["dependent"] in visible_ids and edge["prerequisite"] in visible_ids
-        ]
+        graph = director.mission_graph(
+            mission_id=mission_id,
+            workspace_id=await _load_task_scope(request),
+        )
+        # The Director constructs the graph from one ownership scope; this
+        # endpoint does not filter a mixed global graph after construction.
         return graph
 
     @app.post("/tasks/{task_id}/dependencies/{dependency_id}")
@@ -478,14 +534,17 @@ def create_app(director: Director):
     ):
         """Add a prerequisite edge; both tasks must be visible in this workspace."""
         await _require_auth(request, credentials)
-        task = director.tasks.get(task_id)
-        dependency = director.tasks.get(dependency_id)
+        workspace_id = await _load_task_scope(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        dependency = director.get_task(dependency_id, workspace_id=workspace_id)
         if task is None or dependency is None:
             raise HTTPException(404, "task or dependency not found")
         if not _task_in_workspace(task, request) or not _task_in_workspace(dependency, request):
             raise HTTPException(404, "task or dependency not found")
         try:
-            return await director.add_task_dependency(task_id, dependency_id)
+            return await director.add_task_dependency(
+                task_id, dependency_id, workspace_id=workspace_id,
+            )
         except KeyError:
             raise HTTPException(404, "task or dependency not found")
         except ValueError as exc:
@@ -494,6 +553,7 @@ def create_app(director: Director):
     @app.get("/briefing")
     async def get_briefing(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.briefings[-1] if director.briefings else director.briefing()
 
     @app.get("/tasks/{task_id}/recovery-assessment")
@@ -504,18 +564,16 @@ def create_app(director: Director):
     ):
         """Return scoped recovery guidance; this endpoint never retries tasks."""
         await _require_auth(request, credentials)
-        task = director.tasks.get(task_id)
-        if task is None or not _task_in_workspace(task, request):
+        workspace_id = await _load_task_scope(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise HTTPException(404, "task not found")
-        assessment = director.assess_task_recovery(task_id)
-        visible_dependencies = []
-        for dependency in assessment["dependencies"]:
-            dependency_task = director.tasks.get(dependency["task_id"])
-            if dependency_task is not None and not _task_in_workspace(dependency_task, request):
-                raise HTTPException(404, "task not found")
-            visible_dependencies.append(dependency)
-        assessment["dependencies"] = visible_dependencies
-        return assessment
+        try:
+            return director.assess_task_recovery(
+                task_id, workspace_id=workspace_id,
+            )
+        except KeyError:
+            raise HTTPException(404, "task not found")
 
     @app.post("/tasks/{task_id}/verify-outcome")
     async def verify_task_outcome(
@@ -528,11 +586,15 @@ def create_app(director: Director):
         await _require_auth(request, credentials, write=True)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        task = director.tasks.get(task_id)
-        if task is None or not _task_in_workspace(task, request):
+        workspace_id = await _load_task_scope(request)
+        task = director.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise HTTPException(404, "task not found")
         try:
-            return await director.evaluate_task_success_criteria(task_id, max_age_seconds=max_age_seconds)
+            return await director.evaluate_task_success_criteria(
+                task_id, max_age_seconds=max_age_seconds,
+                workspace_id=workspace_id,
+            )
         except KeyError:
             raise HTTPException(404, "task not found")
         except ValueError as exc:
@@ -550,12 +612,8 @@ def create_app(director: Director):
         _require_platform_scope(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        task = director.tasks.get(task_id)
-        if (
-            task is None
-            or getattr(task, "workspace_id", None)
-            or getattr(task, "scope_type", "platform") != "platform"
-        ):
+        task = director.get_task(task_id)
+        if task is None:
             raise HTTPException(404, "platform task not found")
         try:
             return await director.evaluate_task_success_criteria(task_id, max_age_seconds=max_age_seconds)
@@ -567,14 +625,27 @@ def create_app(director: Director):
     @app.get("/tasks")
     async def get_tasks(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
-        return [safe(asdict(t)) for t in director.tasks.values() if _task_in_workspace(t, request)]
+        workspace_id = await _load_task_scope(request)
+        scoped_tasks = director.tasks_for_scope(workspace_id=workspace_id)
+        if workspace_id:
+            # Preserve read-only visibility for legacy proposal-linked tasks.
+            # Mutation and verification paths still require explicit ownership.
+            visible_legacy = [
+                task for task in director.tasks.values()
+                if _task_in_workspace(task, request)
+            ]
+            known_ids = {task.id for task in scoped_tasks}
+            scoped_tasks.extend(task for task in visible_legacy if task.id not in known_ids)
+        return [safe(asdict(t)) for t in scoped_tasks]
 
     @app.get("/approvals")
     async def get_approvals(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        workspace_id = await _load_task_scope(request)
         return [
-            safe(asdict(t)) for t in director.tasks.values()
-            if t.status == Status.APPROVAL and _task_in_workspace(t, request)
+            safe(asdict(t)) for t in director.tasks_for_scope(
+                workspace_id=workspace_id,
+            ) if t.status == Status.APPROVAL
         ]
 
     @app.post("/tasks/{task_id}/approve")
@@ -585,11 +656,16 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        task = director.tasks.get(task_id)
-        if task is not None and not _task_in_workspace(task, request):
+        task = director.get_task(
+            task_id, workspace_id=await _load_task_scope(request),
+        )
+        if task is None:
             raise HTTPException(404, "Task not found")
         try:
-            return safe(asdict(director.approve(task_id, _trusted_actor(request, body.actor))))
+            return safe(asdict(director.approve(
+                task_id, _trusted_actor(request, body.actor),
+                workspace_id=await _load_task_scope(request),
+            )))
         except KeyError:
             raise HTTPException(404, "Task not found")
         except ValueError as e:
@@ -603,17 +679,23 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        task = director.tasks.get(task_id)
-        if task is not None and not _task_in_workspace(task, request):
+        task = director.get_task(
+            task_id, workspace_id=await _load_task_scope(request),
+        )
+        if task is None:
             raise HTTPException(404, "Task not found")
         try:
-            return safe(asdict(director.reject(task_id, _trusted_actor(request, body.actor), body.reason)))
+            return safe(asdict(director.reject(
+                task_id, _trusted_actor(request, body.actor), body.reason,
+                workspace_id=await _load_task_scope(request),
+            )))
         except KeyError:
             raise HTTPException(404, "Task not found")
 
     @app.get("/engines")
     async def get_engines(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {
             "engines": {
                 name: {
@@ -632,6 +714,7 @@ def create_app(director: Director):
     @app.get("/diagnostics")
     async def get_diagnostics(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {
             "root_cause": director.current_root_cause.__dict__ if director.current_root_cause else None,
             "impact": director.current_impact,
@@ -643,6 +726,7 @@ def create_app(director: Director):
     @app.get("/diagnostics/root-cause")
     async def get_root_cause(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         result = director.current_root_cause
         return {
             "status": "found" if result else "none",
@@ -652,16 +736,19 @@ def create_app(director: Director):
     @app.get("/diagnostics/cascading")
     async def get_cascading(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"predictions": director.current_predictions}
 
     @app.get("/diagnostics/impact")
     async def get_impact(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.current_impact
 
     @app.get("/diagnostics/recovery-plans")
     async def get_recovery_plans(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"recovery_plans": director.recovery_coordinator.get_recovery_plans()}
 
     # ── Decisions & Alerts ───────────────────────────────────────────
@@ -673,6 +760,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return [safe(asdict(d)) for d in list(director.decisions)[-limit:]]
 
     @app.get("/alerts")
@@ -682,6 +770,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"alerts": list(director._alert_history)[-limit:]}
 
     # ── Capabilities ─────────────────────────────────────────────────
@@ -689,6 +778,7 @@ def create_app(director: Director):
     @app.get("/capabilities")
     async def get_capabilities(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         catalog = director.capability_catalog()
         issue_counts = {}
         for item in catalog.values():
@@ -857,23 +947,33 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        if limit < 1 or limit > 200:
+            raise HTTPException(400, "limit must be between 1 and 200")
+        context = getattr(request.state, "request_context", None)
+        workspace_id = _workspace_id(request)
+        # An absent workspace is not, by itself, platform authority. Require
+        # the same explicit platform boundary used by other global endpoints.
+        if workspace_id is None:
+            _require_platform_scope(request)
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        visible_signals = [
+            signal for signal in director.signals.values()
+            if workspace_id is None
+            or is_platform_operator
+            or getattr(signal, "workspace_id", None) == workspace_id
+        ]
         recent = sorted(
-            (signal for signal in director.signals.values()
-             if _workspace_id(request) is None
-             or getattr(getattr(request.state, "request_context", None), "species_privileges", False)
-             or getattr(signal, "workspace_id", None) == _workspace_id(request)),
-            key=lambda s: s.detected_at,
+            visible_signals,
+            key=lambda signal: signal.detected_at,
             reverse=True,
         )[:limit]
         return {
-            "signals": [safe(asdict(s)) for s in recent],
+            "signals": [safe(asdict(signal)) for signal in recent],
             "count": len(recent),
-            "total": sum(
-                1 for signal in director.signals.values()
-                if _workspace_id(request) is None
-                or getattr(getattr(request.state, "request_context", None), "species_privileges", False)
-                or getattr(signal, "workspace_id", None) == _workspace_id(request)
-            ),
+            "total": len(visible_signals),
         }
 
     @app.post("/detectors/run")
@@ -925,32 +1025,38 @@ def create_app(director: Director):
     @app.get("/outlook")
     async def get_outlook(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         outlook = director.generate_strategic_outlook()
         return safe(asdict(outlook)) if outlook else {"error": "Insufficient data"}
 
     @app.get("/allocation")
     async def get_allocation(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return [safe(asdict(a)) for a in director.allocate_attention()]
 
     @app.get("/summary")
     async def get_summary(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"summary": director.generate_executive_summary()}
 
     @app.get("/initiatives")
     async def get_initiatives(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"initiatives": director.generate_initiatives()}
 
     @app.get("/correlations")
     async def get_correlations(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"correlations": director.correlate_observations()}
 
     @app.get("/daily-briefing")
     async def get_daily_briefing(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         director._send_daily_briefing()
         return {"ok": True, "message": "Daily briefing sent"}
 
@@ -959,11 +1065,13 @@ def create_app(director: Director):
     @app.get("/learning/report")
     async def get_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.learning_loop.get_learning_report()
 
     @app.post("/learning/rebuild")
     async def rebuild_learning(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials, write=True)
+        _deny_workspace_global_read(request)
         before = len(director.learning_loop.signals)
         await director._replay_learning_history()
         after = len(director.learning_loop.signals)
@@ -982,6 +1090,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         all_time = director.learning_loop.get_success_rate(capability)
         recent = director.learning_loop.get_recent_success_rate(capability)
         avg_duration = director.learning_loop.get_avg_duration_ms(capability)
@@ -1064,6 +1173,7 @@ def create_app(director: Director):
     @app.get("/learning/contexts")
     async def get_all_contexts(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         contexts = {}
         for ctx_key, stats in director.learning_loop.context_stats.items():
             total = stats["successes"] + stats["failures"]
@@ -1084,6 +1194,7 @@ def create_app(director: Director):
     @app.get("/learning/time-patterns")
     async def get_time_patterns(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         by_capability: Dict[str, Dict[str, Dict[str, int]]] = {}
         for time_key, stats in director.learning_loop.time_stats.items():
             parts = time_key.split(":")
@@ -1121,6 +1232,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         recent = [s for s in director.learning_loop.signals if s.outcome == "failure"]
         recent = list(reversed(recent))[:limit]
         return {
@@ -1148,6 +1260,7 @@ def create_app(director: Director):
     ):
         """Show recent VERIFIED vs INEFFECTIVE outcomes."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         verified = [
             safe(asdict(d)) for d in list(director.decisions)
             if d.outcome == "verified"
@@ -1172,6 +1285,7 @@ def create_app(director: Director):
     @app.get("/learning/targets")
     async def get_learning_targets(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         targets = []
         for tkey, count in director.learning_loop.target_failure_counts.items():
             if ":" not in tkey:
@@ -1196,6 +1310,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         durations = []
         for capability in director.learning_loop.duration_stats.keys():
             avg_ms = director.learning_loop.get_avg_duration_ms(capability)
@@ -1215,6 +1330,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
+        _deny_workspace_global_read(request)
         _require_platform_scope(request)
         director.learning_loop.capability_stats.pop(capability, None)
         director.learning_loop.duration_stats.pop(capability, None)
@@ -1261,6 +1377,7 @@ def create_app(director: Director):
     @app.get("/ooda/state")
     async def get_ooda_state(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable", "message": "Autonomous Loop is not running in this process."}
@@ -1272,6 +1389,7 @@ def create_app(director: Director):
     @app.get("/ooda/world-model")
     async def get_world_model(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1283,6 +1401,7 @@ def create_app(director: Director):
     @app.get("/ooda/priorities")
     async def get_ooda_priorities(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1299,6 +1418,7 @@ def create_app(director: Director):
     @app.get("/ooda/action-preferences")
     async def get_ooda_action_preferences(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1310,6 +1430,7 @@ def create_app(director: Director):
     @app.get("/ooda/causal-insights")
     async def get_ooda_causal_insights(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1321,6 +1442,7 @@ def create_app(director: Director):
     @app.get("/ooda/learner-report")
     async def get_ooda_learner_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1332,6 +1454,7 @@ def create_app(director: Director):
     @app.get("/ooda/intelligence-report")
     async def get_ooda_intelligence_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1353,6 +1476,7 @@ def create_app(director: Director):
     @app.get("/meta/status")
     async def get_meta_status(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable", "message": "Meta Engine not initialized in this process."}
@@ -1364,6 +1488,7 @@ def create_app(director: Director):
     @app.get("/meta/impact")
     async def get_meta_impact(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1375,6 +1500,7 @@ def create_app(director: Director):
     @app.get("/meta/topology")
     async def get_meta_topology(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1386,6 +1512,7 @@ def create_app(director: Director):
     @app.get("/meta/root-cause")
     async def get_meta_root_cause(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1397,6 +1524,7 @@ def create_app(director: Director):
     @app.get("/meta/cascading")
     async def get_meta_cascading(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1408,6 +1536,7 @@ def create_app(director: Director):
     @app.get("/meta/recovery-plans")
     async def get_meta_recovery_plans(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1419,6 +1548,7 @@ def create_app(director: Director):
     @app.get("/meta/alerts")
     async def get_meta_alerts(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1430,6 +1560,7 @@ def create_app(director: Director):
     @app.get("/meta/incidents")
     async def get_meta_incidents(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1441,6 +1572,7 @@ def create_app(director: Director):
     @app.get("/meta/learning/report")
     async def get_meta_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1456,6 +1588,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1471,6 +1604,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
