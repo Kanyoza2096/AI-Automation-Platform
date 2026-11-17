@@ -15,6 +15,7 @@ from typing import Any
 
 from models.social_account import SocialAccount, Platform
 from repositories.social_account_repository import SocialAccountRepository
+from repositories.brand_repository import BrandRepository
 
 from contracts.website_integration import (
     WebsiteEventEnvelope,
@@ -39,12 +40,21 @@ class WebsiteIntegrationService:
             raise RuntimeError("Durable database client is required")
 
     def register(self, workspace_id: str, registration: WebsiteIntegrationRegistration, website_api_token: str = "") -> WebsiteIntegrationReadModel:
+        capabilities = {x.value for x in registration.capabilities}
+        brand_id = (registration.brand_id or "").strip() or None
+        if "PUBLISH_ARTICLE" in capabilities and not brand_id:
+            raise ValueError("brand_id is required when PUBLISH_ARTICLE is enabled")
+        if brand_id:
+            brand = BrandRepository(self.db).find_by_id(brand_id)
+            if brand is None or str(getattr(brand, "workspace_id", "")) != workspace_id:
+                raise ValueError("brand_id must identify a brand in the authenticated workspace")
         row = {
             "integration_id": registration.integration_id,
             "workspace_id": workspace_id,
             "app_name": registration.app_name,
             "environment": registration.environment,
             "base_url": registration.base_url,
+            "brand_id": brand_id,
             "publish_path": registration.publish_path,
             "lookup_path_template": registration.lookup_path_template,
             "edit_path_template": registration.edit_path_template,
@@ -65,6 +75,7 @@ class WebsiteIntegrationService:
         account = SocialAccount(
             id=f"website-{registration.integration_id}",
             workspace_id=workspace_id,
+            brand_id=brand_id,
             platform=Platform.WEBSITE,
             platform_account_id=registration.integration_id,
             account_name=registration.app_name,
@@ -77,6 +88,8 @@ class WebsiteIntegrationService:
                 "delete_path_template": registration.delete_path_template,
                 "integration_id": registration.integration_id,
                 "environment": registration.environment,
+                "capabilities": sorted(capabilities),
+                "status": "publish" if "PUBLISH_ARTICLE" in capabilities else "draft",
             },
             enabled=True,
         )
