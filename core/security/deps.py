@@ -76,16 +76,20 @@ async def require_auth_context(
     that case FastAPI does not resolve Header(...) defaults, so read the actual
     request headers instead of treating the Header metadata object as a value.
     """
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        headers = {}
+
     if not isinstance(authorization, str):
-        authorization = request.headers.get("Authorization")
+        authorization = headers.get("Authorization")
     if not isinstance(x_api_key, str):
-        x_api_key = request.headers.get("X-API-Key")
+        x_api_key = headers.get("X-API-Key")
     if not isinstance(x_correlation_id, str):
-        x_correlation_id = request.headers.get("X-Correlation-ID")
+        x_correlation_id = headers.get("X-Correlation-ID")
 
     existing = getattr(request.state, "request_context", None)
     if existing is not None and getattr(existing, "workspace_id", None):
-        trusted = _bind_verified_gateway_human_context(request, existing, x_correlation_id or request.headers.get("X-Correlation-ID") or "")
+        trusted = _bind_verified_gateway_human_context(request, existing, x_correlation_id or headers.get("X-Correlation-ID") or "")
         return trusted or existing
 
     bearer = ""
