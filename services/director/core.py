@@ -1546,6 +1546,16 @@ class Director:
         dependency = self.tasks.get(dependency_id)
         if task is None or dependency is None:
             raise KeyError("task and dependency must both exist")
+        task_scope = (
+            "workspace", str(getattr(task, "workspace_id", "") or "").strip()
+        ) if getattr(task, "workspace_id", None) else ("platform", "")
+        dependency_scope = (
+            "workspace", str(getattr(dependency, "workspace_id", "") or "").strip()
+        ) if getattr(dependency, "workspace_id", None) else ("platform", "")
+        if task_scope != dependency_scope or (
+            task_scope[0] == "workspace" and not task_scope[1]
+        ):
+            raise ValueError("cross_scope_dependency_not_allowed")
         if task.status not in (Status.PLANNED, Status.APPROVAL, Status.APPROVED):
             raise ValueError("dependencies can only be changed before execution")
         if dependency_id in (getattr(task, "depends_on", []) or []):
@@ -1682,10 +1692,30 @@ class Director:
                         log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
 
-    def mission_graph(self, mission_id: Optional[str] = None) -> dict:
+    def mission_graph(
+        self, mission_id: Optional[str] = None, *, workspace_id: Optional[str] = None,
+    ) -> dict:
+        """Build a graph from one ownership scope only.
+
+        With no workspace_id, expose platform tasks only. A workspace graph
+        includes tasks explicitly owned by that exact workspace; legacy and
+        other-workspace tasks are excluded.
+        """
         selected = {
             tid: task for tid, task in self.tasks.items()
-            if mission_id is None or getattr(task, "mission_id", None) == mission_id
+            if (
+                (
+                    getattr(task, "scope_type", "platform") == "workspace"
+                    and str(getattr(task, "workspace_id", "") or "").strip() == str(workspace_id or "").strip()
+                    and bool(workspace_id)
+                )
+                or (
+                    not workspace_id
+                    and getattr(task, "scope_type", "platform") == "platform"
+                    and not getattr(task, "workspace_id", None)
+                )
+            )
+            and (mission_id is None or getattr(task, "mission_id", None) == mission_id)
         }
         nodes = []
         edges = []
@@ -1700,7 +1730,7 @@ class Director:
                 "mission_priority": float(getattr(task, "mission_priority", 50.0)),
             })
             for dep_id in getattr(task, "depends_on", []) or []:
-                edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in self.tasks})
+                edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in selected})
         return {"version": 1, "storage_scope": "current_memory_with_startup_restore", "mission_id": mission_id, "nodes": nodes, "edges": edges}
 
     def assess_task_recovery(self, task_id: str) -> dict:
@@ -2250,7 +2280,14 @@ class Director:
                 Status.COMPLETED, Status.VERIFIED, Status.INEFFECTIVE,
                 Status.FAILED, Status.CANCELLED, Status.SKIPPED, Status.BLOCKED, Status.FLAGGED,
             }
+            requested_workspace_id = str(workspace_id).strip() if workspace_id else None
             for existing in self.tasks.values():
+                existing_workspace_id = (
+                    str(getattr(existing, "workspace_id", "")).strip()
+                    if getattr(existing, "workspace_id", None) else None
+                )
+                if existing_workspace_id != requested_workspace_id:
+                    continue
                 same_intent = existing.capability == cap_name and existing.params == normalized_params
                 if not same_intent:
                     continue
