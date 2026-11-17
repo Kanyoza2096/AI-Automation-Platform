@@ -1665,16 +1665,20 @@ class BrandScheduler:
                 "topic": "", "platforms": [], "job_id": job_id,
             }
 
-            workflow_factory = self._container.resolve(
-                "PostPublishWorkflowFactory"
+            content_platform = _brand_publish_platform(self.brand)
+            factory_name = (
+                "ArticlePublishWorkflowFactory"
+                if content_platform == "website"
+                else "PostPublishWorkflowFactory"
             )
+            workflow_factory = self._container.resolve(factory_name)
             workflow = workflow_factory(
                 brand=self.brand, ai_profile=self.ai_profile
             )
 
             wf_kwargs = self._build_workflow_context(
                 job_id=job_id,
-                platform=_brand_publish_platform(self.brand),
+                platform=content_platform,
                 source=source,
                 risk_level="low",
                 scheduled_post_id=scheduled_post_id,
