@@ -622,8 +622,10 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        task = director.tasks.get(task_id)
-        if task is not None and not _task_in_workspace(task, request):
+        task = director.get_task(
+            task_id, workspace_id=_task_ownership_workspace_id(request),
+        )
+        if task is None:
             raise HTTPException(404, "Task not found")
         try:
             return safe(asdict(director.reject(
