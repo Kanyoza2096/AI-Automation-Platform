@@ -68,6 +68,9 @@ class BusinessAutomationEngine:
         self._history: List[AutomationExecution] = []
         self._actions: Dict[str, Callable[..., Any]] = {}
         self._lock = asyncio.Lock()
+        # Process-local replay fence for isolated/test consumers without a DB.
+        # Production uses the durable reservation RPC as the authoritative fence.
+        self._in_memory_idempotency_keys: set[tuple[str, str]] = set()
         self.register_action("log", self._action_log)
         self.register_action("set_context", self._action_set_context)
         self.register_action("content_intelligence", self._action_content_intelligence)
@@ -369,6 +372,22 @@ class BusinessAutomationEngine:
         """Reserve an execution before any action runs; durable uniqueness is the replay fence."""
         db = self._get_db()
         if db is None:
+            scoped_key = (workspace_id, key)
+            async with self._lock:
+                if scoped_key in self._in_memory_idempotency_keys:
+                    return AutomationExecution(
+                        id="exec_" + hashlib.sha256(f"{workspace_id}|{key}".encode()).hexdigest()[:24],
+                        rule_id=rule.id,
+                        workspace_id=workspace_id,
+                        action=action,
+                        status="replayed",
+                        dry_run=dry_run,
+                        started_at=0,
+                        finished_at=0,
+                        output={"replay": True},
+                        idempotency_key=key,
+                    )
+                self._in_memory_idempotency_keys.add(scoped_key)
             return None
         execution_id = "exec_" + hashlib.sha256(f"{workspace_id}|{key}".encode()).hexdigest()[:24]
         payload = {"execution_id": execution_id, "rule_id": rule.id, "workspace_id": workspace_id,
