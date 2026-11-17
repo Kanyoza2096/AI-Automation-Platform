@@ -142,6 +142,16 @@ def create_app(director: Director):
         workspace_id = getattr(context, "workspace_id", None) if context is not None else None
         return str(workspace_id) if workspace_id else None
 
+    def _task_ownership_workspace_id(request):
+        """Resolve approval scope from trusted identity, not the request path."""
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        if context is not None and (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        ):
+            return None
+        return _workspace_id(request)
+
     def _proposal_in_workspace(proposal, request) -> bool:
         workspace_id = _workspace_id(request)
         if workspace_id is None or getattr(
@@ -584,7 +594,7 @@ def create_app(director: Director):
         try:
             return safe(asdict(director.approve(
                 task_id, _trusted_actor(request, body.actor),
-                workspace_id=_workspace_id(request),
+                workspace_id=_task_ownership_workspace_id(request),
             )))
         except KeyError:
             raise HTTPException(404, "Task not found")
