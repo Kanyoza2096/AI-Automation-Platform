@@ -65,6 +65,22 @@ def test_authoritatively_ineffective_outcome_counts_as_verified_failure():
     assert loop.get_success_rate("run_health_scan") == 0.0
 
 
+def test_repeated_verified_ineffectiveness_informs_existing_escalation_and_skip_gates():
+    loop = LearningLoop()
+    target = "worker-pool-a"
+
+    for index in range(3):
+        ineffective = task(Status.INEFFECTIVE)
+        ineffective.id = f"ineffective-{index}"
+        loop.record_outcome(ineffective, duration_ms=140, target=target)
+
+    assert loop.get_context_success_rate(Sector.INFRA, "run_health_scan", target) == 0.0
+    assert loop.should_escalate(Sector.INFRA, "run_health_scan", target) is True
+    assert loop.should_skip(Sector.INFRA, "run_health_scan", target) is True
+    assert len(loop.failure_patterns["run_health_scan"]) == 3
+    assert loop.adjust_confidence(task(Status.COMPLETED), target=target) < 0.5
+
+
 def test_ordinary_failed_and_unknown_tasks_do_not_create_verified_learning():
     loop = LearningLoop()
 
