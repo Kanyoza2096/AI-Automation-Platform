@@ -1737,9 +1737,22 @@ class Director:
                 edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in selected})
         return {"version": 1, "storage_scope": "current_memory_with_startup_restore", "mission_id": mission_id, "nodes": nodes, "edges": edges}
 
-    def assess_task_recovery(self, task_id: str) -> dict:
+    def assess_task_recovery(
+        self, task_id: str, *, workspace_id: Optional[str] = None,
+    ) -> dict:
         task = self.tasks.get(task_id)
         if task is None:
+            raise KeyError("task not found")
+        if workspace_id:
+            if (
+                getattr(task, "scope_type", "platform") != "workspace"
+                or str(getattr(task, "workspace_id", "") or "").strip() != str(workspace_id).strip()
+            ):
+                raise KeyError("task not found")
+        elif (
+            getattr(task, "scope_type", "platform") != "platform"
+            or getattr(task, "workspace_id", None)
+        ):
             raise KeyError("task not found")
 
         status = task.status.value if hasattr(task.status, "value") else str(task.status)
@@ -1749,6 +1762,23 @@ class Director:
         pending_dependencies = []
         for dependency_id in list(getattr(task, "depends_on", []) or []):
             dependency = self.tasks.get(dependency_id)
+            dependency_in_scope = bool(
+                dependency is not None
+                and (
+                    (
+                        workspace_id
+                        and getattr(dependency, "scope_type", "platform") == "workspace"
+                        and str(getattr(dependency, "workspace_id", "") or "").strip() == str(workspace_id).strip()
+                    )
+                    or (
+                        not workspace_id
+                        and getattr(dependency, "scope_type", "platform") == "platform"
+                        and not getattr(dependency, "workspace_id", None)
+                    )
+                )
+            )
+            if not dependency_in_scope:
+                dependency = None
             if dependency is None:
                 missing_dependencies.append(dependency_id)
                 dependencies.append({"task_id": dependency_id, "status": "missing"})
