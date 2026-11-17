@@ -408,9 +408,14 @@ class MetaEngineV7:
         }
 
     @staticmethod
-    def _engine_observations_for_snapshot(snapshot: SystemSnapshot) -> list[dict[str, Any]]:
-        """Backward-compatible observation projection; diagnostics are exposed separately."""
-        return MetaEngineV7._engine_observation_contract_for_snapshot(snapshot)["observations"]
+    def _engine_observations_for_snapshot(
+        snapshot: SystemSnapshot,
+        now: Optional[datetime] = None,
+    ) -> list[dict[str, Any]]:
+        """Backward-compatible projection with an injectable freshness clock."""
+        return MetaEngineV7._engine_observation_contract_for_snapshot(
+            snapshot, now=now
+        )["observations"]
 
     def check_health(self) -> Dict[str, Any]:
         snapshot = self._current_snapshot
