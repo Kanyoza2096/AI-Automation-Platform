@@ -120,6 +120,11 @@ on:
       - "scripts/audit_route_wiring.py"
       - "tests/test_route_wiring_audit.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
+      # Authenticated, workspace-scoped long-form article preview endpoint.
+      - "api/routers/workflows.py"
+      - "workflows/article_workflow.py"
+      - "tests/test_article_preview_endpoint.py"
+      - "tests/test_article_workflow.py"
       # Advanced Director: canonical Platform State and durable CAS publication.
       - "core/platform_state.py"
       - "core/platform_state_store.py"
