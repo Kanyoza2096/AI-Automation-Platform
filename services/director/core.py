@@ -2554,8 +2554,8 @@ class Director:
         self, task_id: str, actor: str = "admin", reason: str = "", *,
         workspace_id: Optional[str] = None,
     ) -> Task:
-        task = self.tasks.get(task_id)
-        if task is None or not self._task_matches_scope(task, workspace_id):
+        task = self.get_task(task_id, workspace_id=workspace_id)
+        if task is None:
             raise KeyError(f"Task {task_id} not found")
         task.status = Status.CANCELLED
         task.error = f"Rejected by {actor}: {reason}"
