@@ -3537,21 +3537,14 @@ class Director:
             loop.create_task(self.store.save_decision(d))
 
     def _learn(self, task: Task, signal: Optional[LearningSignal] = None) -> None:
-        if signal is not None:
-            entry = safe(asdict(signal))
-        else:
-            entry = {
-                "id": f"learn_{uuid.uuid4().hex[:12]}",
-                "task_id": task.id,
-                "signal": "success" if task.status in (Status.COMPLETED, Status.VERIFIED) else "failure",
-                "capability": task.capability,
-                "sector": task.sector.value if hasattr(task.sector, "value") else str(task.sector),
-                "duration_ms": 0.0,
-                "error_type": task.error[:100] if task.error else None,
-                "context": {},
-                "timestamp": iso(now()),
-                "lesson": f"Outcome of {task.capability}: {task.status.value}",
-            }
+        # Learning is deliberately narrower than execution telemetry. Only
+        # VERIFIED signals emitted by the outcome-verification path are eligible.
+        if signal is None or task.status != Status.VERIFIED:
+            return
+        entry = safe(asdict(signal))
+        entry["id"] = f"learn_{uuid.uuid4().hex[:16]}"
+        entry["task_id"] = task.id
+        entry["verification_status"] = "verified"
         asyncio.create_task(self.store.save_learning(entry))
 
     def _drain_events(self) -> None:

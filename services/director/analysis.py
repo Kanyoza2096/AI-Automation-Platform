@@ -409,14 +409,11 @@ class LearningLoop:
     """
     Feeds task outcomes back into decision-making.
 
-    v5.4:
-      - VERIFIED, COMPLETED, INEFFECTIVE, and FAILED tasks produce signals.
-      - VERIFIED is positive learning evidence; COMPLETED is explicitly
-        unverified and is excluded from success/failure rates.
-      - INEFFECTIVE is recorded as a failure with
-        error_class=OUTCOME_NOT_VERIFIED. This distinguishes "handler
-        threw an error" from "handler reported success but the world
-        didn't change."
+    Verified-learning policy:
+      - Only VERIFIED tasks whose declared outcome predicate passed produce
+        adaptive learning signals.
+      - COMPLETED, INEFFECTIVE, and FAILED remain execution diagnostics and
+        never alter learned success patterns.
 
     v5.3.1: replay works with dict and dataclass signals.
     v5.3: target-scoped, error-class aware, persistence-ready.
@@ -436,16 +433,13 @@ class LearningLoop:
         "SERVICE_UNAVAILABLE",
     })
 
-    # Statuses that represent a real execution attempt (produce signals)
-    _SIGNAL_STATUSES = frozenset({
-        Status.VERIFIED,
-        Status.COMPLETED,
-        Status.INEFFECTIVE,
-        Status.FAILED,
-    })
+    # Only independently verified outcomes may influence adaptive learning.
+    # Other terminal states remain available in task/decision diagnostics.
+    _SIGNAL_STATUSES = frozenset({Status.VERIFIED})
 
     def __init__(self, max_signals: int = 1000, decay_days: int = 7):
         self.signals: deque = deque(maxlen=max_signals)
+        self._replayed_signal_ids: Set[str] = set()
         self.capability_stats: Dict[str, Dict[str, float]] = {}
         self.failure_patterns: Dict[str, deque] = defaultdict(lambda: deque(maxlen=50))
 
@@ -571,7 +565,9 @@ class LearningLoop:
         INEFFECTIVE (predicate failed) from FAILED (handler error).
         Only these four statuses produce signals.
         """
-        # Only real execution attempts produce signals.
+        # A task outcome is not a lesson unless its declared outcome predicate
+        # passed and the task reached VERIFIED. Keep all other outcomes in the
+        # task/decision ledger; do not train adaptive behavior from them.
         if task.status not in self._SIGNAL_STATUSES:
             return None
 
@@ -840,7 +836,11 @@ class LearningLoop:
         replayed = 0
         for s in signals:
             try:
+                signal_id = self._sig_get(s, "id")
+                if not signal_id or str(signal_id) in self._replayed_signal_ids:
+                    continue
                 if self._replay_signal(s):
+                    self._replayed_signal_ids.add(str(signal_id))
                     replayed += 1
             except Exception as exc:
                 log.warning("rebuild_from_signals: skipping malformed signal — %s", exc)
@@ -851,7 +851,7 @@ class LearningLoop:
         sector = self._coerce_sector(self._sig_get(s, "sector"))
         outcome = self._sig_get(s, "outcome")
 
-        if not capability or sector is None or outcome not in ("success", "failure", "unverified"):
+        if not capability or sector is None or outcome != "success":
             return False
 
         duration_ms = float(self._sig_get(s, "duration_ms", 0) or 0)
@@ -865,7 +865,11 @@ class LearningLoop:
 
         context = self._sig_get(s, "context") or {}
         if not isinstance(context, dict):
-            context = {}
+            return False
+        # Fail closed for legacy/unproven records: a verified status and a
+        # durable row identity are both required before replay.
+        if not self._sig_get(s, "id") or context.get("status") != Status.VERIFIED.value:
+            return False
         target = context.get("target")
         error_class = context.get("error_class") or (
             self.classify_error(error_type) if outcome == "failure" else None
