@@ -211,7 +211,7 @@ class AsyncSupabaseStore:
                 "id": task.id,
                 "workspace_id": workspace_id,
                 "scope_type": scope_type,
-                "payload": json.dumps(safe(asdict(task))),
+                "payload": safe(asdict(task)),
                 "created_at": iso(task.created_at),
                 "status": task.status.value,
             }).execute(),
@@ -313,7 +313,7 @@ class AsyncSupabaseStore:
             "insert into director_decisions",
             lambda: self.supabase.table("director_decisions").upsert({
                 "id": decision.id,
-                "payload": json.dumps(safe(asdict(decision))),
+                "payload": safe(asdict(decision)),
                 "timestamp": iso(decision.timestamp),
             }).execute(),
         )
@@ -449,7 +449,7 @@ class AsyncSupabaseStore:
                 "id": observation_id,
                 "workspace_id": workspace_id,
                 "scope_type": scope_type,
-                "payload": json.dumps(payload),
+                "payload": payload,
                 "timestamp": iso(observation.timestamp),
             }, on_conflict="id").execute(),
         )
@@ -520,7 +520,7 @@ class AsyncSupabaseStore:
             "insert verified Director learning",
             lambda: self.supabase.table("director_learnings").upsert({
                 "id": entry["id"],
-                "payload": json.dumps(safe(entry)),
+                "payload": safe(entry),
                 "timestamp": iso_now(),
             }).execute(),
         )
