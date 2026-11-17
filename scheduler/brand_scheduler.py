@@ -107,6 +107,7 @@ def _brand_publish_platform(brand: Any) -> str:
     if isinstance(metadata, dict):
         configured = metadata.get("primary_platform") or metadata.get("platform")
     value = explicit or configured or "facebook"
+    value = getattr(value, "value", value)
     return str(value).strip().lower() or "facebook"
 
 def _coerce_date(value):
