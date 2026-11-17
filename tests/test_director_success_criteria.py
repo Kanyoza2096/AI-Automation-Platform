@@ -177,7 +177,7 @@ async def test_post_completion_verification_emits_learning_once_only_after_verif
     director.observations["event_bus"] = make_observation({}, status=Health.DEGRADED)
     ineffective = await director.evaluate_task_success_criteria(task.id)
     assert ineffective["outcome"] == "ineffective"
-    assert director.store.learnings == []
+    assert len(director.store.learnings) == 0
 
     task.status = Status.COMPLETED
     director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
