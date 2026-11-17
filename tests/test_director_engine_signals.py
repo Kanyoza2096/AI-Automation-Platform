@@ -289,3 +289,18 @@ def test_signal_batch_over_limit_is_rejected_instead_of_silently_truncated():
     result = director._engine_decision_signals()
     assert result["accepted"] == []
     assert result["rejected"][-1]["reason"] == "signal_count_limit_exceeded"
+
+
+def test_enabled_goals_do_not_create_tasks_without_evidence():
+    director = Director(supabase_client=None)
+
+    tasks = director.decide()
+
+    assert not any(task.description.startswith("Goal-driven:") for task in tasks)
+    assert not any(task.capability in {
+        "run_guardian_scan",
+        "calculate_brand_health",
+        "review_content_quality",
+        "analyze_growth_opportunity",
+        "generate_client_report",
+    } for task in tasks)
