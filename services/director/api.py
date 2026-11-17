@@ -284,7 +284,7 @@ def create_app(director: Director):
     @app.get("/status")
     async def get_status(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
-        _deny_workspace_global_read(request)
+        # Health/status is a deliberately sanitized availability endpoint.
         return director.status()
 
     @app.get("/organism/state")
@@ -1038,7 +1038,6 @@ def create_app(director: Director):
     @app.get("/learning/report")
     async def get_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
-        _deny_workspace_global_read(request)
         _deny_workspace_global_read(request)
         return director.learning_loop.get_learning_report()
 
