@@ -569,3 +569,5 @@ jobs:
 # U2 durable provenance replay verifier and freshness fixture coverage.
 
 # U2 runtime key lifecycle revocation and retained-rotation regression coverage.
+
+# Temporary no-behavior-change trigger for staging-baseline CI comparison (2026-11-17).
