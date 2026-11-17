@@ -203,15 +203,63 @@ class PublishArticleStep(Step):
         return publish_result
 
 
+class PreviewArticleStep(Step):
+    """Return a validated article artifact without invoking any publisher."""
+
+    name = "article_preview"
+
+    async def async_run(self, context: dict[str, Any]) -> dict[str, Any]:
+        article = context.get("article")
+        validation = context.get("article_validation")
+        review = context.get("article_review")
+        if not isinstance(article, dict) or not isinstance(validation, dict) or validation.get("approved") is not True:
+            raise StepFailure(
+                "Article preview requires successful validation",
+                code="article_preview_validation_missing",
+            )
+        if not isinstance(review, dict) or review.get("approved") is not True or review.get("status") != "approved":
+            raise StepFailure(
+                "Article preview requires independent full-text approval",
+                code="article_preview_review_missing",
+            )
+        evidence = context.get("knowledge_evidence") or []
+        preview = {
+            "mode": "preview_only",
+            "publishable": False,
+            "title": article["title"],
+            "excerpt": article["excerpt"],
+            "body": article["body"],
+            "citations": list(article["citations"]),
+            "evidence_sources": [
+                {
+                    "source_id": item.get("source_id"),
+                    "title": (item.get("metadata") or {}).get("title"),
+                }
+                for item in evidence if isinstance(item, dict)
+            ],
+            "review": review,
+        }
+        context["article_preview"] = preview
+        return preview
+
+
 class ArticlePublishWorkflow(Workflow):
     name = "article_publish"
 
-    def __init__(self, *, brand, ai_profile=None, knowledge_repo=None, container=None, category=None):
+    def __init__(
+        self, *, brand, ai_profile=None, knowledge_repo=None, container=None,
+        category=None, dry_run=False,
+    ):
         self._container = container
-        super().__init__(steps=[
+        steps = [
             SelectTopicStep(brand, category, knowledge_repo=knowledge_repo),
             KnowledgeContextStep(brand, knowledge_repo=knowledge_repo),
             GenerateArticleStep(),
             ValidateArticleStep(),
-            PublishArticleStep(container=container),
-        ])
+        ]
+        if dry_run:
+            self.name = "article_preview"
+            steps.append(PreviewArticleStep())
+        else:
+            steps.append(PublishArticleStep(container=container))
+        super().__init__(steps=steps)
