@@ -946,6 +946,27 @@ class Director:
         log.info("Director task restore: %s", summary)
         return summary
 
+    @staticmethod
+    def _is_replayable_learning_signal(signal: Any) -> bool:
+        """Accept only complete, independently verified learning records.
+
+        Legacy task IDs must not be marked as learned during startup merely
+        because an old diagnostic row happens to contain a task_id.
+        """
+        if not isinstance(signal, dict):
+            return False
+        context = signal.get("context")
+        return bool(
+            signal.get("id")
+            and signal.get("task_id")
+            and signal.get("verification_status") == Status.VERIFIED.value
+            and signal.get("outcome") == "success"
+            and isinstance(context, dict)
+            and context.get("status") == Status.VERIFIED.value
+            and signal.get("capability")
+            and self_sector_is_valid(signal.get("sector"))
+        )
+
     async def _replay_learning_history(self) -> None:
         lookback_days = 30
         since = now() - timedelta(days=lookback_days)
@@ -960,26 +981,24 @@ class Director:
         if not signals:
             log.info("Learning replay: no historical signals within %d days", lookback_days)
             return
-        # Restore task-level idempotency alongside the adaptive model so a
-        # repeated verification after restart cannot emit a second signal.
-        for signal in signals:
-            task_id = signal.get("task_id") if isinstance(signal, dict) else None
-            if isinstance(task_id, str) and task_id:
-                self._learning_recorded_task_ids.add(task_id)
+
+        # Filter before restoring idempotency. Unverified legacy rows must not
+        # suppress a later legitimate verification for the same task.
+        eligible = [
+            signal for signal in signals
+            if self._is_replayable_learning_signal(signal)
+        ]
+        for signal in eligible:
+            self._learning_recorded_task_ids.add(signal["task_id"])
+
         try:
-            replayed = self.learning_loop.rebuild_from_signals(signals)
-            if replayed == len(signals):
-                log.info(
-                    "Learning replay: replayed %d signals (lookback %d days)",
-                    replayed, lookback_days,
-                )
-            else:
-                log.warning(
-                    "Learning replay: fetched %d signals, replayed only %d "
-                    "(lookback %d days) — %d skipped",
-                    len(signals), replayed, lookback_days,
-                    len(signals) - replayed,
-                )
+            replayed = self.learning_loop.rebuild_from_signals(eligible)
+            log.info(
+                "Learning replay: fetched %d records, eligible %d, replayed %d, "
+                "rejected %d (lookback %d days)",
+                len(signals), len(eligible), replayed,
+                len(signals) - replayed, lookback_days,
+            )
         except Exception as exc:
             log.exception(
                 "Learning replay: rebuild failed: %s",
