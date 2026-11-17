@@ -10,7 +10,7 @@ button,select{font:inherit}.shell{max-width:1180px;margin:auto;padding:22px}.top
 @media(max-width:760px){.shell{padding:10px}.layout{grid-template-columns:1fr}.top{align-items:flex-start}.article-title{font-size:21px}}
 </style></head>
 <body data-workspace-id="__WORKSPACE_ID__"><main class="shell">
-<header class="top"><div><div class="eyebrow">KDO · Command Center</div><h1>GrowthBridge Article Preview</h1></div><a href="/engineering/console">← Engineering Console</a></header>
+<header class="top"><div><div class="eyebrow">KDO · Command Center</div><h1>GrowthBridge Article Preview</h1></div><div style="display:flex;align-items:center;gap:12px"><button id="connect" class="btn" type="button">Connect API</button><a href="/engineering/console">← Engineering Console</a></div></header>
 <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
 <section class="layout">
 <aside class="panel"><div class="head"><h2>Generate a grounded article</h2></div><div class="body">
@@ -34,7 +34,7 @@ button,select{font:inherit}.shell{max-width:1180px;margin:auto;padding:22px}.top
 (()=>{'use strict';
 const workspaceId=document.body.dataset.workspaceId;
 const $=id=>document.getElementById(id);
-const authHeaders=()=>({...((window.KDO_ENGINEERING_AUTH_HEADERS&&typeof window.KDO_ENGINEERING_AUTH_HEADERS==='object')?window.KDO_ENGINEERING_AUTH_HEADERS:{}),'Accept':'application/json'});
+const authHeaders=()=>({...((window.KDO_ENGINEERING_AUTH_HEADERS&&typeof window.KDO_ENGINEERING_AUTH_HEADERS==='object')?window.KDO_ENGINEERING_AUTH_HEADERS:{}),'Accept':'application/json'});\n$('connect').addEventListener('click',()=>{const token=window.prompt('Paste a short-lived Bearer token or API key. It will be kept in memory only and not saved.');if(!token||!token.trim())return;const value=token.trim();window.KDO_ENGINEERING_AUTH_HEADERS=value.toLowerCase().startsWith('bearer ')?{Authorization:value}:{'X-API-Key':value};loadBrands()});
 const notice=(message,kind='')=>{const n=$('notice');n.textContent=message;n.className='notice'+(kind?' '+kind:'');n.classList.remove('hidden')};
 const clearNotice=()=>{$('notice').classList.add('hidden')};
 const addList=(root,items,formatter)=>{root.replaceChildren();if(!Array.isArray(items)||!items.length){const li=document.createElement('li');li.textContent='No source records returned.';root.append(li);return}for(const item of items){const li=document.createElement('li');li.textContent=formatter(item);root.append(li)}};
