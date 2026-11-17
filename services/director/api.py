@@ -307,14 +307,7 @@ def create_app(director: Director):
     ):
         """Return a read-only, evidence-labelled snapshot of KDO engineering changes."""
         await _require_auth(request, credentials)
-        context = getattr(request.state, "request_context", None)
-        if context is not None and not getattr(context, "species_privileges", False):
-            role = str(getattr(context, "role", "") or "").lower()
-            if role != "owner":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Engineering Awareness contains platform repository and deployment metadata and requires workspace owner or platform authority",
-                )
+        _deny_workspace_global_read(request)
         try:
             from .engineering_awareness import build_engineering_awareness
             from .engineering_ledger import persist_engineering_snapshot
@@ -347,16 +340,9 @@ def create_app(director: Director):
     ):
         """Read persisted engineering history without contacting source providers."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if limit < 1 or limit > 200:
             raise HTTPException(400, "limit must be between 1 and 200")
-        context = getattr(request.state, "request_context", None)
-        if context is not None and not getattr(context, "species_privileges", False):
-            role = str(getattr(context, "role", "") or "").lower()
-            if role != "owner":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Engineering ledger contains platform metadata and requires workspace owner or platform authority",
-                )
         try:
             from .engineering_ledger import read_engineering_ledger
             return await read_engineering_ledger(limit=limit)
