@@ -530,9 +530,13 @@ class Director:
         self.recovery_coordinator = CorrelatedRecovery()
 
         self.learning_loop = LearningLoop()
-        # One verified learning signal per task in this process. The durable
-        # learning row also uses a deterministic task-derived ID for replay safety.
+        # Tenant adaptive state is isolated per trusted workspace identity.
+        self._workspace_learning_loops: Dict[str, LearningLoop] = {}
+        # Idempotency keys are scoped independently; workspace task IDs can
+        # never suppress or replace platform learning records.
         self._learning_recorded_task_ids: set = set()
+        self._workspace_learning_recorded_task_ids: Dict[str, set] = {}
+        self._restored_workspace_learning_scopes: set = set()
         self.adaptive_thresholds = AdaptiveThresholds()
 
         self.current_root_cause: Optional[RootCauseAnalysis] = None
@@ -953,6 +957,19 @@ class Director:
         log.info("Director task restore: %s", summary)
         return summary
 
+    def _learning_loop_for_scope(self, workspace_id: Optional[str] = None) -> LearningLoop:
+        """Return the adaptive learner for exactly one ownership scope."""
+        workspace_id = str(workspace_id).strip() if workspace_id else None
+        if workspace_id is None:
+            return self.learning_loop
+        return self._workspace_learning_loops.setdefault(workspace_id, LearningLoop())
+
+    def _learning_ids_for_scope(self, workspace_id: Optional[str] = None) -> set:
+        workspace_id = str(workspace_id).strip() if workspace_id else None
+        if workspace_id is None:
+            return self._learning_recorded_task_ids
+        return self._workspace_learning_recorded_task_ids.setdefault(workspace_id, set())
+
     @staticmethod
     def _sector_is_valid(value: Any) -> bool:
         try:
@@ -962,7 +979,9 @@ class Director:
             return False
 
     @staticmethod
-    def _is_replayable_learning_signal(signal: Any) -> bool:
+    def _is_replayable_learning_signal(
+        signal: Any, *, workspace_id: Optional[str] = None,
+    ) -> bool:
         """Accept only complete, independently verified learning records.
 
         Legacy task IDs must not be marked as learned during startup merely
@@ -979,13 +998,15 @@ class Director:
             and context.get("status") == Status.VERIFIED.value
             and signal.get("capability")
             and Director._sector_is_valid(signal.get("sector"))
+            and (str(signal.get("workspace_id") or "").strip() or None)
+                == (str(workspace_id).strip() if workspace_id else None)
         )
 
     async def _replay_learning_history(self) -> None:
         lookback_days = 30
         since = now() - timedelta(days=lookback_days)
         try:
-            signals = await self.store.list_learnings_since(since=since, limit=1000)
+            signals = await self.store.list_platform_learnings_since(since=since, limit=1000)
         except Exception as exc:
             log.warning(
                 "Learning replay: failed to load signals: %s",
@@ -1000,10 +1021,10 @@ class Director:
         # suppress a later legitimate verification for the same task.
         eligible = [
             signal for signal in signals
-            if self._is_replayable_learning_signal(signal)
+            if self._is_replayable_learning_signal(signal, workspace_id=None)
         ]
         for signal in eligible:
-            self._learning_recorded_task_ids.add(signal["task_id"])
+            self._learning_ids_for_scope(None).add(signal["task_id"])
 
         try:
             replayed = self.learning_loop.rebuild_from_signals(eligible)
@@ -1546,6 +1567,36 @@ class Director:
             "strategic_context": strategic_context,
             "tasks": [safe(asdict(t)) for t in tasks],
         }
+
+    async def _replay_workspace_learning_history(self, workspace_id: str) -> dict:
+        """Replay only verified signals owned by one explicitly requested workspace."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        loop = self._learning_loop_for_scope(workspace_id)
+        recorded_ids = self._learning_ids_for_scope(workspace_id)
+        if workspace_id in self._restored_workspace_learning_scopes:
+            return {"replayed": 0, "already_loaded": True}
+        since = now() - timedelta(days=30)
+        try:
+            signals = await self.store.list_learnings_since(
+                since=since, limit=1000, workspace_id=workspace_id,
+            )
+            eligible = [
+                signal for signal in signals
+                if self._is_replayable_learning_signal(signal, workspace_id=workspace_id)
+            ]
+            for signal in eligible:
+                recorded_ids.add(signal["task_id"])
+            replayed = loop.rebuild_from_signals(eligible) if eligible else 0
+            self._restored_workspace_learning_scopes.add(workspace_id)
+            return {"replayed": replayed, "loaded": len(signals)}
+        except Exception as exc:
+            log.warning(
+                "Workspace learning replay failed for scoped workspace: %s",
+                sanitize_error_message(exc),
+            )
+            raise RuntimeError("workspace_learning_restore_unavailable") from exc
 
     async def restore_workspace_tasks(self, workspace_id: str) -> dict:
         """Restore one explicitly requested workspace without enumerating tenants."""
@@ -3905,17 +3956,25 @@ class Director:
         # VERIFIED signals emitted by the outcome-verification path are eligible.
         if signal is None or task.status != Status.VERIFIED:
             return False
-        if task.id in self._learning_recorded_task_ids:
+        workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
+        if getattr(task, "scope_type", "platform") == "workspace" and not workspace_id:
+            return False
+        if getattr(task, "scope_type", "platform") not in {"platform", "workspace"}:
+            return False
+        recorded_ids = self._learning_ids_for_scope(workspace_id)
+        if task.id in recorded_ids:
             return False
         entry = safe(asdict(signal))
-        # Stable task identity makes retries/re-verification idempotent in the
-        # durable store as well as in this Director process.
-        task_digest = hashlib.sha256(task.id.encode("utf-8")).hexdigest()[:24]
+        # Include the ownership scope in the stable identity. A task in one
+        # tenant cannot collide with or suppress a platform learning row.
+        identity = f"{workspace_id or 'platform'}:{task.id}"
+        task_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
         entry["id"] = f"learn_{task_digest}"
         entry["task_id"] = task.id
+        entry["workspace_id"] = workspace_id
         entry["verification_status"] = "verified"
         try:
-            persisted = await self.store.save_learning(entry)
+            persisted = await self.store.save_learning(entry, workspace_id=workspace_id)
         except Exception:
             raise
         if persisted is not True:
@@ -3924,21 +3983,27 @@ class Director:
                 task.id,
             )
             return False
-        self._learning_recorded_task_ids.add(task.id)
+        recorded_ids.add(task.id)
         return True
 
     async def _record_verified_learning(self, task: Task, duration_ms: float = 0.0) -> bool:
         """Record learning only after a task has authoritative VERIFIED status."""
-        if task.status != Status.VERIFIED or task.id in self._learning_recorded_task_ids:
+        workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
+        if task.status != Status.VERIFIED or task.id in self._learning_ids_for_scope(workspace_id):
             return False
+        if getattr(task, "scope_type", "platform") == "workspace" and not workspace_id:
+            return False
+        if getattr(task, "scope_type", "platform") not in {"platform", "workspace"}:
+            return False
+        loop = self._learning_loop_for_scope(workspace_id)
         target = self._extract_target(task)
-        signal = self.learning_loop.prepare_outcome(task, duration_ms, target=target)
+        signal = loop.prepare_outcome(task, duration_ms, target=target)
         if signal is None:
             return False
         persisted = await self._learn(task, signal=signal)
         if not persisted:
             return False
-        self.learning_loop.apply_outcome(task, signal, target=target)
+        loop.apply_outcome(task, signal, target=target)
         return True
 
     def _drain_events(self) -> None:
