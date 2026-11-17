@@ -464,3 +464,33 @@ def test_platform_recovery_cannot_read_workspace_task():
 
     with pytest.raises(KeyError, match="task not found"):
         director.assess_task_recovery(task.id)
+
+
+def test_approval_mutations_require_exact_task_ownership_scope():
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "approval-workspace-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "approval-workspace-b"
+    platform = make_task([], status=Status.APPROVAL)
+    platform.id = "approval-platform"
+    director.tasks.update({
+        workspace_a.id: workspace_a,
+        workspace_b.id: workspace_b,
+        platform.id: platform,
+    })
+
+    with pytest.raises(KeyError, match="not found"):
+        director.approve(workspace_a.id)
+    with pytest.raises(KeyError, match="not found"):
+        director.approve(workspace_b.id, workspace_id="workspace-a")
+    with pytest.raises(KeyError, match="not found"):
+        director.reject(workspace_a.id, workspace_id="workspace-b")
+
+    approved = director.approve(workspace_a.id, workspace_id="workspace-a")
+    rejected = director.reject(workspace_b.id, workspace_id="workspace-b", reason="not approved")
+    platform_approved = director.approve(platform.id)
+
+    assert approved.status == Status.APPROVED
+    assert rejected.status == Status.CANCELLED
+    assert platform_approved.status == Status.APPROVED
