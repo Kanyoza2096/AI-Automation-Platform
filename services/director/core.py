@@ -1604,7 +1604,8 @@ class Director:
         if not workspace_id:
             raise ValueError("workspace_id_required")
         if workspace_id in self._restored_workspace_task_scopes:
-            return {"restored": 0, "already_loaded": True, "errors": 0}
+            learning = await self._replay_workspace_learning_history(workspace_id)
+            return {"restored": 0, "already_loaded": True, "errors": 0, "learning": learning}
         try:
             records = await self.store.list_tasks(
                 workspace_id=workspace_id, scope_type="workspace",
@@ -1662,8 +1663,14 @@ class Director:
                     "Skipping invalid workspace Director task: %s",
                     sanitize_error_message(exc),
                 )
+        learning = await self._replay_workspace_learning_history(workspace_id)
         self._restored_workspace_task_scopes.add(workspace_id)
-        return {"restored": restored, "flagged_for_reconciliation": flagged, "errors": errors}
+        return {
+            "restored": restored,
+            "flagged_for_reconciliation": flagged,
+            "errors": errors,
+            "learning": learning,
+        }
 
     async def restore_workspace_observations(self, workspace_id: str) -> dict:
         """Restore evidence only for one trusted workspace scope."""
@@ -3957,9 +3964,12 @@ class Director:
         if signal is None or task.status != Status.VERIFIED:
             return False
         workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
-        if getattr(task, "scope_type", "platform") == "workspace" and not workspace_id:
+        scope_type = getattr(task, "scope_type", "platform")
+        if scope_type == "workspace" and not workspace_id:
             return False
-        if getattr(task, "scope_type", "platform") not in {"platform", "workspace"}:
+        if scope_type == "platform" and workspace_id:
+            return False
+        if scope_type not in {"platform", "workspace"}:
             return False
         recorded_ids = self._learning_ids_for_scope(workspace_id)
         if task.id in recorded_ids:
@@ -3991,9 +4001,12 @@ class Director:
         workspace_id = str(getattr(task, "workspace_id", "") or "").strip() or None
         if task.status != Status.VERIFIED or task.id in self._learning_ids_for_scope(workspace_id):
             return False
-        if getattr(task, "scope_type", "platform") == "workspace" and not workspace_id:
+        scope_type = getattr(task, "scope_type", "platform")
+        if scope_type == "workspace" and not workspace_id:
             return False
-        if getattr(task, "scope_type", "platform") not in {"platform", "workspace"}:
+        if scope_type == "platform" and workspace_id:
+            return False
+        if scope_type not in {"platform", "workspace"}:
             return False
         loop = self._learning_loop_for_scope(workspace_id)
         target = self._extract_target(task)
