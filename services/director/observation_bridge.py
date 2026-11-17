@@ -150,14 +150,29 @@ def reconcile_supervisor_evidence(
             "evidence_class": "supervisor_observation",
             "independently_verified": False,
         })
-        matches = [
+        # Match only against the identity of a Director observation. The
+        # source field is provenance (for example, an API or collector name),
+        # not the observed service identity, and must never create a match.
+        known_matches = [
             fact for fact in facts
             if isinstance(fact, dict)
+            and fact.get("kind") != "supervisor_reported_engine_status"
             and service_id in {
+                str(fact.get("service_id") or "").strip().casefold(),
+                str(fact.get("subject_service_id") or "").strip().casefold(),
                 str(fact.get("observer") or "").strip().casefold(),
-                str(fact.get("source") or "").strip().casefold(),
             }
         ]
+        unknown_matches = [
+            item for item in unknowns
+            if isinstance(item, dict)
+            and service_id in {
+                str(item.get("service_id") or "").strip().casefold(),
+                str(item.get("subject_service_id") or "").strip().casefold(),
+                str(item.get("observer") or "").strip().casefold(),
+            }
+        ]
+        matches = known_matches + unknown_matches
         comparison = {
             "service_id": item["service_id"],
             "supervisor_status": item.get("status", "unknown"),
@@ -167,8 +182,12 @@ def reconcile_supervisor_evidence(
             "independent_verification": False,
         }
         if len(matches) == 1:
-            director_status = matches[0].get("status", "unknown")
+            matched = matches[0]
+            director_status = matched.get("status", matched.get("reported_status", "unknown"))
             comparison["director_status"] = director_status
+            comparison["director_evidence_state"] = (
+                "known_fact" if matched in known_matches else "explicit_unknown"
+            )
             supervisor_class = _status_class(item.get("status"))
             director_class = _status_class(director_status)
             if "unknown" in {supervisor_class, director_class}:
