@@ -917,6 +917,10 @@ def create_app(director: Director):
             raise HTTPException(400, "limit must be between 1 and 200")
         context = getattr(request.state, "request_context", None)
         workspace_id = _workspace_id(request)
+        # An absent workspace is not, by itself, platform authority. Require
+        # the same explicit platform boundary used by other global endpoints.
+        if workspace_id is None:
+            _require_platform_scope(request)
         is_platform_operator = (
             bool(getattr(context, "species_privileges", False))
             or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
