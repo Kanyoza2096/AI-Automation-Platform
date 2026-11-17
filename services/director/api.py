@@ -503,15 +503,12 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is None or not _task_in_workspace(task, request):
             raise HTTPException(404, "task not found")
-        assessment = director.assess_task_recovery(task_id)
-        visible_dependencies = []
-        for dependency in assessment["dependencies"]:
-            dependency_task = director.tasks.get(dependency["task_id"])
-            if dependency_task is not None and not _task_in_workspace(dependency_task, request):
-                raise HTTPException(404, "task not found")
-            visible_dependencies.append(dependency)
-        assessment["dependencies"] = visible_dependencies
-        return assessment
+        try:
+            return director.assess_task_recovery(
+                task_id, workspace_id=_workspace_id(request),
+            )
+        except KeyError:
+            raise HTTPException(404, "task not found")
 
     @app.post("/tasks/{task_id}/verify-outcome")
     async def verify_task_outcome(
