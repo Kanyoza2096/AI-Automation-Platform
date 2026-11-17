@@ -527,7 +527,7 @@ def create_app(director: Director):
     ):
         """Return scoped recovery guidance; this endpoint never retries tasks."""
         await _require_auth(request, credentials)
-        workspace_id = _task_ownership_workspace_id(request)
+        workspace_id = await _load_task_scope(request)
         task = director.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise HTTPException(404, "task not found")
@@ -642,7 +642,7 @@ def create_app(director: Director):
         try:
             return safe(asdict(director.reject(
                 task_id, _trusted_actor(request, body.actor), body.reason,
-                workspace_id=_task_ownership_workspace_id(request),
+                workspace_id=await _load_task_scope(request),
             )))
         except KeyError:
             raise HTTPException(404, "Task not found")
