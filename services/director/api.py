@@ -1026,6 +1026,7 @@ def create_app(director: Director):
     @app.get("/daily-briefing")
     async def get_daily_briefing(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         director._send_daily_briefing()
         return {"ok": True, "message": "Daily briefing sent"}
 
@@ -1035,11 +1036,13 @@ def create_app(director: Director):
     async def get_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
         _deny_workspace_global_read(request)
+        _deny_workspace_global_read(request)
         return director.learning_loop.get_learning_report()
 
     @app.post("/learning/rebuild")
     async def rebuild_learning(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials, write=True)
+        _deny_workspace_global_read(request)
         before = len(director.learning_loop.signals)
         await director._replay_learning_history()
         after = len(director.learning_loop.signals)
@@ -1058,6 +1061,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         all_time = director.learning_loop.get_success_rate(capability)
         recent = director.learning_loop.get_recent_success_rate(capability)
         avg_duration = director.learning_loop.get_avg_duration_ms(capability)
@@ -1140,6 +1144,7 @@ def create_app(director: Director):
     @app.get("/learning/contexts")
     async def get_all_contexts(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         contexts = {}
         for ctx_key, stats in director.learning_loop.context_stats.items():
             total = stats["successes"] + stats["failures"]
@@ -1160,6 +1165,7 @@ def create_app(director: Director):
     @app.get("/learning/time-patterns")
     async def get_time_patterns(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         by_capability: Dict[str, Dict[str, Dict[str, int]]] = {}
         for time_key, stats in director.learning_loop.time_stats.items():
             parts = time_key.split(":")
@@ -1197,6 +1203,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         recent = [s for s in director.learning_loop.signals if s.outcome == "failure"]
         recent = list(reversed(recent))[:limit]
         return {
@@ -1224,6 +1231,7 @@ def create_app(director: Director):
     ):
         """Show recent VERIFIED vs INEFFECTIVE outcomes."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         verified = [
             safe(asdict(d)) for d in list(director.decisions)
             if d.outcome == "verified"
@@ -1248,6 +1256,7 @@ def create_app(director: Director):
     @app.get("/learning/targets")
     async def get_learning_targets(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         targets = []
         for tkey, count in director.learning_loop.target_failure_counts.items():
             if ":" not in tkey:
@@ -1272,6 +1281,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         durations = []
         for capability in director.learning_loop.duration_stats.keys():
             avg_ms = director.learning_loop.get_avg_duration_ms(capability)
@@ -1291,6 +1301,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
+        _deny_workspace_global_read(request)
         _require_platform_scope(request)
         director.learning_loop.capability_stats.pop(capability, None)
         director.learning_loop.duration_stats.pop(capability, None)
