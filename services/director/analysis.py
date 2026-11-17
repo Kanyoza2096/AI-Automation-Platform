@@ -563,7 +563,7 @@ class LearningLoop:
             return None
         is_ineffective = task.status == Status.INEFFECTIVE
         outcome = "failure" if is_ineffective else "success"
-        error_class = "OUTCOME_NOT_VERIFIED" if is_ineffective else None
+        error_class = "AUTHORITATIVE_STATE_MISMATCH" if is_ineffective else None
         error_type = (
             "authoritative_state_mismatch" if is_ineffective else
             (task.error[:100] if task.error else None)
