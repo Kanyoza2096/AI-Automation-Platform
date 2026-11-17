@@ -784,3 +784,50 @@ def test_workspace_identity_cannot_read_shared_director_telemetry(monkeypatch):
     _install_platform_context(platform_app)
     platform = TestClient(platform_app)
     assert platform.get("/engines", headers=headers).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_workspace_verified_learning_isolated_from_platform_and_other_workspaces():
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.VERIFIED, workspace_id="workspace-a")
+    workspace_a.id = "shared-task-id"
+    workspace_b = make_task([], status=Status.VERIFIED, workspace_id="workspace-b")
+    workspace_b.id = "shared-task-id"
+
+    assert await director._record_verified_learning(workspace_a)
+    assert await director._record_verified_learning(workspace_b)
+
+    assert len(director._learning_loop_for_scope("workspace-a").signals) == 1
+    assert len(director._learning_loop_for_scope("workspace-b").signals) == 1
+    assert director.learning_loop.signals == []
+    assert director._learning_ids_for_scope("workspace-a") == {"shared-task-id"}
+    assert director._learning_ids_for_scope("workspace-b") == {"shared-task-id"}
+    assert director._learning_ids_for_scope(None) == set()
+
+    rows = list(director.store.learnings)
+    assert len(rows) == 2
+    assert {row["workspace_id"] for row in rows} == {"workspace-a", "workspace-b"}
+    assert len({row["id"] for row in rows}) == 2
+
+
+@pytest.mark.asyncio
+async def test_workspace_learning_replay_loads_only_exact_workspace_rows():
+    source = Director(supabase_client=None)
+    for workspace_id in ("workspace-a", "workspace-b"):
+        task = make_task([], status=Status.VERIFIED, workspace_id=workspace_id)
+        task.id = "same-task-id"
+        assert await source._record_verified_learning(task)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    result = await restored._replay_workspace_learning_history("workspace-a")
+
+    assert result["replayed"] == 1
+    assert len(restored._learning_loop_for_scope("workspace-a").signals) == 1
+    assert "workspace-b" not in restored._workspace_learning_loops
+    assert restored.learning_loop.signals == []
+
+    platform_rows = await restored.store.list_platform_learnings_since(
+        since=now() - timedelta(days=30), limit=100,
+    )
+    assert platform_rows == []
