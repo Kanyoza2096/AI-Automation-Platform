@@ -158,8 +158,9 @@ def create_app(director: Director):
         if workspace_id:
             try:
                 await director.restore_workspace_tasks(workspace_id)
+                await director.restore_workspace_observations(workspace_id)
             except RuntimeError:
-                raise HTTPException(503, "Workspace task state is temporarily unavailable")
+                raise HTTPException(503, "Workspace task or evidence state is temporarily unavailable")
         return workspace_id
 
     def _proposal_in_workspace(proposal, request) -> bool:
