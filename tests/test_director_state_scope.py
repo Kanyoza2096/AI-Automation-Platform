@@ -1,6 +1,5 @@
 """Regression tests for Director state ownership boundaries."""
 import pytest
-from uuid import UUID
 
 from services.director.models import Authority, Health, Observation, Risk, Sector, Task
 from services.director.stores import InMemoryStore
