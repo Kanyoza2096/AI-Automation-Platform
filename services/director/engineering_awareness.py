@@ -189,8 +189,14 @@ def _deployment_status(deploy: dict) -> str:
     raw = str(deploy.get("status") or deploy.get("deployStatus") or "unknown").lower()
     if raw in {"live", "succeeded", "success"}:
         return "live"
-    if raw in {"build_failed", "update_failed", "pre_deploy_failed", "failed", "canceled", "cancelled", "deactivated"}:
+    if raw in {"build_failed", "update_failed", "pre_deploy_failed", "failed"}:
         return "failed"
+    if raw in {"canceled", "cancelled"}:
+        return "cancelled"
+    if raw == "deactivated":
+        # Render deactivates older successful deployments when a newer deploy replaces them.
+        # Deactivation is not evidence that the original deployment failed.
+        return "superseded"
     if raw in {"build_in_progress", "pre_deploy_in_progress", "update_in_progress", "created", "pending"}:
         return "in_progress"
     return raw or "unknown"
