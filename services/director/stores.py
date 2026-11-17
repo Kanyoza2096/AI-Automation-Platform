@@ -279,8 +279,27 @@ class AsyncSupabaseStore:
         )
         return [dict(row) for row in (result.data or [])] if result else []
 
+    MAX_PERSISTED_OBSERVATIONS = 500
+    MAX_PERSISTED_DECISIONS = 250
+    MAX_PERSISTED_LEARNINGS = 500
+
+    async def _prune_recent_records(self, table_name: str, max_rows: int) -> None:
+        """Retain only the newest bounded set in a Director history table."""
+        rows = await self._execute_with_retry(
+            f"select excess rows from {table_name}",
+            lambda: self.supabase.table(table_name)
+            .select("id").order("timestamp", desc=True)
+            .range(max_rows, max_rows + 999).execute(),
+        )
+        excess_ids = [row.get("id") for row in (rows.data or []) if row.get("id")] if rows else []
+        if excess_ids:
+            await self._execute_with_retry(
+                f"prune excess rows from {table_name}",
+                lambda: self.supabase.table(table_name).delete().in_("id", excess_ids).execute(),
+            )
+
     async def save_decision(self, decision: Decision) -> None:
-        await self._execute_with_retry(
+        result = await self._execute_with_retry(
             "insert into director_decisions",
             lambda: self.supabase.table("director_decisions").upsert({
                 "id": decision.id,
@@ -288,6 +307,8 @@ class AsyncSupabaseStore:
                 "timestamp": iso(decision.timestamp),
             }).execute(),
         )
+        if result is not None:
+            await self._prune_recent_records("director_decisions", self.MAX_PERSISTED_DECISIONS)
 
     async def list_decisions(self, limit: int = 100) -> List[dict]:
         result = await self._execute_with_retry(
@@ -393,7 +414,7 @@ class AsyncSupabaseStore:
         if scope_type != "workspace" and workspace_id:
             log.error("Director DB: refusing non-workspace observation with workspace_id")
             return
-        await self._execute_with_retry(
+        result = await self._execute_with_retry(
             "insert into director_observations",
             lambda: self.supabase.table("director_observations").insert({
                 "workspace_id": workspace_id,
@@ -402,6 +423,8 @@ class AsyncSupabaseStore:
                 "timestamp": iso(observation.timestamp),
             }).execute(),
         )
+        if result is not None:
+            await self._prune_recent_records("director_observations", self.MAX_PERSISTED_OBSERVATIONS)
 
     async def list_observations(
         self, limit: int = 100, *, workspace_id: Optional[str] = None,
@@ -447,8 +470,6 @@ class AsyncSupabaseStore:
     # LEARNING SIGNALS
     # ──────────────────────────────────────────────────────────────────
 
-    MAX_PERSISTED_LEARNINGS = 500
-
     async def save_learning(self, entry: dict) -> None:
         """Persist verified learning only, keeping the free-tier table bounded."""
         if not isinstance(entry, dict):
@@ -473,22 +494,7 @@ class AsyncSupabaseStore:
         )
         if result is None:
             return
-        # Keep only the newest bounded set. Old records are not needed to
-        # reconstruct an unlimited history; replay is separately time-bounded.
-        rows = await self._execute_with_retry(
-            "select excess Director learning records",
-            lambda: self.supabase.table("director_learnings")
-            .select("id").order("timestamp", desc=True)
-            .range(self.MAX_PERSISTED_LEARNINGS, self.MAX_PERSISTED_LEARNINGS + 999)
-            .execute(),
-        )
-        excess_ids = [row.get("id") for row in (rows.data or []) if row.get("id")] if rows else []
-        if excess_ids:
-            await self._execute_with_retry(
-                "prune excess Director learning records",
-                lambda: self.supabase.table("director_learnings")
-                .delete().in_("id", excess_ids).execute(),
-            )
+        await self._prune_recent_records("director_learnings", self.MAX_PERSISTED_LEARNINGS)
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         result = await self._execute_with_retry(
