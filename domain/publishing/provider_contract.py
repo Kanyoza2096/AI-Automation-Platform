@@ -30,6 +30,7 @@ CONTRACTS = {
     "linkedin": ProviderContract("linkedin", max_text_length=3000, supports_image_bytes=True, receipt_kind="post_id", reconciliation="lookup"),
     "telegram": ProviderContract("telegram", max_text_length=4096, supports_image_url=True, supports_image_bytes=True, receipt_kind="message_id", reconciliation="receipt"),
     "whatsapp": ProviderContract("whatsapp", max_text_length=4096, supports_image_url=True, requires_recipient=True, receipt_kind="message_id", reconciliation="webhook"),
+    "website": ProviderContract("website", max_text_length=50000, supports_image_url=True, receipt_kind="post_id", reconciliation="lookup"),
 }
 
 
