@@ -1831,6 +1831,14 @@ class Director:
             Status.INEFFECTIVE, Status.BLOCKED,
         }
         for tid, task in list(self.tasks.items()):
+            # The platform scheduler must never execute tenant-owned or
+            # ambiguously scoped tasks, even if they appear in the legacy
+            # shared registry during migration.
+            if (
+                getattr(task, "scope_type", "platform") != "platform"
+                or getattr(task, "workspace_id", None)
+            ):
+                continue
             if task.status not in (Status.PLANNED, Status.APPROVED) or tid in self._executing:
                 continue
             dependencies = list(getattr(task, "depends_on", []) or [])
@@ -1940,6 +1948,18 @@ class Director:
         task = self.tasks.get(task_id)
         if not task:
             raise KeyError(f"Task {task_id} not found")
+
+        # Defense in depth: direct executor calls must enforce the same
+        # platform-only boundary as the scheduler.
+        if (
+            getattr(task, "scope_type", "platform") != "platform"
+            or getattr(task, "workspace_id", None)
+        ):
+            log.warning(
+                "Platform execution refused for non-platform task %s",
+                task_id,
+            )
+            return task
 
         runnable_states = {Status.PLANNED, Status.APPROVED, Status.APPROVED_PENDING_EXECUTION}
         if task.status not in runnable_states:
