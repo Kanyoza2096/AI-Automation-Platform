@@ -382,3 +382,54 @@ def test_platform_verification_harness_runs_ineffective_to_verified_and_deduplic
     assert repeated.json()["outcome"] == "verified"
     assert len(director.store.learnings) == 1
     assert task.status == Status.VERIFIED
+
+
+def test_mission_graph_isolated_by_workspace_and_platform_scope():
+    director = Director(supabase_client=None)
+    platform_task = make_task([], status=Status.APPROVED)
+    platform_task.id = "platform-task"
+    platform_task.mission_id = "shared-mission"
+    workspace_a_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a_task.id = "workspace-a-task"
+    workspace_a_task.mission_id = "shared-mission"
+    workspace_b_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b_task.id = "workspace-b-task"
+    workspace_b_task.mission_id = "shared-mission"
+    director.tasks.update({
+        platform_task.id: platform_task,
+        workspace_a_task.id: workspace_a_task,
+        workspace_b_task.id: workspace_b_task,
+    })
+
+    platform_graph = director.mission_graph(mission_id="shared-mission")
+    workspace_a_graph = director.mission_graph(
+        mission_id="shared-mission", workspace_id="workspace-a",
+    )
+    workspace_b_graph = director.mission_graph(
+        mission_id="shared-mission", workspace_id="workspace-b",
+    )
+
+    assert {node["task_id"] for node in platform_graph["nodes"]} == {"platform-task"}
+    assert {node["task_id"] for node in workspace_a_graph["nodes"]} == {"workspace-a-task"}
+    assert {node["task_id"] for node in workspace_b_graph["nodes"]} == {"workspace-b-task"}
+
+
+@pytest.mark.asyncio
+async def test_dependency_rejects_cross_workspace_and_platform_edges():
+    director = Director(supabase_client=None)
+    workspace_a_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a_task.id = "workspace-a-task"
+    workspace_b_task = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b_task.id = "workspace-b-task"
+    platform_task = make_task([], status=Status.APPROVAL)
+    platform_task.id = "platform-task"
+    director.tasks.update({
+        workspace_a_task.id: workspace_a_task,
+        workspace_b_task.id: workspace_b_task,
+        platform_task.id: platform_task,
+    })
+
+    with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
+        await director.add_task_dependency("workspace-a-task", "workspace-b-task")
+    with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
+        await director.add_task_dependency("workspace-a-task", "platform-task")
