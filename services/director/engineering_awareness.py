@@ -354,14 +354,39 @@ async def build_engineering_awareness(*, plugin: Any = None, now: datetime | Non
         "deployments_triggered": False,
     }
     if not getattr(plugin, "github_token", ""):
+        # Provider failures are independent: missing GitHub credentials must not
+        # prevent a read-only Render inventory/deployment observation.
+        normalized = [
+            {
+                "repository": repo,
+                "status": "unavailable",
+                "error": "GitHub connector token is not configured",
+                "merged_pull_requests": [],
+                "latest_workflow": None,
+            }
+            for repo in repositories
+        ]
+        render = await _load_render_evidence(repositories)
         return {
-            "status": "unavailable",
-            "source": "none",
+            "status": "partial" if render.get("status") in {"available", "partial"} else "unavailable",
+            "source": "render_api" if render.get("status") in {"available", "partial"} else "none",
             "observed_at": observed_at.isoformat(),
-            "message": "GitHub connector token is not configured; no engineering changes were inferred.",
-            "repositories": [],
-            "render": {"status": "not_evaluated", "deployments": [], "services": []},
-            "summary": {"repositories_configured": len(repositories), "repositories_available": 0, "merged_changes": 0, "deployed_changes": 0, "operationally_verified_changes": 0},
+            "message": "GitHub connector token is not configured; GitHub merge and workflow evidence is unavailable. Render evidence is reported independently.",
+            "repositories": normalized,
+            "render": render,
+            "summary": {
+                "repositories_configured": len(repositories),
+                "repositories_available": 0,
+                "merged_changes": 0,
+                "render_services_matched": len(render.get("services", [])),
+                "render_deployments_observed": len(render.get("deployments", [])),
+                "deployed_changes": 0,
+                "operationally_verified_changes": 0,
+            },
+            "limitations": [
+                "GitHub merge and workflow evidence requires GITHUB_ACCESS_TOKEN.",
+                "Render deployment evidence is independent and does not establish operational acceptance.",
+            ],
             "authority": authority,
         }
 
