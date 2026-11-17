@@ -99,6 +99,19 @@ def _brand_status_value(brand: Any) -> str:
     return str(raw or "").lower()
 
 
+def _brand_content_platform(brand: Any) -> str:
+    """Resolve the configured publishing platform, including brand metadata."""
+    raw = getattr(brand, "platform", None)
+    if raw is None:
+        metadata = getattr(brand, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        raw = metadata.get("primary_platform") or metadata.get("platform")
+    if hasattr(raw, "value"):
+        raw = raw.value
+    value = str(raw or "facebook").strip().lower()
+    return value or "facebook"
+
+
 def _coerce_date(value):
     """Return a `date` from a date/datetime/ISO string; None otherwise."""
     if value is None:
@@ -1654,16 +1667,20 @@ class BrandScheduler:
                 "topic": "", "platforms": [], "job_id": job_id,
             }
 
-            workflow_factory = self._container.resolve(
-                "PostPublishWorkflowFactory"
+            content_platform = _brand_content_platform(self.brand)
+            factory_name = (
+                "ArticlePublishWorkflowFactory"
+                if content_platform == "website"
+                else "PostPublishWorkflowFactory"
             )
+            workflow_factory = self._container.resolve(factory_name)
             workflow = workflow_factory(
                 brand=self.brand, ai_profile=self.ai_profile
             )
 
             wf_kwargs = self._build_workflow_context(
                 job_id=job_id,
-                platform=getattr(self.brand, "platform", "facebook"),
+                platform=content_platform,
                 source=source,
                 risk_level="low",
                 scheduled_post_id=scheduled_post_id,
@@ -1672,8 +1689,7 @@ class BrandScheduler:
             result = self._execute_workflow(workflow, wf_kwargs)
 
             context_platform = (
-                wf_kwargs.get("platform")
-                or getattr(self.brand, "platform", "facebook")
+                wf_kwargs.get("platform") or _brand_content_platform(self.brand)
             )
             topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
                 result, context_platform=context_platform,
