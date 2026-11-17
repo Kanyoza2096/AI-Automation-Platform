@@ -612,7 +612,11 @@ class LearningLoop:
             {"successes": 0, "failures": 0, "unverified": 0, "total_duration_ms": 0},
         )
         stats.setdefault("unverified", 0)
-        bucket = outcome if outcome in {"success", "failure"} else "unverified"
+        bucket = (
+            "successes" if outcome == "success"
+            else "failures" if outcome == "failure"
+            else "unverified"
+        )
         stats[bucket] += 1
         stats["total_duration_ms"] += signal.duration_ms
 
