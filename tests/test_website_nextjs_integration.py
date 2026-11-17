@@ -176,3 +176,37 @@ def test_brand_scheduler_preserves_legacy_facebook_default():
     from types import SimpleNamespace
     from scheduler.brand_scheduler import _brand_publish_platform
     assert _brand_publish_platform(SimpleNamespace(metadata={})) == 'facebook'
+
+
+def test_website_connector_blocks_delete_without_capability(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    account = SocialAccount(
+        id='website-no-delete', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='secret',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'delete_path_template':'/api/kdo/content/{post_id}',
+                         'capabilities':['PUBLISH_ARTICLE']},
+    )
+    monkeypatch.setattr('services.connectors.website_connector.requests.delete',
+                        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('network must not be called')))
+    result = WebsiteConnector(account).delete('article-1')
+    assert not result.ok
+    assert 'DELETE_ARTICLE' in result.error
+
+
+def test_website_connector_blocks_update_without_capability(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    account = SocialAccount(
+        id='website-no-update', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='secret',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'edit_path_template':'/api/kdo/content/{post_id}',
+                         'capabilities':['PUBLISH_ARTICLE']},
+    )
+    monkeypatch.setattr('services.connectors.website_connector.requests.patch',
+                        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('network must not be called')))
+    result = WebsiteConnector(account).edit('article-1', 'updated content')
+    assert not result.ok
+    assert 'UPDATE_ARTICLE' in result.error
