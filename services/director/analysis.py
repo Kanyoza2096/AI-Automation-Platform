@@ -409,14 +409,11 @@ class LearningLoop:
     """
     Feeds task outcomes back into decision-making.
 
-    v5.4:
-      - VERIFIED, COMPLETED, INEFFECTIVE, and FAILED tasks produce signals.
-      - VERIFIED is positive learning evidence; COMPLETED is explicitly
-        unverified and is excluded from success/failure rates.
-      - INEFFECTIVE is recorded as a failure with
-        error_class=OUTCOME_NOT_VERIFIED. This distinguishes "handler
-        threw an error" from "handler reported success but the world
-        didn't change."
+    Verified-learning policy:
+      - Only VERIFIED tasks whose declared outcome predicate passed produce
+        adaptive learning signals.
+      - COMPLETED, INEFFECTIVE, and FAILED remain execution diagnostics and
+        never alter learned success patterns.
 
     v5.3.1: replay works with dict and dataclass signals.
     v5.3: target-scoped, error-class aware, persistence-ready.
@@ -436,7 +433,6 @@ class LearningLoop:
         "SERVICE_UNAVAILABLE",
     })
 
-    # Statuses that represent a real execution attempt (produce signals)
     # Only independently verified outcomes may influence adaptive learning.
     # Other terminal states remain available in task/decision diagnostics.
     _SIGNAL_STATUSES = frozenset({Status.VERIFIED})
