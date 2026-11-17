@@ -913,23 +913,29 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        if limit < 1 or limit > 200:
+            raise HTTPException(400, "limit must be between 1 and 200")
+        context = getattr(request.state, "request_context", None)
+        workspace_id = _workspace_id(request)
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        visible_signals = [
+            signal for signal in director.signals.values()
+            if workspace_id is None
+            or is_platform_operator
+            or getattr(signal, "workspace_id", None) == workspace_id
+        ]
         recent = sorted(
-            (signal for signal in director.signals.values()
-             if _workspace_id(request) is None
-             or getattr(getattr(request.state, "request_context", None), "species_privileges", False)
-             or getattr(signal, "workspace_id", None) == _workspace_id(request)),
-            key=lambda s: s.detected_at,
+            visible_signals,
+            key=lambda signal: signal.detected_at,
             reverse=True,
         )[:limit]
         return {
-            "signals": [safe(asdict(s)) for s in recent],
+            "signals": [safe(asdict(signal)) for signal in recent],
             "count": len(recent),
-            "total": sum(
-                1 for signal in director.signals.values()
-                if _workspace_id(request) is None
-                or getattr(getattr(request.state, "request_context", None), "species_privileges", False)
-                or getattr(signal, "workspace_id", None) == _workspace_id(request)
-            ),
+            "total": len(visible_signals),
         }
 
     @app.post("/detectors/run")
