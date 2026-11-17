@@ -615,7 +615,8 @@ def test_unscoped_canonical_non_platform_identity_cannot_read_or_mutate_proposal
         headers=headers,
         json={"actor": "forged"},
     )
-    assert rejected.status_code == 404
+    # The viewer role is denied by write authorization before proposal lookup.
+    assert rejected.status_code == 403
     assert d.proposals["tenant-proposal"].approved_by is None
 
 
