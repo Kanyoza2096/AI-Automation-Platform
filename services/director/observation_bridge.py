@@ -51,16 +51,20 @@ def project_meta_health_evidence(health: Any) -> dict[str, Any]:
     accepted_count = contract.get("accepted_count")
     rejected_count = contract.get("rejected_count")
     source_count = contract.get("source_count")
+    valid_counts = all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in (source_count, accepted_count, rejected_count)
+    )
     count_integrity = (
-        isinstance(accepted_count, int)
-        and not isinstance(accepted_count, bool)
-        and accepted_count == len(observations)
+        valid_counts
+        and accepted_count == len(raw_observations) == len(observations)
+        and (contract_status == "invalid_source" or source_count == accepted_count + rejected_count)
     )
     contract_valid = contract_name == CONTRACT_NAME and contract_status in VALID_CONTRACT_STATES
     if not contract_valid:
         integrity_status = "contract_unavailable_or_unrecognised"
     elif not count_integrity:
-        integrity_status = "accepted_count_mismatch"
+        integrity_status = "observation_count_mismatch"
     else:
         integrity_status = "consistent"
 
@@ -103,6 +107,145 @@ def project_meta_health_evidence(health: Any) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _status_class(value: Any) -> str:
+    status = str(value or "unknown").strip().lower()
+    if status in {"healthy", "nominal", "ok", "ready", "running"}:
+        return "healthy"
+    if status in {"degraded", "warning", "partial"}:
+        return "degraded"
+    if status in {"critical", "failed", "down"}:
+        return "critical"
+    if status in {"offline", "stopped"}:
+        return "offline"
+    return "unknown"
+
+
+def reconcile_supervisor_evidence(
+    decision_context: Any, supervisor_evidence: Any
+) -> dict[str, Any]:
+    """Compare Meta reports with fresh Director facts using exact source identity only."""
+    context = dict(decision_context) if isinstance(decision_context, dict) else {}
+    evidence = supervisor_evidence if isinstance(supervisor_evidence, dict) else {}
+    facts = list(context.get("facts") or [])
+    unknowns = list(context.get("unknowns") or [])
+    conflicts = list(context.get("conflicts") or [])
+
+    comparisons = []
+    for item in evidence.get("observations", [])[:500]:
+        if not isinstance(item, dict):
+            continue
+        service_id_display = str(item.get("service_id") or "").strip()
+        service_id = service_id_display.casefold()
+        if not service_id:
+            continue
+        facts.append({
+            "kind": "supervisor_reported_engine_status",
+            "observer": "meta_engine",
+            "source": "meta_engine.check_health",
+            "subject_service_id": service_id_display,
+            "status": item.get("status", "unknown"),
+            "observed_at": item.get("observed_at"),
+            "evidence_class": "supervisor_observation",
+            "independently_verified": False,
+        })
+        matches = [
+            fact for fact in facts
+            if isinstance(fact, dict)
+            and service_id in {
+                str(fact.get("observer") or "").strip().casefold(),
+                str(fact.get("source") or "").strip().casefold(),
+            }
+        ]
+        comparison = {
+            "service_id": item["service_id"],
+            "supervisor_status": item.get("status", "unknown"),
+            "director_status": None,
+            "result": "unmatched",
+            "identity_match": "exact",
+            "independent_verification": False,
+        }
+        if len(matches) == 1:
+            director_status = matches[0].get("status", "unknown")
+            comparison["director_status"] = director_status
+            supervisor_class = _status_class(item.get("status"))
+            director_class = _status_class(director_status)
+            if "unknown" in {supervisor_class, director_class}:
+                comparison["result"] = "unknown"
+                unknowns.append({
+                    "kind": "supervisor_director_status_comparison_unknown",
+                    "observer": item["service_id"],
+                    "supervisor_status": item.get("status"),
+                    "director_status": director_status,
+                })
+            elif supervisor_class != director_class:
+                comparison["result"] = "disagreement"
+                conflicts.append({
+                    "kind": "supervisor_director_status_disagreement",
+                    "observer": item["service_id"],
+                    "supervisor_status": item.get("status"),
+                    "director_status": director_status,
+                    "interpretation": (
+                        "Meta Engine and Director report different statuses for the same "
+                        "exact observer identity. Neither report is silently preferred."
+                    ),
+                })
+            else:
+                comparison["result"] = "agreement"
+        elif len(matches) > 1:
+            comparison["result"] = "ambiguous"
+            unknowns.append({
+                "kind": "supervisor_observer_identity_ambiguous",
+                "observer": item["service_id"],
+                "matching_director_facts": len(matches),
+            })
+        else:
+            unknowns.append({
+                "kind": "supervisor_observation_not_matched",
+                "observer": item["service_id"],
+                "interpretation": (
+                    "No fresh Director fact with the exact same observer or source "
+                    "identity was available for comparison."
+                ),
+            })
+        comparisons.append(comparison)
+
+    status = str(evidence.get("status") or "unavailable").lower()
+    if status not in {"complete", "partial"}:
+        unknowns.append({
+            "kind": "supervisor_observation_contract_not_usable",
+            "contract_status": status,
+            "integrity_status": evidence.get("integrity_status", "unknown"),
+        })
+
+    counts = {
+        "compared": len(comparisons),
+        "agreements": sum(item["result"] == "agreement" for item in comparisons),
+        "disagreements": sum(item["result"] == "disagreement" for item in comparisons),
+        "unmatched": sum(item["result"] == "unmatched" for item in comparisons),
+        "ambiguous": sum(item["result"] == "ambiguous" for item in comparisons),
+        "unknown": sum(item["result"] == "unknown" for item in comparisons),
+    }
+    reconciliation_status = (
+        "unavailable" if status not in {"complete", "partial"} else
+        "disagreement" if counts["disagreements"] else
+        "partial" if counts["unmatched"] or counts["ambiguous"] or counts["unknown"] or status == "partial" else
+        "agreement" if counts["compared"] else "no_comparable_observations"
+    )
+    context["facts"] = facts
+    context["unknowns"] = unknowns
+    context["conflicts"] = conflicts
+    context["supervisor_observation_evidence"] = evidence
+    context["supervisor_evidence_reconciliation"] = {
+        "status": reconciliation_status,
+        "counts": counts,
+        "comparisons": comparisons,
+        "independence_established": False,
+        "authority": "read_only_advisory",
+        "grants_execution_authority": False,
+    }
+    return context
 
 
 def read_meta_health_evidence() -> dict[str, Any]:
