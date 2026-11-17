@@ -136,9 +136,20 @@ def reconcile_supervisor_evidence(
     for item in evidence.get("observations", [])[:500]:
         if not isinstance(item, dict):
             continue
-        service_id = str(item.get("service_id") or "").strip().casefold()
+        service_id_display = str(item.get("service_id") or "").strip()
+        service_id = service_id_display.casefold()
         if not service_id:
             continue
+        facts.append({
+            "kind": "supervisor_reported_engine_status",
+            "observer": "meta_engine",
+            "source": "meta_engine.check_health",
+            "subject_service_id": service_id_display,
+            "status": item.get("status", "unknown"),
+            "observed_at": item.get("observed_at"),
+            "evidence_class": "supervisor_observation",
+            "independently_verified": False,
+        })
         matches = [
             fact for fact in facts
             if isinstance(fact, dict)
