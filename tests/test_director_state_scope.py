@@ -82,7 +82,6 @@ def test_unverified_legacy_learning_does_not_qualify_for_replay():
         "sector": "self",
         "outcome": "success",
         "context": {"status": "completed"},
-        "verification_status": "unverified",
     }
 
     assert Director._is_replayable_learning_signal(legacy) is False
@@ -98,7 +97,6 @@ def test_verified_learning_requires_both_durable_and_outcome_verification():
         "sector": "self",
         "outcome": "success",
         "context": {"status": "verified"},
-        "verification_status": "verified",
     }
 
     assert Director._is_replayable_learning_signal(verified) is True
