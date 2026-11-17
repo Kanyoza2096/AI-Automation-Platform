@@ -18,16 +18,36 @@ def _objective():
 def _planner(**kwargs):
     return {
         "summary": "Review evidence before recommending schedule changes.",
-        "steps": [{
-            "step_id": "review",
-            "capability": "review_content_quality",
-            "sector": "content",
-            "objective": "Review the evidence behind the quality gap.",
-            "depends_on": [],
-            "acceptance_criteria": ["The review cites current evidence."],
-            "deliverables": ["Evidence-linked assessment"],
-            "rationale": "Diagnosis precedes action.",
-        }],
+        "steps": [
+            {
+                "step_id": "review",
+                "capability": "review_content_quality",
+                "sector": "content",
+                "objective": "Review the evidence behind the quality gap.",
+                "target": "Current quality observations and source reports",
+                "verification_method": "Compare current observer reports with the stated quality criteria.",
+                "depends_on": [],
+                "acceptance_criteria": ["The review cites current evidence."],
+                "deliverables": ["Evidence-linked assessment"],
+                "rationale": "Diagnosis precedes action.",
+                "criterion_refs": ["criterion:0"],
+                "evidence_refs": [],
+            },
+            {
+                "step_id": "schedule",
+                "capability": "optimize_content_schedule",
+                "sector": "content",
+                "objective": "Recommend a bounded schedule improvement.",
+                "target": "Brand scheduler configuration and verified quality assessment",
+                "verification_method": "Trace the recommendation to the review without changing scheduler state.",
+                "depends_on": ["review"],
+                "acceptance_criteria": ["The recommendation is supported by the review."],
+                "deliverables": ["Schedule recommendation"],
+                "rationale": "Schedule changes remain separately governed.",
+                "criterion_refs": ["criterion:0"],
+                "evidence_refs": [],
+            },
+        ],
     }
 
 

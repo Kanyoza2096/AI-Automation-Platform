@@ -508,6 +508,7 @@ class LLMGateway:
             )
 
         last_error: Optional[str] = None
+        last_finish_reason: Optional[str] = None
         attempted: list[str] = []
 
         for route in routes:
@@ -598,6 +599,8 @@ class LLMGateway:
             status = getattr(receipt, "status", "failed")
             raw_output = getattr(receipt, "raw_output", "") or ""
             finish_reason = self._extract_finish_reason(receipt)
+            if finish_reason:
+                last_finish_reason = finish_reason
             receipt_error = getattr(receipt, "error", None)
 
             if status == "succeeded" and raw_output.strip():
@@ -675,6 +678,7 @@ class LLMGateway:
             workspace_id=workspace_id,
             latency_ms=latency,
             request_id=correlation_id,
+            finish_reason=last_finish_reason,
         )
 
     def _providers_configured(self) -> bool:

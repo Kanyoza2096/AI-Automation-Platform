@@ -10,7 +10,7 @@ class StrategicPlanningError(ValueError):
     """A proposed strategic plan failed its contract or evidence checks."""
 
 
-class StrategicPlannerUnavailable(RuntimeError):
+class StrategicPlannerUnavailable(StrategicPlanningError):
     """The planning provider could not produce a response; this is not bad input."""
 
 

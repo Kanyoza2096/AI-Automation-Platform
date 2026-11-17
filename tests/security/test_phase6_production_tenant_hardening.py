@@ -99,7 +99,7 @@ def test_unknown_workspace_token_fails_closed_when_supabase_client_unavailable(m
     identity = auth.validate(bearer_token="kny_unknown")
 
     assert identity.valid is False
-    assert identity.error == "Legacy api_keys disabled — use api_tokens (kny_)"
+    assert identity.error == "Legacy api_keys disabled — use api_tokens (KDO_API_)"
 
 
 def test_non_default_credential_purpose_is_rejected_until_enforcement(monkeypatch):

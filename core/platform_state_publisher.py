@@ -62,7 +62,14 @@ class PlatformStatePublisher:
             }
             return (
                 sorted(changed_services),
-                sorted(item.capability_id for item in current.capabilities),
+                sorted(
+                    {item.capability_id for item in current.capabilities}
+                    | {
+                        capability
+                        for service in current.services
+                        for capability in service.capabilities
+                    }
+                ),
             )
         old_services = {item.service_id: item for item in previous.services}
         new_services = {item.service_id: item for item in current.services}

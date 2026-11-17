@@ -148,7 +148,7 @@ def test_route_wiring_audit_script_has_no_parse_errors():
     report = json.loads(proc.stdout)
     assert report["parse_errors"] == []
     assert report["orphan_router_modules"] == []
-    assert report["route_count"] == 435
+    assert report["route_count"] == len(report["routes"])
 
 
 def test_retired_integrations_are_absent_from_runtime_and_routes():

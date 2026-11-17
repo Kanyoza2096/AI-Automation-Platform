@@ -178,9 +178,21 @@ def create_app(director: Director):
         return fallback
 
     def _require_platform_scope(request) -> None:
-        """Require a trusted platform identity for shared Director state."""
+        """Require a trusted platform identity for shared Director state.
+
+        A successfully authenticated MASTER_API_TOKEN is the explicit
+        platform-operator credential when middleware has not attached a
+        RequestContext. Workspace/service tokens never receive this fallback.
+        """
         context = getattr(request.state, "request_context", None) if request is not None else None
         if context is None:
+            master = (os.getenv("MASTER_API_TOKEN", "") or "").strip()
+            supplied = (
+                request.headers.get("X-API-Key", "")
+                or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            ) if request is not None else ""
+            if master and supplied and hmac.compare_digest(supplied, master):
+                return
             from fastapi import HTTPException
             raise HTTPException(
                 status_code=403,

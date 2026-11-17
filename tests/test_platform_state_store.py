@@ -54,7 +54,15 @@ class FakeClient:
         self.rpc_calls.append((name, args))
         if self.write_error:
             raise self.write_error
-        return Result(self.write_result)
+        return QueryResult(self.write_result)
+
+
+class QueryResult:
+    def __init__(self, data):
+        self.data = data
+
+    def execute(self):
+        return Result(self.data)
 
 
 def snapshot(revision=1):

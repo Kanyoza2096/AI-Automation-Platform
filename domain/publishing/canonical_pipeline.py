@@ -1340,6 +1340,7 @@ async def _connector_execute(
             image_bytes=image_bytes,
             idempotency_key=idempotency_key,
             brand=brand,
+            **({"title": topic, "topic": topic} if platform == "website" else {}),
             **({"to_number": to_number} if to_number else {}),
             **({"recipient": recipient} if recipient else {}),
         )
@@ -1547,6 +1548,7 @@ async def _connector_execute(
                     image_bytes=image_bytes,
                     idempotency_key=idempotency_key,
                     brand=brand,
+                    **({"title": topic, "topic": topic} if platform == "website" else {}),
                     **({"to_number": to_number} if to_number else {}),
                     **({"recipient": recipient} if recipient else {}),
                 ),

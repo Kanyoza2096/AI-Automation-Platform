@@ -41,7 +41,7 @@ class FakeDB:
 
 def registration():
     return WebsiteIntegrationRegistration(
-        integration_id='site-demo', app_name='Demo Site', base_url='https://demo.example',
+        integration_id='site-demo', app_name='Demo Site', base_url='https://demo.example', brand_id='brand-1',
         context_path='/api/kdo/context',
         capabilities=[WebsiteCapability.CREATE_DRAFT, WebsiteCapability.PUBLISH_ARTICLE],
         event_types=[WebsiteEventType.ARTICLE_PUBLISHED],
@@ -54,11 +54,17 @@ def test_registration_is_durable_and_uses_website_connector_account(monkeypatch)
     class Repo:
         def __init__(self, client): pass
         def save(self, account): saved['account'] = account; return account
+    class Brands:
+        def __init__(self, client): pass
+        def find_by_id(self, brand_id): return SimpleNamespace(id=brand_id, workspace_id='ws-1')
     monkeypatch.setattr('services.integrations.website_integration_service.SocialAccountRepository', Repo)
+    monkeypatch.setattr('services.integrations.website_integration_service.BrandRepository', Brands)
     item = WebsiteIntegrationService(db).register('ws-1', registration(), 'site-secret')
     assert item.connector_authority == 'WebsiteConnector'
     assert saved['account'].platform.value == 'website'
     assert saved['account'].access_token == 'site-secret'
+    assert saved['account'].brand_id == 'brand-1'
+    assert saved['account'].platform_config['capabilities'] == ['CREATE_DRAFT', 'PUBLISH_ARTICLE']
     assert saved['account'].platform_config['status'] == 'draft'
     assert saved['account'].platform_config['context_path'] == '/api/kdo/context'
 
@@ -69,11 +75,16 @@ def test_website_social_account_identity_is_workspace_scoped(monkeypatch):
     class Repo:
         def __init__(self, client): pass
         def save(self, account): saved.append(account); return account
+    class Brands:
+        def __init__(self, client): pass
+        def find_by_id(self, brand_id): return SimpleNamespace(id=brand_id, workspace_id='ws-1')
     monkeypatch.setattr('services.integrations.website_integration_service.SocialAccountRepository', Repo)
+    monkeypatch.setattr('services.integrations.website_integration_service.BrandRepository', Brands)
     service = WebsiteIntegrationService(db)
 
     service.register('ws-1', registration(), 'secret-one')
-    service.register('ws-2', registration(), 'secret-two')
+    draft_registration = registration().model_copy(update={'brand_id': None, 'capabilities': [WebsiteCapability.CREATE_DRAFT]})
+    service.register('ws-2', draft_registration, 'secret-two')
     service.register('ws-1', registration(), 'secret-one')
 
     assert saved[0].id != saved[1].id
@@ -158,3 +169,93 @@ def test_website_registration_cannot_publish_without_publish_capability():
     )
     with pytest.raises(ValueError, match='requires capability'):
         WebsiteIntegrationService(db).register('ws-1', draft_only, 'site-secret')
+
+
+def test_publish_capability_requires_brand_binding(monkeypatch):
+    db = FakeDB()
+    reg = registration().model_copy(update={'brand_id': None})
+    with pytest.raises(ValueError, match='brand_id is required'):
+        WebsiteIntegrationService(db).register('ws-1', reg, 'site-secret')
+
+
+def test_registration_rejects_brand_from_another_workspace(monkeypatch):
+    db = FakeDB()
+    class Brands:
+        def __init__(self, client): pass
+        def find_by_id(self, brand_id): return SimpleNamespace(id=brand_id, workspace_id='ws-other')
+    monkeypatch.setattr('services.integrations.website_integration_service.BrandRepository', Brands)
+    with pytest.raises(ValueError, match='authenticated workspace'):
+        WebsiteIntegrationService(db).register('ws-1', registration(), 'site-secret')
+
+
+def test_website_connector_blocks_unauthorized_publish_edit_and_delete(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    account = SocialAccount(
+        id='website-draft-only', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='test-token',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'capabilities':['CREATE_DRAFT'], 'status':'draft',
+                         'edit_path_template':'/api/kdo/content/{post_id}',
+                         'delete_path_template':'/api/kdo/content/{post_id}'},
+    )
+    connector = WebsiteConnector(account)
+    def no_network(*args, **kwargs):
+        raise AssertionError('unauthorized mutation must not call network')
+    monkeypatch.setattr('services.connectors.website_connector.requests.post', no_network)
+    monkeypatch.setattr('services.connectors.website_connector.requests.patch', no_network)
+    monkeypatch.setattr('services.connectors.website_connector.requests.delete', no_network)
+    assert not connector.publish('Article', title='Article', status='publish').ok
+    assert not connector.edit('post-1', 'Changed').ok
+    assert not connector.delete('post-1').ok
+
+
+def test_website_connector_defaults_to_draft_without_publish_capability():
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    account = SocialAccount(
+        id='website-draft-only', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='test-token',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'capabilities':['CREATE_DRAFT']},
+    )
+    assert WebsiteConnector(account)._status == 'draft'
+
+
+def test_website_connector_publishes_only_with_explicit_capability(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    captured = {}
+    class Response:
+        status_code = 201
+        content = b'{"id":"article-123"}'
+        def json(self): return {'id': 'article-123'}
+    def post(url, **kwargs):
+        captured['url'] = url
+        captured['payload'] = kwargs['json']
+        return Response()
+    monkeypatch.setattr('services.connectors.website_connector.requests.post', post)
+    account = SocialAccount(
+        id='website-publisher', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='test-token',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'capabilities':['CREATE_DRAFT', 'PUBLISH_ARTICLE'], 'status':'publish'},
+    )
+    result = WebsiteConnector(account).publish('Validated article body', title='Validated title', status='publish')
+    assert result.ok and result.post_id == 'article-123'
+    assert captured['payload']['status'] == 'publish'
+    assert captured['payload']['title'] == 'Validated title'
+
+
+def test_website_provider_contract_rejects_oversized_article():
+    from domain.publishing.provider_contract import validate_request
+    assert validate_request('website', text='A valid article') is None
+    assert validate_request('website', text='x' * 50001)['error_code'] == 'content_too_long'
+
+
+def test_brand_scheduler_resolves_website_as_primary_platform():
+    from models.social_account import Platform
+    from scheduler.brand_scheduler import _brand_publish_platform
+    assert _brand_publish_platform(SimpleNamespace(platform=Platform.WEBSITE, metadata={})) == 'website'
+    assert _brand_publish_platform(SimpleNamespace(platform=None, metadata={'primary_platform':'website'})) == 'website'
+    assert _brand_publish_platform(SimpleNamespace(platform=None, metadata={})) == 'facebook'
