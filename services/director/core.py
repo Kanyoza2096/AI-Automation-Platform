@@ -1228,7 +1228,6 @@ class Director:
                 recovery_params,
                 root_cause.root_cause,
                 success_criteria=recovery_criteria,
-                evidence_observed_at=root_cause.timestamp,
             )
             self._send_diagnostic_alert()
 
