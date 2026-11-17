@@ -125,6 +125,10 @@ on:
       - "workflows/article_workflow.py"
       - "tests/test_article_preview_endpoint.py"
       - "tests/test_article_workflow.py"
+      - "routes/growthbridge_article_console.py"
+      - "templates/growthbridge_article_preview.html"
+      - "templates/kdo_engineering_console.html"
+      - "tests/test_growthbridge_article_console.py"
       # Advanced Director: canonical Platform State and durable CAS publication.
       - "core/platform_state.py"
       - "core/platform_state_store.py"
@@ -502,6 +506,7 @@ jobs:
             tests/engineering_vertical/test_phase16_12_container_worker.py \
             tests/engineering_vertical/test_phase16_13_pipeline_composition.py \
             tests/engineering_vertical/test_phase16_8_console.py \
+            tests/test_growthbridge_article_console.py \
             tests/engineering_vertical/test_staging_lifecycle.py \
             tests/engineering_vertical/test_dag_coordinator.py \
             tests/engineering_vertical/test_worker_composition.py \

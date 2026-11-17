@@ -115,7 +115,7 @@ def test_all_router_modules_are_accounted_for_by_main_bootstrap():
         "routes.legacy_runtime_fencing_routes", "routes.workforce_execution_routes", "routes.business_onboarding_routes", "routes.command_center_routes", "routes.sector_pack_routes",
         "api.website_integrations", "routes.connector_fabric_routes", "routes.failure_recovery_routes",
         "routes.tenant_health_observation_routes",
-        "routes.ai_control_plane_routes", "routes.kdo_engineering_console", "routes.species_routes",
+        "routes.ai_control_plane_routes", "routes.kdo_engineering_console", "routes.growthbridge_article_console", "routes.species_routes",
     ):
         if m in source:
             mounts.add(m)
