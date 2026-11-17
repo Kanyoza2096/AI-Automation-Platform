@@ -180,12 +180,22 @@ def create_app(director: Director):
         return workspace_id
 
     def _proposal_in_workspace(proposal, request) -> bool:
-        workspace_id = _workspace_id(request)
-        if workspace_id is None or getattr(
-            getattr(request.state, "request_context", None), "species_privileges", False
-        ):
+        """Expose proposals only to their owning workspace or platform operators."""
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        # Context-free access is permitted only after _require_auth validates a
+        # dedicated master/service credential.
+        if context is None:
             return True
-        return bool(proposal is not None and getattr(proposal, "workspace_id", None) == workspace_id)
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        if is_platform_operator:
+            return True
+        workspace_id = _workspace_id(request)
+        if not workspace_id:
+            return False
+        return bool(proposal is not None and str(getattr(proposal, "workspace_id", "") or "") == workspace_id)
 
     def _task_in_workspace(task, request) -> bool:
         """Enforce explicit task ownership, retaining legacy proposal scoping.
