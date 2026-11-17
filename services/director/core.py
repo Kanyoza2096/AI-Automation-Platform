@@ -947,6 +947,14 @@ class Director:
         return summary
 
     @staticmethod
+    def _sector_is_valid(value: Any) -> bool:
+        try:
+            Sector(value)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _is_replayable_learning_signal(signal: Any) -> bool:
         """Accept only complete, independently verified learning records.
 
@@ -964,7 +972,7 @@ class Director:
             and isinstance(context, dict)
             and context.get("status") == Status.VERIFIED.value
             and signal.get("capability")
-            and self_sector_is_valid(signal.get("sector"))
+            and Director._sector_is_valid(signal.get("sector"))
         )
 
     async def _replay_learning_history(self) -> None:
