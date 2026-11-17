@@ -54,7 +54,6 @@ class WebsiteIntegrationService:
             "app_name": registration.app_name,
             "environment": registration.environment,
             "base_url": registration.base_url,
-            "brand_id": brand_id,
             "publish_path": registration.publish_path,
             "lookup_path_template": registration.lookup_path_template,
             "edit_path_template": registration.edit_path_template,
