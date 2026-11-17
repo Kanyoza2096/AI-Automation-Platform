@@ -203,17 +203,22 @@ async def test_post_completion_verification_emits_learning_once_only_after_verif
     director.observations["event_bus"] = make_observation({}, status=Health.DEGRADED)
     ineffective = await director.evaluate_task_success_criteria(task.id)
     assert ineffective["outcome"] == "ineffective"
-    assert len(director.store.learnings) == 0
+    assert len(director.store.learnings) == 1
+    assert director.store.learnings[0]["outcome"] == "failure"
+    assert director.store.learnings[0]["context"]["status"] == Status.INEFFECTIVE.value
 
     task.status = Status.COMPLETED
     director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
     verified = await director.evaluate_task_success_criteria(task.id)
     assert verified["outcome"] == "verified"
     assert task.status == Status.VERIFIED
+    # One task identity produces one durable learning signal, even if later
+    # reconciliation observes a changed outcome.
     assert len(director.store.learnings) == 1
     assert director.store.learnings[0]["task_id"] == task.id
     assert director.store.learnings[0]["verification_status"] == "verified"
-    assert director.store.learnings[0]["context"]["status"] == Status.VERIFIED.value
+    assert director.store.learnings[0]["context"]["status"] == Status.INEFFECTIVE.value
+    assert director.store.learnings[0]["outcome"] == "failure"
 
     # A repeated verification must not train the same task twice.
     repeated = await director.evaluate_task_success_criteria(task.id)
@@ -336,9 +341,11 @@ def test_platform_verification_harness_runs_ineffective_to_verified_and_deduplic
     assert ineffective.status_code == 200
     assert ineffective.json()["outcome"] == "ineffective"
     assert ineffective.json()["task_status"] == Status.INEFFECTIVE.value
-    assert len(director.store.learnings) == 0
+    assert len(director.store.learnings) == 1
+    assert director.store.learnings[0]["outcome"] == "failure"
+    assert director.store.learnings[0]["context"]["status"] == Status.INEFFECTIVE.value
 
-    # A fresh nominal observation allows verification; no task execution occurs.
+    # A fresh nominal observation allows reconciliation; no task execution occurs.
     task.status = Status.COMPLETED
     director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
     verified = client.post(endpoint, headers=headers)
@@ -349,7 +356,8 @@ def test_platform_verification_harness_runs_ineffective_to_verified_and_deduplic
     learning = director.store.learnings[0]
     assert learning["task_id"] == task.id
     assert learning["verification_status"] == "verified"
-    assert learning["context"]["status"] == Status.VERIFIED.value
+    assert learning["context"]["status"] == Status.INEFFECTIVE.value
+    assert learning["outcome"] == "failure"
 
     repeated = client.post(endpoint, headers=headers)
     assert repeated.status_code == 200
