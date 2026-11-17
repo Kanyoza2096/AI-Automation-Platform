@@ -461,9 +461,6 @@ def test_director_workspace_signal_list_remains_isolated(monkeypatch):
             signal_type="test", subject_type="workspace", subject_id=signal_id,
             workspace_id=workspace_id, confidence=0.9, rationale="test", payload={},
         )
-    app = _workspace_context_app(monkeypatch, "ws-a", role="owner")
-    # Bind this test's populated Director to the app.
-    from services.director import create_app
     app = create_app(d)
 
     @app.middleware("http")
