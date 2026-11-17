@@ -447,23 +447,48 @@ class AsyncSupabaseStore:
     # LEARNING SIGNALS
     # ──────────────────────────────────────────────────────────────────
 
-    async def save_learning(self, entry: dict) -> None:
-        """Persist one learning signal.
+    MAX_PERSISTED_LEARNINGS = 500
 
-        `entry` is expected to be the asdict() of a LearningSignal, which
-        carries capability, sector, outcome, duration_ms, error_type,
-        context (including target and error_class), and timestamp. The
-        payload column stores it as opaque JSON — no schema change needed
-        when the context dict grows.
-        """
-        await self._execute_with_retry(
-            "insert into director_learnings",
+    async def save_learning(self, entry: dict) -> None:
+        """Persist verified learning only, keeping the free-tier table bounded."""
+        if not isinstance(entry, dict):
+            return
+        context = entry.get("context")
+        if (
+            entry.get("verification_status") != "verified"
+            or not isinstance(context, dict)
+            or context.get("status") != "verified"
+            or entry.get("outcome") != "success"
+            or not entry.get("id")
+        ):
+            log.info("Director DB: rejected non-verified learning record")
+            return
+        result = await self._execute_with_retry(
+            "insert verified Director learning",
             lambda: self.supabase.table("director_learnings").upsert({
-                "id": entry.get("id", f"learn_{uuid.uuid4().hex[:12]}"),
+                "id": entry["id"],
                 "payload": json.dumps(safe(entry)),
                 "timestamp": iso_now(),
             }).execute(),
         )
+        if result is None:
+            return
+        # Keep only the newest bounded set. Old records are not needed to
+        # reconstruct an unlimited history; replay is separately time-bounded.
+        rows = await self._execute_with_retry(
+            "select excess Director learning records",
+            lambda: self.supabase.table("director_learnings")
+            .select("id").order("timestamp", desc=True)
+            .range(self.MAX_PERSISTED_LEARNINGS, self.MAX_PERSISTED_LEARNINGS + 999)
+            .execute(),
+        )
+        excess_ids = [row.get("id") for row in (rows.data or []) if row.get("id")] if rows else []
+        if excess_ids:
+            await self._execute_with_retry(
+                "prune excess Director learning records",
+                lambda: self.supabase.table("director_learnings")
+                .delete().in_("id", excess_ids).execute(),
+            )
 
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         result = await self._execute_with_retry(
@@ -492,7 +517,7 @@ class AsyncSupabaseStore:
         result = await self._execute_with_retry(
             "list from director_learnings (since)",
             lambda: self.supabase.table("director_learnings")
-            .select("payload, timestamp")
+            .select("id, payload, timestamp")
             .gte("timestamp", iso(since))
             .order("timestamp", desc=False)  # chronological
             .limit(limit)
@@ -509,6 +534,8 @@ class AsyncSupabaseStore:
                 except Exception:
                     continue
             if isinstance(payload, dict):
+                payload = dict(payload)
+                payload.setdefault("id", row.get("id"))
                 out.append(payload)
         return out
 
