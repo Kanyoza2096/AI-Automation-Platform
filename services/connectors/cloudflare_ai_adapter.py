@@ -170,6 +170,9 @@ class CloudflareAIAdapter:
             content += "\nReturn only a JSON object. Do not return markdown."
         messages.append({"role": "user", "content": content})
         body = {"model": selected_model, "messages": messages, "stream": False}
+        if structured:
+            # Use Workers AI JSON mode as a provider-level constraint, not just a prompt hint.
+            body["response_format"] = {"type": "json_object"}
         if isinstance(max_output_tokens, int) and max_output_tokens > 0:
             body["max_tokens"] = max_output_tokens
         try:
