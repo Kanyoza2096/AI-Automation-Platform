@@ -435,7 +435,9 @@ class LearningLoop:
 
     # Only independently verified outcomes may influence adaptive learning.
     # Other terminal states remain available in task/decision diagnostics.
-    _SIGNAL_STATUSES = frozenset({Status.VERIFIED})
+    _SIGNAL_STATUSES = frozenset({
+        Status.VERIFIED, Status.FAILED, Status.COMPLETED, Status.INEFFECTIVE,
+    })
 
     def __init__(self, max_signals: int = 1000, decay_days: int = 7):
         self.signals: deque = deque(maxlen=max_signals)
@@ -560,8 +562,13 @@ class LearningLoop:
         """Build a verified learning signal without mutating adaptive state."""
         if task.status not in self._SIGNAL_STATUSES:
             return None
-        outcome = "success"
-        error_class = None
+        if task.status == Status.VERIFIED:
+            outcome = "success"
+        elif task.status in {Status.FAILED, Status.INEFFECTIVE}:
+            outcome = "failure"
+        else:
+            outcome = "unverified"
+        error_class = self.classify_error(task.error) if outcome == "failure" else None
         signal = LearningSignal(
             capability=task.capability,
             sector=task.sector,
@@ -591,7 +598,13 @@ class LearningLoop:
         """Apply a previously persisted verified signal to adaptive state."""
         outcome = signal.outcome
         error_class = signal.context.get("error_class")
-        self.verification_stats[task.capability]["verified"] += 1
+        status = signal.context.get("status")
+        if status == Status.VERIFIED.value:
+            self.verification_stats[task.capability]["verified"] += 1
+        elif status == Status.INEFFECTIVE.value:
+            self.verification_stats[task.capability]["ineffective"] += 1
+        elif status == Status.COMPLETED.value:
+            self.verification_stats[task.capability]["unverified"] += 1
         self.signals.append(signal)
 
         stats = self.capability_stats.setdefault(
@@ -599,16 +612,32 @@ class LearningLoop:
             {"successes": 0, "failures": 0, "unverified": 0, "total_duration_ms": 0},
         )
         stats.setdefault("unverified", 0)
-        stats["successes"] += 1
+        bucket = outcome if outcome in {"success", "failure"} else "unverified"
+        stats[bucket] += 1
         stats["total_duration_ms"] += signal.duration_ms
 
         ctx_key = self._context_key(task.sector, task.capability, target)
         time_key = self._time_key(task.sector, task.capability, target)
-        self.context_stats[ctx_key]["successes"] += 1
-        self.time_stats[time_key]["successes"] += 1
+        self.context_stats[ctx_key][bucket] += 1
+        self.time_stats[time_key][bucket] += 1
         self.duration_stats[task.capability].append(signal.duration_ms)
 
-        if target:
+        if outcome == "unverified":
+            return
+        if outcome == "failure":
+            self.failure_patterns[task.capability].append({
+                "timestamp": signal.timestamp,
+                "error": signal.error_type,
+                "error_class": error_class or "UNKNOWN",
+                "context": ctx_key,
+                "target": target,
+            })
+            if target:
+                tkey = self._target_key(task.capability, target)
+                self.target_failure_counts[tkey] += 1
+                self.target_last_error[tkey] = error_class or "UNKNOWN"
+            return
+        if outcome == "success" and target:
             tkey = self._target_key(task.capability, target)
             self.target_failure_counts.pop(tkey, None)
             self.target_last_error.pop(tkey, None)
@@ -618,8 +647,9 @@ class LearningLoop:
                     [p for p in patterns if p.get("target") != target],
                     maxlen=patterns.maxlen or 50,
                 )
-            self.context_stats[ctx_key] = {"successes": 0, "failures": 0, "unverified": 0}
-            self.time_stats[time_key] = {"successes": 0, "failures": 0, "unverified": 0}
+            # Close the failure window without erasing diagnostic counters.
+            self.context_stats[ctx_key]["failures"] = 0
+            self.time_stats[time_key]["failures"] = 0
 
     def record_outcome(
         self,
@@ -818,7 +848,7 @@ class LearningLoop:
         sector = self._coerce_sector(self._sig_get(s, "sector"))
         outcome = self._sig_get(s, "outcome")
 
-        if not capability or sector is None or outcome != "success":
+        if not capability or sector is None or outcome not in {"success", "failure", "unverified"}:
             return False
 
         duration_ms = float(self._sig_get(s, "duration_ms", 0) or 0)
@@ -833,19 +863,25 @@ class LearningLoop:
         context = self._sig_get(s, "context") or {}
         if not isinstance(context, dict):
             return False
-        # Fail closed for legacy/unproven records: a verified status and a
-        # durable row identity are both required before replay.
-        if not self._sig_get(s, "id") or context.get("status") != Status.VERIFIED.value:
+        # Durable identity is required for replay deduplication. Historical
+        # COMPLETED success rows are retained only as unverified diagnostics.
+        if not self._sig_get(s, "id"):
+            return False
+        task_status_str = context.get("status")
+        if task_status_str == Status.COMPLETED.value and outcome in {"success", "unverified"}:
+            outcome = "unverified"
+        elif task_status_str == Status.VERIFIED.value and outcome in {"success", "failure"}:
+            pass
+        elif task_status_str == Status.FAILED.value and outcome == "failure":
+            pass
+        elif task_status_str == Status.INEFFECTIVE.value and outcome == "failure":
+            pass
+        else:
             return False
         target = context.get("target")
         error_class = context.get("error_class") or (
             self.classify_error(error_type) if outcome == "failure" else None
         )
-        task_status_str = context.get("status")
-        # Historical COMPLETED records used "success" before verification
-        # was separated. Reclassify them conservatively during replay.
-        if task_status_str == Status.COMPLETED.value and outcome == "success":
-            outcome = "unverified"
 
         # Verification stats during replay
         if task_status_str == Status.VERIFIED.value:
