@@ -48,6 +48,7 @@ import json
 import logging
 import random
 import uuid
+import hashlib
 from collections import deque
 from dataclasses import asdict
 from datetime import datetime
@@ -423,20 +424,38 @@ class AsyncSupabaseStore:
         if scope_type != "workspace" and workspace_id:
             log.error("Director DB: refusing non-workspace observation with workspace_id")
             return
+        payload = safe(asdict(observation))
+        # Observer loops run repeatedly. Give an unchanged source state a
+        # deterministic row identity so repeated snapshots update one row
+        # instead of consuming storage on every polling interval.
+        fingerprint_payload = dict(payload)
+        fingerprint_payload.pop("timestamp", None)
+        identity = {
+            "scope_type": scope_type,
+            "workspace_id": workspace_id,
+            "source": observation.source,
+            "state": fingerprint_payload,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
+        # The table uses a bigint sequence key; a positive 60-bit stable key
+        # safely fits bigint and avoids requiring a schema migration.
+        observation_id = int(fingerprint[:15], 16)
+        payload["observation_fingerprint"] = fingerprint
         result = await self._execute_with_retry(
-            "insert into director_observations",
-            lambda: self.supabase.table("director_observations").insert({
+            "upsert deduplicated director observation",
+            lambda: self.supabase.table("director_observations").upsert({
+                "id": observation_id,
                 "workspace_id": workspace_id,
                 "scope_type": scope_type,
-                "payload": json.dumps(safe(asdict(observation))),
+                "payload": json.dumps(payload),
                 "timestamp": iso(observation.timestamp),
-            }).execute(),
+            }, on_conflict="id").execute(),
         )
         if result is not None:
-            observation_limit = 200 if scope_type == "workspace" else self.MAX_PERSISTED_OBSERVATIONS
             await self._prune_recent_records(
-                "director_observations", observation_limit,
-                scope_type=scope_type, workspace_id=workspace_id,
+                "director_observations", self.MAX_PERSISTED_OBSERVATIONS,
             )
 
     async def list_observations(
