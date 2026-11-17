@@ -70,3 +70,50 @@ def test_observation_identity_is_stable_uuid_text_for_existing_schema():
     assert first == second
     assert str(UUID(first)) == first
     assert first != _stable_observation_id("b" * 64)
+
+
+def test_unverified_legacy_learning_does_not_qualify_for_replay():
+    from services.director.core import Director
+
+    legacy = {
+        "id": "legacy-learning",
+        "task_id": "legacy-task",
+        "capability": "review_content_quality",
+        "sector": "self",
+        "outcome": "success",
+        "context": {"status": "completed"},
+        "verification_status": "unverified",
+    }
+
+    assert Director._is_replayable_learning_signal(legacy) is False
+
+
+def test_verified_learning_requires_both_durable_and_outcome_verification():
+    from services.director.core import Director
+
+    verified = {
+        "id": "learn-verified",
+        "task_id": "task-verified",
+        "capability": "review_content_quality",
+        "sector": "self",
+        "outcome": "success",
+        "context": {"status": "verified"},
+        "verification_status": "verified",
+    }
+
+    assert Director._is_replayable_learning_signal(verified) is True
+
+
+def test_learning_without_task_identity_cannot_restore_idempotency():
+    from services.director.core import Director
+
+    verified_without_task = {
+        "id": "learn-no-task",
+        "capability": "review_content_quality",
+        "sector": "self",
+        "outcome": "success",
+        "context": {"status": "verified"},
+        "verification_status": "verified",
+    }
+
+    assert Director._is_replayable_learning_signal(verified_without_task) is False
