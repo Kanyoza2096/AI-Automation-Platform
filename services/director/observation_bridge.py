@@ -228,9 +228,10 @@ def reconcile_supervisor_evidence(
         "unknown": sum(item["result"] == "unknown" for item in comparisons),
     }
     reconciliation_status = (
+        "unavailable" if status not in {"complete", "partial"} else
         "disagreement" if counts["disagreements"] else
-        "partial" if counts["unmatched"] or counts["ambiguous"] or counts["unknown"] or status != "complete" else
-        "agreement" if counts["compared"] else "unavailable"
+        "partial" if counts["unmatched"] or counts["ambiguous"] or counts["unknown"] or status == "partial" else
+        "agreement" if counts["compared"] else "no_comparable_observations"
     )
     context["facts"] = facts
     context["unknowns"] = unknowns
