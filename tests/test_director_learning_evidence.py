@@ -63,6 +63,7 @@ def test_many_unverified_completions_cannot_trigger_skip_or_escalation_learning(
 def test_replay_reclassifies_legacy_completed_success_as_unverified():
     loop = LearningLoop()
     legacy_signal = {
+        "id": "legacy-completed-1",
         "capability": "run_health_scan",
         "sector": "infra",
         "outcome": "success",
@@ -87,6 +88,7 @@ def test_replay_accepts_explicit_unverified_outcome_without_resetting_failures()
     loop.target_failure_counts["run_health_scan:worker-pool-a"] = 2
     loop.target_last_error["run_health_scan:worker-pool-a"] = "NETWORK_TIMEOUT"
     signal = {
+        "id": "explicit-unverified-1",
         "capability": "run_health_scan",
         "sector": "infra",
         "outcome": "unverified",
