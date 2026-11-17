@@ -428,8 +428,29 @@ class AsyncSupabaseStore:
         # Observer loops run repeatedly. Give an unchanged source state a
         # deterministic row identity so repeated snapshots update one row
         # instead of consuming storage on every polling interval.
-        fingerprint_payload = dict(payload)
-        fingerprint_payload.pop("timestamp", None)
+        volatile_observation_keys = {
+            "timestamp", "observed_at", "updated_at", "generated_at",
+            "checked_at", "last_checked_at", "last_observed_at",
+            "last_updated_at", "age_seconds", "revision",
+            "correlation_id", "request_id", "trace_id", "span_id",
+            "duration_ms", "latency_ms", "uptime_seconds",
+            "process_uptime_seconds",
+        }
+
+        def stable_value(value):
+            if isinstance(value, dict):
+                return {
+                    str(key): stable_value(item)
+                    for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+                    if str(key).lower() not in volatile_observation_keys
+                }
+            if isinstance(value, list):
+                return [stable_value(item) for item in value]
+            return value
+
+        # Keep changing poll metadata in the stored payload for diagnostics,
+        # but exclude it from identity so unchanged health state is upserted.
+        fingerprint_payload = stable_value(payload)
         identity = {
             "scope_type": scope_type,
             "workspace_id": workspace_id,
