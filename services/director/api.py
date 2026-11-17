@@ -549,7 +549,7 @@ def create_app(director: Director):
         await _require_auth(request, credentials, write=True)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
-        workspace_id = _task_ownership_workspace_id(request)
+        workspace_id = await _load_task_scope(request)
         task = director.get_task(task_id, workspace_id=workspace_id)
         if task is None:
             raise HTTPException(404, "task not found")
