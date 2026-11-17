@@ -494,3 +494,44 @@ def test_approval_mutations_require_exact_task_ownership_scope():
     assert approved.status == Status.APPROVED
     assert rejected.status == Status.CANCELLED
     assert platform_approved.status == Status.APPROVED
+
+
+def test_approval_api_uses_authenticated_workspace_and_platform_scope(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "approval-scope-token")
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "approval-api-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "approval-api-b"
+    platform = make_task([], status=Status.APPROVAL)
+    platform.id = "approval-api-platform"
+    director.tasks.update({
+        workspace_a.id: workspace_a,
+        workspace_b.id: workspace_b,
+        platform.id: platform,
+    })
+    headers = {"Authorization": "Bearer approval-scope-token"}
+
+    tenant_app = create_app(director)
+    _install_tenant_context(tenant_app, workspace_id="workspace-a")
+    tenant_client = TestClient(tenant_app)
+    assert tenant_client.post(
+        f"/tasks/{workspace_b.id}/approve", headers=headers,
+    ).status_code == 404
+    approved = tenant_client.post(
+        f"/tasks/{workspace_a.id}/approve", headers=headers,
+    )
+    assert approved.status_code == 200
+    assert workspace_a.status == Status.APPROVED
+
+    platform_app = create_app(director)
+    _install_platform_context(platform_app)
+    platform_client = TestClient(platform_app)
+    platform_approved = platform_client.post(
+        f"/tasks/{platform.id}/approve", headers=headers,
+    )
+    assert platform_approved.status_code == 200
+    assert platform.status == Status.APPROVED
