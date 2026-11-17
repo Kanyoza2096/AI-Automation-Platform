@@ -923,6 +923,17 @@ class LearningLoop:
                 self.target_failure_counts.pop(tkey, None)
                 self.target_last_error.pop(tkey, None)
 
+        # Restore the chronological signal window as well as aggregate counters.
+        # Recent reliability must include replayed negative outcomes after restart.
+        self.signals.append(LearningSignal(
+            capability=capability,
+            sector=sector,
+            outcome=outcome,
+            duration_ms=duration_ms,
+            error_type=error_type,
+            context=context,
+            timestamp=timestamp,
+        ))
         return True
 
     # ──────────────────────────────────────────────────────────────────
