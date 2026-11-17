@@ -551,47 +551,17 @@ class LearningLoop:
     # RECORDING
     # ──────────────────────────────────────────────────────────────────
 
-    def record_outcome(
+    def prepare_outcome(
         self,
         task: Task,
         duration_ms: float,
         target: Optional[str] = None,
     ) -> Optional[LearningSignal]:
-        """Record a task outcome. Returns the emitted signal, or None if
-        the task did not represent a real execution attempt.
-
-        v5.4: distinguishes VERIFIED (predicate passed) from COMPLETED
-        (handler reported success, no verification requested) from
-        INEFFECTIVE (predicate failed) from FAILED (handler error).
-        Only these four statuses produce signals.
-        """
-        # A task outcome is not a lesson unless its declared outcome predicate
-        # passed and the task reached VERIFIED. Keep all other outcomes in the
-        # task/decision ledger; do not train adaptive behavior from them.
+        """Build a verified learning signal without mutating adaptive state."""
         if task.status not in self._SIGNAL_STATUSES:
             return None
-
-        if task.status == Status.VERIFIED:
-            outcome = "success"
-            error_class = None
-        elif task.status == Status.COMPLETED:
-            outcome = "unverified"
-            error_class = None
-        elif task.status == Status.INEFFECTIVE:
-            outcome = "failure"
-            error_class = "OUTCOME_NOT_VERIFIED"
-        else:  # FAILED
-            outcome = "failure"
-            error_class = self.classify_error(task.error)
-
-        # Verification stats
-        if task.status == Status.VERIFIED:
-            self.verification_stats[task.capability]["verified"] += 1
-        elif task.status == Status.INEFFECTIVE:
-            self.verification_stats[task.capability]["ineffective"] += 1
-        elif task.status == Status.COMPLETED:
-            self.verification_stats[task.capability]["unverified"] += 1
-
+        outcome = "success"
+        error_class = None
         signal = LearningSignal(
             capability=task.capability,
             sector=task.sector,
@@ -610,6 +580,18 @@ class LearningLoop:
             },
             timestamp=now(),
         )
+        return signal
+
+    def apply_outcome(
+        self,
+        task: Task,
+        signal: LearningSignal,
+        target: Optional[str] = None,
+    ) -> None:
+        """Apply a previously persisted verified signal to adaptive state."""
+        outcome = signal.outcome
+        error_class = signal.context.get("error_class")
+        self.verification_stats[task.capability]["verified"] += 1
         self.signals.append(signal)
 
         stats = self.capability_stats.setdefault(
@@ -617,53 +599,38 @@ class LearningLoop:
             {"successes": 0, "failures": 0, "unverified": 0, "total_duration_ms": 0},
         )
         stats.setdefault("unverified", 0)
-        stats["successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"] += 1
-        stats["total_duration_ms"] += duration_ms
+        stats["successes"] += 1
+        stats["total_duration_ms"] += signal.duration_ms
 
         ctx_key = self._context_key(task.sector, task.capability, target)
-        self.context_stats[ctx_key][
-            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
-        ] += 1
-
         time_key = self._time_key(task.sector, task.capability, target)
-        self.time_stats[time_key][
-            "successes" if outcome == "success" else "failures" if outcome == "failure" else "unverified"
-        ] += 1
-
-        self.duration_stats[task.capability].append(duration_ms)
-
-        if outcome == "unverified":
-            return signal
-
-        if outcome == "failure":
-            self.failure_patterns[task.capability].append({
-                "timestamp": signal.timestamp,
-                "error": signal.error_type,
-                "error_class": error_class,
-                "context": ctx_key,
-                "target": target,
-            })
-            if target:
-                tkey = self._target_key(task.capability, target)
-                self.target_failure_counts[tkey] += 1
-                self.target_last_error[tkey] = error_class or "UNKNOWN"
-            return signal
+        self.context_stats[ctx_key]["successes"] += 1
+        self.time_stats[time_key]["successes"] += 1
+        self.duration_stats[task.capability].append(signal.duration_ms)
 
         if target:
             tkey = self._target_key(task.capability, target)
             self.target_failure_counts.pop(tkey, None)
             self.target_last_error.pop(tkey, None)
-
             patterns = self.failure_patterns.get(task.capability)
             if patterns:
                 self.failure_patterns[task.capability] = deque(
                     [p for p in patterns if p.get("target") != target],
                     maxlen=patterns.maxlen or 50,
                 )
-
             self.context_stats[ctx_key] = {"successes": 0, "failures": 0, "unverified": 0}
             self.time_stats[time_key] = {"successes": 0, "failures": 0, "unverified": 0}
 
+    def record_outcome(
+        self,
+        task: Task,
+        duration_ms: float,
+        target: Optional[str] = None,
+    ) -> Optional[LearningSignal]:
+        """Backward-compatible prepare-and-apply operation for verified outcomes."""
+        signal = self.prepare_outcome(task, duration_ms, target=target)
+        if signal is not None:
+            self.apply_outcome(task, signal, target=target)
         return signal
 
     # ──────────────────────────────────────────────────────────────────
