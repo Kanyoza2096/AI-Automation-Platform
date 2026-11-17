@@ -28,6 +28,7 @@ class FakeQuery:
         self.filters = []
         self.sort_desc = False
         self.row_limit = None
+        self.row_range = None
         self.ids = None
 
     def upsert(self, payload, **kwargs):
