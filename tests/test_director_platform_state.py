@@ -120,7 +120,7 @@ def test_platform_state_route_denies_unscoped_admin_without_species_privilege(mo
 
     response = TestClient(app).get(
         "/platform-state",
-        headers={"Authorization": "Bearer valid-user-session"},
+        headers={"Authorization": "Bearer master-test-token"},
     )
     assert response.status_code == 403
 
