@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.director import Director
-from services.director.models import Authority, Health, Observation, Risk, Sector, Status, Task
+from services.director.models import Authority, Health, Observation, Proposal, ProposalStatus, Risk, Sector, Status, Task
 
 
 def make_task(criteria, status=Status.COMPLETED, *, workspace_id=None):
@@ -650,3 +650,31 @@ def test_workspace_task_api_lazily_restores_only_authenticated_workspace(monkeyp
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["restored-api-a"]
     assert "workspace-b" not in director.workspace_tasks
+
+
+def test_workspace_proposal_approval_creates_task_in_same_workspace_registry():
+    director = Director(supabase_client=None)
+    proposal = Proposal(
+        id="workspace-proposal",
+        workspace_id="workspace-a",
+        sector=Sector.BRANDS,
+        title="Review brand health",
+        rationale="A workspace-owned review proposal",
+        capability="self_diagnostic",
+        params={"brand_id": "brand-a"},
+        target_param_value="brand-a",
+        expected_benefit="Improved visibility",
+        estimated_cost="0",
+        risk=Risk.LOW,
+        confidence=0.9,
+        signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    director.proposals[proposal.id] = proposal
+
+    task = director.approve_proposal(proposal.id, actor="workspace-owner")
+
+    assert task.workspace_id == "workspace-a"
+    assert task.scope_type == "workspace"
+    assert task.id not in director.tasks
+    assert director.workspace_tasks["workspace-a"][task.id] is task
