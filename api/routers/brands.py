@@ -11,6 +11,30 @@ router = APIRouter()
 # BRANDS CRUD
 # ═══════════════════════════════════════════════════════════════════════════
 
+// Authenticated current-workspace lookup for operator consoles that collect credentials
+// after serving a static UI shell. Workspace identity comes only from require_auth.
+@router.get("/workspaces/current/brands")
+async def list_current_workspace_brands(
+    request: Request,
+    container=Depends(get_container),
+    _auth: bool = Depends(require_auth),
+):
+    """List brands for the workspace bound to the authenticated credentials."""
+    try:
+        workspace_id = auth_workspace_id_var.get()
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="No workspace bound to credentials")
+        await require_workspace_ownership("workspace", workspace_id, request, container)
+        from repositories.brand_repository import BrandRepository
+        repo = await _async_wrap(container.resolve, BrandRepository)
+        brands = await _async_wrap(repo.find_by_workspace, workspace_id)
+        return _ok({"brands": [b.model_dump(mode="json") for b in brands]})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, "GET /api/v1/workspaces/current/brands")
+
+
 @router.post("/workspaces/{workspace_id}/brands")
 async def create_brand(
     workspace_id: str,
