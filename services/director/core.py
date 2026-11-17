@@ -1593,10 +1593,13 @@ class Director:
             return {"replayed": replayed, "loaded": len(signals)}
         except Exception as exc:
             log.warning(
-                "Workspace learning replay failed for scoped workspace: %s",
+                "Workspace learning replay is temporarily unavailable for scoped workspace: %s",
                 sanitize_error_message(exc),
             )
-            raise RuntimeError("workspace_learning_restore_unavailable") from exc
+            # Learning is adaptive context, not an authorization dependency.
+            # Keep task/evidence reads available and retry replay on a later
+            # request because this scope is deliberately not marked restored.
+            return {"replayed": 0, "loaded": 0, "unavailable": True}
 
     async def restore_workspace_tasks(self, workspace_id: str) -> dict:
         """Restore one explicitly requested workspace without enumerating tenants."""
