@@ -198,6 +198,13 @@ def reconcile_supervisor_evidence(decision_context: Any, supervisor_evidence: An
             comparison["director_status"] = director_status
             comparison["director_evidence_state"] = "known_fact" if matched in known_matches else "explicit_unknown"
             supervisor_class, director_class = _status_class(item.get("status")), _status_class(director_status)
+            comparison["status_classes"] = {
+                "supervisor": supervisor_class,
+                "director": director_class,
+            }
+            comparison["matched_record_kind"] = str(matched.get("kind") or "unspecified")
+            comparison["matching_fact_count"] = len(known_matches)
+            comparison["matching_unknown_count"] = len(unknown_matches)
             if "unknown" in {supervisor_class, director_class}:
                 comparison["result"] = "unknown"
                 unknowns.append({
