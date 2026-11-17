@@ -11,8 +11,8 @@ router = APIRouter()
 # BRANDS CRUD
 # ═══════════════════════════════════════════════════════════════════════════
 
-// Authenticated current-workspace lookup for operator consoles that collect credentials
-// after serving a static UI shell. Workspace identity comes only from require_auth.
+# Authenticated current-workspace lookup for operator consoles that collect credentials
+# after serving a static UI shell. Workspace identity comes only from require_auth.
 @router.get("/workspaces/current/brands")
 async def list_current_workspace_brands(
     request: Request,
