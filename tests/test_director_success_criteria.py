@@ -166,6 +166,27 @@ def test_outcome_reconciliation_api_requires_authentication(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_verified_learning_is_not_marked_recorded_when_persistence_is_unacknowledged(monkeypatch):
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    task.status = Status.VERIFIED
+    director.tasks[task.id] = task
+
+    async def reject_persistence(entry):
+        return False
+
+    monkeypatch.setattr(director.store, "save_learning", reject_persistence)
+    recorded = await director._record_verified_learning(task)
+
+    assert recorded is False
+    assert task.id not in director._learning_recorded_task_ids
+    assert len(director.store.learnings) == 0
+
+
 async def test_post_completion_verification_emits_learning_once_only_after_verified_outcome():
     director = Director(supabase_client=None)
     task = make_task([{
