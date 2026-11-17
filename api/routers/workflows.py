@@ -174,6 +174,87 @@ async def workflow_trigger(
         return _safe_err(exc, "POST /api/v1/workflow/trigger")
 
 
+@router.post("/workflow/article/preview")
+async def preview_article(
+    request: Request,
+    body: dict,
+    container=Depends(get_container),
+    _auth=Depends(require_workspace_operator),
+):
+    """Generate and review one brand article without entering the publish path.
+
+    The target brand is resolved only after authenticating the caller's
+    workspace. The dry-run workflow has no PublishArticleStep, and this
+    endpoint never invokes the scheduler or governed publish executor.
+    """
+    try:
+        from repositories.brand_repository import BrandRepository
+        from repositories.knowledge_repository import KnowledgeRepository
+        from workflows.article_workflow import ArticlePublishWorkflow
+
+        brand_id = str(body.get("brand_id") or "").strip()
+        if not brand_id:
+            return _err("brand_id is required", 400)
+
+        category = body.get("category")
+        if category is not None:
+            if not isinstance(category, str) or len(category) > 100:
+                return _err("category must be a string of at most 100 characters", 400)
+            category = category.strip() or None
+
+        workspace_id = await require_workspace(request)
+        brand_repo = await _async_wrap(container.resolve, BrandRepository)
+        brand = await _async_wrap(brand_repo.find_by_id, brand_id)
+        if not brand or getattr(brand, "workspace_id", None) != workspace_id:
+            return _err("Brand not found in the authenticated workspace", 404)
+
+        knowledge_repo = await _async_wrap(container.resolve, KnowledgeRepository)
+        workflow = ArticlePublishWorkflow(
+            brand=brand,
+            knowledge_repo=knowledge_repo,
+            category=category,
+            dry_run=True,
+        )
+        result = await workflow.execute_async(initial_context={
+            "brand": brand,
+            "brand_id": brand_id,
+            "workspace_id": workspace_id,
+            "platform": "website",
+            "source": "manual_preview",
+        })
+
+        if not result.success:
+            failed = result.failed_step
+            return _ok({
+                "preview": None,
+                "status": "blocked",
+                "workflow": result.workflow_name,
+                "failed_step": failed.step_name if failed else None,
+                "error_code": failed.error_code if failed else "article_preview_failed",
+                "message": failed.error if failed else "Article preview did not complete",
+                "completed_steps": [
+                    step.step_name for step in result.steps if step.ok
+                ],
+                "publish_attempted": False,
+            }, 422)
+
+        preview = result.last_output
+        if not isinstance(preview, dict) or preview.get("publishable") is not False:
+            return _err("Preview workflow returned an invalid non-publishing artifact", 500)
+
+        return _ok({
+            "status": "preview_ready",
+            "workflow": result.workflow_name,
+            "duration_ms": round(result.total_ms),
+            "preview": preview,
+            "publish_attempted": False,
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, "POST /api/v1/workflow/article/preview")
+
+
 @router.post("/workflow/jobs/{job_id}/cancel")
 async def cancel_pending_workflow_job(
     job_id: str,
