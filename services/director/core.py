@@ -964,12 +964,18 @@ class Director:
         if not isinstance(signal, dict):
             return False
         context = signal.get("context")
+        outcome = signal.get("outcome")
+        expected_status = (
+            Status.VERIFIED.value if outcome == "success" else
+            Status.INEFFECTIVE.value if outcome == "failure" else None
+        )
         return bool(
             signal.get("id")
             and signal.get("task_id")
-            and signal.get("outcome") == "success"
+            and expected_status
             and isinstance(context, dict)
-            and context.get("status") == Status.VERIFIED.value
+            and context.get("status") == expected_status
+            and signal.get("verification_status") == "verified"
             and signal.get("capability")
             and Director._sector_is_valid(signal.get("sector"))
         )
@@ -1675,11 +1681,11 @@ class Director:
                 except Exception as exc:
                     log.exception("Failed to persist task outcome reconciliation: %s", sanitize_error_message(exc))
                     return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": True, "persistence": "failed"}
-                if outcome == "verified":
+                if outcome in ("verified", "ineffective"):
                     try:
                         await self._record_verified_learning(task)
                     except Exception as exc:
-                        log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
+                        log.exception("Failed to persist verified/ineffective learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
 
     def mission_graph(self, mission_id: Optional[str] = None) -> dict:
@@ -3605,9 +3611,8 @@ class Director:
             loop.create_task(self.store.save_decision(d))
 
     async def _learn(self, task: Task, signal: Optional[LearningSignal] = None) -> bool:
-        # Learning is deliberately narrower than execution telemetry. Only
-        # VERIFIED signals emitted by the outcome-verification path are eligible.
-        if signal is None or task.status != Status.VERIFIED:
+        # Only authoritative positive/negative outcome-predicate results learn.
+        if signal is None or task.status not in (Status.VERIFIED, Status.INEFFECTIVE):
             return False
         if task.id in self._learning_recorded_task_ids:
             return False
@@ -3632,8 +3637,8 @@ class Director:
         return True
 
     async def _record_verified_learning(self, task: Task, duration_ms: float = 0.0) -> bool:
-        """Record learning only after a task has authoritative VERIFIED status."""
-        if task.status != Status.VERIFIED or task.id in self._learning_recorded_task_ids:
+        """Record learning only after authoritative positive or negative verification."""
+        if task.status not in (Status.VERIFIED, Status.INEFFECTIVE) or task.id in self._learning_recorded_task_ids:
             return False
         target = self._extract_target(task)
         signal = self.learning_loop.prepare_outcome(task, duration_ms, target=target)

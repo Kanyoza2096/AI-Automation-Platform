@@ -122,3 +122,63 @@ async def test_verified_learning_survives_director_restart_and_replays_from_stor
     assert restarted.learning_loop.verification_stats["self_diagnostic"]["verified"] == 1
     assert restarted.learning_loop.capability_stats["self_diagnostic"]["successes"] == 1
     assert len(restarted.learning_loop._replayed_signal_ids) == 1
+
+
+
+@pytest.mark.asyncio
+async def test_authoritative_ineffective_learning_survives_restart_and_replays():
+    database = DurableFakeSupabase()
+    first = Director(supabase_client=database)
+    task = Task(
+        id="staging-durable-ineffective-contract",
+        sector=Sector.SELF,
+        description="Isolated Director authoritative negative-outcome test",
+        capability="self_diagnostic",
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        status=Status.INEFFECTIVE,
+        result={
+            "verified": False,
+            "outcome_verification": {
+                "outcome": "ineffective",
+                "reason": "authoritative_state_mismatch",
+            },
+        },
+    )
+
+    persisted_and_applied = await first._record_verified_learning(task)
+
+    assert persisted_and_applied is True
+    assert task.id in first._learning_recorded_task_ids
+    assert len(first.learning_loop.signals) == 1
+    assert first.learning_loop.signals[0].outcome == "failure"
+    assert len(database.rows["director_learnings"]) == 1
+
+    restarted = Director(supabase_client=database)
+    await restarted._replay_learning_history()
+
+    assert task.id in restarted._learning_recorded_task_ids
+    assert restarted.learning_loop.verification_stats["self_diagnostic"]["ineffective"] == 1
+    assert restarted.learning_loop.capability_stats["self_diagnostic"]["failures"] == 1
+    assert restarted.learning_loop.capability_stats["self_diagnostic"]["successes"] == 0
+    assert restarted.learning_loop.get_recent_success_rate("self_diagnostic") == 0.0
+    assert len(restarted.learning_loop.signals) == 1
+    assert len(restarted.learning_loop._replayed_signal_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_store_rejects_mismatched_verified_outcome_contract():
+    database = DurableFakeSupabase()
+    director = Director(supabase_client=database)
+    mismatched = {
+        "id": "mismatched-learning-contract",
+        "task_id": "task-mismatch",
+        "outcome": "failure",
+        "verification_status": "verified",
+        "capability": "self_diagnostic",
+        "sector": Sector.SELF.value,
+        "context": {"status": Status.VERIFIED.value},
+    }
+
+    assert await director.store.save_learning(mismatched) is False
+    assert database.rows["director_learnings"] == {}

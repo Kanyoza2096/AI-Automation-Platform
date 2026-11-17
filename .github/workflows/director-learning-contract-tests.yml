@@ -1,0 +1,46 @@
+name: Director Verified Learning Contract
+
+on:
+  pull_request:
+    paths:
+      - "services/director/analysis.py"
+      - "services/director/core.py"
+      - "services/director/stores.py"
+      - "tests/test_director_learning_evidence.py"
+      - "tests/test_director_learning_persistence_contract.py"
+      - ".github/workflows/director-learning-contract-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: director-learning-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verified-learning-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || 'staging' }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system libraries for declared runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev pkg-config python3-dev
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+      - name: Verify verified learning and durable replay contracts
+        run: |
+          python -m pytest -q \
+            tests/test_director_learning_evidence.py \
+            tests/test_director_learning_persistence_contract.py
