@@ -260,7 +260,8 @@ def reconcile_supervisor_evidence(decision_context: Any, supervisor_evidence: An
 
     results = [item["result"] for item in comparisons]
     counts = {
-        "compared": sum(value in {"agreement", "disagreement"} for value in results),
+        "compared": len(comparisons),
+        "comparable_status_pairs": sum(value in {"agreement", "disagreement"} for value in results),
         "agreements": results.count("agreement"),
         "disagreements": results.count("disagreement"),
         "unmatched": results.count("unmatched"),
