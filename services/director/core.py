@@ -2320,45 +2320,11 @@ class Director:
                 task.reason += " (engine recommendation requires explicit approval)"
             decisions.append(task)
 
-        for goal in sorted(self.goals.values(), key=lambda g: g.priority, reverse=True):
-            if not goal.enabled:
-                continue
-            mapping = {
-                Sector.SECURITY: ("run_guardian_scan", 0.93),
-                Sector.BRANDS: ("calculate_brand_health", 0.88),
-                Sector.CONTENT: ("review_content_quality", 0.80),
-                Sector.GROWTH: ("analyze_growth_opportunity", 0.82),
-                Sector.CLIENTS: ("generate_client_report", 0.78),
-            }
-            if goal.sector not in mapping:
-                continue
+        # Goal definitions describe long-term priorities; they are not evidence.
+        # Do not turn them into executable tasks without a fresh, scoped signal.
+        # Real work enters through fresh observer issues and validated engine
+        # signals above, each carrying its own target and evidence contract.
 
-            cap_name, conf = mapping[goal.sector]
-            cap = self.capabilities.get(cap_name)
-
-            if cap is None or not self._handler_is_bound(getattr(cap, "handler", None)):
-                continue
-
-            cutoff = now() - timedelta(seconds=3600)
-            recently_run = any(
-                t.capability == cap_name
-                and t.executed_at is not None
-                and t.executed_at >= cutoff
-                for t in self.tasks.values()
-            )
-            if recently_run:
-                continue
-
-            decisions.append(self._create_task(
-                goal.sector, f"Goal-driven: {goal.name}", cap_name,
-                f"Goal: {goal.name}", conf,
-            ))
-
-        if not decisions:
-            decisions.append(self._create_task(
-                Sector.SELF, "Run Director self-diagnostic", "self_diagnostic",
-                "No urgent work; inspect own state", 0.95,
-            ))
         seen = set()
         unique = []
         for task in decisions:
