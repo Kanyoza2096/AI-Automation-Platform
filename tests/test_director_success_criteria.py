@@ -40,10 +40,11 @@ async def test_direct_platform_executor_refuses_workspace_owned_task():
 
 
 
-def make_observation(metrics, *, age_seconds=0, status=Health.NOMINAL):
+def make_observation(metrics, *, age_seconds=0, status=Health.NOMINAL, workspace_id=None):
     return Observation(
         source="test-authoritative-observer", sector=Sector.BRANDS, status=status,
         metrics=metrics, timestamp=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        workspace_id=workspace_id,
     )
 
 
@@ -323,7 +324,9 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     assert hidden_workspace_task.status_code == 404
 
     # Workspace verification remains available for the matching tenant task.
-    director.workspace_observations.setdefault("workspace-test", {})["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    director.workspace_observations.setdefault("workspace-test", {})["event_bus"] = make_observation(
+        {}, status=Health.NOMINAL, workspace_id="workspace-test",
+    )
     tenant_verified = tenant_client.post(
         f"/tasks/{workspace_task.id}/verify-outcome", headers=headers,
     )
@@ -425,9 +428,10 @@ async def test_dependency_rejects_cross_workspace_and_platform_edges():
     director.workspace_tasks["workspace-b"] = {workspace_b_task.id: workspace_b_task}
     director.tasks[platform_task.id] = platform_task
 
-    with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
+    # Out-of-scope IDs are indistinguishable from missing tasks to the caller.
+    with pytest.raises(KeyError):
         await director.add_task_dependency("workspace-a-task", "workspace-b-task", workspace_id="workspace-a")
-    with pytest.raises(ValueError, match="cross_scope_dependency_not_allowed"):
+    with pytest.raises(KeyError):
         await director.add_task_dependency("workspace-a-task", "platform-task", workspace_id="workspace-a")
 
 
