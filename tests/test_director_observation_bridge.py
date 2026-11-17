@@ -170,3 +170,56 @@ def test_reconciliation_does_not_match_on_provenance_source_alone():
     reconciliation = result["supervisor_evidence_reconciliation"]
     assert reconciliation["counts"]["unmatched"] == 2
     assert reconciliation["counts"]["agreements"] == 0
+
+
+def test_canonical_identity_alias_is_explicit_and_coverage_distinguishes_missing_registry():
+    from services.director.observation_bridge import reconcile_supervisor_evidence
+
+    evidence = project_meta_health_evidence({
+        **_health(),
+        "engine_observations": [
+            {"service_id": "director", "status": "healthy", "observed_at": "2026-11-17T03:00:00+00:00"},
+            {"service_id": "autonomous_loop", "status": "healthy", "observed_at": "2026-11-17T03:00:00+00:00"},
+        ],
+        "engine_observation_contract": {
+            "contract": "meta_engine.observations/v1",
+            "status": "complete",
+            "source_count": 2,
+            "accepted_count": 2,
+            "rejected_count": 0,
+            "freshness_seconds": 3600,
+            "generated_at": "2026-11-17T03:00:12+00:00",
+            "rejected": [],
+        },
+    })
+    result = reconcile_supervisor_evidence({
+        "facts": [{"observer": "meta_director", "service_id": "meta_director", "status": "healthy"}],
+        "unknowns": [],
+        "conflicts": [],
+    }, evidence)
+    reconciliation = result["supervisor_evidence_reconciliation"]
+    director = next(row for row in reconciliation["comparisons"] if row["service_id"] == "director")
+    autonomous_loop = next(row for row in reconciliation["comparisons"] if row["service_id"] == "autonomous_loop")
+    assert director["canonical_service_id"] == "director"
+    assert director["result"] == "agreement"
+    assert director["identity_match"] == "canonical_exact"
+    assert autonomous_loop["result"] == "unmatched"
+    assert autonomous_loop["coverage_status"] == "no_director_observer_declared"
+    assert reconciliation["coverage"]["no_director_observer_declared"] == 1
+    assert reconciliation["grants_execution_authority"] is False
+
+
+def test_declared_observer_without_comparable_fact_is_not_marked_healthy():
+    from services.director.observation_bridge import reconcile_supervisor_evidence
+
+    evidence = project_meta_health_evidence(_health())
+    result = reconcile_supervisor_evidence({
+        "facts": [],
+        "unknowns": [],
+        "conflicts": [],
+    }, evidence)
+    reconciliation = result["supervisor_evidence_reconciliation"]
+    guardian = next(row for row in reconciliation["comparisons"] if row["service_id"] == "guardian")
+    assert guardian["director_registry_status"] == "declared"
+    assert guardian["coverage_status"] == "declared_no_comparable_evidence"
+    assert guardian["result"] == "unmatched"
