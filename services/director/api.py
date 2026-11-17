@@ -154,7 +154,7 @@ def create_app(director: Director):
 
     async def _load_task_scope(request):
         """Load only the authenticated workspace's tasks before scoped access."""
-        workspace_id = await _load_task_scope(request)
+        workspace_id = _task_ownership_workspace_id(request)
         if workspace_id:
             try:
                 await director.restore_workspace_tasks(workspace_id)
