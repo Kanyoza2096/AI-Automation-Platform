@@ -574,3 +574,24 @@ def test_workspace_verification_never_falls_back_to_platform_observations():
 
     assert result["outcome"] == "unknown"
     assert result["criteria"][0]["reason"] == "observer_missing"
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_restore_loads_only_explicit_workspace_scope():
+    source = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "persisted-workspace-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "persisted-workspace-b"
+    assert await source.store.save_task(workspace_a)
+    assert await source.store.save_task(workspace_b)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    summary = await restored.restore_workspace_tasks("workspace-a")
+
+    assert summary["restored"] == 1
+    assert restored.get_task(workspace_a.id, workspace_id="workspace-a") is not None
+    assert restored.get_task(workspace_b.id, workspace_id="workspace-a") is None
+    assert workspace_b.id not in restored.workspace_tasks.get("workspace-a", {})
+    assert workspace_a.id not in restored.tasks
