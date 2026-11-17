@@ -164,7 +164,8 @@ class _FakeObservationQuery:
     def execute(self):
         self.client.calls.append((self.operation, dict(self.values)))
         if self.operation == "select":
-            return _FakeResponse(self.client.existing_rows)
+            rows = self.client.existing_rows if "payload" in self.values else []
+            return _FakeResponse(rows)
         return _FakeResponse([{"id": 42}])
 
 
@@ -213,8 +214,5 @@ async def test_save_observation_updates_existing_numeric_database_id():
 
     update_calls = [values for operation, values in client.calls if operation == "update"]
     assert len(update_calls) == 1
-    assert any(
-        operation == "eq" and values.get("id") == 42
-        for operation, values in client.calls
-    )
+    assert update_calls[0]["id"] == 42
     assert "id" not in update_calls[0]
