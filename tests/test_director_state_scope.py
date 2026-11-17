@@ -1,8 +1,9 @@
 """Regression tests for Director state ownership boundaries."""
 import pytest
+from uuid import UUID
 
 from services.director.models import Authority, Health, Observation, Risk, Sector, Task
-from services.director.stores import InMemoryStore
+from services.director.stores import InMemoryStore, _stable_observation_id
 
 
 def _task(task_id: str, *, workspace_id=None, scope_type="platform") -> Task:
@@ -59,3 +60,13 @@ def test_platform_observations_remain_platform_scoped_by_default():
     observation = Observation(source="platform-monitor", sector=Sector.INFRA)
     assert observation.workspace_id is None
     assert observation.scope_type == "platform"
+
+
+def test_observation_identity_is_stable_uuid_text_for_existing_schema():
+    fingerprint = "a" * 64
+    first = _stable_observation_id(fingerprint)
+    second = _stable_observation_id(fingerprint)
+
+    assert first == second
+    assert str(UUID(first)) == first
+    assert first != _stable_observation_id("b" * 64)
