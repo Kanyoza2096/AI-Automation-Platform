@@ -849,3 +849,34 @@ async def test_workspace_task_restore_survives_temporary_learning_store_failure(
     assert result["learning"]["unavailable"] is True
     assert "workspace-a" in director._restored_workspace_task_scopes
     assert "workspace-a" not in director._restored_workspace_learning_scopes
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_detection_stays_within_exact_workspace_scope():
+    director = Director(supabase_client=None)
+    task_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    task_a.id = "workspace-a-task-a"
+    task_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    task_b.id = "workspace-a-task-b"
+    task_c = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    task_c.id = "workspace-b-task-c"
+    task_b.depends_on = [task_c.id]  # A foreign ID must not be traversed.
+    director.workspace_tasks = {
+        "workspace-a": {task_a.id: task_a, task_b.id: task_b},
+        "workspace-b": {task_c.id: task_c},
+    }
+
+    # An in-scope path back to task A is rejected as a cycle.
+    task_b.depends_on = [task_a.id]
+    with pytest.raises(ValueError, match="cycle"):
+        await director.add_task_dependency(
+            task_a.id, task_b.id, workspace_id="workspace-a",
+        )
+
+    # A stale foreign dependency reference is ignored, not traversed.
+    task_b.depends_on = [task_c.id]
+    result = await director.add_task_dependency(
+        task_a.id, task_b.id, workspace_id="workspace-a",
+    )
+    assert result["changed"] is True
+    assert task_a.depends_on == [task_b.id]
