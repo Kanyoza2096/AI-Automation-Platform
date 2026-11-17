@@ -477,3 +477,30 @@ def test_director_workspace_signal_list_remains_isolated(monkeypatch):
     assert response.status_code == 200
     assert response.json()["total"] == 1
     assert [item["id"] for item in response.json()["signals"]] == ["signal-a"]
+
+
+def test_director_unscoped_non_platform_identity_cannot_list_all_signals(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import DirectorSignal, Sector
+
+    d = Director(supabase_client=None)
+    d.signals["signal-a"] = DirectorSignal(
+        id="signal-a", detector="test", sector=Sector.CONTENT,
+        signal_type="test", subject_type="workspace", subject_id="a",
+        workspace_id="ws-a", confidence=0.9, rationale="test", payload={},
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/signals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 403
