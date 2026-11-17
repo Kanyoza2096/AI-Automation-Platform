@@ -595,3 +595,31 @@ async def test_workspace_task_restore_loads_only_explicit_workspace_scope():
     assert restored.get_task(workspace_b.id, workspace_id="workspace-a") is None
     assert workspace_b.id not in restored.workspace_tasks.get("workspace-a", {})
     assert workspace_a.id not in restored.tasks
+
+
+@pytest.mark.asyncio
+async def test_workspace_observation_restore_is_exactly_scoped():
+    source = Director(supabase_client=None)
+    workspace_a_observation = make_observation(
+        {"tenant": {"value": "a"}}, workspace_id="workspace-a",
+    )
+    workspace_a_observation.source = "tenant-observer"
+    workspace_b_observation = make_observation(
+        {"tenant": {"value": "b"}}, workspace_id="workspace-b",
+    )
+    workspace_b_observation.source = "tenant-observer"
+    platform_observation = make_observation({"platform": {"value": True}})
+    platform_observation.source = "platform-observer"
+    assert await source.store.save_observation(workspace_a_observation)
+    assert await source.store.save_observation(workspace_b_observation)
+    assert await source.store.save_observation(platform_observation)
+
+    restored = Director(supabase_client=None)
+    restored.store = source.store
+    summary = await restored.restore_workspace_observations("workspace-a")
+
+    assert summary["restored"] == 1
+    assert set(restored.workspace_observations["workspace-a"]) == {"tenant-observer"}
+    assert restored.workspace_observations["workspace-a"]["tenant-observer"].workspace_id == "workspace-a"
+    assert "workspace-b" not in restored.workspace_observations
+    assert restored.observations == {}
