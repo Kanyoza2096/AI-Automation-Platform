@@ -457,16 +457,12 @@ def create_app(director: Director):
     ):
         """Expose the current Director task graph, scoped to the caller."""
         await _require_auth(request, credentials)
-        graph = director.mission_graph(mission_id=mission_id)
-        visible_ids = {
-            node["task_id"] for node in graph["nodes"]
-            if _task_in_workspace(director.tasks.get(node["task_id"]), request)
-        }
-        graph["nodes"] = [node for node in graph["nodes"] if node["task_id"] in visible_ids]
-        graph["edges"] = [
-            edge for edge in graph["edges"]
-            if edge["dependent"] in visible_ids and edge["prerequisite"] in visible_ids
-        ]
+        graph = director.mission_graph(
+            mission_id=mission_id,
+            workspace_id=_workspace_id(request),
+        )
+        # The Director constructs the graph from one ownership scope; this
+        # endpoint does not filter a mixed global graph after construction.
         return graph
 
     @app.post("/tasks/{task_id}/dependencies/{dependency_id}")
