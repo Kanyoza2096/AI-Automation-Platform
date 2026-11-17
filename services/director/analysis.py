@@ -882,6 +882,15 @@ class LearningLoop:
         error_class = context.get("error_class") or (
             self.classify_error(error_type) if outcome == "failure" else None
         )
+        self.signals.append(LearningSignal(
+            capability=capability,
+            sector=sector,
+            outcome=outcome,
+            duration_ms=duration_ms,
+            error_type=error_type,
+            context=dict(context),
+            timestamp=timestamp,
+        ))
 
         # Verification stats during replay
         if task_status_str == Status.VERIFIED.value:
