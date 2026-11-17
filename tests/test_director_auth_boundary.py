@@ -541,3 +541,39 @@ def test_unscoped_canonical_super_admin_can_read_global_telemetry(monkeypatch):
         "/organism/state", headers={"Authorization": "Bearer valid-user-session"}
     )
     assert response.status_code == 200
+
+
+def test_unscoped_canonical_non_platform_identity_cannot_access_platform_task_scope(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+    assert client.get("/tasks", headers=headers).status_code == 403
+    assert client.get("/missions/graph", headers=headers).status_code == 403
+
+
+def test_unscoped_canonical_super_admin_can_access_platform_task_scope(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+    assert client.get("/tasks", headers=headers).status_code == 200
+    assert client.get("/missions/graph", headers=headers).status_code == 200
