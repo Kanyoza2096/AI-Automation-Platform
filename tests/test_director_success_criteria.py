@@ -184,6 +184,12 @@ async def test_verified_learning_is_not_marked_recorded_when_persistence_is_unac
     assert recorded is False
     assert task.id not in director._learning_recorded_task_ids
     assert len(director.store.learnings) == 0
+    assert len(director.learning_loop.signals) == 0
+    assert director.learning_loop.capability_stats == {}
+    assert director.learning_loop.context_stats == {}
+    assert director.learning_loop.time_stats == {}
+    assert director.learning_loop.duration_stats == {}
+    assert director.learning_loop.verification_stats == {}
 
 
 async def test_post_completion_verification_emits_learning_once_only_after_verified_outcome():
