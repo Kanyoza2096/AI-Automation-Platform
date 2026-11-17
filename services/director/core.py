@@ -3618,12 +3618,17 @@ class Director:
         entry["id"] = f"learn_{task_digest}"
         entry["task_id"] = task.id
         entry["verification_status"] = "verified"
-        self._learning_recorded_task_ids.add(task.id)
         try:
-            await self.store.save_learning(entry)
+            persisted = await self.store.save_learning(entry)
         except Exception:
-            self._learning_recorded_task_ids.discard(task.id)
             raise
+        if persisted is not True:
+            log.error(
+                "Director: verified learning persistence was not acknowledged for task %s",
+                task.id,
+            )
+            return False
+        self._learning_recorded_task_ids.add(task.id)
         return True
 
     async def _record_verified_learning(self, task: Task, duration_ms: float = 0.0) -> bool:
