@@ -76,4 +76,38 @@ def test_projection_filters_malformed_observation_rows():
     result = project_meta_health_evidence(health)
 
     assert len(result["observations"]) == 2
-    assert result["integrity_status"] == "consistent"
+    assert result["integrity_status"] == "accepted_count_mismatch"
+
+
+def test_director_decision_context_includes_read_only_meta_supervisor_evidence(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+    from services.director import Director, create_app
+    import services.director.api as director_api
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "master-test-token")
+    monkeypatch.setenv("PYTHON_SERVICE_TOKEN", "service-test-token")
+    expected = project_meta_health_evidence(_health())
+    monkeypatch.setattr(director_api, "read_meta_health_evidence", lambda: expected)
+
+    app = create_app(Director(supabase_client=None))
+
+    @app.middleware("http")
+    async def canonical_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-test", role="owner", species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/decision-context",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["supervisor_observation_evidence"]
+    assert payload["source"] == "meta_engine.check_health"
+    assert payload["policy"]["grants_execution_authority"] is False
+    assert payload["observations"][1]["status"] == "degraded"
