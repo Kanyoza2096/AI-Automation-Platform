@@ -795,6 +795,14 @@ class InMemoryStore:
         self.learnings.append(dict(entry))
         return True
 
+    async def list_platform_learnings_since(self, since: datetime, limit: int = 5000) -> List[dict]:
+        cutoff = iso(since)
+        return [
+            dict(entry) for entry in self.learnings
+            if (str(entry.get("workspace_id") or "").strip() or None) is None
+            and (entry.get("timestamp") is None or str(entry.get("timestamp")) >= cutoff)
+        ][-limit:]
+
     async def list_learnings(self, limit: int = 100) -> List[dict]:
         return list(self.learnings)[-limit:]
 
