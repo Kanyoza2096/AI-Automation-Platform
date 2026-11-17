@@ -119,7 +119,6 @@ async def test_verified_learning_survives_director_restart_and_replays_from_stor
     await restarted._replay_learning_history()
 
     assert task.id in restarted._learning_recorded_task_ids
-    assert len(restarted.learning_loop.signals) == 1
-    replayed = restarted.learning_loop.signals[0]
-    assert replayed.capability == "self_diagnostic"
-    assert replayed.context["status"] == Status.VERIFIED.value
+    assert restarted.learning_loop.verification_stats["self_diagnostic"]["verified"] == 1
+    assert restarted.learning_loop.capability_stats["self_diagnostic"]["successes"] == 1
+    assert len(restarted.learning_loop._replayed_signal_ids) == 1
