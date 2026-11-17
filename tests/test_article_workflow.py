@@ -5,7 +5,7 @@ import pytest
 
 from workflows.base import StepFailure
 from workflows.article_workflow import ValidateArticleStep, PublishArticleStep
-from scheduler.brand_scheduler import _brand_content_platform
+from scheduler.brand_scheduler import _brand_publish_platform
 
 
 def _article_context():
