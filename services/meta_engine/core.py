@@ -413,9 +413,20 @@ class MetaEngineV7:
         now: Optional[datetime] = None,
     ) -> list[dict[str, Any]]:
         """Backward-compatible projection with an injectable freshness clock."""
-        return MetaEngineV7._engine_observation_contract_for_snapshot(
+        observations = MetaEngineV7._engine_observation_contract_for_snapshot(
             snapshot, now=now
         )["observations"]
+        # Preserve the legacy four-field shape; richer freshness diagnostics
+        # remain available through _engine_observation_contract_for_snapshot.
+        return [
+            {
+                "service_id": item["service_id"],
+                "status": item["status"],
+                "observed_at": item["observed_at"],
+                "source_version": item["source_version"],
+            }
+            for item in observations
+        ]
 
     def check_health(self) -> Dict[str, Any]:
         snapshot = self._current_snapshot
