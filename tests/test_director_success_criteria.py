@@ -193,3 +193,129 @@ async def test_post_completion_verification_emits_learning_once_only_after_verif
     repeated = await director.evaluate_task_success_criteria(task.id)
     assert repeated["outcome"] == "verified"
     assert len(director.store.learnings) == 1
+
+
+def _install_platform_context(app):
+    from types import SimpleNamespace
+
+    @app.middleware("http")
+    async def platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None,
+            principal_id="platform-test-super-admin",
+            role="owner",
+            species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+
+def _install_tenant_context(app, workspace_id="workspace-test", role="owner"):
+    from types import SimpleNamespace
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=workspace_id,
+            principal_id="tenant-test-owner",
+            role=role,
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+
+def test_platform_verification_api_enforces_platform_scope_and_task_ownership(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "platform-harness-token")
+    director = Director(supabase_client=None)
+    platform_task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    platform_task.id = "platform-harness-task"
+    director.tasks[platform_task.id] = platform_task
+
+    workspace_task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    workspace_task.id = "workspace-harness-task"
+    workspace_task.workspace_id = "workspace-test"
+    workspace_task.scope_type = "workspace"
+    director.tasks[workspace_task.id] = workspace_task
+
+    tenant_app = create_app(director)
+    _install_tenant_context(tenant_app)
+    tenant_client = TestClient(tenant_app)
+    headers = {"Authorization": "Bearer platform-harness-token"}
+
+    # A workspace owner must not use the platform-only endpoint.
+    denied = tenant_client.post(
+        f"/platform/tasks/{platform_task.id}/verify-outcome", headers=headers,
+    )
+    assert denied.status_code == 403
+
+    platform_app = create_app(director)
+    _install_platform_context(platform_app)
+    platform_client = TestClient(platform_app)
+
+    # Platform authority still cannot use this endpoint to verify tenant data.
+    hidden_workspace_task = platform_client.post(
+        f"/platform/tasks/{workspace_task.id}/verify-outcome", headers=headers,
+    )
+    assert hidden_workspace_task.status_code == 404
+
+    # Tenant endpoint also does not expose a platform-scoped task.
+    hidden_platform_task = tenant_client.post(
+        f"/tasks/{platform_task.id}/verify-outcome", headers=headers,
+    )
+    assert hidden_platform_task.status_code == 404
+
+
+def test_platform_verification_harness_runs_ineffective_to_verified_and_deduplicates_learning(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "platform-harness-token")
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    task.id = "platform-lifecycle-harness"
+    director.tasks[task.id] = task
+
+    app = create_app(director)
+    _install_platform_context(app)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer platform-harness-token"}
+    endpoint = f"/platform/tasks/{task.id}/verify-outcome"
+
+    director.observations["event_bus"] = make_observation({}, status=Health.DEGRADED)
+    ineffective = client.post(endpoint, headers=headers)
+    assert ineffective.status_code == 200
+    assert ineffective.json()["outcome"] == "ineffective"
+    assert ineffective.json()["task_status"] == Status.INEFFECTIVE.value
+    assert len(director.store.learnings) == 0
+
+    # A fresh nominal observation allows verification; no task execution occurs.
+    task.status = Status.COMPLETED
+    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    verified = client.post(endpoint, headers=headers)
+    assert verified.status_code == 200
+    assert verified.json()["outcome"] == "verified"
+    assert verified.json()["task_status"] == Status.VERIFIED.value
+    assert len(director.store.learnings) == 1
+    learning = director.store.learnings[0]
+    assert learning["task_id"] == task.id
+    assert learning["verification_status"] == "verified"
+    assert learning["context"]["status"] == Status.VERIFIED.value
+
+    repeated = client.post(endpoint, headers=headers)
+    assert repeated.status_code == 200
+    assert repeated.json()["outcome"] == "verified"
+    assert len(director.store.learnings) == 1
+    assert task.status == Status.VERIFIED
