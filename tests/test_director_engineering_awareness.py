@@ -136,3 +136,38 @@ def test_deployment_ledger_records_distinct_state_transitions_idempotently():
     assert building["event_key"] != live["event_key"]
     assert building["payload"]["status"] == "in_progress"
     assert live["payload"]["status"] == "live"
+
+
+
+def test_render_evidence_is_evaluated_when_github_token_is_missing(monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+    from services.director import engineering_awareness as awareness
+
+    class PluginWithoutToken:
+        github_token = ""
+
+    calls = []
+
+    async def fake_render(repositories):
+        calls.append(list(repositories))
+        return {
+            "status": "available",
+            "services": [{"service_id": "srv-backend"}],
+            "deployments": [{"deploy_id": "dep-live", "status": "live"}],
+        }
+
+    monkeypatch.setattr(awareness, "_load_render_evidence", fake_render)
+    snapshot = asyncio.run(awareness.build_engineering_awareness(
+        plugin=PluginWithoutToken(),
+        now=datetime(2026, 11, 17, tzinfo=timezone.utc),
+    ))
+
+    assert calls == [list(awareness.DEFAULT_REPOSITORIES)]
+    assert snapshot["status"] == "partial"
+    assert snapshot["source"] == "render_api"
+    assert snapshot["repositories"][0]["status"] == "unavailable"
+    assert snapshot["render"]["status"] == "available"
+    assert snapshot["summary"]["render_services_matched"] == 1
+    assert snapshot["summary"]["render_deployments_observed"] == 1
+    assert snapshot["summary"]["operationally_verified_changes"] == 0
