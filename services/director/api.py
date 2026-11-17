@@ -529,6 +529,32 @@ def create_app(director: Director):
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
+    @app.post("/platform/tasks/{task_id}/verify-outcome")
+    async def verify_platform_task_outcome(
+        task_id: str,
+        request: Request,
+        max_age_seconds: int = 300,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Verify only platform-owned tasks under explicit platform authority."""
+        await _require_auth(request, credentials, write=True)
+        _require_platform_scope(request)
+        if max_age_seconds < 1 or max_age_seconds > 86400:
+            raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
+        task = director.tasks.get(task_id)
+        if (
+            task is None
+            or getattr(task, "workspace_id", None)
+            or getattr(task, "scope_type", "platform") != "platform"
+        ):
+            raise HTTPException(404, "platform task not found")
+        try:
+            return await director.evaluate_task_success_criteria(task_id, max_age_seconds=max_age_seconds)
+        except KeyError:
+            raise HTTPException(404, "platform task not found")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     @app.get("/tasks")
     async def get_tasks(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
