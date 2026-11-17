@@ -166,7 +166,6 @@ def test_outcome_reconciliation_api_requires_authentication(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_verified_learning_is_not_marked_recorded_when_persistence_is_unacknowledged(monkeypatch):
     director = Director(supabase_client=None)
     task = make_task([{
