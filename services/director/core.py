@@ -1681,11 +1681,11 @@ class Director:
                 except Exception as exc:
                     log.exception("Failed to persist task outcome reconciliation: %s", sanitize_error_message(exc))
                     return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": True, "persistence": "failed"}
-                if outcome == "verified":
+                if outcome in ("verified", "ineffective"):
                     try:
                         await self._record_verified_learning(task)
                     except Exception as exc:
-                        log.exception("Failed to persist verified learning for %s: %s", task.id, sanitize_error_message(exc))
+                        log.exception("Failed to persist verified/ineffective learning for %s: %s", task.id, sanitize_error_message(exc))
         return {"task_id": task_id, "outcome": outcome, "criteria": results, "task_status": task.status.value, "state_updated": task.status in (Status.VERIFIED, Status.INEFFECTIVE)}
 
     def mission_graph(self, mission_id: Optional[str] = None) -> dict:
