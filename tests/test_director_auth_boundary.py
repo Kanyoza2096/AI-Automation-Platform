@@ -402,3 +402,15 @@ def test_proposal_capability_has_explicit_governed_handoff_slot():
     # An ordinary handler is not evidence of canonical governed execution.
     assert capability.governed_handoff is None
     assert capability.handler is handler
+
+
+def test_workspace_owner_cannot_read_platform_engineering_metadata(monkeypatch):
+    app = _workspace_context_app(monkeypatch, "ws-a", role="owner")
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+
+    awareness = client.get("/engineering-awareness", headers=headers)
+    ledger = client.get("/engineering-awareness/ledger", headers=headers)
+
+    assert awareness.status_code == 403
+    assert ledger.status_code == 403
