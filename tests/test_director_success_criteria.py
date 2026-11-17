@@ -830,3 +830,22 @@ async def test_workspace_learning_replay_loads_only_exact_workspace_rows():
         since=datetime.now(timezone.utc) - timedelta(days=30), limit=100,
     )
     assert platform_rows == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_task_restore_survives_temporary_learning_store_failure():
+    from services.director.stores import InMemoryStore
+
+    class LearningUnavailableStore(InMemoryStore):
+        async def list_learnings_since(self, since, limit=5000, *, workspace_id=None):
+            raise RuntimeError("learning storage unavailable")
+
+    director = Director(supabase_client=None)
+    director.store = LearningUnavailableStore()
+
+    result = await director.restore_workspace_tasks("workspace-a")
+
+    assert result["restored"] == 0
+    assert result["learning"]["unavailable"] is True
+    assert "workspace-a" in director._restored_workspace_task_scopes
+    assert "workspace-a" not in director._restored_workspace_learning_scopes
