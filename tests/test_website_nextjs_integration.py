@@ -129,3 +129,36 @@ def test_website_connector_defaults_to_draft_when_publish_not_authorized():
                          'capabilities':['CREATE_DRAFT']},
     )
     assert WebsiteConnector(account)._status == 'draft'
+
+
+
+def test_website_provider_contract_accepts_article_payload():
+    from domain.publishing.provider_contract import validate_request
+    assert validate_request('website', text='A useful article body') is None
+    assert validate_request('website', text='x' * 50001)['error_code'] == 'content_too_long'
+
+
+def test_website_connector_publishes_only_with_explicit_capability(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    captured = {}
+    class Response:
+        status_code = 201
+        content = b'{"id":"article-123"}'
+        def json(self): return {'id':'article-123'}
+    def post(url, **kwargs):
+        captured['url'] = url
+        captured['payload'] = kwargs['json']
+        return Response()
+    monkeypatch.setattr('services.connectors.website_connector.requests.post', post)
+    account = SocialAccount(
+        id='website-publisher', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='secret',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'capabilities':['CREATE_DRAFT', 'PUBLISH_ARTICLE'], 'status':'publish'},
+    )
+    result = WebsiteConnector(account).publish('Article body', title='Article title', topic='Article title',
+                                               idempotency_key='article-key-123')
+    assert result.ok and result.post_id == 'article-123'
+    assert captured['payload']['title'] == 'Article title'
+    assert captured['payload']['status'] == 'publish'
