@@ -504,3 +504,40 @@ def test_director_unscoped_non_platform_identity_cannot_list_all_signals(monkeyp
         "/signals", headers={"Authorization": "Bearer valid-user-session"}
     )
     assert response.status_code == 403
+
+
+
+def test_director_unscoped_non_platform_identity_cannot_read_global_telemetry(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_non_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/organism/state", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 403
+
+
+def test_unscoped_canonical_super_admin_can_read_global_telemetry(monkeypatch):
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def unscoped_platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, role="operator", platform_role="super_admin",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).get(
+        "/organism/state", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
