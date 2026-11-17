@@ -292,14 +292,17 @@ class AsyncSupabaseStore:
     async def _prune_recent_records(
         self, table_name: str, max_rows: int, *,
         scope_type: Optional[str] = None, workspace_id: Optional[str] = None,
+        filter_null_workspace: bool = False,
     ) -> None:
-        """Retain bounded history without pruning another workspace's observations."""
+        """Retain bounded history without pruning another ownership scope."""
         def excess_query():
             query = self.supabase.table(table_name).select("id")
             if scope_type is not None:
                 query = query.eq("scope_type", scope_type)
             if workspace_id is not None:
                 query = query.eq("workspace_id", workspace_id)
+            elif filter_null_workspace:
+                query = query.is_("workspace_id", "null")
             return query.order("timestamp", desc=True).range(max_rows, max_rows + 999).execute()
 
         rows = await self._execute_with_retry(
@@ -558,7 +561,10 @@ class AsyncSupabaseStore:
         )
         if result is None:
             return False
-        await self._prune_recent_records("director_learnings", self.MAX_PERSISTED_LEARNINGS)
+        await self._prune_recent_records(
+            "director_learnings", self.MAX_PERSISTED_LEARNINGS,
+            workspace_id=workspace_id, filter_null_workspace=True,
+        )
         return True
 
     async def list_platform_learnings_since(self, since: datetime, limit: int = 5000) -> List[dict]:
