@@ -94,7 +94,7 @@ def test_verified_learning_requires_both_durable_and_outcome_verification():
         "id": "learn-verified",
         "task_id": "task-verified",
         "capability": "review_content_quality",
-        "sector": "self",
+        "sector": "self_improvement",
         "outcome": "success",
         "context": {"status": "verified"},
     }
