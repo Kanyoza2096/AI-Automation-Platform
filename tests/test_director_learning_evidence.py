@@ -49,6 +49,35 @@ def test_only_verified_success_and_real_failures_contribute_to_success_rate():
     assert report["total"] == 3
 
 
+def test_authoritatively_ineffective_outcome_counts_as_verified_failure():
+    loop = LearningLoop()
+    ineffective = task(Status.INEFFECTIVE)
+
+    signal = loop.record_outcome(
+        ineffective, duration_ms=140, target="worker-pool-a"
+    )
+
+    assert signal is not None
+    assert signal.outcome == "failure"
+    assert signal.context["status"] == Status.INEFFECTIVE.value
+    assert signal.context["error_class"] == "OUTCOME_NOT_VERIFIED"
+    assert loop.verification_stats["run_health_scan"]["ineffective"] == 1
+    assert loop.capability_stats["run_health_scan"]["failures"] == 1
+    assert loop.capability_stats["run_health_scan"]["successes"] == 0
+    assert loop.target_failure_counts["run_health_scan:worker-pool-a"] == 1
+    assert loop.target_last_error["run_health_scan:worker-pool-a"] == "OUTCOME_NOT_VERIFIED"
+    assert loop.get_success_rate("run_health_scan") == 0.0
+
+
+def test_ordinary_failed_and_unknown_tasks_do_not_create_verified_learning():
+    loop = LearningLoop()
+
+    assert loop.record_outcome(task(Status.FAILED, error="network timeout"), 100) is None
+    assert loop.record_outcome(task(Status.FLAGGED), 100) is None
+    assert loop.capability_stats == {}
+    assert loop.verification_stats == {}
+
+
 def test_many_unverified_completions_cannot_trigger_skip_or_escalation_learning():
     loop = LearningLoop()
     for _ in range(10):
