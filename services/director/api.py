@@ -195,6 +195,21 @@ def create_app(director: Director):
         proposal = director.proposals.get(proposal_id) if proposal_id else None
         return _proposal_in_workspace(proposal, request)
 
+    def _deny_workspace_global_read(request) -> None:
+        """Prevent tenant identities from reading shared platform telemetry."""
+        context = getattr(request.state, "request_context", None) if request is not None else None
+        if context is None or not getattr(context, "workspace_id", None):
+            return
+        is_platform_operator = (
+            bool(getattr(context, "species_privileges", False))
+            or str(getattr(context, "platform_role", "") or "").lower() == "super_admin"
+        )
+        if not is_platform_operator:
+            raise HTTPException(
+                status_code=403,
+                detail="This endpoint exposes platform-wide Director state",
+            )
+
     def _trusted_actor(request, fallback: str = "admin") -> str:
         context = getattr(request.state, "request_context", None) if request is not None else None
         principal_id = getattr(context, "principal_id", None) if context is not None else None
@@ -269,6 +284,7 @@ def create_app(director: Director):
     @app.get("/status")
     async def get_status(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.status()
 
     @app.get("/organism/state")
@@ -279,6 +295,7 @@ def create_app(director: Director):
     ):
         """Expose current observations with explicit provenance and freshness."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         return director.organism_state(max_age_seconds=max_age_seconds)
@@ -659,6 +676,7 @@ def create_app(director: Director):
     @app.get("/engines")
     async def get_engines(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {
             "engines": {
                 name: {
@@ -677,6 +695,7 @@ def create_app(director: Director):
     @app.get("/diagnostics")
     async def get_diagnostics(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {
             "root_cause": director.current_root_cause.__dict__ if director.current_root_cause else None,
             "impact": director.current_impact,
@@ -688,6 +707,7 @@ def create_app(director: Director):
     @app.get("/diagnostics/root-cause")
     async def get_root_cause(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         result = director.current_root_cause
         return {
             "status": "found" if result else "none",
@@ -697,16 +717,19 @@ def create_app(director: Director):
     @app.get("/diagnostics/cascading")
     async def get_cascading(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"predictions": director.current_predictions}
 
     @app.get("/diagnostics/impact")
     async def get_impact(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.current_impact
 
     @app.get("/diagnostics/recovery-plans")
     async def get_recovery_plans(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"recovery_plans": director.recovery_coordinator.get_recovery_plans()}
 
     # ── Decisions & Alerts ───────────────────────────────────────────
@@ -718,6 +741,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return [safe(asdict(d)) for d in list(director.decisions)[-limit:]]
 
     @app.get("/alerts")
@@ -727,6 +751,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"alerts": list(director._alert_history)[-limit:]}
 
     # ── Capabilities ─────────────────────────────────────────────────
@@ -970,27 +995,32 @@ def create_app(director: Director):
     @app.get("/outlook")
     async def get_outlook(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         outlook = director.generate_strategic_outlook()
         return safe(asdict(outlook)) if outlook else {"error": "Insufficient data"}
 
     @app.get("/allocation")
     async def get_allocation(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return [safe(asdict(a)) for a in director.allocate_attention()]
 
     @app.get("/summary")
     async def get_summary(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"summary": director.generate_executive_summary()}
 
     @app.get("/initiatives")
     async def get_initiatives(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"initiatives": director.generate_initiatives()}
 
     @app.get("/correlations")
     async def get_correlations(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return {"correlations": director.correlate_observations()}
 
     @app.get("/daily-briefing")
@@ -1004,6 +1034,7 @@ def create_app(director: Director):
     @app.get("/learning/report")
     async def get_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.learning_loop.get_learning_report()
 
     @app.post("/learning/rebuild")
