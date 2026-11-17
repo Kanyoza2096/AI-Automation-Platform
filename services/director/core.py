@@ -2783,6 +2783,38 @@ class Director:
             "inferences": inferences,
             "unknowns": unknowns,
             "conflicts": conflicts,
+            "observer_discovery": self._observer_discovery_evidence(),
+        }
+
+    def _observer_discovery_evidence(self) -> dict:
+        """Expose why registered observers did or did not become live observers."""
+        report = self.engine_discovery_report if isinstance(self.engine_discovery_report, dict) else {}
+        categories = (
+            "discovered", "missing_exports", "import_failures",
+            "factory_failures", "unsupported_exports",
+        )
+        entries = {}
+        for category in categories:
+            values = report.get(category, [])
+            entries[category] = [
+                {
+                    key: str(value.get(key, ""))[:240]
+                    for key in ("observer", "module", "export", "kind", "reason", "sector")
+                    if value.get(key) is not None
+                }
+                for value in values if isinstance(value, dict)
+            ][:200]
+        return {
+            "status": "available" if report.get("registry_entries") else "unavailable",
+            "registry_entries": int(report.get("registry_entries", len(ENGINE_REGISTRY)) or 0),
+            "discovered_count": int(report.get("discovered_count", 0) or 0),
+            "missing_export_count": int(report.get("missing_export_count", 0) or 0),
+            "import_failure_count": int(report.get("import_failure_count", 0) or 0),
+            "factory_failure_count": int(report.get("factory_failure_count", 0) or 0),
+            "unsupported_export_count": int(report.get("unsupported_export_count", 0) or 0),
+            "entries": entries,
+            "read_only": True,
+            "grants_execution_authority": False,
         }
 
     def strategic_context(self, max_age_seconds: int = 300, max_tasks: int = 100) -> dict:
