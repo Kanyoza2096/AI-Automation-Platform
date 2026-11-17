@@ -33,7 +33,7 @@ button,select{font:inherit}.shell{max-width:1180px;margin:auto;padding:22px}.top
 <script>
 (()=>{'use strict';
 const $=id=>document.getElementById(id);
-const authHeaders=()=>({...((window.KDO_ENGINEERING_AUTH_HEADERS&&typeof window.KDO_ENGINEERING_AUTH_HEADERS==='object')?window.KDO_ENGINEERING_AUTH_HEADERS:{}),'Accept':'application/json'})
+const authHeaders=()=>({...((window.KDO_ENGINEERING_AUTH_HEADERS&&typeof window.KDO_ENGINEERING_AUTH_HEADERS==='object')?window.KDO_ENGINEERING_AUTH_HEADERS:{}),'Accept':'application/json'});
 $('connect').addEventListener('click',()=>{const token=window.prompt('Paste a short-lived Bearer token or API key. It will be kept in memory only and not saved.');if(!token||!token.trim())return;const value=token.trim();window.KDO_ENGINEERING_AUTH_HEADERS=value.toLowerCase().startsWith('bearer ')?{Authorization:value}:{'X-API-Key':value};loadBrands()});
 const notice=(message,kind='')=>{const n=$('notice');n.textContent=message;n.className='notice'+(kind?' '+kind:'');n.classList.remove('hidden')};
 const clearNotice=()=>{$('notice').classList.add('hidden')};
