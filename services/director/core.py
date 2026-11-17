@@ -1795,7 +1795,14 @@ class Director:
             })
             for dep_id in getattr(task, "depends_on", []) or []:
                 edges.append({"prerequisite": dep_id, "dependent": tid, "resolved": dep_id in selected})
-        return {"version": 1, "storage_scope": "current_memory_with_startup_restore", "mission_id": mission_id, "nodes": nodes, "edges": edges}
+        storage_scope = (
+            "workspace_memory_only_until_scoped_restore"
+            if workspace_id else "platform_current_memory_with_startup_restore"
+        )
+        return {
+            "version": 1, "storage_scope": storage_scope,
+            "mission_id": mission_id, "nodes": nodes, "edges": edges,
+        }
 
     def assess_task_recovery(
         self, task_id: str, *, workspace_id: Optional[str] = None,
