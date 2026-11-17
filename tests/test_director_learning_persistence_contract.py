@@ -161,6 +161,8 @@ async def test_authoritative_ineffective_learning_survives_restart_and_replays()
     assert restarted.learning_loop.verification_stats["self_diagnostic"]["ineffective"] == 1
     assert restarted.learning_loop.capability_stats["self_diagnostic"]["failures"] == 1
     assert restarted.learning_loop.capability_stats["self_diagnostic"]["successes"] == 0
+    assert restarted.learning_loop.get_recent_success_rate("self_diagnostic") == 0.0
+    assert len(restarted.learning_loop.signals) == 1
     assert len(restarted.learning_loop._replayed_signal_ids) == 1
 
 
