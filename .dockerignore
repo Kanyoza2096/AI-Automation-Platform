@@ -12,4 +12,6 @@ env/
 .env*
 *.log
 tests/
+!tests/
+!tests/**
 attached_assets/
