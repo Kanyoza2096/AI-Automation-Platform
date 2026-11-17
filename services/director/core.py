@@ -3471,6 +3471,7 @@ class Director:
                 "source": source,
                 "sector": getattr(getattr(observation, "sector", None), "value", str(getattr(observation, "sector", "unknown"))),
                 "status": str(status or "unknown").lower(),
+                "status_known": str(status or "unknown").lower() not in {"", "unknown", "none"},
                 "observed_at": observed_at,
                 "freshness": freshness,
                 "age_seconds": round(age_seconds, 3) if age_seconds is not None else None,
@@ -3485,7 +3486,12 @@ class Director:
             })
             evidence_sources.append(evidence)
 
-        fresh_evidence_count = sum(1 for item in evidence_sources if item["freshness"] == "fresh")
+        # A recent timestamp alone is not evidence: UNKNOWN source states
+        # must remain unknown and cannot raise the decision's evidence state.
+        fresh_evidence_count = sum(
+            1 for item in evidence_sources
+            if item["freshness"] == "fresh" and item["status_known"]
+        )
         evidence_state = (
             "unknown" if fresh_evidence_count == 0
             else "partial" if fresh_evidence_count < len(evidence_sources)
@@ -3497,7 +3503,9 @@ class Director:
             timestamp=now(),
             decision=decision_text,
             reason=rationale,
-            confidence=task.confidence,
+            # Task confidence is not a calibrated decision probability.
+            # Keep it in the audit basis, but do not present it as confidence.
+            confidence=None,
             sector=task.sector,
             authority=task.authority,
             risk=task.risk,
@@ -3522,10 +3530,12 @@ class Director:
                 "outcome": outcome,
             },
             confidence_basis={
-                "value_source": "legacy_task_confidence",
-                "calibration": "not_evidence_calibrated",
+                "value_source": "unavailable",
+                "calibration": "not_calibrated",
+                "reason": "No validated decision-outcome calibration dataset is available.",
+                "input_task_confidence": task.confidence,
                 "evidence_source_count": len(evidence_sources),
-                "fresh_evidence_source_count": fresh_evidence_count,
+                "fresh_known_evidence_source_count": fresh_evidence_count,
             },
         )
         self.decisions.append(d)
