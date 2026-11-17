@@ -380,6 +380,7 @@ def create_app(director: Director):
     ):
         """Return the evidence context used to explain Director planning."""
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         if max_age_seconds < 1 or max_age_seconds > 86400:
             raise HTTPException(400, "max_age_seconds must be between 1 and 86400")
         context = director.decision_context(max_age_seconds=max_age_seconds)
@@ -759,6 +760,7 @@ def create_app(director: Director):
     @app.get("/capabilities")
     async def get_capabilities(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         catalog = director.capability_catalog()
         issue_counts = {}
         for item in catalog.values():
@@ -1348,6 +1350,7 @@ def create_app(director: Director):
     @app.get("/ooda/state")
     async def get_ooda_state(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable", "message": "Autonomous Loop is not running in this process."}
@@ -1359,6 +1362,7 @@ def create_app(director: Director):
     @app.get("/ooda/world-model")
     async def get_world_model(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1370,6 +1374,7 @@ def create_app(director: Director):
     @app.get("/ooda/priorities")
     async def get_ooda_priorities(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1386,6 +1391,7 @@ def create_app(director: Director):
     @app.get("/ooda/action-preferences")
     async def get_ooda_action_preferences(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1397,6 +1403,7 @@ def create_app(director: Director):
     @app.get("/ooda/causal-insights")
     async def get_ooda_causal_insights(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1408,6 +1415,7 @@ def create_app(director: Director):
     @app.get("/ooda/learner-report")
     async def get_ooda_learner_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1419,6 +1427,7 @@ def create_app(director: Director):
     @app.get("/ooda/intelligence-report")
     async def get_ooda_intelligence_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         loop = await _get_autonomous_loop()
         if loop is None:
             return {"ok": False, "status": "unavailable"}
@@ -1440,6 +1449,7 @@ def create_app(director: Director):
     @app.get("/meta/status")
     async def get_meta_status(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable", "message": "Meta Engine not initialized in this process."}
@@ -1451,6 +1461,7 @@ def create_app(director: Director):
     @app.get("/meta/impact")
     async def get_meta_impact(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1462,6 +1473,7 @@ def create_app(director: Director):
     @app.get("/meta/topology")
     async def get_meta_topology(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1473,6 +1485,7 @@ def create_app(director: Director):
     @app.get("/meta/root-cause")
     async def get_meta_root_cause(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1484,6 +1497,7 @@ def create_app(director: Director):
     @app.get("/meta/cascading")
     async def get_meta_cascading(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1495,6 +1509,7 @@ def create_app(director: Director):
     @app.get("/meta/recovery-plans")
     async def get_meta_recovery_plans(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1506,6 +1521,7 @@ def create_app(director: Director):
     @app.get("/meta/alerts")
     async def get_meta_alerts(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1517,6 +1533,7 @@ def create_app(director: Director):
     @app.get("/meta/incidents")
     async def get_meta_incidents(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1528,6 +1545,7 @@ def create_app(director: Director):
     @app.get("/meta/learning/report")
     async def get_meta_learning_report(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1543,6 +1561,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
@@ -1558,6 +1577,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         meta = await _get_meta_engine()
         if meta is None:
             return {"ok": False, "status": "unavailable"}
