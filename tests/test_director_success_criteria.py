@@ -828,6 +828,6 @@ async def test_workspace_learning_replay_loads_only_exact_workspace_rows():
     assert restored.learning_loop.signals == []
 
     platform_rows = await restored.store.list_platform_learnings_since(
-        since=now() - timedelta(days=30), limit=100,
+        since=datetime.now(timezone.utc) - timedelta(days=30), limit=100,
     )
     assert platform_rows == []
