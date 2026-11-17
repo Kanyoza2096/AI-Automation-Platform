@@ -1220,7 +1220,14 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
         BindingMetadata(
             "PostPublishWorkflowFactory",
             ServiceCriticality.REQUIRED,
-            description="Canonical post publish workflow factory",
+            description="Canonical social post publish workflow factory",
+        )
+    )
+    bindings.append(
+        BindingMetadata(
+            "ArticlePublishWorkflowFactory",
+            ServiceCriticality.REQUIRED,
+            description="Evidence-grounded long-form article workflow for website brands",
         )
     )
 
