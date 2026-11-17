@@ -63,6 +63,8 @@ def test_registration_is_durable_and_uses_website_connector_account(monkeypatch)
     assert item.connector_authority == 'WebsiteConnector'
     assert saved['account'].platform.value == 'website'
     assert saved['account'].access_token == 'site-secret'
+    assert saved['account'].brand_id == 'brand-1'
+    assert saved['account'].platform_config['capabilities'] == ['CREATE_DRAFT', 'PUBLISH_ARTICLE']
     assert saved['account'].platform_config['status'] == 'draft'
     assert saved['account'].platform_config['context_path'] == '/api/kdo/context'
 
@@ -218,3 +220,34 @@ def test_website_connector_defaults_to_draft_without_publish_capability():
                          'capabilities':['CREATE_DRAFT']},
     )
     assert WebsiteConnector(account)._status == 'draft'
+
+
+def test_website_connector_publishes_only_with_explicit_capability(monkeypatch):
+    from models.social_account import Platform, SocialAccount
+    from services.connectors.website_connector import WebsiteConnector
+    captured = {}
+    class Response:
+        status_code = 201
+        content = b'{"id":"article-123"}'
+        def json(self): return {'id': 'article-123'}
+    def post(url, **kwargs):
+        captured['url'] = url
+        captured['payload'] = kwargs['json']
+        return Response()
+    monkeypatch.setattr('services.connectors.website_connector.requests.post', post)
+    account = SocialAccount(
+        id='website-publisher', workspace_id='ws-1', brand_id='brand-1',
+        platform=Platform.WEBSITE, access_token='test-token',
+        platform_config={'base_url':'https://demo.example', 'publish_path':'/api/kdo/content',
+                         'capabilities':['CREATE_DRAFT', 'PUBLISH_ARTICLE'], 'status':'publish'},
+    )
+    result = WebsiteConnector(account).publish('Validated article body', title='Validated title', status='publish')
+    assert result.ok and result.post_id == 'article-123'
+    assert captured['payload']['status'] == 'publish'
+    assert captured['payload']['title'] == 'Validated title'
+
+
+def test_website_provider_contract_rejects_oversized_article():
+    from domain.publishing.provider_contract import validate_request
+    assert validate_request('website', text='A valid article') is None
+    assert validate_request('website', text='x' * 50001)['error_code'] == 'content_too_long'
