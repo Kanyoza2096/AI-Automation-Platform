@@ -486,6 +486,7 @@ class Director:
         self.workspace_tasks: Dict[str, Dict[str, Task]] = {}
         self.workspace_observations: Dict[str, Dict[str, Observation]] = {}
         self._restored_workspace_task_scopes: set[str] = set()
+        self._restored_workspace_observation_scopes: set[str] = set()
         self.goals: Dict[str, Goal] = {}
 
         self.history: deque = deque(maxlen=5000)
@@ -1611,6 +1612,64 @@ class Director:
                 )
         self._restored_workspace_task_scopes.add(workspace_id)
         return {"restored": restored, "flagged_for_reconciliation": flagged, "errors": errors}
+
+    async def restore_workspace_observations(self, workspace_id: str) -> dict:
+        """Restore evidence only for one trusted workspace scope."""
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id_required")
+        if workspace_id in self._restored_workspace_observation_scopes:
+            return {"restored": 0, "already_loaded": True, "errors": 0}
+        try:
+            records = await self.store.list_observations(
+                workspace_id=workspace_id, scope_type="workspace",
+            )
+        except Exception as exc:
+            log.warning(
+                "Director workspace observation restore failed: %s",
+                sanitize_error_message(exc),
+            )
+            raise RuntimeError("workspace_observation_restore_unavailable") from exc
+
+        restored = errors = 0
+        registry = self.workspace_observations.setdefault(workspace_id, {})
+        for record in records or []:
+            try:
+                raw = record.get("payload", record) if isinstance(record, dict) else record
+                if isinstance(raw, str):
+                    import json
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw.get("source"):
+                    errors += 1
+                    continue
+                if isinstance(record, dict) and record.get("scope_type"):
+                    raw["scope_type"] = record["scope_type"]
+                fields = {
+                    key: raw[key] for key in Observation.__dataclass_fields__
+                    if key in raw
+                }
+                fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                fields["status"] = Health(fields.get("status", Health.UNKNOWN.value))
+                stamp = fields.get("timestamp")
+                if isinstance(stamp, str) and stamp:
+                    fields["timestamp"] = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                observation = Observation(**fields)
+                if (
+                    observation.scope_type != "workspace"
+                    or str(observation.workspace_id or "").strip() != workspace_id
+                ):
+                    errors += 1
+                    continue
+                registry[observation.source] = observation
+                restored += 1
+            except Exception as exc:
+                errors += 1
+                log.warning(
+                    "Skipping invalid workspace Director observation: %s",
+                    sanitize_error_message(exc),
+                )
+        self._restored_workspace_observation_scopes.add(workspace_id)
+        return {"restored": restored, "errors": errors}
 
     def get_task(self, task_id: str, *, workspace_id: Optional[str] = None) -> Optional[Task]:
         """Look up a task only inside the caller's explicit ownership scope."""
