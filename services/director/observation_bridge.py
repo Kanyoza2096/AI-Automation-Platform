@@ -54,7 +54,7 @@ def project_meta_health_evidence(health: Any) -> dict[str, Any]:
     count_integrity = (
         isinstance(accepted_count, int)
         and not isinstance(accepted_count, bool)
-        and accepted_count == len(raw_observations)
+        and accepted_count == len(observations)
     )
     contract_valid = contract_name == CONTRACT_NAME and contract_status in VALID_CONTRACT_STATES
     if not contract_valid:
