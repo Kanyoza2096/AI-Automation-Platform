@@ -6,12 +6,38 @@ from services.director import Director
 from services.director.models import Authority, Health, Observation, Risk, Sector, Status, Task
 
 
-def make_task(criteria, status=Status.COMPLETED):
+def make_task(criteria, status=Status.COMPLETED, *, workspace_id=None):
     return Task(
         id="task-criteria", sector=Sector.BRANDS, description="Verify brand outcome",
         capability="self_diagnostic", authority=Authority.SUGGEST, risk=Risk.LOW,
         status=status, success_criteria=criteria, result={"ok": True},
+        workspace_id=workspace_id,
     )
+
+@pytest.mark.asyncio
+async def test_platform_scheduler_skips_workspace_owned_task_in_legacy_registry():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    director.tasks[task.id] = task
+
+    await director._execute_due_async()
+
+    assert task.status == Status.APPROVED
+    assert task.executed_at is None
+
+
+@pytest.mark.asyncio
+async def test_direct_platform_executor_refuses_workspace_owned_task():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    director.tasks[task.id] = task
+
+    returned = await director._execute_async(task.id)
+
+    assert returned is task
+    assert task.status == Status.APPROVED
+    assert task.executed_at is None
+
 
 
 def make_observation(metrics, *, age_seconds=0, status=Health.NOMINAL):
