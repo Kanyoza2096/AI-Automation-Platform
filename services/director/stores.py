@@ -424,9 +424,8 @@ class AsyncSupabaseStore:
             log.error("Director DB: refusing non-workspace observation with workspace_id")
             return
         payload = safe(asdict(observation))
-        # Observer loops run repeatedly. Give an unchanged source state a
-        # deterministic row identity so repeated snapshots update one row
-        # instead of consuming storage on every polling interval.
+        # Observer loops run repeatedly. Fingerprint an unchanged source state
+        # so repeated snapshots can update the existing database-generated row.
         volatile_observation_keys = {
             "timestamp", "observed_at", "updated_at", "generated_at",
             "checked_at", "last_checked_at", "last_observed_at",
