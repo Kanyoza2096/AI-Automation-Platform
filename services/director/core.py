@@ -1547,7 +1547,15 @@ class Director:
     def get_task(self, task_id: str, *, workspace_id: Optional[str] = None) -> Optional[Task]:
         """Look up a task only inside the caller's explicit ownership scope."""
         if workspace_id:
-            return self.workspace_tasks.get(str(workspace_id).strip(), {}).get(task_id)
+            workspace_id = str(workspace_id).strip()
+            task = self.workspace_tasks.get(workspace_id, {}).get(task_id)
+            if (
+                task is None
+                or getattr(task, "scope_type", "platform") != "workspace"
+                or str(getattr(task, "workspace_id", "") or "").strip() != workspace_id
+            ):
+                return None
+            return task
         task = self.tasks.get(task_id)
         if task is None:
             return None
@@ -1561,7 +1569,12 @@ class Director:
     def tasks_for_scope(self, *, workspace_id: Optional[str] = None) -> list[Task]:
         """Return tasks from exactly one ownership registry."""
         if workspace_id:
-            return list(self.workspace_tasks.get(str(workspace_id).strip(), {}).values())
+            workspace_id = str(workspace_id).strip()
+            return [
+                task for task in self.workspace_tasks.get(workspace_id, {}).values()
+                if getattr(task, "scope_type", "platform") == "workspace"
+                and str(getattr(task, "workspace_id", "") or "").strip() == workspace_id
+            ]
         return [
             task for task in self.tasks.values()
             if getattr(task, "scope_type", "platform") == "platform"
@@ -1656,6 +1669,11 @@ class Director:
                 if workspace_id else self.observations
             )
             obs = observations.get(observer_name.strip())
+            if workspace_id and obs is not None and (
+                getattr(obs, "scope_type", "platform") != "workspace"
+                or str(getattr(obs, "workspace_id", "") or "").strip() != str(workspace_id).strip()
+            ):
+                obs = None
             if obs is None:
                 unknown = True
                 results.append({"index": index, "outcome": "unknown", "reason": "observer_missing", "observer": observer_name})
