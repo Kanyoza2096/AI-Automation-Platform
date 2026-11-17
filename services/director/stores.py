@@ -283,13 +283,22 @@ class AsyncSupabaseStore:
     MAX_PERSISTED_DECISIONS = 250
     MAX_PERSISTED_LEARNINGS = 500
 
-    async def _prune_recent_records(self, table_name: str, max_rows: int) -> None:
-        """Retain only the newest bounded set in a Director history table."""
+    async def _prune_recent_records(
+        self, table_name: str, max_rows: int, *,
+        scope_type: Optional[str] = None, workspace_id: Optional[str] = None,
+    ) -> None:
+        """Retain bounded history without pruning another workspace's observations."""
+        def excess_query():
+            query = self.supabase.table(table_name).select("id")
+            if scope_type is not None:
+                query = query.eq("scope_type", scope_type)
+            if workspace_id is not None:
+                query = query.eq("workspace_id", workspace_id)
+            return query.order("timestamp", desc=True).range(max_rows, max_rows + 999).execute()
+
         rows = await self._execute_with_retry(
             f"select excess rows from {table_name}",
-            lambda: self.supabase.table(table_name)
-            .select("id").order("timestamp", desc=True)
-            .range(max_rows, max_rows + 999).execute(),
+            excess_query,
         )
         excess_ids = [row.get("id") for row in (rows.data or []) if row.get("id")] if rows else []
         if excess_ids:
@@ -424,7 +433,11 @@ class AsyncSupabaseStore:
             }).execute(),
         )
         if result is not None:
-            await self._prune_recent_records("director_observations", self.MAX_PERSISTED_OBSERVATIONS)
+            observation_limit = 200 if scope_type == "workspace" else self.MAX_PERSISTED_OBSERVATIONS
+            await self._prune_recent_records(
+                "director_observations", observation_limit,
+                scope_type=scope_type, workspace_id=workspace_id,
+            )
 
     async def list_observations(
         self, limit: int = 100, *, workspace_id: Optional[str] = None,
