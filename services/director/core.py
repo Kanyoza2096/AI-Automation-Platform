@@ -2175,21 +2175,41 @@ class Director:
             return None
         return str(value)
 
-    async def _execute_async(self, task_id: str) -> Task:
-        task = self.tasks.get(task_id)
-        if not task:
-            raise KeyError(f"Task {task_id} not found")
+    async def _execute_async(
+        self, task_id: str, *, workspace_id: Optional[str] = None,
+    ) -> Task:
+        if workspace_id:
+            # A workspace scheduler must supply its trusted workspace scope.
+            # Only an explicitly owned workspace task can be selected here.
+            task = self.get_task(task_id, workspace_id=workspace_id)
+            if task is None:
+                raise KeyError(f"Task {task_id} not found")
+        else:
+            # The legacy/platform scheduler can see only the platform registry.
+            # Retain a guard for old tenant rows that may still be in this map.
+            task = self.tasks.get(task_id)
+            if not task:
+                raise KeyError(f"Task {task_id} not found")
+            if (
+                getattr(task, "scope_type", "platform") != "platform"
+                or getattr(task, "workspace_id", None)
+            ):
+                log.warning(
+                    "Platform execution refused for non-platform task %s",
+                    task_id,
+                )
+                return task
 
-        # Defense in depth: direct executor calls must enforce the same
-        # platform-only boundary as the scheduler.
-        if (
-            getattr(task, "scope_type", "platform") != "platform"
-            or getattr(task, "workspace_id", None)
-        ):
-            log.warning(
-                "Platform execution refused for non-platform task %s",
-                task_id,
-            )
+        # Workspace tasks may use only the proposal-backed governed handoff.
+        # They never fall through to the legacy capability handler.
+        if workspace_id and not task.proposal_id:
+            task.status = Status.APPROVAL
+            task.error = "canonical_governed_handoff_required"
+            task.result = {
+                "status": "deferred",
+                "reason": "workspace_tasks_require_proposal_backed_governed_handoff",
+            }
+            await self.store.save_task(task)
             return task
 
         runnable_states = {Status.PLANNED, Status.APPROVED, Status.APPROVED_PENDING_EXECUTION}
