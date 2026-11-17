@@ -967,7 +967,6 @@ class Director:
         return bool(
             signal.get("id")
             and signal.get("task_id")
-            and signal.get("verification_status") == Status.VERIFIED.value
             and signal.get("outcome") == "success"
             and isinstance(context, dict)
             and context.get("status") == Status.VERIFIED.value
