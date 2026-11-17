@@ -66,6 +66,11 @@ from .models import (
 log = logging.getLogger("kanyoza.director")
 
 
+def _stable_observation_id(fingerprint: str) -> str:
+    """Return a deterministic UUID string compatible with the text DB primary key."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kdo:director-observation:{fingerprint}"))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ASYNC SUPABASE STORE
 # ═══════════════════════════════════════════════════════════════════════════
@@ -460,9 +465,9 @@ class AsyncSupabaseStore:
         fingerprint = hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
-        # The table uses a bigint sequence key; a positive 60-bit stable key
-        # safely fits bigint and avoids requiring a schema migration.
-        observation_id = int(fingerprint[:15], 16)
+        # director_observations.id is TEXT in the deployed schema. Keep the
+        # deterministic identity as a UUID string instead of sending an int.
+        observation_id = _stable_observation_id(fingerprint)
         payload["observation_fingerprint"] = fingerprint
         result = await self._execute_with_retry(
             "upsert deduplicated director observation",
@@ -477,6 +482,7 @@ class AsyncSupabaseStore:
         if result is not None:
             await self._prune_recent_records(
                 "director_observations", self.MAX_PERSISTED_OBSERVATIONS,
+                scope_type=scope_type, workspace_id=workspace_id,
             )
 
     async def list_observations(
