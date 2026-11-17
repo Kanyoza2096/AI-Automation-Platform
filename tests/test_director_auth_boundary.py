@@ -577,3 +577,73 @@ def test_unscoped_canonical_super_admin_can_access_platform_task_scope(monkeypat
     headers = {"Authorization": "Bearer valid-user-session"}
     assert client.get("/tasks", headers=headers).status_code == 200
     assert client.get("/missions/graph", headers=headers).status_code == 200
+
+
+def test_unscoped_canonical_non_platform_identity_cannot_read_or_mutate_proposals(monkeypatch):
+    from services.director.models import Proposal, ProposalStatus, Risk, Sector
+    from services.director import Director, create_app
+
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def unscoped_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, principal_id="ordinary-user-123",
+            role="viewer", species_privileges=False, platform_role="",
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.proposals["tenant-proposal"] = Proposal(
+        id="tenant-proposal", workspace_id="ws-private", sector=Sector.CONTENT,
+        title="private", rationale="test", capability="self_diagnostic",
+        params={}, target_param_value=None, expected_benefit="test",
+        estimated_cost="0", risk=Risk.LOW, confidence=0.9, signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+
+    listed = client.get("/proposals", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()["proposals"] == []
+
+    assert client.get("/proposals/tenant-proposal", headers=headers).status_code == 404
+    rejected = client.post(
+        "/proposals/tenant-proposal/approve",
+        headers=headers,
+        json={"actor": "forged"},
+    )
+    assert rejected.status_code == 404
+    assert d.proposals["tenant-proposal"].approved_by is None
+
+
+def test_unscoped_canonical_super_admin_can_read_platform_proposals(monkeypatch):
+    from services.director.models import Proposal, ProposalStatus, Risk, Sector
+    from services.director import Director, create_app
+
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def platform_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, principal_id="platform-admin",
+            role="owner", species_privileges=False, platform_role="super_admin",
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.proposals["platform-proposal"] = Proposal(
+        id="platform-proposal", workspace_id=None, sector=Sector.CONTENT,
+        title="platform", rationale="test", capability="self_diagnostic",
+        params={}, target_param_value=None, expected_benefit="test",
+        estimated_cost="0", risk=Risk.LOW, confidence=0.9, signal_ids=[],
+        status=ProposalStatus.PENDING,
+    )
+    response = TestClient(app).get(
+        "/proposals", headers={"Authorization": "Bearer valid-user-session"}
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["proposals"]] == ["platform-proposal"]
