@@ -534,11 +534,16 @@ class AsyncSupabaseStore:
         if not isinstance(entry, dict):
             return False
         context = entry.get("context")
+        outcome = entry.get("outcome")
+        expected_status = (
+            "verified" if outcome == "success" else
+            "ineffective" if outcome == "failure" else None
+        )
         if (
             entry.get("verification_status") != "verified"
             or not isinstance(context, dict)
-            or context.get("status") != "verified"
-            or entry.get("outcome") != "success"
+            or context.get("status") != expected_status
+            or expected_status is None
             or not entry.get("id")
         ):
             log.info("Director DB: rejected non-verified learning record")
@@ -731,12 +736,17 @@ class InMemoryStore:
 
     async def save_learning(self, entry: dict) -> bool:
         context = entry.get("context") if isinstance(entry, dict) else None
+        outcome = entry.get("outcome") if isinstance(entry, dict) else None
+        expected_status = (
+            "verified" if outcome == "success" else
+            "ineffective" if outcome == "failure" else None
+        )
         if (
             not isinstance(entry, dict)
             or entry.get("verification_status") != "verified"
             or not isinstance(context, dict)
-            or context.get("status") != "verified"
-            or entry.get("outcome") != "success"
+            or context.get("status") != expected_status
+            or expected_status is None
             or not entry.get("id")
         ):
             return False
