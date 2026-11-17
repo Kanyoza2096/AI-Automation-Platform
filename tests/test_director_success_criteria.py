@@ -623,3 +623,30 @@ async def test_workspace_observation_restore_is_exactly_scoped():
     assert restored.workspace_observations["workspace-a"]["tenant-observer"].workspace_id == "workspace-a"
     assert "workspace-b" not in restored.workspace_observations
     assert restored.observations == {}
+
+
+def test_workspace_task_api_lazily_restores_only_authenticated_workspace(monkeypatch):
+    from fastapi.testclient import TestClient
+    from services.director import create_app
+
+    monkeypatch.setenv("MASTER_API_TOKEN", "workspace-restore-token")
+    director = Director(supabase_client=None)
+    workspace_a = make_task([], status=Status.APPROVAL, workspace_id="workspace-a")
+    workspace_a.id = "restored-api-a"
+    workspace_b = make_task([], status=Status.APPROVAL, workspace_id="workspace-b")
+    workspace_b.id = "restored-api-b"
+
+    import asyncio
+    asyncio.run(director.store.save_task(workspace_a))
+    asyncio.run(director.store.save_task(workspace_b))
+
+    app = create_app(director)
+    _install_tenant_context(app, workspace_id="workspace-a")
+    client = TestClient(app)
+    response = client.get(
+        "/tasks", headers={"Authorization": "Bearer workspace-restore-token"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["restored-api-a"]
+    assert "workspace-b" not in director.workspace_tasks
