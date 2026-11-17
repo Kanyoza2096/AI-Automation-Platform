@@ -7,9 +7,9 @@ COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt --retries 10 --timeout 120
 COPY . .
 
-# Fail the staging image build if the isolated, in-memory Director contract tests fail.
-# This suite constructs Director(supabase_client=None); it does not connect to either database.
-RUN python -m pytest tests/test_director_success_criteria.py tests/test_director_state_scope.py -q
+# Fail the staging image build if Director verification, scope, or durable learning contracts fail.
+# The persistence contract uses a durable fake PostgREST transport; it does not touch either database.
+RUN python -m pytest tests/test_director_success_criteria.py tests/test_director_state_scope.py tests/test_director_learning_persistence_contract.py -q
 
 RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
 USER botuser
