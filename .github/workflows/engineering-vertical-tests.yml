@@ -23,7 +23,7 @@ on:
       - "tests/test_organism_event_bridge.py"
       - "core/species_auth.py"
       - "core/security/deps.py"
-      - "tests/test_auth_dependency_direct_call.py"
+            tests/test_auth_dependency_direct_call.py \
       - "services/connectors/facebook_connector.py"
       - "services/facebook.py"
       - "services/v69_tenant_facebook_connector_factory.py"
