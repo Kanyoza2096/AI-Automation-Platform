@@ -1111,6 +1111,7 @@ class Director:
             confidence=proposal.confidence,
             params=proposal.params,
             source=f"proposal:{proposal.id}",
+            workspace_id=getattr(proposal, "workspace_id", None),
         )
         task.proposal_id = proposal.id
         task.approved_by = actor
