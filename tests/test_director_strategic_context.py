@@ -125,9 +125,9 @@ def test_strategic_context_never_exposes_task_params_or_engine_signal_params():
         assert secret not in serialized
 
 
-def test_strategic_context_preserves_unknown_learning_rates():
+def test_strategic_context_excludes_unverified_learning_outcomes():
     director = Director(supabase_client=None)
-    director.learning_loop.record_outcome(
+    signal = director.learning_loop.record_outcome(
         Task(
             id="unverified",
             sector=Sector.INFRA,
@@ -141,11 +141,9 @@ def test_strategic_context_preserves_unknown_learning_rates():
     )
 
     context = director.strategic_context()
-    learning = context["learning"]["capabilities"]["run_health_scan"]
 
-    assert learning["success_rate"] is None
-    assert learning["recent_rate"] is None
-    assert learning["unverified_outcome_count"] == 1
+    assert signal is None
+    assert "run_health_scan" not in context["learning"]["capabilities"]
 
 
 def test_strategic_context_validates_bounds():
