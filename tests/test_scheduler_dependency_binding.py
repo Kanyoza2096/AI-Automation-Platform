@@ -113,6 +113,9 @@ def test_scheduler_selects_article_factory_for_website_and_social_factory_otherw
         scheduler._distributed_lock = Lock()
         scheduler._publish_semaphore = Semaphore()
         scheduler._pipeline_status = {"status": "idle"}
+        scheduler._posts_failed = 0
+        scheduler._metrics = SimpleNamespace(record_publish_failure=lambda duration: None)
+        scheduler._dead_letter_queue = SimpleNamespace(push=lambda **kwargs: None)
         scheduler._emit = lambda *args, **kwargs: None
         scheduler._emit_dashboard = lambda *args, **kwargs: None
 
