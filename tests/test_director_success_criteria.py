@@ -529,3 +529,48 @@ def test_approval_api_uses_authenticated_workspace_and_platform_scope(monkeypatc
     )
     assert platform_approved.status_code == 200
     assert platform.status == Status.APPROVED
+
+
+def test_workspace_task_creation_uses_separate_registry_and_deduplicates_per_workspace():
+    director = Director(supabase_client=None)
+    first = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-a",
+    )
+    repeated_same_workspace = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "repeat workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-a",
+    )
+    same_intent_other_workspace = director._create_task(
+        Sector.BRANDS, "Review workspace asset", "self_diagnostic",
+        "different workspace scoped test", params={"asset_id": "asset-1"},
+        workspace_id="workspace-b",
+    )
+
+    assert first.id == repeated_same_workspace.id
+    assert same_intent_other_workspace.id != first.id
+    assert first.id not in director.tasks
+    assert same_intent_other_workspace.id not in director.tasks
+    assert director.get_task(first.id, workspace_id="workspace-a") is first
+    assert director.get_task(first.id, workspace_id="workspace-b") is None
+
+
+def test_workspace_verification_never_falls_back_to_platform_observations():
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "domain", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }], workspace_id="workspace-a")
+    task.id = "workspace-evidence-task"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.observations["domain"] = make_observation({}, status=Health.NOMINAL)
+
+    import asyncio
+    result = asyncio.run(director.evaluate_task_success_criteria(
+        task.id, workspace_id="workspace-a",
+    ))
+
+    assert result["outcome"] == "unknown"
+    assert result["criteria"][0]["reason"] == "observer_missing"
