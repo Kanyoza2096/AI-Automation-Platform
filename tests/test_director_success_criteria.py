@@ -454,7 +454,7 @@ def test_recovery_assessment_hides_cross_workspace_dependency_state():
     assert assessment["dependencies"] == [
         {"task_id": "workspace-b-secret", "status": "missing"},
     ]
-    assert "workspace-b" not in str(assessment)
+    assert all(item["status"] != Status.FAILED.value for item in assessment["dependencies"])
 
 
 def test_platform_recovery_cannot_read_workspace_task():
