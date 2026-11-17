@@ -960,6 +960,12 @@ class Director:
         if not signals:
             log.info("Learning replay: no historical signals within %d days", lookback_days)
             return
+        # Restore task-level idempotency alongside the adaptive model so a
+        # repeated verification after restart cannot emit a second signal.
+        for signal in signals:
+            task_id = signal.get("task_id") if isinstance(signal, dict) else None
+            if isinstance(task_id, str) and task_id:
+                self._learning_recorded_task_ids.add(task_id)
         try:
             replayed = self.learning_loop.rebuild_from_signals(signals)
             if replayed == len(signals):
