@@ -268,6 +268,15 @@ def test_platform_verification_api_enforces_platform_scope_and_task_ownership(mo
     )
     assert hidden_workspace_task.status_code == 404
 
+    # Workspace verification remains available for the matching tenant task.
+    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    tenant_verified = tenant_client.post(
+        f"/tasks/{workspace_task.id}/verify-outcome", headers=headers,
+    )
+    assert tenant_verified.status_code == 200
+    assert tenant_verified.json()["outcome"] == "verified"
+    assert workspace_task.status == Status.VERIFIED
+
     # Tenant endpoint also does not expose a platform-scoped task.
     hidden_platform_task = tenant_client.post(
         f"/tasks/{platform_task.id}/verify-outcome", headers=headers,
