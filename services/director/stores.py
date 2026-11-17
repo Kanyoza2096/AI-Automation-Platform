@@ -616,15 +616,21 @@ class AsyncSupabaseStore:
         generates more than 5000 signals in the lookback window, replay
         will silently truncate to the most recent entries.
         """
+        def _query_learning_scope():
+            query = (
+                self.supabase.table("director_learnings")
+                .select("id, payload, timestamp")
+                .gte("timestamp", iso(since))
+            )
+            if workspace_id:
+                query = query.eq("workspace_id", str(workspace_id).strip())
+            else:
+                query = query.is_("workspace_id", "null")
+            return query.order("timestamp", desc=False).limit(limit).execute()
+
         result = await self._execute_with_retry(
             "list from director_learnings (since)",
-            lambda: self.supabase.table("director_learnings")
-            .select("id, payload, timestamp")
-            .gte("timestamp", iso(since))
-            .eq("workspace_id", str(workspace_id).strip())
-            .order("timestamp", desc=False)  # chronological
-            .limit(limit)
-            .execute(),
+            _query_learning_scope,
         )
         if not result or not result.data:
             return []
