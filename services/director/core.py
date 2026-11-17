@@ -2513,9 +2513,21 @@ class Director:
             + mission_priority * 0.25
         )
 
-    def approve(self, task_id: str, actor: str = "admin") -> Task:
+    @staticmethod
+    def _task_matches_scope(task: Task, workspace_id: Optional[str]) -> bool:
+        """Require explicit ownership for every approval mutation."""
+        scope_type = getattr(task, "scope_type", "platform")
+        task_workspace_id = str(getattr(task, "workspace_id", "") or "").strip()
+        if workspace_id:
+            return scope_type == "workspace" and task_workspace_id == str(workspace_id).strip()
+        return scope_type == "platform" and not task_workspace_id
+
+    def approve(
+        self, task_id: str, actor: str = "admin", *,
+        workspace_id: Optional[str] = None,
+    ) -> Task:
         task = self.tasks.get(task_id)
-        if task is None:
+        if task is None or not self._task_matches_scope(task, workspace_id):
             raise KeyError(f"Task {task_id} not found")
         if task.status not in (Status.APPROVAL, Status.FLAGGED):
             raise ValueError("Task is not awaiting approval")
@@ -2524,9 +2536,12 @@ class Director:
         task.approved_by = actor
         return task
 
-    def reject(self, task_id: str, actor: str = "admin", reason: str = "") -> Task:
+    def reject(
+        self, task_id: str, actor: str = "admin", reason: str = "", *,
+        workspace_id: Optional[str] = None,
+    ) -> Task:
         task = self.tasks.get(task_id)
-        if task is None:
+        if task is None or not self._task_matches_scope(task, workspace_id):
             raise KeyError(f"Task {task_id} not found")
         task.status = Status.CANCELLED
         task.error = f"Rejected by {actor}: {reason}"
