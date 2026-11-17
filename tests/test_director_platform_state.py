@@ -89,7 +89,7 @@ def test_platform_state_route_denies_tenant_even_when_tenant_owner(monkeypatch):
 
     response = TestClient(app).get(
         "/platform-state",
-        headers={"Authorization": "Bearer valid-user-session"},
+        headers={"Authorization": "Bearer master-test-token"},
     )
     assert response.status_code == 403
 
@@ -276,7 +276,10 @@ def test_explicit_strategic_plan_refreshes_platform_state_before_planner_input(m
     )
     director.store.save_strategic_plan = save_plan
 
-    result = asyncio.run(director.create_strategic_plan({"objective_id": "test"}))
+    result = asyncio.run(director.create_strategic_plan(
+        {"objective_id": "test"},
+        planner=lambda **_kwargs: {},
+    ))
 
     assert result["status"] == "proposed"
     assert reader.calls == 1
