@@ -1,0 +1,21 @@
+# Staging-only Dockerfile: run the Director regression harness during image build.
+# Configure only kdo-engineering-staging to use this file. Production must keep ./Dockerfile.
+FROM python:3.12-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git curl build-essential pkg-config libcairo2-dev libpango1.0-dev libgdk-pixbuf-2.0-dev libffi-dev libssl-dev libxml2-dev libxslt1-dev libpq-dev shared-mime-info postgresql-client && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt --retries 10 --timeout 120
+COPY . .
+
+# Fail the staging image build if the isolated, in-memory Director contract tests fail.
+# This suite constructs Director(supabase_client=None); it does not connect to either database.
+RUN python -m pytest tests/test_director_success_criteria.py -q
+
+RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
+USER botuser
+ENV PORT=10000
+ENV OTEL_SERVICE_NAME="kanyoza-ai-platform-staging"
+ENV OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD curl -f http://localhost:${PORT}/health/live || exit 1
+EXPOSE 10000
+CMD ["sh", "-c", "exec honcho start --procfile Procfile"]
