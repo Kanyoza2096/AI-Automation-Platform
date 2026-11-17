@@ -101,20 +101,22 @@ def test_meta_engine_exports_timestamped_observations_from_its_cached_snapshot()
         SystemSnapshot,
     )
 
+    observed_at = datetime.now(timezone.utc)
     health = EngineHealth(
         name="director",
         status=EngineStatus.DEGRADED,
         version="director-v5.5",
-        checked_at=NOW,
+        checked_at=observed_at,
     )
     payload = MetaEngineV7._engine_observations_for_snapshot(
-        SystemSnapshot(engines={"director": health})
+        SystemSnapshot(engines={"director": health}),
+        now=observed_at,
     )
 
     assert payload == [{
         "service_id": "director",
         "status": "degraded",
-        "observed_at": NOW.isoformat(),
+        "observed_at": observed_at.isoformat(),
         "source_version": "director-v5.5",
     }]
 
