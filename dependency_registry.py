@@ -1147,6 +1147,7 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
     from services.content_semantic_reviewer import ContentSemanticReviewer
     from services.pipeline.pipeline import ContentGenerationPipeline
     from workflows.post_workflow import PostPublishWorkflow
+    from workflows.article_workflow import ArticlePublishWorkflow
     from plugins.base import PluginRegistry
 
     content_engine = ContentEngine(container=c)
@@ -1195,8 +1196,18 @@ def _register_workflows(c: ServiceContainer, bindings: list[BindingMetadata]) ->
             container=c,
         )
 
+    def article_publish_workflow_factory(brand, ai_profile=None, category=None):
+        return ArticlePublishWorkflow(
+            brand=brand,
+            ai_profile=ai_profile,
+            knowledge_repo=knowledge_repo,
+            container=c,
+            category=category,
+        )
+
     c.register("ContentGenerationPipelineFactory", lambda: content_pipeline_factory, singleton=True)
     c.register("PostPublishWorkflowFactory", lambda: post_publish_workflow_factory, singleton=True)
+    c.register("ArticlePublishWorkflowFactory", lambda: article_publish_workflow_factory, singleton=True)
 
     bindings.append(
         BindingMetadata(
