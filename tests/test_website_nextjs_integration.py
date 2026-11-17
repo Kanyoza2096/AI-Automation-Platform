@@ -162,3 +162,17 @@ def test_website_connector_publishes_only_with_explicit_capability(monkeypatch):
     assert result.ok and result.post_id == 'article-123'
     assert captured['payload']['title'] == 'Article title'
     assert captured['payload']['status'] == 'publish'
+
+
+
+def test_brand_scheduler_uses_configured_website_platform():
+    from types import SimpleNamespace
+    from scheduler.brand_scheduler import _brand_publish_platform
+    brand = SimpleNamespace(metadata={'primary_platform':'website'})
+    assert _brand_publish_platform(brand) == 'website'
+
+
+def test_brand_scheduler_preserves_legacy_facebook_default():
+    from types import SimpleNamespace
+    from scheduler.brand_scheduler import _brand_publish_platform
+    assert _brand_publish_platform(SimpleNamespace(metadata={})) == 'facebook'
