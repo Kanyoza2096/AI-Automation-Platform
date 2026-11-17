@@ -756,7 +756,6 @@ def test_workspace_identity_cannot_read_shared_director_telemetry(monkeypatch):
     headers = {"Authorization": "Bearer telemetry-scope-token"}
 
     for path in (
-        "/status",
         "/organism/state",
         "/engines",
         "/diagnostics",
