@@ -35,7 +35,7 @@ def test_cloudflare_adapter_returns_structured_ai_receipt_without_action_intent(
         assert request.url.path.endswith("/ai/v1/chat/completions")
         assert request.headers["Authorization"] == "Bearer token"
         payload = json.loads(request.content)
-        assert payload["model"] == "@cf/google/gemma-4-26b-a4b-it"
+        assert payload["model"] == CloudflareAIAdapter.DEFAULT_MODEL
         return httpx.Response(200, json={"result": {"choices": [{"message": {"content": '{"intent":"delivery_delay","recommended_actions":["check_order_status"]}'}}], "usage": {"total_tokens": 9}}})
     adapter = CloudflareAIAdapter(account_id="acct", token="token", client=client(handler))
     receipt = adapter.analyze(user_prompt="Customer says order is delayed", correlation_id="c1", structured=True)
@@ -70,7 +70,7 @@ def test_provider_registry_is_explicit():
 
 
 def test_policy_selects_provider_without_application_coupling():
-    route = select_ai_route("classification")
+    route = select_ai_route("classification")[0]
     assert route.provider == "cloudflare_ai"
     assert route.model.startswith("@cf/")
 
@@ -93,7 +93,7 @@ def test_kdo_formulates_action_intent_from_ai_data_not_from_provider():
 
 def test_ai_cannot_turn_unapproved_recommendation_into_intent():
     receipt = AIReceipt(status="succeeded", provider="cloudflare_ai", model="m", raw_output='{"recommended_actions":["refund_customer"]}', structured_output={"recommended_actions":["refund_customer"]}, usage=None, correlation_id="c1", request_fingerprint="f1")
-    with pytest.raises(ValueError, match="not a KDO-permitted action"):
+    with pytest.raises(ValueError, match="not in the KDO allowlist"):
         formulate_action_intent_from_ai(receipt, workspace_id="ws-1", allowed_actions={"notify_customer": {"risk_level":"low"}}, idempotency_key="k1")
 
 
