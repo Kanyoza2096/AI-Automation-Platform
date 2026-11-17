@@ -39,6 +39,27 @@ async def test_structured_success_criteria_verifies_only_from_fresh_healthy_obse
 
 
 @pytest.mark.asyncio
+async def test_recovery_status_criterion_can_verify_recovery_or_detect_persistent_failure():
+    director = Director(supabase_client=None)
+    task = make_task([{
+        "observer": "event_bus", "metric_path": "$status",
+        "operator": "equals", "expected": Health.NOMINAL.value,
+    }])
+    director.tasks[task.id] = task
+    director.observations["event_bus"] = make_observation({}, status=Health.DEGRADED)
+
+    failed_result = await director.evaluate_task_success_criteria(task.id)
+    assert failed_result["outcome"] == "ineffective"
+    assert failed_result["criteria"][0]["observed_value"] == Health.DEGRADED.value
+
+    task.status = Status.COMPLETED
+    director.observations["event_bus"] = make_observation({}, status=Health.NOMINAL)
+    verified_result = await director.evaluate_task_success_criteria(task.id)
+    assert verified_result["outcome"] == "verified"
+    assert task.status == Status.VERIFIED
+
+
+@pytest.mark.asyncio
 async def test_mismatched_evidence_marks_completed_task_ineffective():
     director = Director(supabase_client=None)
     task = make_task([{
