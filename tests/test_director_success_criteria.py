@@ -702,3 +702,40 @@ async def test_workspace_task_executor_requires_explicit_scope_and_never_uses_le
     assert deferred.status == Status.APPROVAL
     assert deferred.error == "canonical_governed_handoff_required"
     assert handler_calls == []
+
+
+@pytest.mark.asyncio
+async def test_workspace_governed_handoff_rejects_foreign_proposal_reference():
+    director = Director(supabase_client=None)
+    task = make_task([], status=Status.APPROVED, workspace_id="workspace-a")
+    task.id = "workspace-task-foreign-proposal"
+    task.proposal_id = "foreign-proposal"
+    director.workspace_tasks["workspace-a"] = {task.id: task}
+    director.proposals["foreign-proposal"] = Proposal(
+        id="foreign-proposal",
+        workspace_id="workspace-b",
+        sector=Sector.BRANDS,
+        title="Foreign proposal",
+        rationale="must not be linked",
+        capability="self_diagnostic",
+        params={},
+        target_param_value=None,
+        expected_benefit="none",
+        estimated_cost="0",
+        risk=Risk.LOW,
+        confidence=0.9,
+        signal_ids=[],
+    )
+    handoff_calls = []
+
+    async def forbidden_handoff(**kwargs):
+        handoff_calls.append(kwargs)
+        return {"ok": True, "status": "succeeded", "execution_id": "x", "intent_id": "y"}
+
+    director.capabilities[task.capability].governed_handoff = forbidden_handoff
+    result = await director._execute_async(task.id, workspace_id="workspace-a")
+
+    assert result.status == Status.APPROVAL
+    assert result.error == "canonical_governed_handoff_required"
+    assert result.result["reason"] == "proposal_not_found"
+    assert handoff_calls == []
