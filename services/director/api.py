@@ -536,6 +536,7 @@ def create_app(director: Director):
     @app.get("/briefing")
     async def get_briefing(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
+        _deny_workspace_global_read(request)
         return director.briefings[-1] if director.briefings else director.briefing()
 
     @app.get("/tasks/{task_id}/recovery-assessment")
