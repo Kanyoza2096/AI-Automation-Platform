@@ -47,7 +47,6 @@ import asyncio
 import json
 import logging
 import random
-import uuid
 import hashlib
 from collections import deque
 from dataclasses import asdict
@@ -64,11 +63,6 @@ from .models import (
 )
 
 log = logging.getLogger("kanyoza.director")
-
-
-def _stable_observation_id(fingerprint: str) -> str:
-    """Return a deterministic UUID string compatible with the text DB primary key."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kdo:director-observation:{fingerprint}"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -430,9 +424,8 @@ class AsyncSupabaseStore:
             log.error("Director DB: refusing non-workspace observation with workspace_id")
             return
         payload = safe(asdict(observation))
-        # Observer loops run repeatedly. Give an unchanged source state a
-        # deterministic row identity so repeated snapshots update one row
-        # instead of consuming storage on every polling interval.
+        # Observer loops run repeatedly. Fingerprint an unchanged source state
+        # so repeated snapshots can update the existing database-generated row.
         volatile_observation_keys = {
             "timestamp", "observed_at", "updated_at", "generated_at",
             "checked_at", "last_checked_at", "last_observed_at",
@@ -465,19 +458,47 @@ class AsyncSupabaseStore:
         fingerprint = hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         ).hexdigest()
-        # director_observations.id is TEXT in the deployed schema. Keep the
-        # deterministic identity as a UUID string instead of sending an int.
-        observation_id = _stable_observation_id(fingerprint)
+        # The production table uses a BIGINT identity/sequence primary key.
+        # Keep the stable fingerprint in JSONB and let PostgreSQL allocate id.
+        # First update an existing fingerprint match; otherwise insert a new row.
+        # A concurrent first insert can at worst create a duplicate snapshot, but
+        # cannot overwrite an unrelated observation or violate the BIGINT contract.
         payload["observation_fingerprint"] = fingerprint
-        result = await self._execute_with_retry(
-            "upsert deduplicated director observation",
-            lambda: self.supabase.table("director_observations").upsert({
-                "id": observation_id,
+
+        def persist_observation():
+            existing_query = (
+                self.supabase.table("director_observations")
+                .select("id")
+                .eq("scope_type", scope_type)
+                .contains("payload", {"observation_fingerprint": fingerprint})
+            )
+            if workspace_id:
+                existing_query = existing_query.eq("workspace_id", workspace_id)
+            else:
+                existing_query = existing_query.is_("workspace_id", "null")
+            existing = existing_query.limit(1).execute()
+            rows = getattr(existing, "data", None) or []
+            if rows:
+                existing_id = rows[0].get("id")
+                return (
+                    self.supabase.table("director_observations")
+                    .update({
+                        "payload": payload,
+                        "timestamp": iso(observation.timestamp),
+                    })
+                    .eq("id", existing_id)
+                    .execute()
+                )
+            return self.supabase.table("director_observations").insert({
                 "workspace_id": workspace_id,
                 "scope_type": scope_type,
                 "payload": payload,
                 "timestamp": iso(observation.timestamp),
-            }, on_conflict="id").execute(),
+            }).execute()
+
+        result = await self._execute_with_retry(
+            "upsert deduplicated director observation",
+            persist_observation,
         )
         if result is not None:
             await self._prune_recent_records(
