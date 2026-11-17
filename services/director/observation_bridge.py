@@ -57,8 +57,8 @@ def project_meta_health_evidence(health: Any) -> dict[str, Any]:
     )
     count_integrity = (
         valid_counts
-        and accepted_count == len(observations)
-        and source_count == accepted_count + rejected_count
+        and accepted_count == len(raw_observations) == len(observations)
+        and (contract_status == "invalid_source" or source_count == accepted_count + rejected_count)
     )
     contract_valid = contract_name == CONTRACT_NAME and contract_status in VALID_CONTRACT_STATES
     if not contract_valid:
