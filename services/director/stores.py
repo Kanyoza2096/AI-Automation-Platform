@@ -691,8 +691,20 @@ class InMemoryStore:
     async def list_strategic_plans(self, limit: int = 50) -> List[dict]:
         return [safe(plan) for plan in list(self.strategic_plans.values())[-limit:][::-1]]
 
-    async def save_observation(self, observation: Observation) -> None:
-        self.observations.append(safe(asdict(observation)))
+    async def save_observation(self, observation: Observation) -> bool:
+        workspace_id = str(observation.workspace_id).strip() if observation.workspace_id else None
+        scope_type = "workspace" if workspace_id else observation.scope_type
+        if scope_type not in {"platform", "workspace", "legacy_unclassified"}:
+            return False
+        if scope_type == "workspace" and not workspace_id:
+            return False
+        if scope_type != "workspace" and workspace_id:
+            return False
+        record = safe(asdict(observation))
+        record["workspace_id"] = workspace_id
+        record["scope_type"] = scope_type
+        self.observations.append(record)
+        return True
 
     async def list_observations(
         self, limit: int = 100, *, workspace_id: Optional[str] = None,
