@@ -590,9 +590,17 @@ def create_app(director: Director):
     async def get_tasks(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
         await _require_auth(request, credentials)
         workspace_id = await _load_task_scope(request)
-        return [safe(asdict(t)) for t in director.tasks_for_scope(
-            workspace_id=workspace_id,
-        )]
+        scoped_tasks = director.tasks_for_scope(workspace_id=workspace_id)
+        if workspace_id:
+            # Preserve read-only visibility for legacy proposal-linked tasks.
+            # Mutation and verification paths still require explicit ownership.
+            visible_legacy = [
+                task for task in director.tasks.values()
+                if _task_in_workspace(task, request)
+            ]
+            known_ids = {task.id for task in scoped_tasks}
+            scoped_tasks.extend(task for task in visible_legacy if task.id not in known_ids)
+        return [safe(asdict(t)) for t in scoped_tasks]
 
     @app.get("/approvals")
     async def get_approvals(request: Request, credentials: Optional[HTTPAuthorizationCredentials] = None):
