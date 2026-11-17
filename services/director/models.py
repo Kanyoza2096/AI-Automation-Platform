@@ -338,7 +338,8 @@ class Decision:
     timestamp: datetime
     decision: str
     reason: str
-    confidence: float
+    # None means no calibrated decision-confidence estimate is available.
+    confidence: Optional[float]
     sector: Sector
     authority: Authority
     risk: Risk
