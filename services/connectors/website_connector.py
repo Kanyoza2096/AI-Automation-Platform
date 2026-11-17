@@ -137,9 +137,13 @@ class WebsiteConnector:
             return None
 
     def delete(self, post_id: str) -> ConnectorResult:
+        if "DELETE_ARTICLE" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="DELETE_ARTICLE capability is not enabled", outcome="failed")
         return self._mutate_template(self._delete_template, post_id, "delete")
 
     def edit(self, post_id: str, content: str) -> ConnectorResult:
+        if "UPDATE_ARTICLE" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="UPDATE_ARTICLE capability is not enabled", outcome="failed")
         return self._mutate_template(self._edit_template, post_id, "edit", {"content": content})
 
     def _mutate_template(self, template: str, post_id: str, operation: str, extra: Optional[dict[str, Any]] = None) -> ConnectorResult:
