@@ -1480,7 +1480,7 @@ class Director:
         ).strip().lower() in {"1", "true", "yes", "on"}
         if runtime_v2_enabled:
             # Feature-gated because production must first receive and verify
-            # migrations 175–177. The v2 RPC atomically creates the legacy
+            # migrations 175–180. The v2 RPC atomically creates the legacy
             # task/admission rows AND the versioned mission/event aggregate.
             from .orchestration.store import MissionRuntimeStore
             try:
