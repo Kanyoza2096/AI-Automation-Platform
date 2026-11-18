@@ -453,7 +453,11 @@ class JobStatsService:
         code = str(job.get("last_error_code") or "").upper()
         if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
             category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
-        elif "first-person" in evidence or "first person" in evidence:
+        elif (
+            "first-person" in evidence
+            or "first person" in evidence
+            or "first_person_violation" in evidence
+        ):
             category, action = "voice_compliance", "Regenerate or edit the copy to remove prohibited first-person language."
         elif "too short" in evidence or "minimum 80" in evidence or "caption" in evidence and "word" in evidence:
             category, action = "caption_quality", "Regenerate the caption to meet the configured minimum length and quality rules."
@@ -478,8 +482,9 @@ class JobStatsService:
         shared = self._get_shared_client()
         result = shared.execute(
             lambda c: c.table("automation_jobs")
-            .select("job_id,last_error_code,result,attempt_count,max_attempts")
+            .select("job_id,last_error_code,result,attempt_count,max_attempts,updated_at")
             .eq("status", "FAILED")
+            .order("updated_at", desc=True)
             .limit(max(1, min(int(limit), 500)))
             .execute()
         )
