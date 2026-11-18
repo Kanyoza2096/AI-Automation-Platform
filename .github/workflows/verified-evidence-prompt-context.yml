@@ -1,0 +1,40 @@
+name: Verified Evidence Prompt Context Tests
+
+on:
+  pull_request:
+    branches: [staging]
+    paths:
+      - "workflows/post_workflow.py"
+      - "tests/test_post_workflow_evidence_gate.py"
+      - ".github/workflows/verified-evidence-prompt-context.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verified-evidence-context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes pkg-config libcairo2-dev
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pytest>=8,<9"
+      - name: Compile changed workflow
+        run: python -m py_compile workflows/post_workflow.py
+      - name: Run evidence-gate regression tests
+        run: python -m pytest -q tests/test_post_workflow_evidence_gate.py
