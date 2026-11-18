@@ -411,9 +411,17 @@ class JobStatsService:
             failed = int(status_counts.get("FAILED", 0) or 0)
             active_jobs = int(stats.get("active_jobs", 0) or 0)
             oldest_minutes = float(stats.get("oldest_active_minutes", 0) or 0)
-        except (TypeError, ValueError):
-            stale = failed = active_jobs = 0
-            oldest_minutes = 0.0
+            if min(stale, failed, active_jobs) < 0 or oldest_minutes < 0:
+                raise ValueError("negative queue metric")
+        except (TypeError, ValueError, OverflowError) as exc:
+            # A malformed stats payload is not evidence of an empty queue.
+            # Fail closed rather than silently converting bad telemetry to zero.
+            return {
+                "status": "unknown",
+                "error": f"invalid_stats_payload: {type(exc).__name__}: {str(exc)[:200]}",
+                "stats": None,
+                "reason": "job statistics were returned but could not be interpreted safely",
+            }
 
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
 
