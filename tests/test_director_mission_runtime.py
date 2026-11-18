@@ -125,9 +125,9 @@ class FakeNativeAdapter:
     max_concurrency = 1
     timeout_seconds = 5.0
 
-    def __init__(self, engine_id, summary):
+    def __init__(self, engine_id, summary, capability="research.analyze"):
         self.engine_id = engine_id
-        self.capabilities = frozenset({"research.analyze"})
+        self.capabilities = frozenset({capability})
         self.summary = summary
         self.calls = []
 
@@ -155,7 +155,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
     store = MemoryMissionStore()
     registry = AdapterRegistry()
     researcher = FakeNativeAdapter("content_intelligence", "Research completed with evidence.")
-    reviewer = FakeNativeAdapter("meta_engine", "Independent review supports the finding.")
+    reviewer = FakeNativeAdapter("meta_engine", "Independent review supports the finding.", capability="review.analyze")
     registry.register(researcher)
     registry.register(reviewer)
     task_state_changes = []
@@ -236,6 +236,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         correlation_id="corr-runtime-1",
         round_number=1,
         context="Compare the cited evidence with the finding.",
+        recipient_capability="review.analyze",
     )
     answer = await runtime.answer_engine_question(
         mission_id=store.mission_id,
@@ -247,6 +248,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
     )
     assert answer.engine_id == "meta_engine"
     assert len(reviewer.calls) == 1
+    assert reviewer.calls[0].capability == "review.analyze"
     assert store.row["state_snapshot"]["pending_questions"] == {}
     task_evidence = store.row["state_snapshot"]["task_results"][store.task_id]["evidence_refs"]
     assert "source:content_intelligence" in task_evidence
