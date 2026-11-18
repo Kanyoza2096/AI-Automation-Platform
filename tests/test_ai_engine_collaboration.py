@@ -7,6 +7,18 @@ from fastapi import HTTPException
 from api.routers import ai_chat
 
 
+def test_collaboration_run_id_accepts_uuid_correlation_and_rejects_invalid_values():
+    import uuid
+
+    requested = str(uuid.uuid4())
+    assert ai_chat._resolve_collaboration_run_id(requested) == requested
+    assert uuid.UUID(ai_chat._resolve_collaboration_run_id()).version == 4
+    for invalid in ("not-a-uuid", 123, "x" * 65):
+        with pytest.raises(HTTPException) as error:
+            ai_chat._resolve_collaboration_run_id(invalid)
+        assert error.value.status_code == 422
+
+
 def test_collaboration_engine_allowlist_is_closed_and_deduplicated():
     assert ai_chat._normalize_collaboration_engines(["guardian", "ai_brain", "guardian"]) == [
         "guardian", "ai_brain"
