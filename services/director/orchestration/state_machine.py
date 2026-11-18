@@ -366,6 +366,8 @@ class MissionStateMachine:
             task_id = command.task_id or self._require_text(payload, "task_id")
             if task_id not in task_ids:
                 raise MissionTransitionRejected("task_not_in_mission")
+            if task_status.get(task_id) not in {"approval_required", "approved", "failed", "blocked"}:
+                raise MissionTransitionRejected("task_not_reassignable_from_current_state")
             engine_id = self._require_text(payload, "engine_id")
             capability = self._require_text(payload, "capability")
             previous = assignments.get(task_id, {})
@@ -381,8 +383,8 @@ class MissionStateMachine:
             to_engine = self._require_text(payload, "to_engine")
             if command.actor_type not in {"engine", "director"}:
                 raise MissionTransitionRejected("handoff_request_actor_invalid")
-            if task_id not in assignments:
-                raise MissionTransitionRejected("task_must_be_assigned_before_handoff")
+            if task_id not in assignments or task_status.get(task_id) != "executing":
+                raise MissionTransitionRejected("task_must_be_executing_before_handoff")
             if command.actor_type == "engine" and assignments[task_id].get("engine_id") != command.actor_id:
                 raise MissionTransitionRejected("handoff_request_engine_assignment_mismatch")
             if command.recipient_type != "engine" or command.recipient_id != to_engine:
