@@ -118,3 +118,10 @@ def test_database_rejects_malformed_source_urls_and_supersedes_unpromoted_cases(
     assert "^https?://[^/[:space:]?#]+" in promotion_migration
     assert "review_status IN ('pending', 'approved')" in promotion_migration
     assert "content_sha256 IS DISTINCT FROM current_hash" in promotion_migration
+
+
+def test_provisional_entry_ids_cannot_be_approved_as_source_provenance():
+    api_source = API_PATH.read_text()
+    migration = MIGRATION_PATH.read_text()
+    assert 'body.source_id.strip().startswith("unverified-entry:")' in api_source
+    assert "source_id NOT LIKE 'unverified-entry:%'" in migration
