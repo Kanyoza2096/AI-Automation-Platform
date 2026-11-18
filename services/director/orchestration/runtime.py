@@ -76,7 +76,8 @@ class MissionOrchestrationRuntime:
         round_number: int = 0,
         evidence_refs: Sequence[Mapping[str, Any]] = (),
     ) -> MissionRuntimeSnapshot:
-        return await self.state_machine.commit(
+        event_payload = dict(payload or {})
+        snapshot = await self.state_machine.commit(
             self.store,
             current,
             MissionEventCommand(
@@ -85,7 +86,7 @@ class MissionOrchestrationRuntime:
                 actor_type=actor_type,
                 actor_id=actor_id,
                 correlation_id=correlation_id,
-                payload=dict(payload or {}),
+                payload=event_payload,
                 task_id=task_id,
                 recipient_type=recipient_type,
                 recipient_id=recipient_id,
@@ -95,6 +96,39 @@ class MissionOrchestrationRuntime:
                 evidence_refs=tuple(evidence_refs),
             ),
         )
+        sync_rules = {
+            "task.started": ("executing", {"approved"}),
+            "task.progress": ("executing", {"executing"}),
+            "task.completed": ("completed", {"executing"}),
+            "task.failed": ("failed", {"executing"}),
+            "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
+            "task.verified": ("verified", {"completed"}),
+            "task.reassigned": ("approval_required", {"failed", "blocked", "flagged"}),
+            "task.handoff.accepted": ("approval_required", {"executing"}),
+        }
+        rule = sync_rules.get(event_type)
+        if task_id and rule:
+            target_status, expected_statuses = rule
+            result = None
+            error = None
+            if event_type == "task.completed":
+                result = {
+                    key: event_payload.get(key)
+                    for key in ("summary", "findings", "recommendations", "limitations", "confidence")
+                    if key in event_payload
+                }
+            elif event_type in {"task.failed", "task.blocked"}:
+                error = str(event_payload.get("reason") or event_type)[:2000]
+            await self.store.sync_workspace_task_status(
+                task_id=task_id,
+                workspace_id=str(current.workspace_id),
+                mission_id=current.mission_id,
+                target_status=target_status,
+                expected_statuses=tuple(expected_statuses),
+                result=result,
+                error=error,
+            )
+        return snapshot
 
     async def assign_task(
         self,
@@ -112,6 +146,11 @@ class MissionOrchestrationRuntime:
         if capability not in adapter.capabilities:
             raise MissionTransitionRejected("engine_capability_not_registered")
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task_row = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task_row or task_row.get("status") != "approval_required":
+            raise MissionTaskNotReady("canonical_task_not_awaiting_approval")
         return await self._commit(
             current,
             event_type="task.assigned",
@@ -134,6 +173,15 @@ class MissionOrchestrationRuntime:
         correlation_id: str,
     ) -> MissionRuntimeSnapshot:
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task_row = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if (
+            not task_row
+            or task_row.get("status") != "approved"
+            or not task_row.get("payload", {}).get("approved_by")
+        ):
+            raise MissionTaskNotReady("canonical_director_approval_not_persisted")
         return await self._commit(
             current,
             event_type="task.approved",
@@ -182,6 +230,15 @@ class MissionOrchestrationRuntime:
         timeout_seconds: float | None = None,
     ) -> EngineContribution:
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task_row = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if (
+            not task_row
+            or task_row.get("status") != "approved"
+            or not task_row.get("payload", {}).get("approved_by")
+        ):
+            raise MissionTaskNotReady("canonical_director_approval_not_persisted")
         state = dict(current.state_snapshot or {})
         assignments = dict(state.get("task_assignments") or {})
         assignment = assignments.get(task_id)
@@ -347,7 +404,7 @@ class MissionOrchestrationRuntime:
         refs = [
             {"ref": str(item.get("ref"))}
             for item in (state.get("evidence_refs") or [])
-            if isinstance(item, Mapping) and item.get("ref")
+            if isinstance(item, Mapping) and item.get("ref") and item.get("task_id") == task_id
         ]
         return await self._commit(
             current,
@@ -469,6 +526,7 @@ class MissionOrchestrationRuntime:
                 actor_type="engine",
                 actor_id=recipient_id,
                 correlation_id=correlation_id,
+                task_id=task_id,
                 evidence_refs=refs,
                 payload={"evidence_count": len(refs), "in_reply_to": question_message_id},
             )
