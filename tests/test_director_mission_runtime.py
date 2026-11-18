@@ -1,13 +1,13 @@
 import copy
-from datetime import datetime, timezone
-
 import pytest
 
 from services.director.orchestration import (
     AdapterRegistry,
     EngineContribution,
     MissionOrchestrationRuntime,
+    MissionRuntimeNotFound,
     MissionStateMachine,
+    MissionTaskNotReady,
 )
 
 
@@ -173,7 +173,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         correlation_id="corr-runtime-1",
     )
 
-    with pytest.raises(Exception, match="canonical_director_approval_not_persisted"):
+    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
         await runtime.approve_task(
             mission_id=store.mission_id,
             workspace_id=store.workspace_id,
@@ -284,7 +284,7 @@ async def test_runtime_cannot_assign_task_to_unregistered_engine_or_cross_worksp
             correlation_id="corr-runtime-2",
         )
 
-    with pytest.raises(Exception, match="workspace_mission_not_found"):
+    with pytest.raises(MissionRuntimeNotFound, match="workspace_mission_not_found"):
         await runtime.assign_task(
             mission_id=store.mission_id,
             workspace_id="another-workspace",
