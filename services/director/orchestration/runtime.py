@@ -79,12 +79,38 @@ class MissionOrchestrationRuntime:
         evidence_refs: Sequence[Mapping[str, Any]] = (),
     ) -> MissionRuntimeSnapshot:
         event_payload = dict(payload or {})
-        sync_event_types = {
-            "task.started", "task.progress", "task.completed", "task.failed",
-            "task.blocked", "task.verified", "task.reassigned", "task.handoff.accepted",
+        sync_rules = {
+            "task.started": ("executing", {"approved"}),
+            "task.progress": ("executing", {"executing"}),
+            "task.completed": ("completed", {"executing"}),
+            "task.failed": ("failed", {"executing"}),
+            "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
+            "task.verified": ("verified", {"completed"}),
+            "task.reassigned": ("approval_required", {"approval_required", "approved", "failed", "blocked", "flagged"}),
+            "task.handoff.accepted": ("approval_required", {"executing"}),
         }
-        if task_id and event_type in sync_event_types and self.task_state_callback is None:
-            raise MissionTaskNotReady("runtime_task_state_callback_required")
+        rule = sync_rules.get(event_type)
+        task_sync = None
+        callback_result = None
+        callback_error = None
+        if task_id and rule:
+            if self.task_state_callback is None:
+                raise MissionTaskNotReady("runtime_task_state_callback_required")
+            target_status, expected_statuses = rule
+            if event_type == "task.completed":
+                callback_result = {
+                    key: event_payload.get(key)
+                    for key in ("summary", "findings", "recommendations", "limitations", "confidence")
+                    if key in event_payload
+                }
+            elif event_type in {"task.failed", "task.blocked"}:
+                callback_error = str(event_payload.get("reason") or event_type)[:2000]
+            task_sync = {
+                "target_status": target_status,
+                "expected_statuses": sorted(expected_statuses),
+                "result": callback_result,
+                "error": callback_error,
+            }
         snapshot = await self.state_machine.commit(
             self.store,
             current,
@@ -102,41 +128,11 @@ class MissionOrchestrationRuntime:
                 thread_id=thread_id,
                 round_number=round_number,
                 evidence_refs=tuple(evidence_refs),
+                task_sync=task_sync,
             ),
         )
-        sync_rules = {
-            "task.started": ("executing", {"approved"}),
-            "task.progress": ("executing", {"executing"}),
-            "task.completed": ("completed", {"executing"}),
-            "task.failed": ("failed", {"executing"}),
-            "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
-            "task.verified": ("verified", {"completed"}),
-            "task.reassigned": ("approval_required", {"approval_required", "approved", "failed", "blocked", "flagged"}),
-            "task.handoff.accepted": ("approval_required", {"executing"}),
-        }
-        rule = sync_rules.get(event_type)
-        if task_id and rule:
-            target_status, expected_statuses = rule
-            result = None
-            error = None
-            if event_type == "task.completed":
-                result = {
-                    key: event_payload.get(key)
-                    for key in ("summary", "findings", "recommendations", "limitations", "confidence")
-                    if key in event_payload
-                }
-            elif event_type in {"task.failed", "task.blocked"}:
-                error = str(event_payload.get("reason") or event_type)[:2000]
-            await self.store.sync_workspace_task_status(
-                task_id=task_id,
-                workspace_id=str(current.workspace_id),
-                mission_id=current.mission_id,
-                target_status=target_status,
-                expected_statuses=tuple(expected_statuses),
-                result=result,
-                error=error,
-            )
-            self.task_state_callback(task_id, target_status, result, error)
+        if task_id and rule and self.task_state_callback is not None:
+            self.task_state_callback(task_id, task_sync["target_status"], callback_result, callback_error)
         return snapshot
 
     async def assign_task(
