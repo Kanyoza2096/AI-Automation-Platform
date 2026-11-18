@@ -637,12 +637,13 @@ class GenerateContentStep(Step):
                     ).hexdigest()
                     result = repaired_result
                     candidate_caption = str(result.get("caption") or "")
-                    repair_error = str(result.get("error") or "")
-                    repair_code = str(result.get("error_code") or "")
+                    # Normalize both the top-level result and MediaArtifact
+                    # here as well: ContentEngine may expose a later retry's
+                    # caption-quality failure on the artifact only.
+                    repair_error = self._caption_quality_failure_reason(result) or ""
                     still_caption_quality_failure = (
                         result.get("publishable") is False
-                        and repair_code == "CONTENT_PIPELINE_FAILED"
-                        and "caption_quality:" in repair_error
+                        and bool(repair_error)
                         and candidate_caption.strip()
                     )
                     logger.info(
