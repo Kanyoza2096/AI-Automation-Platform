@@ -104,6 +104,82 @@ CREATE TRIGGER director_mission_events_append_only_guard
     BEFORE UPDATE OR DELETE ON public.director_mission_events
     FOR EACH ROW EXECUTE FUNCTION public.reject_director_mission_event_mutation();
 
+CREATE OR REPLACE FUNCTION public.guard_director_mission_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+BEGIN
+    IF NEW.version <> 0 THEN
+        RAISE EXCEPTION 'director_mission_must_start_at_version_zero';
+    END IF;
+    RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS director_missions_initial_version_guard ON public.director_missions;
+CREATE TRIGGER director_missions_initial_version_guard
+    BEFORE INSERT ON public.director_missions
+    FOR EACH ROW EXECUTE FUNCTION public.guard_director_mission_insert();
+
+CREATE OR REPLACE FUNCTION public.guard_director_mission_state_update()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+BEGIN
+    IF NEW.mission_id <> OLD.mission_id
+       OR NEW.scope_type <> OLD.scope_type
+       OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+       OR NEW.plan_id <> OLD.plan_id
+       OR NEW.admission_idempotency_key IS DISTINCT FROM OLD.admission_idempotency_key
+       OR NEW.created_at <> OLD.created_at THEN
+        RAISE EXCEPTION 'director_mission_identity_is_immutable';
+    END IF;
+    IF NEW.version <> OLD.version + 1 THEN
+        RAISE EXCEPTION 'director_mission_state_requires_next_version';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM public.director_mission_events
+         WHERE mission_id = NEW.mission_id
+           AND sequence_number = NEW.version
+    ) THEN
+        RAISE EXCEPTION 'director_mission_state_requires_matching_event';
+    END IF;
+    RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS director_missions_state_event_guard ON public.director_missions;
+CREATE TRIGGER director_missions_state_event_guard
+    BEFORE UPDATE ON public.director_missions
+    FOR EACH ROW EXECUTE FUNCTION public.guard_director_mission_state_update();
+
+CREATE OR REPLACE FUNCTION public.guard_director_mission_event_insert()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $
+DECLARE
+    mission_row public.director_missions%ROWTYPE;
+BEGIN
+    SELECT * INTO mission_row
+      FROM public.director_missions
+     WHERE mission_id = NEW.mission_id;
+    IF NOT FOUND
+       OR mission_row.scope_type <> NEW.scope_type
+       OR mission_row.workspace_id IS DISTINCT FROM NEW.workspace_id THEN
+        RAISE EXCEPTION 'director_mission_event_scope_mismatch';
+    END IF;
+    IF NEW.sequence_number <> mission_row.version + 1 THEN
+        RAISE EXCEPTION 'director_mission_event_sequence_mismatch';
+    END IF;
+    RETURN NEW;
+END;
+$;
+
+DROP TRIGGER IF EXISTS director_mission_events_scope_guard ON public.director_mission_events;
+CREATE TRIGGER director_mission_events_scope_guard
+    BEFORE INSERT ON public.director_mission_events
+    FOR EACH ROW EXECUTE FUNCTION public.guard_director_mission_event_insert();
+
 CREATE OR REPLACE FUNCTION public.append_director_mission_event(
     p_scope_type TEXT,
     p_workspace_id TEXT,
