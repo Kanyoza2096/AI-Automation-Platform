@@ -2450,6 +2450,8 @@ class Director:
         task = self.tasks.get(task_id)
         if task is None:
             raise KeyError(f"Task {task_id} not found")
+        if task.status == Status.APPROVED and task.approved_by == actor:
+            return task
         if task.status not in (Status.APPROVAL, Status.FLAGGED):
             raise ValueError("Task is not awaiting approval")
         task.status = Status.APPROVED
