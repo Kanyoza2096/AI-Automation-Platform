@@ -785,6 +785,7 @@ def test_director_mission_state_machine_requires_governed_approval_and_verificat
     snapshot = started.next_snapshot
     completed = machine.prepare(snapshot, command(
         "task.completed", actor_type="engine", actor_id="content_intelligence", key="complete-1",
+        payload={"summary": "Evidence-backed research completed."},
     ))
     snapshot = completed.next_snapshot
     verified = machine.prepare(snapshot, command(
@@ -894,7 +895,7 @@ def test_director_mission_state_machine_pauses_at_budget_ceiling_and_preserves_d
         payload={"usage_tokens": 100, "provider_calls": 1},
     )
     paused = machine.prepare(snapshot, usage).next_snapshot
-    assert paused.status == "paused"
+    assert paused.status == "awaiting_review"
     assert paused.state_snapshot["budget"]["exhausted"] is True
     with pytest.raises(MissionTransitionRejected, match="mission_budget_exhausted"):
         machine.prepare(paused, MissionEventCommand(
