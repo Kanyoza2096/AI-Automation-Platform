@@ -307,6 +307,9 @@ class MissionStateMachine:
                         return []
                     return [str(value).strip()[:width] for value in values[:limit] if str(value).strip()]
 
+                summary = str(payload.get("summary") or "").strip()
+                if not summary:
+                    raise MissionTransitionRejected("task_completion_summary_required")
                 confidence = payload.get("confidence")
                 if confidence is not None and (
                     isinstance(confidence, bool)
@@ -317,15 +320,15 @@ class MissionStateMachine:
                 task_results[task_id] = {
                     "engine_id": assignments[task_id]["engine_id"],
                     "capability": assignments[task_id]["capability"],
-                    "summary": str(payload.get("summary") or "").strip()[:700],
-                    "findings": _bounded_strings("findings", limit=3, width=160),
-                    "recommendations": _bounded_strings("recommendations", limit=2, width=140),
-                    "limitations": _bounded_strings("limitations", limit=2, width=100),
+                    "summary": summary[:500],
+                    "findings": _bounded_strings("findings", limit=3, width=120),
+                    "recommendations": _bounded_strings("recommendations", limit=2, width=120),
+                    "limitations": _bounded_strings("limitations", limit=2, width=80),
                     "evidence_refs": [
-                        str(item.get("ref"))[:100]
+                        str(item.get("ref"))[:80]
                         for item in state["evidence_refs"]
                         if isinstance(item, Mapping) and item.get("ref")
-                    ][:4],
+                    ][:3],
                     "confidence": float(confidence) if confidence is not None else None,
                     "completed_at": str(payload.get("completed_at") or "")[:64],
                 }
