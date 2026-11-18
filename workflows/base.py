@@ -124,6 +124,9 @@ class WorkflowResult:
             "review_diagnostics", "decision", "rationale", "claims",
             "unsupported_claims", "evidence_coverage", "scores", "request_id",
             "approved", "support_status", "source_ids", "claim",
+            "provider", "model", "assessed", "supported", "unsupported",
+            "uncertain", "supported_rate", "claim_coverage", "brand_relevance",
+            "originality", "audience_value", "genericity",
         }
 
         def safe_detail(detail: Any) -> dict[str, Any]:
