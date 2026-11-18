@@ -238,7 +238,7 @@ BEGIN
             promoted_event.workspace_id, promoted_event.brand_id, 'revoked',
             'system:knowledge-content-change', promoted_event.content_sha256,
             promoted_event.source_id, promoted_event.source_url,
-            OLD.metadata, NEW.metadata,
+            COALESCE(OLD.metadata, '{}'::jsonb), COALESCE(NEW.metadata, '{}'::jsonb),
             'Promoted evidence invalidated because knowledge content changed'
         )
         ON CONFLICT (case_id, event_type) DO NOTHING;
