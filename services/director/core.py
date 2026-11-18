@@ -1475,17 +1475,40 @@ class Director:
             "step_parameters": step_parameters,
             "task_ids": [task.id for task in tasks],
         }, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
-        persist = getattr(self.store, "stage_mission_admission", None)
-        if not callable(persist):
-            raise RuntimeError("durable_mission_admission_store_unavailable")
-        receipt = await persist(
-            workspace_id=workspace_id,
-            idempotency_key=idempotency_key,
-            plan_id=str(plan_id),
-            mission_id=mission_id,
-            request_fingerprint=request_fingerprint,
-            tasks=persisted_rows,
-        )
+        runtime_v2_enabled = str(
+            os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_V2", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if runtime_v2_enabled:
+            # Feature-gated because production must first receive and verify
+            # migrations 175–177. The v2 RPC atomically creates the legacy
+            # task/admission rows AND the versioned mission/event aggregate.
+            from .orchestration.store import MissionRuntimeStore
+            try:
+                receipt = await MissionRuntimeStore(self.store).admit_workspace_mission(
+                    workspace_id=workspace_id,
+                    idempotency_key=idempotency_key,
+                    plan_id=str(plan_id),
+                    mission_id=mission_id,
+                    request_fingerprint=request_fingerprint,
+                    tasks=persisted_rows,
+                )
+            except Exception as exc:
+                log.exception("Director v2 mission admission failed")
+                raise RuntimeError("durable_mission_runtime_admission_unavailable") from exc
+        else:
+            # Backward-compatible legacy admission remains the default until
+            # the v2 schema and runtime are explicitly enabled per environment.
+            persist = getattr(self.store, "stage_mission_admission", None)
+            if not callable(persist):
+                raise RuntimeError("durable_mission_admission_store_unavailable")
+            receipt = await persist(
+                workspace_id=workspace_id,
+                idempotency_key=idempotency_key,
+                plan_id=str(plan_id),
+                mission_id=mission_id,
+                request_fingerprint=request_fingerprint,
+                tasks=persisted_rows,
+            )
         if not isinstance(receipt, dict):
             raise RuntimeError("mission_admission_persistence_unavailable")
         if receipt.get("error") == "mission_idempotency_conflict":
@@ -1517,6 +1540,7 @@ class Director:
             "execution_permitted": False,
             "approval_required": True,
             "governance_required": True,
+            "durable_runtime": "v2" if runtime_v2_enabled else "legacy",
         }
 
     async def verify_strategic_plan(self, plan: dict, max_age_seconds: int = 300) -> dict:
