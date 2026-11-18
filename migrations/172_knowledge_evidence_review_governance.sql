@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS public.knowledge_evidence_review_cases (
                 AND reviewed_at IS NOT NULL
                 AND source_id IS NOT NULL AND length(btrim(source_id)) > 0
                 AND source_id NOT LIKE 'unverified-entry:%'
-                AND source_url IS NOT NULL AND source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?
+                AND source_url IS NOT NULL AND source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?$'
             )
         ),
     CONSTRAINT knowledge_evidence_review_decision_has_reviewer
