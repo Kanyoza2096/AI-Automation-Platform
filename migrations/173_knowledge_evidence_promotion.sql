@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS public.knowledge_evidence_promotion_events (
     actor_id TEXT NOT NULL CHECK (length(btrim(actor_id)) > 0),
     content_sha256 TEXT NOT NULL CHECK (content_sha256 ~ '^[0-9a-f]{64}$'),
     source_id TEXT NOT NULL,
-    source_url TEXT NOT NULL CHECK (source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?
+    source_url TEXT NOT NULL CHECK (source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?$'),
     metadata_before JSONB NOT NULL DEFAULT '{}'::jsonb,
     metadata_after JSONB NOT NULL DEFAULT '{}'::jsonb,
     reason TEXT,
@@ -99,7 +99,7 @@ BEGIN
     IF review_case.source_id IS NULL
        OR review_case.source_id LIKE 'unverified-entry:%'
        OR review_case.source_url IS NULL
-       OR review_case.source_url !~ '^https?://[^/[:space:]?#]+([/?#].*)?
+       OR review_case.source_url !~ '^https?://[^/[:space:]?#]+([/?#].*)?$' THEN
         RAISE EXCEPTION 'Approved case is missing stable source provenance';
     END IF;
 
@@ -341,7 +341,7 @@ BEGIN
     IF review_case.source_id IS NULL
        OR review_case.source_id LIKE 'unverified-entry:%'
        OR review_case.source_url IS NULL
-       OR review_case.source_url !~ '^https?://' THEN
+       OR review_case.source_url !~ '^https?://[^/[:space:]?#]+([/?#].*)?$' THEN
         RAISE EXCEPTION 'Approved case is missing stable source provenance';
     END IF;
 
@@ -742,7 +742,7 @@ BEGIN
     IF review_case.source_id IS NULL
        OR review_case.source_id LIKE 'unverified-entry:%'
        OR review_case.source_url IS NULL
-       OR review_case.source_url !~ '^https?://' THEN
+       OR review_case.source_url !~ '^https?://[^/[:space:]?#]+([/?#].*)?$' THEN
         RAISE EXCEPTION 'Approved case is missing stable source provenance';
     END IF;
 
