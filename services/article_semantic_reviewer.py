@@ -22,6 +22,7 @@ class ArticleSemanticReviewer:
             "decision": None,
             "evidence_coverage": {"assessed": 0, "supported": 0, "unsupported": 0, "uncertain": 0, "supported_rate": 0.0},
             "unsupported_claims": [],
+            "uncertain_claims": [],
             "request_id": request_id,
             "provider": provider,
             "model": model,
