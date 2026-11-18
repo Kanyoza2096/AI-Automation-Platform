@@ -109,3 +109,12 @@ def test_promotion_rpc_is_audited_idempotent_and_content_changes_revoke():
     assert "'verified', false" in source
     assert "system:knowledge-content-change" in source
     assert "GRANT EXECUTE ON FUNCTION public.promote_approved_knowledge_evidence(UUID, TEXT)" in source
+
+
+def test_database_rejects_malformed_source_urls_and_supersedes_unpromoted_cases():
+    review_migration = MIGRATION_PATH.read_text()
+    promotion_migration = (ROOT / "migrations" / "173_knowledge_evidence_promotion.sql").read_text()
+    assert "^https?://[^/[:space:]?#]+" in review_migration
+    assert "^https?://[^/[:space:]?#]+" in promotion_migration
+    assert "review_status IN ('pending', 'approved')" in promotion_migration
+    assert "content_sha256 IS DISTINCT FROM current_hash" in promotion_migration
