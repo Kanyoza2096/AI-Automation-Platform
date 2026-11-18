@@ -485,7 +485,7 @@ async def submit_knowledge_evidence_review(
                 .update({
                     "review_status": "pending", "reviewed_by": None,
                     "reviewed_at": None, "review_notes": None,
-                    "submitted_by": actor, "source_id": source_id,
+                    "source_id": source_id,
                     "source_url": source_url,
                 }).eq("id", case["id"]).select("*").single().execute()
             )
