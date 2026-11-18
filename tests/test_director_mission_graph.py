@@ -30,6 +30,26 @@ async def test_mission_dependency_is_persisted_and_graph_exposes_edge():
 @pytest.mark.asyncio
 async def test_workspace_ownership_survives_task_persistence_and_restore():
     director = Director(supabase_client=None)
+    from dataclasses import asdict
+
+    class MemoryTaskStore:
+        def __init__(self):
+            self.rows = []
+
+        async def save_task(self, task):
+            self.rows = [row for row in self.rows if row["id"] != task.id]
+            self.rows.append({
+                "id": task.id,
+                "scope_type": task.scope_type,
+                "workspace_id": task.workspace_id,
+                "payload": asdict(task),
+            })
+            return True
+
+        async def list_tasks(self, limit=200, **kwargs):
+            return list(self.rows)
+
+    director.store = MemoryTaskStore()
     task = Task(
         id="workspace-task", sector=Sector.SELF, description="workspace-task",
         capability="self_diagnostic", authority=Authority.SUGGEST, risk=Risk.LOW,
@@ -175,6 +195,36 @@ class _MissionAdmissionStore:
         return brand_id == "brand-owned" and workspace_id == "workspace-a"
 
 
+
+def _bind_stageable_health_capability(director, monkeypatch):
+    from types import SimpleNamespace
+
+    capability = SimpleNamespace(
+        name="test_brand_health",
+        sector=Sector.BRANDS,
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        parameter_schema={
+            "type": "object",
+            "properties": {"brand_id": {"type": "string"}},
+            "required": ["brand_id"],
+            "additionalProperties": False,
+        },
+        target_param="brand_id",
+        proposal_capable=False,
+        mission_staging_mode="read_only_review",
+    )
+    director.capabilities = {"test_brand_health": capability}
+    director.capability_binding_report["test_brand_health"] = "bound"
+    monkeypatch.setattr(director, "capability_catalog", lambda: {
+        "test_brand_health": {
+            "mission_staging_ready": True,
+            "runtime_binding_confirmed": True,
+            "binding_status": "bound",
+        }
+    })
+
+
 def _stageable_health_plan():
     return {
         "plan_id": "plan-health-1",
@@ -182,7 +232,7 @@ def _stageable_health_plan():
         "source_context_generated_at": "2026-11-16T08:00:00+00:00",
         "steps": [{
             "step_id": "health",
-            "capability": "calculate_brand_health",
+            "capability": "test_brand_health",
             "sector": "brands",
             "objective": "Assess the selected workspace brand",
             "target": "Workspace-owned brand health",
@@ -198,8 +248,7 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
     director = Director(supabase_client=None)
     def bound_brand_health(params):
         return {"ok": True}
-    director.bind_capability("calculate_brand_health", bound_brand_health)
-    director.capability_binding_report["calculate_brand_health"] = "bound"
+    _bind_stageable_health_capability(director, monkeypatch)
     director.store = _MissionAdmissionStore()
     async def load_plan(plan_id):
         return _stageable_health_plan()
@@ -235,11 +284,9 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
 @pytest.mark.asyncio
 async def test_strategic_mission_admission_rejects_unlisted_params_and_unowned_brand(monkeypatch):
     director = Director(supabase_client=None)
-    director.bind_capability("calculate_brand_health", lambda params: {"ok": True})
-    director.capability_binding_report["calculate_brand_health"] = "bound"
+    _bind_stageable_health_capability(director, monkeypatch)
     director.store = _MissionAdmissionStore()
     plan = _stageable_health_plan()
-    plan["steps"][0].update(capability="calculate_brand_health", sector="brands")
     async def load_plan(plan_id):
         return plan
     monkeypatch.setattr(director, "load_strategic_plan", load_plan)
@@ -278,8 +325,7 @@ async def test_strategic_mission_admission_can_use_v2_runtime_atomically(monkeyp
     from services.director.orchestration import store as runtime_store_module
 
     director = Director(supabase_client=None)
-    director.bind_capability("calculate_brand_health", lambda params: {"ok": True})
-    director.capability_binding_report["calculate_brand_health"] = "bound"
+    _bind_stageable_health_capability(director, monkeypatch)
 
     class LegacyStoreMustNotBeUsed(_MissionAdmissionStore):
         async def stage_mission_admission(self, **kwargs):
