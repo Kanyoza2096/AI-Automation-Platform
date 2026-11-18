@@ -510,8 +510,8 @@ class JobStatsService:
         policy["publication_replay_allowed"] = False
         return policy
 
-    @staticmethod
-    def _classify_failed_job(job: dict) -> dict:
+    @classmethod
+    def _classify_failed_job(cls, job: dict) -> dict:
         """Classify a terminal failure from persisted, structured evidence."""
         result = job.get("result") if isinstance(job.get("result"), dict) else {}
         steps = result.get("failed_steps") if isinstance(result.get("failed_steps"), list) else []
@@ -545,7 +545,7 @@ class JobStatsService:
             "attempt_count": job.get("attempt_count"),
             "max_attempts": job.get("max_attempts"),
             "recommended_action": action,
-            "recovery_policy": self._recovery_policy(
+            "recovery_policy": cls._recovery_policy(
                 category, job.get("attempt_count"), job.get("max_attempts")
             ),
         }
