@@ -11,6 +11,7 @@ from api.v1_models import *
 from api.v1_helpers import *
 from api.v1_stores import *
 from config.settings import settings
+from api.chat_action_proposals import build_chat_action_proposal
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -908,6 +909,29 @@ async def ai_chat(
         if not result.ok:
             raise HTTPException(status_code=503, detail="AI conversation provider temporarily unavailable")
         reply = result.text
+
+    # A conversational engine may prepare a narrow, typed proposal. It cannot
+    # dispatch it: the UI must submit a server-mapped command through KCPG.
+    action_proposal = await build_chat_action_proposal(
+        gateway,
+        workspace_id=workspace_id,
+        engine=engine,
+        message=body.message,
+        conversation_context="\\n".join(turns),
+    )
+    if action_proposal and action_proposal.get("status") == "ready":
+        reply = (
+            str(reply or "").rstrip()
+            + "\\n\\n**Governed handoff proposal prepared — not executed.** "
+            + str(action_proposal.get("governance_note") or "")
+        )
+    elif action_proposal and action_proposal.get("status") == "needs_clarification":
+        reply = (
+            str(reply or "").rstrip()
+            + "\\n\\n**Before I prepare a governed handoff:** "
+            + str(action_proposal.get("clarifying_question") or "")
+        )
+
     message_time = datetime.now(timezone.utc).isoformat()
     user_message = {
         "id": str(uuid.uuid4()), "conversation_id": conversation_id,
@@ -934,6 +958,7 @@ async def ai_chat(
         "model": result.model or "ai_provider",
         "provider": result.provider,
         "engine": engine,
+        "action_proposal": action_proposal,
         "tokens_used": assistant_message["tokens_used"],
         "request_id": result.request_id,
         "conversation_id": conversation_id,
