@@ -158,3 +158,12 @@ def test_migrations_have_single_definitions_and_exact_extension_qualification():
     assert promotion.count("CREATE OR REPLACE FUNCTION public.") == 3
     assert "extensions.extensions.digest" not in review + promotion
     assert "SET search_path = public" not in review + promotion
+
+
+def test_evidence_audit_ledgers_revoke_service_role_mutation_privileges():
+    migration = (ROOT / "migrations" / "174_knowledge_evidence_audit_append_only_privileges.sql").read_text()
+    assert "FROM PUBLIC, anon, authenticated, service_role" in migration
+    assert "GRANT SELECT, INSERT" in migration
+    assert "UPDATE" not in migration
+    assert "DELETE" not in migration
+    assert "TRUNCATE" not in migration
