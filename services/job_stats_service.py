@@ -140,8 +140,10 @@ class JobStatsService:
         self._cache: dict = {}
         self._cache_time: float = 0.0
         self._lock = threading.Lock()
-        # A failed stats query must never be represented as an empty, healthy queue.
-        self._last_error: Optional[str] = None
+        # Query errors are per-caller: concurrent health probes must not clear
+        # or overwrite one another's failure state.
+        self._error_state = threading.local()
+        self._last_error = None
 
         # v4.1: Shared client with semaphore
         self._shared_client: Optional[SharedSupabaseClient] = None
@@ -156,6 +158,14 @@ class JobStatsService:
 
         if self._event_bus is not None:
             self._subscribe_to_events()
+
+    @property
+    def _last_error(self) -> Optional[str]:
+        return getattr(self._error_state, "value", None)
+
+    @_last_error.setter
+    def _last_error(self, value: Optional[str]) -> None:
+        self._error_state.value = value
 
     # ------------------------------------------------------------------
     # Dependency Injection
