@@ -482,8 +482,6 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("evidence_submission_requires_engine_actor")
             if not command.evidence_refs:
                 raise MissionTransitionRejected("evidence_references_required")
-            if command.task_id is not None and (command.task_id not in assignments or assignments[command.task_id].get("engine_id") != command.actor_id):
-                raise MissionTransitionRejected("evidence_engine_assignment_mismatch")
             if command.task_id and command.task_id not in task_ids:
                 raise MissionTransitionRejected("evidence_task_not_in_mission")
             if command.task_id and command.actor_type == "engine":
@@ -496,12 +494,16 @@ class MissionStateMachine:
                 )
                 if command.actor_id != assigned_engine and not is_pending_collaborator:
                     raise MissionTransitionRejected("evidence_engine_not_authorized_for_task")
-            known = {str(item.get("ref")) for item in state["evidence_refs"] if isinstance(item, Mapping)}
+            known = {
+                (str(item.get("ref")), item.get("task_id"))
+                for item in state["evidence_refs"] if isinstance(item, Mapping)
+            }
             for item in command.evidence_refs:
                 ref = str(item.get("ref") or "").strip()
                 if not ref:
                     raise MissionTransitionRejected("evidence_reference_id_required")
-                if ref not in known:
+                evidence_key = (ref, command.task_id)
+                if evidence_key not in known:
                     if len(state["evidence_refs"]) >= 50:
                         raise MissionTransitionRejected("mission_evidence_reference_limit_exceeded")
                     state["evidence_refs"].append({
@@ -509,7 +511,7 @@ class MissionStateMachine:
                         "source_engine": command.actor_id[:128],
                         "task_id": command.task_id,
                     })
-                    known.add(ref)
+                    known.add(evidence_key)
             if command.task_id in task_results:
                 task_results[command.task_id]["evidence_refs"] = [
                     str(item.get("ref"))[:80]
