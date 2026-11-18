@@ -304,7 +304,15 @@ class KnowledgeContextStep(Step):
                 ).strip()
                 if not source_id:
                     continue
-                facts.append(text)
+                verified = metadata.get("verified") is True
+                # Make provenance visible to the model. The deterministic
+                # evidence gate remains authoritative, but without this
+                # annotation the model sees unverified passages as plain
+                # prose and may invent empirical claims that the gate must
+                # reject later.
+                facts.append(
+                    f"[source_id={source_id};verified={'true' if verified else 'false'}]\\n{text}"
+                )
                 evidence.append({
                     "source_id": source_id,
                     "text": text,
