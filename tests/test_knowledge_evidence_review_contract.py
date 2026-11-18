@@ -141,3 +141,20 @@ def test_review_state_transitions_require_audited_reviewer_identity():
     assert "Pending evidence cases may only change through a decision or supersession" in review
     assert "Evidence review decisions require reviewer identity and timestamp" in review
     assert '"reviewed_by": actor' in (ROOT / "api" / "routers" / "knowledge.py").read_text()
+
+
+def test_review_submission_and_decision_are_concurrency_safe():
+    source = API_PATH.read_text()
+    assert "concurrent submitter may have won the unique" in source
+    assert "raced.data[0]" in source
+    assert '.eq("id", case_id).eq("review_status", "pending").select("*").execute()' in source
+    assert '_ok({"review_case": _evidence_review_payload(changed.data[0])' in source
+
+
+def test_migrations_have_single_definitions_and_exact_extension_qualification():
+    review = MIGRATION_PATH.read_text()
+    promotion = (ROOT / "migrations" / "173_knowledge_evidence_promotion.sql").read_text()
+    assert review.count("CREATE OR REPLACE FUNCTION public.") == 3
+    assert promotion.count("CREATE OR REPLACE FUNCTION public.") == 3
+    assert "extensions.extensions.digest" not in review + promotion
+    assert "SET search_path = public" not in review + promotion
