@@ -1,4 +1,5 @@
 import copy
+from datetime import datetime, timezone
 import pytest
 
 from services.director.orchestration import (
@@ -9,7 +10,10 @@ from services.director.orchestration import (
     MissionRuntimeStoreError,
     MissionRuntimeNotFound,
     MissionStateMachine,
+    MissionTaskContext,
     MissionTaskNotReady,
+    build_default_adapter_registry,
+    ConditionEngineMissionAdapter,
 )
 
 
@@ -431,3 +435,85 @@ def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_st
 
     import asyncio
     asyncio.run(run())
+
+
+
+@pytest.mark.asyncio
+async def test_condition_engine_adapter_is_workspace_verified_advisory_only():
+    now = datetime.now(timezone.utc).isoformat()
+
+    class FakeConditionEngine:
+        def __init__(self):
+            self.calls = []
+
+        def calculate_brand_health(self, brand_id, *, emit_event=True, workspace_id=None):
+            self.calls.append((brand_id, emit_event, workspace_id))
+            return {
+                "score": 74.5,
+                "status": "stable",
+                "components": {"engagement": {"combined": 72.0}},
+                "observation_count": 4,
+                "latest_observed_at": now,
+                "observation_refs": [
+                    {"ref": "condition-observation:obs-1", "post_id": "post-1", "observed_at": now}
+                ],
+            }
+
+    engine = FakeConditionEngine()
+    verifier_calls = []
+
+    async def verify_brand(brand_id, workspace_id):
+        verifier_calls.append((brand_id, workspace_id))
+        return brand_id == "brand-owned" and workspace_id == "workspace-runtime-test"
+
+    adapter = ConditionEngineMissionAdapter(
+        engine=engine,
+        brand_ownership_verifier=verify_brand,
+    )
+    context = MissionTaskContext(
+        task_id="condition-task",
+        mission_id="condition-mission",
+        workspace_id="workspace-runtime-test",
+        capability="calculate_brand_health",
+        objective="Assess brand health using existing observations.",
+        inputs={"brand_id": "brand-owned"},
+        correlation_id="condition-correlation",
+    )
+    result = await adapter.invoke(context)
+
+    assert result.status == "completed"
+    assert result.engine_id == "condition_engine"
+    assert result.side_effect_class == "internal_record"
+    assert result.authority == "none"
+    assert result.evidence[0]["ref"] == "condition-observation:obs-1"
+    assert engine.calls == [("brand-owned", False, "workspace-runtime-test")]
+    assert verifier_calls == [("brand-owned", "workspace-runtime-test")]
+
+    denied = ConditionEngineMissionAdapter(
+        engine=engine,
+        brand_ownership_verifier=lambda brand_id, workspace_id: False,
+    )
+    with pytest.raises(PermissionError, match="brand_workspace_ownership_failed"):
+        await denied.invoke(context)
+
+
+def test_default_registry_requires_explicit_workspace_brand_verifier():
+    class FakeConditionEngine:
+        def calculate_brand_health(self, brand_id, *, emit_event=True, workspace_id=None):
+            return {"score": 50, "status": "unknown", "observation_count": 0}
+
+    class DirectorStore:
+        async def brand_belongs_to_workspace(self, brand_id, workspace_id):
+            return True
+
+    registry = build_default_adapter_registry(
+        director_store=DirectorStore(),
+        condition_engine=FakeConditionEngine(),
+    )
+    descriptions = {item["engine_id"]: item for item in registry.describe()}
+    assert set(descriptions) == {"content_intelligence", "condition_engine"}
+    assert "calculate_brand_health" in descriptions["condition_engine"]["capabilities"]
+    assert descriptions["condition_engine"]["authority"] == "none"
+
+    with pytest.raises(ValueError, match="director_store_brand_ownership_verifier_required"):
+        build_default_adapter_registry(director_store=object(), condition_engine=FakeConditionEngine())
