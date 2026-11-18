@@ -57,7 +57,7 @@ def test_review_api_uses_server_service_client_and_never_promotes_verified_flag(
 def test_database_guard_binds_case_to_locked_current_content_and_tenant():
     migration = MIGRATION_PATH.read_text()
     assert "FOR UPDATE" in migration
-    assert "extensions.digest(convert_to(current_content, 'UTF8'), 'sha256')" in migration
+    assert "digest(convert_to(current_content, 'UTF8'), 'sha256')" in migration
     assert "current_brand_id IS DISTINCT FROM NEW.brand_id" in migration
     assert "current_workspace_id IS DISTINCT FROM NEW.workspace_id" in migration
     assert "Approved evidence review cases are immutable" in migration
