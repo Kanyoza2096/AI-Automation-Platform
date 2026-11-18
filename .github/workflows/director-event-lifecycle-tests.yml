@@ -26,11 +26,12 @@ on:
       - "services/director/orchestration/**"
       - "tests/test_director_native_engine_adapters.py"
       - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_graph.py"
       - "tests/test_ai_provider_fabric.py"
       - "migrations/175_director_mission_admission_scope_contract.sql"
       - "migrations/176_director_mission_runtime_and_event_journal.sql"
       - "migrations/177_director_mission_journal_privilege_hardening.sql"
-      - "migrations/178_director_mission_event_task_scope_guard.sql"
+      - "migrations/179_director_mission_runtime_initial_state.sql"
       - "tests/test_director_executive_report_truth.py"
       - "tests/test_director_decision_evidence.py"
       - "tests/test_director_learning_evidence.py"
@@ -38,10 +39,11 @@ on:
       - "services/director/orchestration/**"
       - "tests/test_director_native_engine_adapters.py"
       - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_graph.py"
       - "migrations/175_director_mission_admission_scope_contract.sql"
       - "migrations/176_director_mission_runtime_and_event_journal.sql"
       - "migrations/177_director_mission_journal_privilege_hardening.sql"
-      - "migrations/178_director_mission_event_task_scope_guard.sql"
+      - "migrations/179_director_mission_runtime_initial_state.sql"
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
@@ -125,6 +127,7 @@ jobs:
             tests/test_director_capability_audit.py \
             tests/test_director_native_engine_adapters.py \
             tests/test_director_mission_state_machine.py \
+            tests/test_director_mission_graph.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
             tests/test_meta_engine_lifecycle_identity.py \
