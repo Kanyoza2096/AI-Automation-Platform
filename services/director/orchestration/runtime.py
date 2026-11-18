@@ -223,6 +223,29 @@ class MissionOrchestrationRuntime:
         ]
 
     @staticmethod
+    def _bounded_input_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
+        if values is None:
+            return {}
+        if not isinstance(values, Mapping):
+            raise TypeError("recipient_inputs_must_be_mapping")
+        bounded: dict[str, Any] = {}
+        for key, value in list(values.items())[:20]:
+            name = str(key).strip()[:80]
+            if not name:
+                continue
+            if isinstance(value, str):
+                bounded[name] = value[:2000]
+            elif isinstance(value, bool) or value is None or isinstance(value, (int, float)):
+                bounded[name] = value
+            elif isinstance(value, (list, tuple)):
+                bounded[name] = [
+                    item[:500] if isinstance(item, str) else item
+                    for item in list(value)[:10]
+                    if isinstance(item, (str, int, float, bool)) or item is None
+                ]
+        return bounded
+
+    @staticmethod
     def _usage_int(value: Any) -> int:
         if isinstance(value, bool):
             return 0
@@ -449,6 +472,8 @@ class MissionOrchestrationRuntime:
         correlation_id: str,
         round_number: int,
         context: str = "",
+        recipient_capability: str | None = None,
+        recipient_inputs: Mapping[str, Any] | None = None,
     ) -> MissionRuntimeSnapshot:
         if actor_engine_id == recipient_engine_id:
             raise MissionTransitionRejected("engine_cannot_question_itself")
@@ -459,7 +484,8 @@ class MissionOrchestrationRuntime:
         capability = str(assignment.get("capability") or "")
         if assignment.get("engine_id") != actor_engine_id:
             raise MissionTransitionRejected("question_actor_does_not_own_task")
-        if capability not in actor.capabilities or capability not in recipient.capabilities:
+        target_capability = str(recipient_capability or capability)
+        if capability not in actor.capabilities or target_capability not in recipient.capabilities:
             raise MissionTransitionRejected("question_recipient_capability_unavailable")
         return await self._commit(
             current,
@@ -474,7 +500,12 @@ class MissionOrchestrationRuntime:
             message_id=message_id,
             thread_id=f"task:{task_id}",
             round_number=round_number,
-            payload={"question": question[:2000], "context": context[:4000]},
+            payload={
+                "question": question[:2000],
+                "context": context[:4000],
+                "recipient_capability": target_capability,
+                "recipient_inputs": self._bounded_input_mapping(recipient_inputs),
+            },
         )
 
     async def answer_engine_question(
@@ -497,9 +528,10 @@ class MissionOrchestrationRuntime:
         asker_id = str(pending.get("from_engine") or "")
         recipient_id = str(pending.get("to_engine") or "")
         assignment = (current.state_snapshot.get("task_assignments") or {}).get(task_id) or {}
-        capability = str(assignment.get("capability") or "")
+        assigned_capability = str(assignment.get("capability") or "")
+        recipient_capability = str(pending.get("recipient_capability") or assigned_capability)
         recipient = self.adapters.get(recipient_id)
-        if capability not in recipient.capabilities:
+        if recipient_capability not in recipient.capabilities:
             raise MissionTransitionRejected("answer_engine_capability_unavailable")
 
         events = await self.store.list_events(
@@ -528,9 +560,10 @@ class MissionOrchestrationRuntime:
             task_id=task_id,
             mission_id=mission_id,
             workspace_id=workspace_id,
-            capability=capability,
+            capability=recipient_capability,
             objective=question_text,
             inputs={
+                **self._bounded_input_mapping(question_payload.get("recipient_inputs")),
                 "topic": question_text,
                 "context": str(question_payload.get("context") or "")[:4000],
             },
