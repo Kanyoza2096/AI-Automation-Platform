@@ -439,7 +439,13 @@ class GenerateContentStep(Step):
             "empirical, numerical, performance, or personal-experience claims; "
             "never invent facts, metrics, stories, citations, or source IDs. "
             "Do not use first-person pronouns. Start directly without a generic "
-            "opener. Return only the corrected caption, with no explanation."
+            "opener. If the rejection is a word-count failure, the final caption "
+            "must contain at least 80 whitespace-delimited words (aim for 100-130) "
+            "by developing additional distinct points already supported by the "
+            "provided source material. Do not pad, repeat, or invent details. "
+            "If the sources cannot support the required length, do not fabricate "
+            "content; the workflow will reject the draft. Return only the corrected "
+            "caption, with no explanation."
         )
 
     async def async_run(self, context: dict[str, Any]) -> Any:
@@ -566,30 +572,53 @@ class GenerateContentStep(Step):
                         repair_reason = f"factual_evidence: {evidence_reason}"
 
             if repair_reason:
-                logger.warning(
-                    "PostWorkflow: generated caption failed compliance; "
-                    "requesting one bounded repair brand='%s' reason=%s",
-                    self._brand.name, repair_reason,
-                )
-                repair_prompt = self._build_compliance_repair_prompt(
-                    base_prompt, candidate_caption, repair_reason,
-                )
-                repaired_result = await self._engine.generate_post(
-                    brand=self._brand,
-                    ai_profile=self._ai_profile,
-                    topic=topic,
-                    base_prompt=repair_prompt,
-                )
-                if repaired_result:
+                # A short caption is a generation-quality failure, not a
+                # reason to relax the policy. Permit at most two focused
+                # rewrites, and only continue when the engine explicitly
+                # reports another caption-quality length failure. Evidence,
+                # editorial, media, and provider failures remain fail-closed.
+                for repair_attempt in range(1, 3):
+                    logger.warning(
+                        "PostWorkflow: generated caption failed compliance; "
+                        "requesting bounded repair %d/2 brand='%s' reason=%s",
+                        repair_attempt, self._brand.name, repair_reason,
+                    )
+                    repair_prompt = self._build_compliance_repair_prompt(
+                        base_prompt, candidate_caption, repair_reason,
+                    )
+                    repaired_result = await self._engine.generate_post(
+                        brand=self._brand,
+                        ai_profile=self._ai_profile,
+                        topic=topic,
+                        base_prompt=repair_prompt,
+                    )
+                    if not repaired_result:
+                        break
+
                     context["prompt_sha256"] = hashlib.sha256(
                         repair_prompt.encode("utf-8")
                     ).hexdigest()
                     result = repaired_result
-                    logger.info(
-                        "PostWorkflow: bounded caption repair returned "
-                        "publishable=%s brand='%s'",
-                        result.get("publishable"), self._brand.name,
+                    candidate_caption = str(result.get("caption") or "")
+                    repair_error = str(result.get("error") or "")
+                    repair_code = str(result.get("error_code") or "")
+                    still_caption_quality_failure = (
+                        result.get("publishable") is False
+                        and repair_code == "CONTENT_PIPELINE_FAILED"
+                        and "caption_quality:" in repair_error
+                        and candidate_caption.strip()
                     )
+                    logger.info(
+                        "PostWorkflow: bounded caption repair %d/2 returned "
+                        "publishable=%s caption_words=%d brand='%s'",
+                        repair_attempt,
+                        result.get("publishable"),
+                        len(candidate_caption.split()),
+                        self._brand.name,
+                    )
+                    if not still_caption_quality_failure:
+                        break
+                    repair_reason = repair_error
 
         caption_to_check = (
             str(supplied_caption)
