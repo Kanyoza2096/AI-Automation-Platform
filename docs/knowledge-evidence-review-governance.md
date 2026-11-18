@@ -35,3 +35,15 @@ The current affected brands fall into distinct review cohorts:
 - Third brand: 732 records with no source type, trust class, source ID, or source URL metadata. These require source recovery or rejection; entry IDs alone are not proof of provenance.
 
 No record should be batch-approved based only on a URL being present, a generated attribution string, or a matching topic.
+
+
+## API lifecycle
+
+The authenticated API exposes:
+- POST /api/v1/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review to submit an exact content version. Repeated submissions reuse the same case; rejected/superseded cases can be reopened.
+- GET /api/v1/brands/{brand_id}/knowledge-evidence-reviews to list brand-scoped cases by status.
+- POST /api/v1/brands/{brand_id}/knowledge-evidence-reviews/{case_id}/decision for a human reviewer to approve or reject a pending case.
+
+All endpoints require workspace write access and use the service-role client only on the server. Decisions are restricted to the authenticated human identity. Approval requires a stable source ID and HTTP(S) source URL. The API rechecks the entry content hash before decision, and the database guard locks the knowledge row and rechecks the hash and tenant binding in the same transaction. Approved snapshots are immutable; a later content edit cannot inherit the approval.
+
+Approval is reusable source governance, not per-post moderation. It does not promote evidence into the publishing validator; evidence_promoted remains false until a separate audited promotion operation is implemented and reviewed.
