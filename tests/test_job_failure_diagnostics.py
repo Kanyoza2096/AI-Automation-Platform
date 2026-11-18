@@ -186,6 +186,35 @@ def test_reliability_diagnostician_uses_job_failure_metadata():
     assert any("Failure categories:" in item for item in diagnosis.evidence_summary)
 
 
+def test_partial_failure_sample_is_not_misreported_as_validation_only():
+    incident = Incident(
+        symptom="job_service degraded",
+        source="engine_alert",
+        component="job_service",
+    )
+    evidence = {
+        "health_registry": {
+            "job_service": {
+                "status": "degraded",
+                "metadata": {
+                    "failure_diagnostics": {
+                        "status": "available",
+                        "total_failed": 30,
+                        "total_returned": 20,
+                        "truncated": True,
+                        "counts_by_category": {"caption_length_failure": 20},
+                        "jobs": [{"step_error_code": "AI_VALIDATION_ERROR"}] * 20,
+                    }
+                },
+            }
+        }
+    }
+
+    diagnosis = Diagnostician().diagnose(incident, evidence)
+
+    assert diagnosis.probable_cause == "job_failure_backlog"
+
+
 def test_unmapped_job_service_heal_does_not_fall_back_to_generic_restart():
     class FakeBus:
         async def subscribe(self, *_args, **_kwargs):
