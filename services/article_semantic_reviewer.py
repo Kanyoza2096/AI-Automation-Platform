@@ -169,7 +169,11 @@ class ArticleSemanticReviewer:
         }
         unsupported_claims = [
             claim for claim in reviewed_claims
-            if claim["support_status"] in {"unsupported", "uncertain"}
+            if claim["support_status"] == "unsupported"
+        ]
+        uncertain_claims = [
+            claim for claim in reviewed_claims
+            if claim["support_status"] == "uncertain"
         ]
 
         quality_ok = (
@@ -189,7 +193,7 @@ class ArticleSemanticReviewer:
                 "independent reviewer rejected the article"
                 if decision == "reject" else
                 "one or more material claims are unsupported or uncertain"
-                if unsupported_claims else
+                if unsupported_claims or uncertain_claims else
                 "one or more article quality thresholds were not met"
                 if not quality_ok else
                 str(data.get("rationale") or "independent reviewer requested human review")[:2000]
@@ -198,6 +202,7 @@ class ArticleSemanticReviewer:
             "decision": decision,
             "claims": reviewed_claims,
             "unsupported_claims": unsupported_claims,
+            "uncertain_claims": uncertain_claims,
             "evidence_coverage": evidence_coverage,
             "scores": scores,
             "request_id": getattr(result, "request_id", None),
