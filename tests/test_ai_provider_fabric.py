@@ -613,3 +613,121 @@ def test_director_native_adapter_registry_invokes_content_engine_with_workspace_
     assert result.evidence[0]["ref"] == "evidence-1"
     assert result.authority == "none"
     assert result.side_effect_class == "external_read_only"
+
+
+
+def test_director_mission_runtime_store_uses_governed_rpcs_and_scoped_reads():
+    from types import SimpleNamespace
+    from services.director.orchestration.store import MissionEventWrite, MissionRuntimeStore
+
+    class Query:
+        def __init__(self, table, owner):
+            self.table = table
+            self.owner = owner
+            self.filters = []
+            self.operations = []
+
+        def select(self, *args, **kwargs):
+            self.operations.append(("select", args, kwargs))
+            return self
+
+        def eq(self, *args):
+            self.filters.append(("eq",) + args)
+            return self
+
+        def is_(self, *args):
+            self.filters.append(("is",) + args)
+            return self
+
+        def order(self, *args, **kwargs):
+            self.operations.append(("order", args, kwargs))
+            return self
+
+        def limit(self, value):
+            self.operations.append(("limit", value))
+            return self
+
+        def execute(self):
+            self.owner.read_queries.append(self)
+            rows = [{"mission_id": "mission-store-test"}] if self.table == "director_missions" else [{"sequence_number": 1}]
+            return SimpleNamespace(data=rows)
+
+    class Supabase:
+        def __init__(self):
+            self.rpc_calls = []
+            self.read_queries = []
+
+        def rpc(self, name, params):
+            self.rpc_calls.append((name, params))
+            return SimpleNamespace(execute=lambda: SimpleNamespace(data={"replayed": False, "version": 1}))
+
+        def table(self, name):
+            return Query(name, self)
+
+    class Backend:
+        def __init__(self):
+            self.supabase = Supabase()
+
+        async def _execute_with_retry(self, operation, fn):
+            return fn()
+
+    async def run():
+        backend = Backend()
+        store = MissionRuntimeStore(backend)
+        admitted = await store.admit_workspace_mission(
+            workspace_id="workspace-store-test",
+            idempotency_key="admission-store-test",
+            plan_id="plan-store-test",
+            mission_id="mission-store-test",
+            request_fingerprint="a" * 64,
+            tasks=[{"id": "task-store-test", "workspace_id": "workspace-store-test"}],
+        )
+        assert admitted["version"] == 1
+        assert backend.supabase.rpc_calls[0][0] == "stage_director_mission_v2"
+        assert backend.supabase.rpc_calls[0][1]["p_workspace_id"] == "workspace-store-test"
+
+        event = MissionEventWrite(
+            scope_type="workspace",
+            workspace_id="workspace-store-test",
+            mission_id="mission-store-test",
+            expected_version=1,
+            idempotency_key="event-store-test",
+            request_fingerprint="b" * 64,
+            event_type="agent.question.asked",
+            actor_type="engine",
+            actor_id="content_intelligence",
+            recipient_type="engine",
+            recipient_id="meta_engine",
+            task_id="task-store-test",
+            message_id="message-store-test",
+            thread_id="thread-store-test",
+            round_number=1,
+            correlation_id="corr-store-test",
+            payload={"question": "Challenge this finding."},
+            evidence_refs=({"ref": "source-1"},),
+            status="running",
+            phase="collaboration",
+            state_snapshot={"active_reasoning_round": 1},
+        )
+        appended = await store.append_event(event)
+        assert appended["version"] == 1
+        assert backend.supabase.rpc_calls[1][0] == "append_director_mission_event"
+        assert backend.supabase.rpc_calls[1][1]["p_recipient_id"] == "meta_engine"
+
+        mission = await store.get_mission(
+            mission_id="mission-store-test",
+            scope_type="workspace",
+            workspace_id="workspace-store-test",
+        )
+        timeline = await store.list_events(
+            mission_id="mission-store-test",
+            scope_type="workspace",
+            workspace_id="workspace-store-test",
+            limit=20,
+        )
+        assert mission["mission_id"] == "mission-store-test"
+        assert timeline[0]["sequence_number"] == 1
+        assert ("eq", "workspace_id", "workspace-store-test") in backend.supabase.read_queries[0].filters
+        assert ("eq", "workspace_id", "workspace-store-test") in backend.supabase.read_queries[1].filters
+
+    asyncio.run(run())
