@@ -483,8 +483,9 @@ async def submit_knowledge_evidence_review(
             reopened = await _async_wrap(
                 lambda: client.table("knowledge_evidence_review_cases")
                 .update({
-                    "review_status": "pending", "reviewed_by": None,
-                    "reviewed_at": None, "review_notes": None,
+                    "review_status": "pending", "reviewed_by": actor,
+                    "reviewed_at": _review_datetime.now(_review_timezone.utc).isoformat(),
+                    "review_notes": "Reopened for a fresh source review.",
                     "source_id": source_id,
                     "source_url": source_url,
                 }).eq("id", case["id"]).select("*").single().execute()
