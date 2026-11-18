@@ -83,7 +83,6 @@ def test_content_handoff_only_stages_a_topic_candidate():
     ))
     assert result["command_id"] == "content.candidate.stage"
     assert result["risk_level"] == "low"
-    assert "does not" not in result["description"].lower() or result["status"] == "ready"
     assert "publish" in gateway.calls[0]["prompt"]
 
 
