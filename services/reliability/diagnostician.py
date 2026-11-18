@@ -115,8 +115,11 @@ class Diagnostician:
                     for job in failed_jobs
                     if isinstance(job, dict)
                 ]
-                validation_only = bool(step_codes) and all(
-                    code == "AI_VALIDATION_ERROR" for code in step_codes
+                validation_only = (
+                    bool(failed_jobs)
+                    and len(step_codes) == len(failed_jobs)
+                    and not bool(failure_diagnostics.get("truncated"))
+                    and all(code == "AI_VALIDATION_ERROR" for code in step_codes)
                 )
 
                 cause = (
