@@ -663,9 +663,14 @@ class BrandScheduler:
 
         self._supabase_circuit = SupabaseCircuitBreaker()
 
+        # One Redis key shared by every brand scheduler. This is the
+        # cross-brand publication mutex: only one publish pipeline may run
+        # at a time across all brands and service instances.
         self._distributed_lock = DistributedLock(
-            name=f"brand:{brand.id}:publish",
+            name="global:publish",
             redis_client=redis_client,
+            timeout_seconds=1800,
+            allow_local_fallback=False,
         )
 
         self._publish_semaphore = threading.Semaphore(
@@ -1160,9 +1165,8 @@ class BrandScheduler:
         job_id = f"pub_{datetime.now().strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
         agent_name = self.ai_profile.name if self.ai_profile else "Gemini"
 
-        require_dist = str(os.getenv("REQUIRE_DISTRIBUTED_LOCK", "")).lower() in (
-            "1", "true", "yes",
-        )
+        # Publishing must fail closed without Redis-backed coordination.
+        require_dist = True
         if not self._distributed_lock.acquire(require_distributed=require_dist):
             logger.warning(
                 "[%s] Could not acquire publish lock (mode=%s) — skip",
@@ -1472,9 +1476,8 @@ class BrandScheduler:
                     }
                 self._manual_trigger_keys[idempotency_key] = now
 
-        require_dist = str(os.getenv("REQUIRE_DISTRIBUTED_LOCK", "")).lower() in (
-            "1", "true", "yes",
-        )
+        # Publishing must fail closed without Redis-backed coordination.
+        require_dist = True
         if not self._distributed_lock.acquire(require_distributed=require_dist):
             return {
                 "ok": False,
