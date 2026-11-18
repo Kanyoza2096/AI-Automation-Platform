@@ -123,6 +123,8 @@ jobs:
             tests/test_director_decision_evidence.py \
             tests/test_director_learning_evidence.py \
             tests/test_director_capability_audit.py \
+            tests/test_director_native_engine_adapters.py \\
+            tests/test_director_mission_state_machine.py \\
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
             tests/test_meta_engine_lifecycle_identity.py \
