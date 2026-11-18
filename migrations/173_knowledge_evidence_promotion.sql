@@ -90,7 +90,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        extensions.digest(convert_to(entry_content, 'UTF8'), 'sha256'),
+        digest(convert_to(entry_content, 'UTF8'), 'sha256'),
         'hex'
     );
     IF current_hash IS DISTINCT FROM review_case.content_sha256 THEN
@@ -199,7 +199,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        extensions.digest(convert_to(NEW.content, 'UTF8'), 'sha256'),
+        digest(convert_to(NEW.content, 'UTF8'), 'sha256'),
         'hex'
     );
 
@@ -332,7 +332,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        extensions.digest(convert_to(entry_content, 'UTF8'), 'sha256'),
+        digest(convert_to(entry_content, 'UTF8'), 'sha256'),
         'hex'
     );
     IF current_hash IS DISTINCT FROM review_case.content_sha256 THEN
@@ -733,7 +733,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        extensions.digest(convert_to(entry_content, 'UTF8'), 'sha256'),
+        digest(convert_to(entry_content, 'UTF8'), 'sha256'),
         'hex'
     );
     IF current_hash IS DISTINCT FROM review_case.content_sha256 THEN
