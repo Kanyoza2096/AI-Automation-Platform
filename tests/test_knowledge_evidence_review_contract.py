@@ -86,3 +86,26 @@ def test_approved_source_metadata_cannot_be_rewritten():
     guard = migration[migration.index("CREATE OR REPLACE FUNCTION public.guard_knowledge_evidence_review_case"):]
     for field in ("source_id", "source_url", "source_title", "source_type", "trust_class"):
         assert f"NEW.{field} IS DISTINCT FROM OLD.{field}" in guard
+
+
+def test_promotion_is_explicit_human_authorized_and_transactional():
+    source = API_PATH.read_text()
+    routes = _route_contracts(source)
+    assert (
+        "POST",
+        "/brands/{brand_id}/knowledge-evidence-reviews/{case_id}/promote",
+    ) in routes
+    assert "promote_approved_knowledge_evidence" in source
+    assert "_evidence_review_actor(require_human=True)" in source
+
+
+def test_promotion_rpc_is_audited_idempotent_and_content_changes_revoke():
+    migration = ROOT / "migrations" / "173_knowledge_evidence_promotion.sql"
+    source = migration.read_text()
+    assert "FOR UPDATE" in source
+    assert "knowledge_evidence_promotion_case_event_unique" in source
+    assert "metadata_after" in source and "'verified', true" in source
+    assert "knowledge_evidence_content_invalidate" in source
+    assert "'verified', false" in source
+    assert "system:knowledge-content-change" in source
+    assert "GRANT EXECUTE ON FUNCTION public.promote_approved_knowledge_evidence(UUID, TEXT)" in source
