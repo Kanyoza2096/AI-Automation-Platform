@@ -221,3 +221,28 @@ It must additionally expose task ownership, dependencies, parallel execution, re
 - No second generic job scheduler or duplicate capability registry.
 - No production schema mutation during the audit/design phase.
 - No claim of multi-agent execution based solely on multiple LLM prompts or a collaboration UI.
+
+
+## 10. Implementation update — 18 November 2026
+
+The first additive implementation is in draft PR #349.
+
+### Implemented foundation
+- `MissionRuntimeStore` reads workspace-scoped mission aggregates and timelines, and performs writes only through the versioned admission/event RPCs.
+- `MissionStateMachine` is deterministic and model-free. It validates assignment, operator approval, task start/result/verification, bounded engine questions and answers, handoffs, disagreement resolution, resource accounting, and terminal mission transitions.
+- Task results are persisted as bounded summaries and evidence references in the mission snapshot; the append-only event journal retains the full transition record.
+- The first native adapter wraps Content Intelligence's actual async research runtime. The adapter registry enforces declared capabilities, identity matching, per-engine concurrency and timeout bounds, and advisory-only side-effect policy.
+- Strategic mission admission has an opt-in `KDO_DIRECTOR_MISSION_RUNTIME_V2` path. It defaults off; existing production admission remains unchanged until a separate production schema and release review.
+
+### Staging database status
+- Migrations 175–180 are applied to the staging Supabase project.
+- Migration 179 seeds complete mission runtime state atomically at v2 admission.
+- Migration 180 indexes the mission aggregate's plan and workspace-admission foreign keys.
+- Migration 178 is retained because it was already applied to staging, although its task-scope guard duplicates the guard introduced in migration 176.
+- A rollback-only staging test exercised v2 admission and asserted the initial task approval state, empty assignment/result/message/handoff maps, and bounded round budget. The transaction was rolled back.
+- After the test, staging still contained 571 Director tasks, 1 strategic plan, and zero admission receipts, missions, or mission events.
+- The three mission tables have RLS enabled. `anon` and `authenticated` have no table access; service-role writes to mission aggregates/events are revoked and writes are available through fixed-search-path RPCs. The security advisor's RLS-without-policy notices are informational and intentional for these service-role-only tables.
+- The new foreign-key indexes remove the unindexed-FK performance notices. They currently appear as unused because the mission tables are empty.
+
+### Remaining implementation gates
+This is a foundation, not the completed multi-agent runtime. The v2 admission flag is not enabled. Director's existing approval endpoint is not yet synchronized with the mission event state machine; approved-task dispatch through native adapters, multi-engine scheduling and question delivery, restart recovery orchestration, Mission Control live timeline, and the governed recommendation-to-plan-to-mission transition still need end-to-end integration. No production migration or deployment has been performed.
