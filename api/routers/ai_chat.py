@@ -162,14 +162,21 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             }
             source_status["github_api+render_api"] = {"status": "unavailable", "records": 0}
 
-    unavailable = [name for name, status in source_status.items() if status["status"] == "unavailable"]
+    unavailable = [name for name, status in source_status.items() if status["status"] in {"unavailable", "partial", "inconsistent"}]
     return {
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "freshness": "queried_for_this_message",
         "sources": {
             "tables": source_tables,
-            "scope": "authenticated_workspace+platform_read_only" if include_engineering_awareness else ("authenticated_workspace" if source_tables else "none"),
-            "platform_sources": ["github_api", "render_api"] if include_engineering_awareness else [],
+            "scope": (
+                "authenticated_workspace+platform_read_only" if include_engineering_awareness else
+                "authenticated_workspace+platform_runtime_read_only" if "platform_runtime" in source_status else
+                "authenticated_workspace" if source_tables else "none"
+            ),
+            "platform_sources": (
+                ["github_api", "render_api"] if include_engineering_awareness else
+                ["platform_runtime"] if "platform_runtime" in source_status else []
+            ),
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
