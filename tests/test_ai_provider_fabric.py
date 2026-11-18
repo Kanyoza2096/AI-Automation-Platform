@@ -731,3 +731,199 @@ def test_director_mission_runtime_store_uses_governed_rpcs_and_scoped_reads():
         assert ("eq", "workspace_id", "workspace-store-test") in backend.supabase.read_queries[1].filters
 
     asyncio.run(run())
+
+
+
+def test_director_mission_state_machine_requires_governed_approval_and_verification():
+    from services.director.orchestration import (
+        MissionEventCommand, MissionRuntimeSnapshot, MissionStateMachine,
+        MissionTransitionRejected,
+    )
+
+    machine = MissionStateMachine()
+    snapshot = MissionRuntimeSnapshot(
+        mission_id="mission-state-test",
+        scope_type="workspace",
+        workspace_id="workspace-state-test",
+        version=1,
+        status="admitted",
+        phase="admission",
+        task_ids=("task-state-test",),
+        state_snapshot=machine.initial_state(["task-state-test"]),
+    )
+
+    def command(event_type, *, actor_type, actor_id, key, payload=None,
+                task_id="task-state-test", evidence_refs=()):
+        return MissionEventCommand(
+            event_type=event_type,
+            idempotency_key=key,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            correlation_id="corr-state-test",
+            task_id=task_id,
+            payload=payload or {},
+            evidence_refs=evidence_refs,
+        )
+
+    assigned = machine.prepare(snapshot, command(
+        "task.assigned", actor_type="director", actor_id="director",
+        key="assign-1", payload={"engine_id": "content_intelligence", "capability": "research.analyze"},
+    ))
+    snapshot = assigned.next_snapshot
+    with pytest.raises(MissionTransitionRejected, match="task_approval_required_before_start"):
+        machine.prepare(snapshot, command(
+            "task.started", actor_type="director", actor_id="director", key="start-without-approval",
+        ))
+
+    approved = machine.prepare(snapshot, command(
+        "task.approved", actor_type="operator", actor_id="operator-1", key="approve-1",
+    ))
+    snapshot = approved.next_snapshot
+    started = machine.prepare(snapshot, command(
+        "task.started", actor_type="director", actor_id="director", key="start-1",
+    ))
+    snapshot = started.next_snapshot
+    completed = machine.prepare(snapshot, command(
+        "task.completed", actor_type="engine", actor_id="content_intelligence", key="complete-1",
+    ))
+    snapshot = completed.next_snapshot
+    verified = machine.prepare(snapshot, command(
+        "task.verified", actor_type="director", actor_id="director", key="verify-1",
+        evidence_refs=({"ref": "verification-receipt-1"},),
+    ))
+    snapshot = verified.next_snapshot
+    mission_done = machine.prepare(snapshot, command(
+        "mission.completed", actor_type="director", actor_id="director",
+        key="mission-complete", task_id=None,
+    ))
+    assert mission_done.next_snapshot.status == "completed"
+    assert mission_done.next_snapshot.state_snapshot["task_status"]["task-state-test"] == "verified"
+
+
+def test_director_mission_state_machine_bounds_engine_followup_rounds():
+    from services.director.orchestration import (
+        MissionEventCommand, MissionRuntimeSnapshot, MissionStateMachine,
+        MissionTransitionRejected,
+    )
+
+    machine = MissionStateMachine(max_reasoning_rounds=3)
+    snapshot = MissionRuntimeSnapshot(
+        mission_id="mission-round-test",
+        scope_type="workspace",
+        workspace_id="workspace-round-test",
+        version=1,
+        status="admitted",
+        phase="admission",
+        task_ids=(),
+        state_snapshot=machine.initial_state([], max_reasoning_rounds=3),
+    )
+
+    def question(sender, recipient, round_number, message_id):
+        return MissionEventCommand(
+            event_type="engine.question.asked",
+            idempotency_key=f"question-{message_id}",
+            actor_type="engine",
+            actor_id=sender,
+            recipient_type="engine",
+            recipient_id=recipient,
+            message_id=message_id,
+            thread_id="thread-round-test",
+            round_number=round_number,
+            correlation_id="corr-round-test",
+            payload={"question": "Please challenge the evidence."},
+        )
+
+    def answer(sender, recipient, round_number, message_id, in_reply_to):
+        return MissionEventCommand(
+            event_type="engine.answer.received",
+            idempotency_key=f"answer-{message_id}",
+            actor_type="engine",
+            actor_id=sender,
+            recipient_type="engine",
+            recipient_id=recipient,
+            message_id=message_id,
+            thread_id="thread-round-test",
+            round_number=round_number,
+            correlation_id="corr-round-test",
+            payload={"in_reply_to": in_reply_to, "answer": "Here is the evidence-based response."},
+        )
+
+    snapshot = machine.prepare(snapshot, question("content_intelligence", "meta_engine", 1, "q1")).next_snapshot
+    with pytest.raises(MissionTransitionRejected, match="previous_reasoning_round_has_unanswered_questions"):
+        machine.prepare(snapshot, question("meta_engine", "content_intelligence", 2, "q2"))
+
+    snapshot = machine.prepare(snapshot, answer("meta_engine", "content_intelligence", 1, "a1", "q1")).next_snapshot
+    snapshot = machine.prepare(snapshot, question("meta_engine", "content_intelligence", 2, "q2")).next_snapshot
+    snapshot = machine.prepare(snapshot, answer("content_intelligence", "meta_engine", 2, "a2", "q2")).next_snapshot
+    snapshot = machine.prepare(snapshot, question("content_intelligence", "meta_engine", 3, "q3")).next_snapshot
+    snapshot = machine.prepare(snapshot, answer("meta_engine", "content_intelligence", 3, "a3", "q3")).next_snapshot
+    with pytest.raises(MissionTransitionRejected, match="reasoning_round_limit_exceeded"):
+        machine.prepare(snapshot, question("meta_engine", "content_intelligence", 4, "q4"))
+    assert snapshot.state_snapshot["active_reasoning_round"] == 3
+    assert snapshot.state_snapshot["pending_questions"] == {}
+
+
+def test_director_mission_state_machine_pauses_at_budget_ceiling_and_preserves_dissent():
+    from services.director.orchestration import (
+        MissionEventCommand, MissionRuntimeSnapshot, MissionStateMachine,
+        MissionTransitionRejected,
+    )
+
+    machine = MissionStateMachine()
+    snapshot = MissionRuntimeSnapshot(
+        mission_id="mission-budget-test",
+        scope_type="workspace",
+        workspace_id="workspace-budget-test",
+        version=1,
+        status="admitted",
+        phase="admission",
+        task_ids=("task-budget-test",),
+        state_snapshot=machine.initial_state(
+            ["task-budget-test"], max_tokens=100, max_provider_calls=2,
+        ),
+    )
+    with pytest.raises(MissionTransitionRejected, match="mission_token_budget_would_be_exceeded"):
+        machine.ensure_budget_available(snapshot, estimated_tokens=101)
+
+    usage = MissionEventCommand(
+        event_type="engine.call.completed",
+        idempotency_key="usage-1",
+        actor_type="system",
+        actor_id="resource-controller",
+        correlation_id="corr-budget-test",
+        payload={"usage_tokens": 100, "provider_calls": 1},
+    )
+    paused = machine.prepare(snapshot, usage).next_snapshot
+    assert paused.status == "paused"
+    assert paused.state_snapshot["budget"]["exhausted"] is True
+    with pytest.raises(MissionTransitionRejected, match="mission_budget_exhausted"):
+        machine.prepare(paused, MissionEventCommand(
+            event_type="mission.resumed",
+            idempotency_key="resume-after-budget",
+            actor_type="operator",
+            actor_id="operator-1",
+            correlation_id="corr-budget-test",
+        ))
+
+    dissent_snapshot = MissionRuntimeSnapshot(
+        mission_id="mission-dissent-test",
+        scope_type="workspace",
+        workspace_id="workspace-dissent-test",
+        version=2,
+        status="running",
+        phase="collaboration",
+        task_ids=("task-dissent-test",),
+        state_snapshot={
+            **machine.initial_state(["task-dissent-test"]),
+            "task_status": {"task-dissent-test": "verified"},
+            "unresolved_disagreements": ["disagreement-1"],
+        },
+    )
+    with pytest.raises(MissionTransitionRejected, match="mission_has_unresolved_collaboration"):
+        machine.prepare(dissent_snapshot, MissionEventCommand(
+            event_type="mission.completed",
+            idempotency_key="complete-with-dissent",
+            actor_type="director",
+            actor_id="director",
+            correlation_id="corr-dissent-test",
+        ))
