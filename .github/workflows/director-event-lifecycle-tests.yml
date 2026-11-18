@@ -101,5 +101,28 @@ jobs:
       - name: Compile governed chat route and proposal module
         run: python -m compileall -q api/chat_action_proposals.py api/engine_handoff_evidence.py api/routers/ai_chat.py services/director/orchestration services/content_intelligence.py
       - name: Verify Director event lifecycle and architecture contracts
-        run: |
-          python -m pytest -q             tests/security/test_shared_event_bus_safety.py             tests/services/test_director_event_delivery.py             tests/test_condition_engine_event_context.py             tests/test_condition_engine_council_approval_fence.py             tests/test_health_monitor_observability.py             tests/test_director_strategic_context.py             tests/test_director_strategic_planning.py             tests/test_ai_provider_fabric.py             tests/test_ai_chat_action_proposals.py             tests/test_director_strategic_plan_persistence.py             tests/test_director_auth_boundary.py             tests/test_director_executive_report_truth.py             tests/test_director_decision_evidence.py             tests/test_director_learning_evidence.py             tests/test_director_capability_audit.py             tests/test_engine_handoff_evidence.py             tests/test_director_native_engine_adapters.py             tests/test_content_intelligence_automation_stage.py             tests/test_engine_truth.py             tests/test_meta_engine_lifecycle_identity.py             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access             tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
+        run: >-
+          python -m pytest -q
+            tests/security/test_shared_event_bus_safety.py
+            tests/services/test_director_event_delivery.py
+            tests/test_condition_engine_event_context.py
+            tests/test_condition_engine_council_approval_fence.py
+            tests/test_health_monitor_observability.py
+            tests/test_director_strategic_context.py
+            tests/test_director_strategic_planning.py
+            tests/test_ai_provider_fabric.py
+            tests/test_ai_chat_action_proposals.py
+            tests/test_director_strategic_plan_persistence.py
+            tests/test_director_auth_boundary.py
+            tests/test_director_executive_report_truth.py
+            tests/test_director_decision_evidence.py
+            tests/test_director_learning_evidence.py
+            tests/test_director_capability_audit.py
+            tests/test_engine_handoff_evidence.py
+            tests/test_director_native_engine_adapters.py
+            tests/test_content_intelligence_automation_stage.py
+            tests/test_engine_truth.py
+            tests/test_meta_engine_lifecycle_identity.py
+            tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority
+            tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access
+            tests/test_architecture_contracts.py::test_preboot_unified_bus_adopts_bootstrapped_supabase_client
