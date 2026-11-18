@@ -140,6 +140,8 @@ class JobStatsService:
         self._cache: dict = {}
         self._cache_time: float = 0.0
         self._lock = threading.Lock()
+        # A failed stats query must never be represented as an empty, healthy queue.
+        self._last_error: Optional[str] = None
 
         # v4.1: Shared client with semaphore
         self._shared_client: Optional[SharedSupabaseClient] = None
@@ -270,6 +272,7 @@ class JobStatsService:
     def get_stats(self, brand_id: Optional[str] = None) -> dict:
         """Get comprehensive job statistics with broken pipe retry."""
         if self._shared_client is None:
+            self._last_error = "Supabase client not configured"
             logger.warning(
                 "JobStatsService: get_stats() called without client"
             )
@@ -295,6 +298,7 @@ class JobStatsService:
                     logger.error(
                         "JobStatsService: all stats methods failed: %s", e
                     )
+                    self._last_error = f"stats_query_failed: {type(e).__name__}: {e}"[:500]
                     return self._empty_stats()
                 time.sleep(0.5 * (2 ** attempt))
             except Exception as e:
@@ -309,17 +313,21 @@ class JobStatsService:
                         logger.error(
                             "JobStatsService: all stats methods failed: %s", e2
                         )
+                        self._last_error = f"stats_query_failed: {type(e2).__name__}: {e2}"[:500]
                         return self._empty_stats()
                     time.sleep(0.5 * (2 ** attempt))
                 except Exception as e2:
                     logger.error(
                         "JobStatsService: all stats methods failed: %s", e2
                     )
+                    self._last_error = f"stats_query_failed: {type(e2).__name__}: {e2}"[:500]
                     return self._empty_stats()
 
         if stats is None:
+            self._last_error = "stats_query_returned_no_data"
             return self._empty_stats()
 
+        self._last_error = None
         with self._lock:
             self._cache[cache_key] = stats
             self._cache_time = time.monotonic()
@@ -361,6 +369,13 @@ class JobStatsService:
 
         try:
             stats = self.get_stats()
+            if self._last_error:
+                return {
+                    "status": "unknown",
+                    "error": self._last_error,
+                    "stats": None,
+                    "reason": "job statistics unavailable; queue health cannot be certified",
+                }
         except Exception as e:
             logger.error("JobStatsService health check failed: %s", e)
             # v4.2 FIX: unknown instead of degraded
