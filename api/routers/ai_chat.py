@@ -25,8 +25,10 @@ _ENGINE_GUIDANCE = {
     "council": "You are the KDO Council deliberation assistant. Focus on balanced alternatives, trade-offs, decision rationale, and prior recorded Council outcomes. Distinguish recorded decisions from suggestions in this chat. You cannot cast votes or create authoritative Council decisions.",
     "ai_brain": "You are the KDO AI Brain conversational explainer. Focus on system observability, workforce activity, intelligence flow, and evidence provenance. The attached workforce events and Director observations are bounded workspace records, not global or guaranteed-live telemetry.",
     "content": "You are the KDO Content Engine writing assistant. Focus on audience, brand voice, editorial quality, and evidence-grounded content. Use attached workspace content history and writing profiles when available. Do not invent testimonials, statistics, product claims, or brand facts. You cannot publish or schedule content.",
+    "ooda": "You are the KDO OODA Loop advisory specialist. Examine the operator objective against the attached read-only autonomous-loop status. Recommend what should be observed, oriented, or evaluated next; distinguish loop state from a new decision. You cannot start, step, pause, reconfigure, or execute the loop, and you cannot claim an ACT stage occurred.",
+    "meta": "You are the KDO Meta Engine diagnostic specialist. Interpret the attached fresh supervisor health observations and diagnoses, preserving freshness, unknowns, and evidence limitations. Meta reports are not independent verification. You may recommend investigation, but cannot heal, recover, restart, remediate, or change controls.",
 }
-_VALID_ENGINES = set(_ENGINE_GUIDANCE)
+_VALID_ENGINES = {"general", "director", "guardian", "council", "ai_brain", "content"}
 
 
 def _conversation_db():
@@ -111,7 +113,16 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             source_status[table] = {"status": "unavailable", "records": 0}
 
     source_tables = []
-    if engine == "director":
+    if engine in {"ooda", "meta"}:
+        from api.engine_handoff_evidence import load_engine_handoff_evidence
+        platform_evidence = await load_engine_handoff_evidence(engine)
+        evidence["platform_engine_observation"] = _safe_context_value(platform_evidence)
+        source_status["platform_runtime"] = {
+            "status": str(platform_evidence.get("status") or "unavailable"),
+            "records": len(platform_evidence.get("engine_observations") or platform_evidence.get("diagnoses") or []),
+        }
+        source_tables = ["platform_runtime"]
+    elif engine == "director":
         await read_table("workspace_tasks", "director_tasks", "id,status,created_at,payload", "created_at", 8)
         await read_table("workspace_decisions", "director_decisions", "id,payload,timestamp", "timestamp", 6)
         source_tables = ["director_tasks", "director_decisions"]
@@ -151,14 +162,21 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             }
             source_status["github_api+render_api"] = {"status": "unavailable", "records": 0}
 
-    unavailable = [name for name, status in source_status.items() if status["status"] == "unavailable"]
+    unavailable = [name for name, status in source_status.items() if status["status"] in {"unavailable", "partial", "inconsistent"}]
     return {
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "freshness": "queried_for_this_message",
         "sources": {
             "tables": source_tables,
-            "scope": "authenticated_workspace+platform_read_only" if include_engineering_awareness else ("authenticated_workspace" if source_tables else "none"),
-            "platform_sources": ["github_api", "render_api"] if include_engineering_awareness else [],
+            "scope": (
+                "authenticated_workspace+platform_read_only" if include_engineering_awareness else
+                "authenticated_workspace+platform_runtime_read_only" if "platform_runtime" in source_status else
+                "authenticated_workspace" if source_tables else "none"
+            ),
+            "platform_sources": (
+                ["github_api", "render_api"] if include_engineering_awareness else
+                ["platform_runtime"] if "platform_runtime" in source_status else []
+            ),
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
@@ -169,7 +187,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
 
 
 
-_COLLABORATION_ENGINES = {"guardian", "ai_brain", "council", "content"}
+_COLLABORATION_ENGINES = {"guardian", "ai_brain", "council", "content", "ooda", "meta"}
 
 
 def _normalize_collaboration_engines(value):
@@ -704,6 +722,14 @@ async def ai_chat(
         if operation != "chat" or engine != "director":
             raise HTTPException(status_code=422, detail="Only a Director chat can coordinate engine collaboration")
         collaboration_engines = _normalize_collaboration_engines(context.get("collaboration_engines"))
+        if {"ooda", "meta"}.intersection(collaboration_engines):
+            request_context = getattr(request.state, "request_context", None)
+            role = str(getattr(request_context, "role", "") or "").lower()
+            has_platform_access = bool(
+                getattr(request_context, "species_privileges", False) or role == "owner"
+            )
+            if not has_platform_access:
+                raise HTTPException(status_code=403, detail="OODA and Meta consultations require platform-authorized access")
 
     workspace_id = await require_workspace(request)
     db = _conversation_db()
