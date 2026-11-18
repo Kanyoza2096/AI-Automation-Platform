@@ -144,7 +144,7 @@ class WorkflowResult:
                 elif isinstance(value, list):
                     if key in {"errors"}:
                         safe[key] = [str(item)[:500] for item in value[:20]]
-                    elif key in {"claims", "unsupported_claims"}:
+                    elif key in {"claims", "unsupported_claims", "uncertain_claims"}:
                         safe[key] = [
                             safe_detail(item) for item in value[:100]
                             if isinstance(item, dict)
