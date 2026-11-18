@@ -246,8 +246,6 @@ def _stageable_health_plan():
 @pytest.mark.asyncio
 async def test_strategic_mission_admission_stages_workspace_tasks_without_execution(monkeypatch):
     director = Director(supabase_client=None)
-    def bound_brand_health(params):
-        return {"ok": True}
     _bind_stageable_health_capability(director, monkeypatch)
     director.store = _MissionAdmissionStore()
     async def load_plan(plan_id):
@@ -275,7 +273,7 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
 
     replay = await director.stage_strategic_mission(
         plan_id="plan-health-1", workspace_id="workspace-a",
-        idempotency_key="operator-request-001", step_parameters={"health": {}}, actor="operator-1",
+        idempotency_key="operator-request-001", step_parameters={"health": {"brand_id": "brand-owned"}}, actor="operator-1",
     )
     assert replay["replayed"] is True
     assert replay["task_ids"] == result["task_ids"]
