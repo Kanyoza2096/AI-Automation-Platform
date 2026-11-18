@@ -68,7 +68,7 @@ def test_failure_intelligence_classifies_evidence_gate_without_retrying():
 
 def test_failure_intelligence_classifies_voice_and_caption_failures():
     voice = JobStatsService._classify_failed_job({
-        "result": {"failed_steps": [{"step": "validate_content", "error": "first-person violation"}]}
+        "result": {"failed_steps": [{"step": "validate_content", "error": "caption_quality: first_person_violation: forbidden first-person pronoun pattern"}]}
     })
     caption = JobStatsService._classify_failed_job({
         "result": {"failed_steps": [{"step": "validate_content", "error": "caption too short: 79 words; minimum 80"}]}
