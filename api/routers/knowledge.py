@@ -429,7 +429,7 @@ def _valid_evidence_url(value: Optional[str]) -> bool:
     if not value:
         return False
     parsed = _urlparse(value.strip())
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(ch.isspace() for ch in value)
 
 
 def _evidence_review_payload(row: dict) -> dict:
