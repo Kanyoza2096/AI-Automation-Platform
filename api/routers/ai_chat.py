@@ -31,6 +31,23 @@ _ENGINE_GUIDANCE = {
 _VALID_ENGINES = {"general", "director", "guardian", "council", "ai_brain", "content"}
 
 
+def _resolve_collaboration_run_id(value=None):
+    """Resolve a client correlation ID without granting it authority.
+
+    The ID only lets the authenticated client observe this workspace-scoped
+    run while the synchronous collaboration request is still in progress.
+    Workspace ownership and all writes remain server-derived.
+    """
+    if value in (None, ""):
+        return str(uuid.uuid4())
+    if not isinstance(value, str) or len(value) > 64:
+        raise HTTPException(status_code=422, detail="Invalid collaboration correlation ID")
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid collaboration correlation ID") from exc
+
+
 def _conversation_db():
     from services.supabase import supabase_service
     client = supabase_service.service_client
@@ -844,7 +861,7 @@ async def ai_chat(
             [f"OPERATOR: {str(item.get('content') or '')[:1200]}" for item in prior if item.get("role") == "user"]
             + [f"OPERATOR: {body.message}"]
         )[:6000]
-        collaboration_run_id = str(uuid.uuid4())
+        collaboration_run_id = _resolve_collaboration_run_id(context.get("collaboration_id"))
         collaboration_started_at = datetime.now(timezone.utc).isoformat()
         await _db_call(lambda: db.table("director_collaboration_runs").insert({
             "id": collaboration_run_id,

@@ -104,3 +104,16 @@ async def test_meta_handoff_fails_closed_when_health_provider_is_unavailable(mon
     assert evidence["status"] == "unavailable"
     assert evidence["execution_authority"] == "none"
     assert evidence["recovery_started"] is False
+
+def test_collaboration_run_id_accepts_uuid_correlation_and_rejects_invalid_values():
+    import uuid
+    from fastapi import HTTPException
+    from api.routers.ai_chat import _resolve_collaboration_run_id
+
+    requested = str(uuid.uuid4())
+    assert _resolve_collaboration_run_id(requested) == requested
+    assert uuid.UUID(_resolve_collaboration_run_id()).version == 4
+    for invalid in ("not-a-uuid", 123, "x" * 65):
+        with pytest.raises(HTTPException) as error:
+            _resolve_collaboration_run_id(invalid)
+        assert error.value.status_code == 422
