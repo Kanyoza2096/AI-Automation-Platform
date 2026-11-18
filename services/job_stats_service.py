@@ -415,6 +415,7 @@ class JobStatsService:
             return {
                 "status": "unhealthy",
                 "stats": stats,
+                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
                 "reason": (
                     f"job backlog: stale={stale} failed={failed} "
                     f"active={active_jobs} "
@@ -426,6 +427,7 @@ class JobStatsService:
             return {
                 "status": "degraded",
                 "stats": stats,
+                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
                 "reason": (
                     f"job backlog growing: stale={stale} failed={failed} "
                     f"active={active_jobs} "
