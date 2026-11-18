@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS public.knowledge_evidence_review_cases (
     workspace_id TEXT,
     brand_id TEXT,
     source_id TEXT NOT NULL,
-    source_url TEXT,
+    submitted_by TEXT NOT NULL CHECK (length(btrim(submitted_by)) > 0),
+    source_url TEXT CHECK (source_url IS NULL OR source_url ~ '^https?://'),
     source_title TEXT,
     source_type TEXT,
     trust_class TEXT,
@@ -84,3 +85,73 @@ COMMENT ON TABLE public.knowledge_evidence_review_events IS
     'Append-only audit trail for evidence review decisions. Only service_role may append events.';
 COMMENT ON COLUMN public.knowledge_evidence_review_cases.content_sha256 IS
     'SHA-256 of the exact knowledge entry content reviewed; any content change requires a new review case.';
+
+
+-- Make the decision history unavoidable for normal service-role writes.
+CREATE OR REPLACE FUNCTION public.record_knowledge_evidence_review_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    event_name TEXT;
+    event_actor TEXT;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        event_name := 'submitted';
+        event_actor := NEW.submitted_by;
+        INSERT INTO public.knowledge_evidence_review_events (
+            case_id, event_type, actor_id, reason, evidence
+        ) VALUES (
+            NEW.id,
+            event_name,
+            event_actor,
+            'Evidence review case submitted',
+            jsonb_build_object(
+                'knowledge_entry_id', NEW.knowledge_entry_id,
+                'content_sha256', NEW.content_sha256,
+                'source_id', NEW.source_id
+            )
+        );
+        RETURN NEW;
+    END IF;
+
+    IF NEW.review_status IS DISTINCT FROM OLD.review_status THEN
+        event_name := CASE NEW.review_status
+            WHEN 'approved' THEN 'approved'
+            WHEN 'rejected' THEN 'rejected'
+            WHEN 'superseded' THEN 'superseded'
+            ELSE 'reopened'
+        END;
+        event_actor := coalesce(NEW.reviewed_by, NEW.submitted_by);
+        NEW.updated_at := NOW();
+        INSERT INTO public.knowledge_evidence_review_events (
+            case_id, event_type, actor_id, reason, evidence
+        ) VALUES (
+            NEW.id,
+            event_name,
+            event_actor,
+            NEW.review_notes,
+            jsonb_build_object(
+                'review_status', NEW.review_status,
+                'content_sha256', NEW.content_sha256,
+                'source_id', NEW.source_id,
+                'source_url', NEW.source_url
+            )
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.record_knowledge_evidence_review_event()
+    FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS knowledge_evidence_review_case_audit
+    ON public.knowledge_evidence_review_cases;
+CREATE TRIGGER knowledge_evidence_review_case_audit
+    BEFORE INSERT OR UPDATE OF review_status
+    ON public.knowledge_evidence_review_cases
+    FOR EACH ROW
+    EXECUTE FUNCTION public.record_knowledge_evidence_review_event();
