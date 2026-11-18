@@ -647,6 +647,7 @@ class MissionStateMachine:
             "correlation_id": command.correlation_id,
             "payload": payload,
             "evidence_refs": list(command.evidence_refs),
+            "task_sync": dict(command.task_sync) if command.task_sync else None,
             "status": next_status,
             "phase": next_phase,
             "state_snapshot": state,
