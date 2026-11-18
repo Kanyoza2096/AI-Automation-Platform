@@ -420,6 +420,33 @@ class GenerateContentStep(Step):
             logger.debug("PostWorkflow: theme cache warm-up failed: %s", exc)
 
     @staticmethod
+    def _caption_quality_failure_reason(result: Any) -> str | None:
+        """Normalize caption-quality failure details across engine result shapes."""
+        if not isinstance(result, dict):
+            return None
+        artifact = result.get("media_artifact")
+        error_code = (
+            result.get("error_code")
+            or getattr(artifact, "error_code", None)
+            or (artifact.get("error_code") if isinstance(artifact, dict) else None)
+        )
+        error = (
+            result.get("error")
+            or result.get("degraded_reason")
+            or getattr(artifact, "error", None)
+            or (artifact.get("error") if isinstance(artifact, dict) else None)
+            or ""
+        )
+        reason = str(error).strip()
+        if (
+            str(error_code or "").strip() == "CONTENT_PIPELINE_FAILED"
+            and "caption_quality:" in reason
+            and str(result.get("caption") or "").strip()
+        ):
+            return reason
+        return None
+
+    @staticmethod
     def _build_compliance_repair_prompt(
         base_prompt: str, caption: str, rejection_reason: str,
     ) -> str:
@@ -533,26 +560,32 @@ class GenerateContentStep(Step):
             )
 
         supplied_caption = context.get("scheduled_caption")
+        candidate_caption = str(result.get("caption") or "")
+        repair_reason = None
+        normalized_quality_reason = self._caption_quality_failure_reason(result)
 
-        # A failed ContentEngine result must never be reclassified as an
-        # editorial/evidence failure. In particular, an empty gateway response
-        # currently reaches validate_caption_evidence() and is misleadingly
-        # reported as "caption is empty". Keep the original generation reason.
-        # A non-empty caption_quality failure remains eligible for the single
-        # bounded repair below; all other non-publishable results fail closed.
+        # Keep the original generation failure visible. The engine may expose
+        # failure metadata at the top level or on its MediaArtifact; normalize
+        # both before deciding whether a generated caption is repairable.
+        if result.get("publishable") is False:
+            artifact = result.get("media_artifact")
+            logger.warning(
+                "PostWorkflow: non-publishable generation result brand='%s' "
+                "supplied_caption=%s error_code=%s artifact_error_code=%s "
+                "caption_words=%d caption_quality_repairable=%s",
+                self._brand.name,
+                supplied_caption is not None,
+                result.get("error_code"),
+                getattr(artifact, "error_code", None),
+                len(candidate_caption.split()),
+                normalized_quality_reason is not None,
+            )
 
-        # A single repair is allowed only for generated captions. Never rewrite
-        # a caller-supplied scheduled caption, and never loop on a failed repair.
+        # Only generated captions may be repaired. Caller-supplied scheduled
+        # captions remain immutable, even if the engine returns a short draft.
         if supplied_caption is None:
-            candidate_caption = str(result.get("caption") or "")
-            repair_reason = None
-            engine_error = str(result.get("error") or "")
-            if (
-                result.get("error_code") == "CONTENT_PIPELINE_FAILED"
-                and "caption_quality:" in engine_error
-                and candidate_caption.strip()
-            ):
-                repair_reason = engine_error
+            if normalized_quality_reason:
+                repair_reason = normalized_quality_reason
             elif candidate_caption.strip():
                 from services.content_evidence import (
                     validate_caption_evidence,
