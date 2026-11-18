@@ -107,14 +107,14 @@ CREATE TRIGGER director_mission_events_append_only_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $body$
 BEGIN
     IF NEW.version <> 0 THEN
         RAISE EXCEPTION 'director_mission_must_start_at_version_zero';
     END IF;
     RETURN NEW;
 END;
-$;
+$body$;
 
 DROP TRIGGER IF EXISTS director_missions_initial_version_guard ON public.director_missions;
 CREATE TRIGGER director_missions_initial_version_guard
@@ -124,7 +124,7 @@ CREATE TRIGGER director_missions_initial_version_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_state_update()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $body$
 BEGIN
     IF NEW.mission_id <> OLD.mission_id
        OR NEW.scope_type <> OLD.scope_type
@@ -146,7 +146,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$;
+$body$;
 
 DROP TRIGGER IF EXISTS director_missions_state_event_guard ON public.director_missions;
 CREATE TRIGGER director_missions_state_event_guard
@@ -156,7 +156,7 @@ CREATE TRIGGER director_missions_state_event_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_event_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $
+AS $body$
 DECLARE
     mission_row public.director_missions%ROWTYPE;
 BEGIN
@@ -173,7 +173,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$;
+$body$;
 
 DROP TRIGGER IF EXISTS director_mission_events_scope_guard ON public.director_mission_events;
 CREATE TRIGGER director_mission_events_scope_guard
