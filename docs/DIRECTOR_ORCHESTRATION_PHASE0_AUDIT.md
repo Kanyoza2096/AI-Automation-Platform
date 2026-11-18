@@ -129,3 +129,36 @@ The audited backend repository contains Director APIs and read-only AI Control P
 - Added `ContentIntelligenceMissionAdapter` as the first native adapter. It passes the mission workspace into the existing engine, carries evidence URLs/fingerprints, and returns advisory contributions only.
 - Added adapter and gateway regression tests. The focused CI suite now includes the workspace-aware async gateway test through `tests/test_ai_provider_fabric.py`.
 - The registry is not yet wired into the Director API or scheduler; it remains opt-in and has no production execution path. Durable mission journaling and native task execution integration are still next-phase work.
+
+
+## 8. Durable mission state and event-journal implementation
+
+### Existing infrastructure suitability
+
+- The Unified Event Bus publishes notifications and persists to the shared `events` delivery table asynchronously. Its in-process timeline is not a transactionally authoritative mission journal.
+- `shared_event_bus` is a mutable delivery/claim queue, not an append-only mission history.
+- The legacy `event_store` abstraction is an in-memory store in the audited bus path; it is not the durable mission aggregate.
+- `automation_jobs` and `services/job_service.py` are coupled to content/social publishing workflows and are not a generic specialist-engine task queue.
+- Therefore Director's existing `director_tasks` remains the canonical task store, while a separate mission aggregate and append-only event journal are justified. The Event Bus can receive notifications after authoritative mission writes.
+
+### Staging implementation applied
+
+- Migration 176 creates `director_missions` (versioned aggregate/state snapshot) and `director_mission_events` (append-only lifecycle, engine message, handoff, evidence, and disagreement journal).
+- `append_director_mission_event` atomically appends a sequenced event and advances the mission state/version using optimistic concurrency and an idempotency fingerprint.
+- `stage_director_mission_v2` wraps the existing workspace admission RPC and creates the mission aggregate plus its initial admission event in the same transaction.
+- Database guards enforce mission identity immutability, event-to-state sequence consistency, event scope matching, and append-only event history.
+- Migration 177 hardens the boundary: mission/event tables are SELECT-only for `service_role`; writes are restricted to fixed-search-path `SECURITY DEFINER` RPCs executable only by `service_role`. `anon` and `authenticated` have no table access or function execution.
+- The RPCs are deliberately narrow and schema-qualified. The existing Director store still calls the legacy admission RPC; switching it to v2 is a separate code integration step and is not yet enabled.
+
+### Transactional verification
+
+A rollback-only database test exercised:
+- workspace mission admission through v2;
+- initial version and admission event;
+- engine-to-engine question event with sender, recipient, thread, round, and correlation metadata;
+- idempotent replay;
+- same-key/different-fingerprint rejection;
+- stale-version rejection;
+- append-only update rejection.
+
+The test transaction was rolled back. Staging remains at 571 Director tasks, 1 strategic plan, 0 admission receipts, 0 mission aggregates, and 0 mission events. No existing rows were modified.
