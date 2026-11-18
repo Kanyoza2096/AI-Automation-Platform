@@ -125,7 +125,6 @@ BEGIN
             ELSE 'reopened'
         END;
         event_actor := coalesce(NEW.reviewed_by, NEW.submitted_by);
-        NEW.updated_at := NOW();
         INSERT INTO public.knowledge_evidence_review_events (
             case_id, event_type, actor_id, reason, evidence
         ) VALUES (
@@ -151,7 +150,30 @@ REVOKE ALL ON FUNCTION public.record_knowledge_evidence_review_event()
 DROP TRIGGER IF EXISTS knowledge_evidence_review_case_audit
     ON public.knowledge_evidence_review_cases;
 CREATE TRIGGER knowledge_evidence_review_case_audit
-    BEFORE INSERT OR UPDATE OF review_status
+    AFTER INSERT OR UPDATE OF review_status
     ON public.knowledge_evidence_review_cases
     FOR EACH ROW
     EXECUTE FUNCTION public.record_knowledge_evidence_review_event();
+
+
+CREATE OR REPLACE FUNCTION public.touch_knowledge_evidence_review_case()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    NEW.updated_at := NOW();
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.touch_knowledge_evidence_review_case()
+    FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS knowledge_evidence_review_case_touch
+    ON public.knowledge_evidence_review_cases;
+CREATE TRIGGER knowledge_evidence_review_case_touch
+    BEFORE UPDATE
+    ON public.knowledge_evidence_review_cases
+    FOR EACH ROW
+    EXECUTE FUNCTION public.touch_knowledge_evidence_review_case();
