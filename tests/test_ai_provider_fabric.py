@@ -572,8 +572,9 @@ def test_content_intelligence_uses_workspace_aware_async_gateway():
 
 def test_director_native_adapter_registry_invokes_content_engine_with_workspace_scope():
     from types import SimpleNamespace
-    from services.director.orchestration.contracts import AdapterRegistry, MissionTaskContext
-    from services.director.orchestration.native_adapters import ContentIntelligenceMissionAdapter
+    from services.director.orchestration import (
+        AdapterRegistry, MissionTaskContext, ContentIntelligenceMissionAdapter,
+    )
 
     class FakeEngine:
         async def analyze(self, topic, **kwargs):
