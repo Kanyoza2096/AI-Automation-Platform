@@ -232,6 +232,10 @@ async def preview_article(
                 "failed_step": failed.step_name if failed else None,
                 "error_code": failed.error_code if failed else "article_preview_failed",
                 "message": failed.error if failed else "Article preview did not complete",
+                "review_diagnostics": (
+                    (failed.error_detail or {}).get("review_diagnostics")
+                    if failed and isinstance(failed.error_detail, dict) else None
+                ),
                 "completed_steps": [
                     step.step_name for step in result.steps if step.ok
                 ],
