@@ -160,3 +160,19 @@ def test_job_stats_query_error_state_is_isolated_between_threads():
 
     assert observed == [None]
     assert service._last_error == "main-thread failure"
+
+
+def test_failure_intelligence_classifies_provider_timeout_from_failed_step():
+    diagnosis = JobStatsService._classify_failed_job({
+        "last_error_code": "WORKFLOW_FAILED",
+        "attempt_count": 2,
+        "max_attempts": 3,
+        "result": {"failed_steps": [{
+            "step": "generate_content",
+            "error": "AI provider timeout while requesting completion",
+        }]},
+    })
+
+    assert diagnosis["category"] == "provider_availability"
+    assert diagnosis["recovery_policy"]["execution_mode"] == "retry_candidate"
+    assert diagnosis["recovery_policy"]["automatic_execution"] is False
