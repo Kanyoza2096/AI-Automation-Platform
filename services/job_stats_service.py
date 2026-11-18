@@ -282,6 +282,9 @@ class JobStatsService:
         with self._lock:
             if cache_key in self._cache:
                 if time.monotonic() - self._cache_time < self.CACHE_TTL_SECONDS:
+                    # A cached successful observation supersedes an earlier transient
+                    # query failure; do not leave the health probe stuck at UNKNOWN.
+                    self._last_error = None
                     return self._cache[cache_key]
 
         stats = None
@@ -383,6 +386,16 @@ class JobStatsService:
 
         # v4.4 — Derive status from the numbers we just computed.
         status_counts = stats.get("status_counts") or {}
+        failure_intelligence = None
+        if int(status_counts.get("FAILED", 0) or 0) > 0:
+            try:
+                failure_intelligence = self.get_failure_intelligence()
+            except Exception as exc:
+                # Keep the queue verdict, but make the missing diagnostic evidence explicit.
+                failure_intelligence = {
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
         try:
             stale = int(status_counts.get("STALE", 0) or 0)
             failed = int(status_counts.get("FAILED", 0) or 0)
@@ -420,7 +433,70 @@ class JobStatsService:
                 ),
             }
 
-        return {"status": "healthy", "stats": stats}
+        result = {"status": "healthy", "stats": stats}
+        if failure_intelligence is not None:
+            result["failure_intelligence"] = failure_intelligence
+        return result
+
+    @staticmethod
+    def _classify_failed_job(job: dict) -> dict:
+        """Classify a terminal failure from persisted, structured evidence."""
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        steps = result.get("failed_steps") if isinstance(result.get("failed_steps"), list) else []
+        evidence = " ".join(
+            str(value or "")
+            for step in steps if isinstance(step, dict)
+            for value in (step.get("error"), step.get("error_code"), step.get("step"))
+        ).lower()
+        code = str(job.get("last_error_code") or "").upper()
+        if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
+            category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
+        elif "first-person" in evidence or "first person" in evidence:
+            category, action = "voice_compliance", "Regenerate or edit the copy to remove prohibited first-person language."
+        elif "too short" in evidence or "minimum 80" in evidence or "caption" in evidence and "word" in evidence:
+            category, action = "caption_quality", "Regenerate the caption to meet the configured minimum length and quality rules."
+        elif "semantic" in evidence or "unsupported material claim" in evidence:
+            category, action = "semantic_validation", "Repair claims against cited evidence, then rerun semantic and caption gates."
+        elif code == "AI_PROVIDER_UNAVAILABLE":
+            category, action = "provider_availability", "Check provider health and retry only through the governed retry path."
+        else:
+            category, action = "unclassified", "Inspect the persisted failed-step evidence before selecting a remediation."
+        return {
+            "job_id": job.get("job_id"),
+            "category": category,
+            "last_error_code": code or None,
+            "failed_steps": [s.get("step") for s in steps if isinstance(s, dict) and s.get("step")],
+            "attempt_count": job.get("attempt_count"),
+            "max_attempts": job.get("max_attempts"),
+            "recommended_action": action,
+        }
+
+    def get_failure_intelligence(self, limit: int = 100) -> dict:
+        """Read-only diagnosis of terminal FAILED jobs; never retries or mutates jobs."""
+        shared = self._get_shared_client()
+        result = shared.execute(
+            lambda c: c.table("automation_jobs")
+            .select("job_id,last_error_code,result,attempt_count,max_attempts")
+            .eq("status", "FAILED")
+            .limit(max(1, min(int(limit), 500)))
+            .execute()
+        )
+        jobs = result.data or []
+        classified = [self._classify_failed_job(job) for job in jobs]
+        categories = {}
+        for item in classified:
+            bucket = categories.setdefault(item["category"], {
+                "count": 0, "recommended_action": item["recommended_action"], "job_ids": []
+            })
+            bucket["count"] += 1
+            if item.get("job_id") and len(bucket["job_ids"]) < 20:
+                bucket["job_ids"].append(item["job_id"])
+        return {
+            "status": "available",
+            "total_failed_jobs_inspected": len(classified),
+            "categories": categories,
+            "unclassified_count": categories.get("unclassified", {}).get("count", 0),
+        }
 
     def get_status(self) -> dict:
         return self.health_check()
