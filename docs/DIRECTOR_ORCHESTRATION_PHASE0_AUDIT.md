@@ -55,7 +55,11 @@ The staging-specific migration `staging_director_persistence_contracts` has no m
 
 **Additional critical finding:** the production `stage_director_mission` RPC inserts workspace-owned tasks without setting `scope_type`. Migration 170 requires `scope_type = 'workspace'` whenever `workspace_id` is non-null, while the column default is `platform`. The current production function definition therefore conflicts with the live table constraint and is expected to fail on a new workspace mission admission. This was established by comparing the live function definition with the live check constraint; the RPC was not invoked and no rows were changed.
 
-**Decision:** do not replay migrations 153–157 wholesale into staging. A forward-only migration 175 has been authored on this feature branch to create the missing admission receipt table/RPC in staging and explicitly set `scope_type = 'workspace'`, with task contract checks and service-role-only execution. It preserves all existing task/plan rows. It has not yet been applied to production.
+**Staging remediation applied and verified:** migration `director_mission_admission_scope_contract` (repository file `migrations/175_director_mission_admission_scope_contract.sql`, Supabase version `20261118200918`) created the missing admission receipt table and installed a `SECURITY INVOKER` RPC that explicitly inserts `scope_type = 'workspace'`. RLS is enabled; `anon` and `authenticated` have no table SELECT or function EXECUTE; `service_role` has the required access. A transactional test invoked the function twice to verify initial admission and idempotent replay, then deliberately rolled the test transaction back. No test rows remain. Staging still has exactly 571 Director tasks, 1 proposed plan, and 0 admission receipts. No existing rows were changed.
+
+**Production remains untouched:** its live RPC still omits `scope_type`, conflicting with the live `director_tasks_workspace_scope_check` constraint and the `platform` default. This is a source/schema-confirmed production defect that requires a separate forward-only production migration after the staging fix is merged and reviewed.
+
+**Decision:** do not replay migrations 153–157 wholesale into staging. Use migration 175 as the forward-only staging contract and keep the separate production RPC repair behind the normal release gate.
 
 ## 2. KCPG command boundary
 
