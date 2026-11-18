@@ -34,10 +34,9 @@ class MissionTaskContext:
             if not value:
                 raise ValueError(f"{name}_required")
             object.__setattr__(self, name, value)
-        if self.workspace_id == "platform":
-            # Platform-wide missions are valid, but must be explicitly named.
-            if not self.correlation_id:
-                raise ValueError("platform_mission_requires_correlation_id")
+        if not str(self.correlation_id or "").strip():
+            raise ValueError("correlation_id_required")
+        object.__setattr__(self, "correlation_id", str(self.correlation_id).strip())
         if not isinstance(self.inputs, Mapping):
             raise TypeError("task_inputs_must_be_mapping")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
@@ -70,6 +69,8 @@ class EngineContribution:
             raise ValueError("invalid_contribution_status")
         if self.authority != "none":
             raise ValueError("engine_contribution_cannot_grant_authority")
+        if self.side_effect_class not in {"read_only", "external_read_only", "internal_record"}:
+            raise ValueError("native_adapter_side_effect_class_not_advisory_safe")
         if self.confidence is not None and not 0.0 <= float(self.confidence) <= 1.0:
             raise ValueError("confidence_out_of_range")
 
