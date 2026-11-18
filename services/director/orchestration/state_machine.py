@@ -327,7 +327,9 @@ class MissionStateMachine:
                     "evidence_refs": [
                         str(item.get("ref"))[:80]
                         for item in state["evidence_refs"]
-                        if isinstance(item, Mapping) and item.get("ref")
+                        if isinstance(item, Mapping)
+                        and item.get("ref")
+                        and item.get("task_id") == task_id
                     ][:3],
                     "confidence": float(confidence) if confidence is not None else None,
                     "completed_at": str(payload.get("completed_at") or "")[:64],
