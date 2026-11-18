@@ -948,11 +948,36 @@ class PromptBuilder:
             spec, structured=structured, knowledge_context=knowledge_context,
         )
 
+        growthbridge_sales_contract = ""
+        if str(getattr(brand, "name", "") or "").strip().casefold() == "growthbridge virtual":
+            growthbridge_sales_contract = """
+GROWTHBRIDGE VIRTUAL — BUSINESS ADVERTISING REQUIREMENT (MANDATORY)
+This is a business and services brand. Write promotional, conversion-oriented
+advertising copy by default, not a neutral educational explainer or detached
+industry commentary. Present the relevant GrowthBridge service or offering
+as a practical solution to a real business, digital, people, community, or
+event need. Explain the customer value clearly and persuasively, using only
+services and details explicitly supported by the retrieved source material.
+Make the post feel like a credible advertisement: strong benefit-led hook,
+specific service relevance, clear value proposition, and a direct invitation
+to enquire, contact GrowthBridge, or take the next supported action. Do not
+invent prices, guarantees, outcomes, client results, partnerships, locations,
+availability, credentials, or service features. If the retrieved evidence
+does not substantiate a service, do not advertise or imply that service.
+Keep the caption at least 80 words without padding or repetition. Use the
+brand's five pillars (Digital, Business, People, Community, Events) as a
+content mix across posts; do not force all five into one advertisement.
+Finish with a specific enquiry-oriented call to action and a relevant
+question where the platform contract requires one. All KDO policy,
+evidence, prohibited-content, and media gates remain mandatory.
+""".strip()
+
         task = f"""
 Task:
 Write one social media post for {brand.name}.
 {topic_str}
 {axis_str}
+{growthbridge_sales_contract}
 --- BRAND VOICE GUIDE ---
 {style_guide}
 
