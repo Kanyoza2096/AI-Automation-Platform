@@ -139,6 +139,28 @@ class MissionStateMachine:
         }
         return target in allowed.get(current, set())
 
+    def ensure_budget_available(
+        self,
+        current: MissionRuntimeSnapshot,
+        *,
+        estimated_tokens: int = 0,
+        estimated_provider_calls: int = 1,
+    ) -> None:
+        """Preflight a provider call before dispatch; daily workspace limits still apply."""
+        if current.status not in {"admitted", "queued", "running"}:
+            raise MissionTransitionRejected("mission_not_accepting_provider_calls")
+        if estimated_tokens < 0 or estimated_provider_calls < 0:
+            raise MissionTransitionRejected("provider_estimate_must_be_nonnegative")
+        budget = dict((current.state_snapshot or {}).get("budget") or {})
+        if budget.get("exhausted"):
+            raise MissionTransitionRejected("mission_budget_exhausted")
+        max_tokens = budget.get("max_tokens")
+        max_calls = budget.get("max_provider_calls")
+        if max_tokens is not None and int(budget.get("tokens_used", 0)) + estimated_tokens > int(max_tokens):
+            raise MissionTransitionRejected("mission_token_budget_would_be_exceeded")
+        if max_calls is not None and int(budget.get("provider_calls", 0)) + estimated_provider_calls > int(max_calls):
+            raise MissionTransitionRejected("mission_provider_call_budget_would_be_exceeded")
+
     def prepare(
         self, current: MissionRuntimeSnapshot, command: MissionEventCommand
     ) -> MissionTransition:
@@ -163,6 +185,7 @@ class MissionStateMachine:
         state.setdefault("evidence_refs", [])
         state.setdefault("unresolved_disagreements", [])
         state.setdefault("pending_handoffs", {})
+        state.setdefault("pending_questions", {})
         state.setdefault("active_reasoning_round", 0)
         budget = state.setdefault("budget", {})
         budget.setdefault("max_rounds", self.max_reasoning_rounds)
@@ -196,6 +219,8 @@ class MissionStateMachine:
             capability = self._require_text(payload, "capability")
             if task_id not in task_ids:
                 raise MissionTransitionRejected("task_not_in_mission")
+            if command.actor_type not in {"director", "system"}:
+                raise MissionTransitionRejected("task_assignment_requires_director_or_system")
             assignments[task_id] = {"engine_id": engine_id, "capability": capability}
             event_task_id = task_id
             next_phase = "delegation"
@@ -231,7 +256,10 @@ class MissionStateMachine:
             value = payload.get("progress")
             if not isinstance(value, (int, float)) or not 0 <= value <= 100:
                 raise MissionTransitionRejected("task_progress_out_of_range")
+            if command.actor_type not in {"engine", "director", "system"}:
+                raise MissionTransitionRejected("task_progress_actor_invalid")
             progress[task_id] = float(value)
+            event_task_id = task_id
 
         elif event_type in {"task.completed", "task.failed", "task.blocked"}:
             self._require_active(current.status)
@@ -242,8 +270,8 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("task_must_be_executing_before_result")
             if event_type == "task.blocked" and task_status.get(task_id) not in {"approval_required", "approved", "executing"}:
                 raise MissionTransitionRejected("task_cannot_be_blocked_from_current_state")
-            if event_type == "task.completed" and command.actor_type not in {"engine", "director", "system"}:
-                raise MissionTransitionRejected("task_completion_actor_invalid")
+            if command.actor_type not in {"engine", "director", "system"}:
+                raise MissionTransitionRejected("task_result_actor_invalid")
             task_status[task_id] = {
                 "task.completed": "completed",
                 "task.failed": "failed",
@@ -289,6 +317,8 @@ class MissionStateMachine:
             self._require_active(current.status)
             task_id = command.task_id or self._require_text(payload, "task_id")
             to_engine = self._require_text(payload, "to_engine")
+            if command.actor_type not in {"engine", "director"}:
+                raise MissionTransitionRejected("handoff_request_actor_invalid")
             if task_id not in assignments:
                 raise MissionTransitionRejected("task_must_be_assigned_before_handoff")
             if command.recipient_type != "engine" or command.recipient_id != to_engine:
@@ -328,9 +358,20 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("reasoning_round_limit_exceeded")
             if round_number > int(state["active_reasoning_round"]) + 1:
                 raise MissionTransitionRejected("reasoning_round_sequence_invalid")
-            if round_number > int(state["active_reasoning_round"]):
+            if command.message_id in state["pending_questions"]:
+                raise MissionTransitionRejected("duplicate_question_message_id")
+            active_round = int(state["active_reasoning_round"])
+            if round_number > active_round:
+                if any(int(item.get("round", 0)) == active_round for item in state["pending_questions"].values()):
+                    raise MissionTransitionRejected("previous_reasoning_round_has_unanswered_questions")
                 state["active_reasoning_round"] = round_number
                 budget["rounds_used"] = max(int(budget["rounds_used"]), round_number)
+            state["pending_questions"][command.message_id] = {
+                "from_engine": command.actor_id,
+                "to_engine": command.recipient_id,
+                "round": round_number,
+                "task_id": command.task_id,
+            }
             next_status, next_phase = "running", "collaboration"
 
         elif event_type == "engine.answer.received":
@@ -339,8 +380,15 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("engine_answer_requires_engine_actor")
             if not command.message_id or command.round_number < 1:
                 raise MissionTransitionRejected("engine_answer_message_and_round_required")
-            if command.round_number != int(state["active_reasoning_round"]):
+            in_reply_to = self._require_text(payload, "in_reply_to")
+            question = state["pending_questions"].get(in_reply_to)
+            if not question:
+                raise MissionTransitionRejected("question_not_pending")
+            if command.actor_id != question["to_engine"] or command.recipient_type != "engine" or command.recipient_id != question["from_engine"]:
+                raise MissionTransitionRejected("answer_sender_or_recipient_mismatch")
+            if command.round_number != int(question["round"]) or command.round_number != int(state["active_reasoning_round"]):
                 raise MissionTransitionRejected("answer_round_not_open")
+            state["pending_questions"].pop(in_reply_to, None)
             next_status, next_phase = "running", "collaboration"
 
         elif event_type == "engine.challenge.raised":
@@ -432,7 +480,7 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("mission_completion_requires_director_or_system")
             if not task_ids or any(task_status.get(task_id) != "verified" for task_id in task_ids):
                 raise MissionTransitionRejected("mission_tasks_not_all_verified")
-            if unresolved or pending_handoffs:
+            if unresolved or pending_handoffs or state["pending_questions"]:
                 raise MissionTransitionRejected("mission_has_unresolved_collaboration")
             next_status, next_phase = "completed", "completed"
 
