@@ -74,6 +74,7 @@ def test_failure_diagnostics_reads_failed_rows_and_excludes_unneeded_payload():
     }]
     client = _Client(rows)
     service = JobStatsService()
+    service._shared_client = object()
     service._get_shared_client = lambda: _SharedClient(client)
 
     diagnostics = service.get_failure_diagnostics(limit=20)
@@ -115,6 +116,34 @@ def test_job_service_health_carries_failed_job_evidence(monkeypatch):
     assert result["failure_diagnostics"]["total_failed"] == 12
     assert result["failure_diagnostics"]["truncated"] is True
     assert len(result["failure_diagnostics"]["jobs"]) == 2
+
+
+def test_reliability_pulse_preserves_health_report_metadata(monkeypatch):
+    import lifecycle
+    from services.reliability.pulse import PulseCollector
+
+    failure_metadata = {
+        "failure_diagnostics": {
+            "status": "available",
+            "total_failed": 12,
+            "jobs": [{"step_error_code": "AI_VALIDATION_ERROR"}],
+        }
+    }
+
+    class FakeRegistry:
+        def check_all(self):
+            return {
+                "job_service": SimpleNamespace(
+                    status=SimpleNamespace(value="degraded"),
+                    error_message=None,
+                    metadata=failure_metadata,
+                )
+            }
+
+    monkeypatch.setattr(lifecycle, "health_registry", FakeRegistry())
+    evidence = asyncio.run(PulseCollector().collect())
+
+    assert evidence["health_registry"]["job_service"]["metadata"] == failure_metadata
 
 
 def test_reliability_diagnostician_uses_job_failure_metadata():
