@@ -125,3 +125,19 @@ def test_provisional_entry_ids_cannot_be_approved_as_source_provenance():
     migration = MIGRATION_PATH.read_text()
     assert 'body.source_id.strip().startswith("unverified-entry:")' in api_source
     assert "source_id NOT LIKE 'unverified-entry:%'" in migration
+
+
+def test_security_definer_functions_pin_search_path_and_qualify_digest():
+    review = MIGRATION_PATH.read_text()
+    promotion = (ROOT / "migrations" / "173_knowledge_evidence_promotion.sql").read_text()
+    for source in (review, promotion):
+        assert "SET search_path = pg_catalog" in source
+        assert "extensions.digest(convert_to(" in source
+        assert "SET search_path = public" not in source
+
+
+def test_review_state_transitions_require_audited_reviewer_identity():
+    review = MIGRATION_PATH.read_text()
+    assert "Pending evidence cases may only change through a decision or supersession" in review
+    assert "Evidence review decisions require reviewer identity and timestamp" in review
+    assert '"reviewed_by": actor' in (ROOT / "api" / "routers" / "knowledge.py").read_text()
