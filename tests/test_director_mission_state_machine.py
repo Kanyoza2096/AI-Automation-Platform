@@ -156,7 +156,7 @@ def test_mission_budget_preflight_and_usage_pause_are_enforced():
         actor_type="system", actor_id="llm_gateway",
         payload={"usage_tokens": 1000, "provider_calls": 1},
     ))
-    assert current.status == "paused"
+    assert current.status == "awaiting_review"
     assert current.state_snapshot["budget"]["exhausted"] is True
 
     with pytest.raises(MissionTransitionRejected, match="mission_budget_exhausted"):
