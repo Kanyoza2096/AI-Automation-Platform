@@ -396,16 +396,6 @@ class JobStatsService:
 
         # v4.4 — Derive status from the numbers we just computed.
         status_counts = stats.get("status_counts") or {}
-        failure_intelligence = None
-        if int(status_counts.get("FAILED", 0) or 0) > 0:
-            try:
-                failure_intelligence = self.get_failure_intelligence()
-            except Exception as exc:
-                # Keep the queue verdict, but make the missing diagnostic evidence explicit.
-                failure_intelligence = {
-                    "status": "unavailable",
-                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-                }
         try:
             stale = int(status_counts.get("STALE", 0) or 0)
             failed = int(status_counts.get("FAILED", 0) or 0)
@@ -422,6 +412,20 @@ class JobStatsService:
                 "stats": None,
                 "reason": "job statistics were returned but could not be interpreted safely",
             }
+
+        # Only query failure detail after validating the aggregate metrics.
+        # A malformed FAILED count must never trigger another query or escape
+        # the fail-closed health response.
+        failure_intelligence = None
+        if failed > 0:
+            try:
+                failure_intelligence = self.get_failure_intelligence()
+            except Exception as exc:
+                # Keep the queue verdict, but make the missing diagnostic evidence explicit.
+                failure_intelligence = {
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
 
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
 
