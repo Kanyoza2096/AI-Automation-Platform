@@ -140,6 +140,10 @@ class JobStatsService:
         self._cache: dict = {}
         self._cache_time: float = 0.0
         self._lock = threading.Lock()
+        # Query errors are per-caller: concurrent health probes must not clear
+        # or overwrite one another's failure state.
+        self._error_state = threading.local()
+        self._last_error = None
 
         # v4.1: Shared client with semaphore
         self._shared_client: Optional[SharedSupabaseClient] = None
@@ -154,6 +158,14 @@ class JobStatsService:
 
         if self._event_bus is not None:
             self._subscribe_to_events()
+
+    @property
+    def _last_error(self) -> Optional[str]:
+        return getattr(self._error_state, "value", None)
+
+    @_last_error.setter
+    def _last_error(self, value: Optional[str]) -> None:
+        self._error_state.value = value
 
     # ------------------------------------------------------------------
     # Dependency Injection
@@ -270,6 +282,7 @@ class JobStatsService:
     def get_stats(self, brand_id: Optional[str] = None) -> dict:
         """Get comprehensive job statistics with broken pipe retry."""
         if self._shared_client is None:
+            self._last_error = "Supabase client not configured"
             logger.warning(
                 "JobStatsService: get_stats() called without client"
             )
@@ -279,6 +292,9 @@ class JobStatsService:
         with self._lock:
             if cache_key in self._cache:
                 if time.monotonic() - self._cache_time < self.CACHE_TTL_SECONDS:
+                    # A cached successful observation supersedes an earlier transient
+                    # query failure; do not leave the health probe stuck at UNKNOWN.
+                    self._last_error = None
                     return self._cache[cache_key]
 
         stats = None
@@ -295,6 +311,7 @@ class JobStatsService:
                     logger.error(
                         "JobStatsService: all stats methods failed: %s", e
                     )
+                    self._last_error = f"stats_query_failed: {type(e).__name__}: {e}"[:500]
                     return self._empty_stats()
                 time.sleep(0.5 * (2 ** attempt))
             except Exception as e:
@@ -309,17 +326,21 @@ class JobStatsService:
                         logger.error(
                             "JobStatsService: all stats methods failed: %s", e2
                         )
+                        self._last_error = f"stats_query_failed: {type(e2).__name__}: {e2}"[:500]
                         return self._empty_stats()
                     time.sleep(0.5 * (2 ** attempt))
                 except Exception as e2:
                     logger.error(
                         "JobStatsService: all stats methods failed: %s", e2
                     )
+                    self._last_error = f"stats_query_failed: {type(e2).__name__}: {e2}"[:500]
                     return self._empty_stats()
 
         if stats is None:
+            self._last_error = "stats_query_returned_no_data"
             return self._empty_stats()
 
+        self._last_error = None
         with self._lock:
             self._cache[cache_key] = stats
             self._cache_time = time.monotonic()
@@ -361,6 +382,13 @@ class JobStatsService:
 
         try:
             stats = self.get_stats()
+            if self._last_error:
+                return {
+                    "status": "unknown",
+                    "error": self._last_error,
+                    "stats": None,
+                    "reason": "job statistics unavailable; queue health cannot be certified",
+                }
         except Exception as e:
             logger.error("JobStatsService health check failed: %s", e)
             # v4.2 FIX: unknown instead of degraded
@@ -373,9 +401,31 @@ class JobStatsService:
             failed = int(status_counts.get("FAILED", 0) or 0)
             active_jobs = int(stats.get("active_jobs", 0) or 0)
             oldest_minutes = float(stats.get("oldest_active_minutes", 0) or 0)
-        except (TypeError, ValueError):
-            stale = failed = active_jobs = 0
-            oldest_minutes = 0.0
+            if min(stale, failed, active_jobs) < 0 or oldest_minutes < 0:
+                raise ValueError("negative queue metric")
+        except (TypeError, ValueError, OverflowError) as exc:
+            # A malformed stats payload is not evidence of an empty queue.
+            # Fail closed rather than silently converting bad telemetry to zero.
+            return {
+                "status": "unknown",
+                "error": f"invalid_stats_payload: {type(exc).__name__}: {str(exc)[:200]}",
+                "stats": None,
+                "reason": "job statistics were returned but could not be interpreted safely",
+            }
+
+        # Only query failure detail after validating the aggregate metrics.
+        # A malformed FAILED count must never trigger another query or escape
+        # the fail-closed health response.
+        failure_intelligence = None
+        if failed > 0:
+            try:
+                failure_intelligence = self.get_failure_intelligence()
+            except Exception as exc:
+                # Keep the queue verdict, but make the missing diagnostic evidence explicit.
+                failure_intelligence = {
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
 
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
 
@@ -387,6 +437,7 @@ class JobStatsService:
             return {
                 "status": "unhealthy",
                 "stats": stats,
+                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
                 "reason": (
                     f"job backlog: stale={stale} failed={failed} "
                     f"active={active_jobs} "
@@ -398,6 +449,7 @@ class JobStatsService:
             return {
                 "status": "degraded",
                 "stats": stats,
+                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
                 "reason": (
                     f"job backlog growing: stale={stale} failed={failed} "
                     f"active={active_jobs} "
@@ -405,7 +457,134 @@ class JobStatsService:
                 ),
             }
 
-        return {"status": "healthy", "stats": stats}
+        result = {"status": "healthy", "stats": stats}
+        if failure_intelligence is not None:
+            result["failure_intelligence"] = failure_intelligence
+        return result
+
+    @staticmethod
+    def _recovery_policy(category: str, attempt_count=None, max_attempts=None) -> dict:
+        """Return a governed recovery proposal; this method never executes it."""
+        try:
+            attempts = max(0, int(attempt_count or 0))
+            maximum = max(0, int(max_attempts or 0))
+        except (TypeError, ValueError, OverflowError):
+            attempts, maximum = 0, 0
+
+        policies = {
+            "caption_quality": {
+                "proposal": "bounded_caption_repair",
+                "execution_mode": "proposal_only",
+                "requires": ["caption_word_count", "voice_and_policy_validation", "semantic_validation"],
+            },
+            "voice_compliance": {
+                "proposal": "bounded_voice_rewrite",
+                "execution_mode": "proposal_only",
+                "requires": ["voice_and_policy_validation", "semantic_validation", "caption_word_count"],
+            },
+            "evidence_grounding": {
+                "proposal": "verified_source_or_claim_removal",
+                "execution_mode": "human_review",
+                "requires": ["verified_source_id_or_claim_removal", "semantic_validation"],
+            },
+            "semantic_validation": {
+                "proposal": "evidence_backed_claim_repair",
+                "execution_mode": "human_review",
+                "requires": ["claim_to_source_mapping", "semantic_validation", "voice_and_policy_validation"],
+            },
+            "provider_availability": {
+                "proposal": "transient_provider_retry_review",
+                "execution_mode": "retry_candidate" if maximum > 0 and attempts < maximum else "human_review",
+                "requires": ["provider_recovered", "attempt_budget_available", "idempotency_check", "external_publish_state_check"],
+            },
+            "unclassified": {
+                "proposal": "manual_investigation",
+                "execution_mode": "human_review",
+                "requires": ["root_cause_identified"],
+            },
+        }
+        policy = dict(policies.get(category, policies["unclassified"]))
+        policy["automatic_execution"] = False
+        policy["attempt_count"] = attempts
+        policy["max_attempts"] = maximum
+        policy["publication_replay_allowed"] = False
+        return policy
+
+    @classmethod
+    def _classify_failed_job(cls, job: dict) -> dict:
+        """Classify a terminal failure from persisted, structured evidence."""
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        steps = result.get("failed_steps") if isinstance(result.get("failed_steps"), list) else []
+        evidence = " ".join(
+            str(value or "")
+            for step in steps if isinstance(step, dict)
+            for value in (step.get("error"), step.get("error_code"), step.get("step"))
+        ).lower()
+        code = str(job.get("last_error_code") or "").upper()
+        if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
+            category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
+        elif (
+            "first-person" in evidence
+            or "first person" in evidence
+            or "first_person_violation" in evidence
+        ):
+            category, action = "voice_compliance", "Regenerate or edit the copy to remove prohibited first-person language."
+        elif "too short" in evidence or "minimum 80" in evidence or "caption" in evidence and "word" in evidence:
+            category, action = "caption_quality", "Regenerate the caption to meet the configured minimum length and quality rules."
+        elif "semantic" in evidence or "unsupported material claim" in evidence:
+            category, action = "semantic_validation", "Repair claims against cited evidence, then rerun semantic and caption gates."
+        elif code == "AI_PROVIDER_UNAVAILABLE" or "provider unavailable" in evidence or "provider timeout" in evidence:
+            category, action = "provider_availability", "Check provider health and retry only through the governed retry path."
+        else:
+            category, action = "unclassified", "Inspect the persisted failed-step evidence before selecting a remediation."
+        return {
+            "job_id": job.get("job_id"),
+            "category": category,
+            "last_error_code": code or None,
+            "failed_steps": [s.get("step") for s in steps if isinstance(s, dict) and s.get("step")],
+            "attempt_count": job.get("attempt_count"),
+            "max_attempts": job.get("max_attempts"),
+            "recommended_action": action,
+            "recovery_policy": cls._recovery_policy(
+                category, job.get("attempt_count"), job.get("max_attempts")
+            ),
+        }
+
+    def get_failure_intelligence(self, limit: int = 100) -> dict:
+        """Read-only diagnosis of terminal FAILED jobs; never retries or mutates jobs."""
+        shared = self._get_shared_client()
+        result = shared.execute(
+            lambda c: c.table("automation_jobs")
+            .select("job_id,last_error_code,result,attempt_count,max_attempts,updated_at")
+            .eq("status", "FAILED")
+            .order("updated_at", desc=True)
+            .limit(max(1, min(int(limit), 500)))
+            .execute()
+        )
+        jobs = result.data or []
+        classified = [self._classify_failed_job(job) for job in jobs]
+        categories = {}
+        for item in classified:
+            bucket = categories.setdefault(item["category"], {
+                "count": 0,
+                "recommended_action": item["recommended_action"],
+                "job_ids": [],
+                "recovery_proposals": [],
+            })
+            bucket["count"] += 1
+            if item.get("job_id") and len(bucket["job_ids"]) < 20:
+                bucket["job_ids"].append(item["job_id"])
+            if len(bucket["recovery_proposals"]) < 20:
+                bucket["recovery_proposals"].append({
+                    "job_id": item.get("job_id"),
+                    **item["recovery_policy"],
+                })
+        return {
+            "status": "available",
+            "total_failed_jobs_inspected": len(classified),
+            "categories": categories,
+            "unclassified_count": categories.get("unclassified", {}).get("count", 0),
+        }
 
     def get_status(self) -> dict:
         return self.health_check()
