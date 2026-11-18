@@ -47,6 +47,10 @@ class GenerateArticleStep(Step):
             "must have a clear introduction, descriptive section headings, practical "
             "detail, and a useful conclusion.\n"
             f"Brand: {brand_context}\nTopic: {topic}\n"
+            f"Allowed citation source IDs (use exact strings only): {[item['source_id'] for item in source_material]}\n"
+            "The citations array must contain only exact IDs from that allowed list. "
+            "Never invent, rewrite, infer, or cite an ID not listed. If no supplied source "
+            "supports the article, do not fabricate a citation.\n"
             f"Evidence: {source_material}"
         )
         try:
@@ -111,8 +115,25 @@ class ValidateArticleStep(Step):
         citations = article.get("citations")
         if not isinstance(citations, list) or not citations:
             raise StepFailure("Article must include source citations", code="article_citations_missing")
-        if any(not isinstance(value, str) or value not in allowed_ids for value in citations):
-            raise StepFailure("Article cites an unknown knowledge source", code="article_citations_invalid")
+        invalid_citations = [
+            value for value in citations
+            if not isinstance(value, str) or value not in allowed_ids
+        ]
+        if invalid_citations:
+            invalid_source_ids = [
+                value[:200] if isinstance(value, str) else f"<{type(value).__name__}>"
+                for value in invalid_citations[:20]
+            ]
+            raise StepFailure(
+                "Article cites an unknown knowledge source",
+                code="article_citations_invalid",
+                detail={
+                    "invalid_source_ids": invalid_source_ids,
+                    "allowed_source_ids": sorted(allowed_ids)[:50],
+                    "citation_count": len(citations),
+                    "invalid_citation_count": len(invalid_citations),
+                },
+            )
         reviewer = self._reviewer
         if reviewer is None:
             from services.article_semantic_reviewer import ArticleSemanticReviewer
