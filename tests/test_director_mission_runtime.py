@@ -211,6 +211,18 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
     assert len(researcher.calls) == 1
     assert store.task["status"] == "completed"
     assert store.row["state_snapshot"]["task_results"][store.task_id]["summary"] == result.summary
+    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="Do not execute a completed task again.",
+            inputs={},
+            idempotency_prefix="execute-duplicate",
+            correlation_id="corr-runtime-1",
+        )
+    assert len(researcher.calls) == 1
 
     await runtime.ask_engine(
         mission_id=store.mission_id,
