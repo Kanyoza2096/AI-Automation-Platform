@@ -182,6 +182,7 @@ CREATE TRIGGER knowledge_evidence_review_case_touch
 -- Database-enforced binding: a case can only be submitted/approved for the
 -- exact current knowledge content and its real tenant. FOR UPDATE serializes
 -- the check against concurrent edits to the knowledge row.
+CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 
 CREATE OR REPLACE FUNCTION public.guard_knowledge_evidence_review_case()
