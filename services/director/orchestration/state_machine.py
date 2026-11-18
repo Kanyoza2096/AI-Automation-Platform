@@ -482,6 +482,18 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("evidence_references_required")
             if command.task_id is not None and (command.task_id not in assignments or assignments[command.task_id].get("engine_id") != command.actor_id):
                 raise MissionTransitionRejected("evidence_engine_assignment_mismatch")
+            if command.task_id and command.task_id not in task_ids:
+                raise MissionTransitionRejected("evidence_task_not_in_mission")
+            if command.task_id and command.actor_type == "engine":
+                assignment = assignments.get(command.task_id) or {}
+                assigned_engine = assignment.get("engine_id")
+                is_pending_collaborator = any(
+                    item.get("task_id") == command.task_id and item.get("to_engine") == command.actor_id
+                    for item in state["pending_questions"].values()
+                    if isinstance(item, Mapping)
+                )
+                if command.actor_id != assigned_engine and not is_pending_collaborator:
+                    raise MissionTransitionRejected("evidence_engine_not_authorized_for_task")
             known = {str(item.get("ref")) for item in state["evidence_refs"] if isinstance(item, Mapping)}
             for item in command.evidence_refs:
                 ref = str(item.get("ref") or "").strip()
@@ -490,8 +502,20 @@ class MissionStateMachine:
                 if ref not in known:
                     if len(state["evidence_refs"]) >= 50:
                         raise MissionTransitionRejected("mission_evidence_reference_limit_exceeded")
-                    state["evidence_refs"].append({"ref": ref[:100], "source_engine": command.actor_id[:128], "task_id": command.task_id})
+                    state["evidence_refs"].append({
+                        "ref": ref[:100],
+                        "source_engine": command.actor_id[:128],
+                        "task_id": command.task_id,
+                    })
                     known.add(ref)
+            if command.task_id in task_results:
+                task_results[command.task_id]["evidence_refs"] = [
+                    str(item.get("ref"))[:80]
+                    for item in state["evidence_refs"]
+                    if isinstance(item, Mapping)
+                    and item.get("ref")
+                    and item.get("task_id") == command.task_id
+                ][:3]
             event_task_id = command.task_id
             next_status, next_phase = "running", "collaboration"
 
