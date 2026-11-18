@@ -61,10 +61,11 @@ BEGIN
 
     target_status := p_task_sync->>'target_status';
     expected_statuses := p_task_sync->'expected_statuses';
-    IF target_status NOT IN (
+    IF target_status IS NULL OR target_status NOT IN (
         'approval_required', 'approved', 'executing', 'completed',
         'failed', 'blocked', 'flagged', 'verified'
-    ) OR jsonb_typeof(expected_statuses) IS DISTINCT FROM 'array' THEN
+    ) OR jsonb_typeof(expected_statuses) IS DISTINCT FROM 'array'
+       OR jsonb_array_length(expected_statuses) = 0 THEN
         RAISE EXCEPTION 'atomic_task_sync_contract_invalid';
     END IF;
 
