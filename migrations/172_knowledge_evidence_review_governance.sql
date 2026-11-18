@@ -208,9 +208,15 @@ BEGIN
            OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
             RAISE EXCEPTION 'Evidence review case identity and snapshot are immutable';
         END IF;
-        IF OLD.review_status = 'approved'
-           AND NEW.review_status <> 'superseded' THEN
-            RAISE EXCEPTION 'Approved evidence review cases are immutable';
+        IF OLD.review_status = 'approved' THEN
+            IF NEW.review_status <> 'superseded'
+               OR NEW.source_id IS DISTINCT FROM OLD.source_id
+               OR NEW.source_url IS DISTINCT FROM OLD.source_url
+               OR NEW.source_title IS DISTINCT FROM OLD.source_title
+               OR NEW.source_type IS DISTINCT FROM OLD.source_type
+               OR NEW.trust_class IS DISTINCT FROM OLD.trust_class THEN
+                RAISE EXCEPTION 'Approved evidence review cases are immutable';
+            END IF;
         END IF;
         IF OLD.review_status IN ('rejected', 'superseded')
            AND NEW.review_status <> 'pending' THEN
