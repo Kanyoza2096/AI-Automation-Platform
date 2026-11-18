@@ -240,7 +240,7 @@ BEGIN
         END IF;
 
         current_hash := encode(
-            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            digest(convert_to(current_content, 'UTF8'), 'sha256'),
             'hex'
         );
         IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
@@ -492,7 +492,7 @@ BEGIN
         END IF;
 
         current_hash := encode(
-            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            digest(convert_to(current_content, 'UTF8'), 'sha256'),
             'hex'
         );
         IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
@@ -721,7 +721,7 @@ BEGIN
         END IF;
 
         current_hash := encode(
-            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            digest(convert_to(current_content, 'UTF8'), 'sha256'),
             'hex'
         );
         IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
@@ -973,7 +973,7 @@ BEGIN
         END IF;
 
         current_hash := encode(
-            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            digest(convert_to(current_content, 'UTF8'), 'sha256'),
             'hex'
         );
         IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
