@@ -11,6 +11,7 @@ from .contracts import (
     NativeEngineAdapter,
 )
 from .native_adapters import ContentIntelligenceMissionAdapter
+from .runtime import MissionOrchestrationRuntime, MissionRuntimeNotFound, MissionTaskNotReady
 from .store import MissionEventWrite, MissionRuntimeStore, MissionRuntimeStoreError
 from .state_machine import (
     MissionEventCommand,
@@ -28,6 +29,9 @@ __all__ = [
     "MissionTaskContext",
     "NativeEngineAdapter",
     "ContentIntelligenceMissionAdapter",
+    "MissionOrchestrationRuntime",
+    "MissionRuntimeNotFound",
+    "MissionTaskNotReady",
     "MissionEventWrite",
     "MissionRuntimeStore",
     "MissionRuntimeStoreError",
