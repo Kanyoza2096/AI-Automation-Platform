@@ -977,7 +977,6 @@ Task:
 Write one social media post for {brand.name}.
 {topic_str}
 {axis_str}
-{growthbridge_sales_contract}
 --- BRAND VOICE GUIDE ---
 {style_guide}
 
@@ -997,6 +996,8 @@ Before you write, decide these three things in silence:
   - What evidence grounds it — the kind appropriate to this brand?
 
 Then write the post. Do not include the three decisions in the output.
+
+{growthbridge_sales_contract}
 
 {FINAL_KDO_CAPTION_CONTRACT}
 """.strip()
