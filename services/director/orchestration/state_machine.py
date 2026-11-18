@@ -73,6 +73,7 @@ class MissionEventCommand:
     thread_id: str | None = None
     round_number: int = 0
     evidence_refs: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+    task_sync: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
