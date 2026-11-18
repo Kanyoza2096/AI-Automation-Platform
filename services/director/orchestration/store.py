@@ -6,6 +6,7 @@ writes directly to director_missions or director_mission_events.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from ..utils import safe
@@ -166,6 +167,116 @@ class MissionRuntimeStore:
         )
         rows = getattr(response, "data", None) or []
         return dict(rows[0]) if rows else None
+
+    async def get_workspace_task(
+        self, *, task_id: str, workspace_id: str, mission_id: str
+    ) -> dict[str, Any] | None:
+        """Read a canonical task only when its workspace and mission match."""
+        query = (
+            self._store.supabase.table("director_tasks").select("*")
+            .eq("id", task_id)
+            .eq("workspace_id", workspace_id)
+            .eq("scope_type", "workspace")
+        )
+        response = await self._execute(
+            "read canonical Director workspace task",
+            lambda: query.limit(1).execute(),
+        )
+        rows = getattr(response, "data", None) or []
+        if not rows:
+            return None
+        row = dict(rows[0])
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            import json
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(payload, dict):
+            return None
+        if (
+            row.get("workspace_id") != workspace_id
+            or row.get("scope_type") != "workspace"
+            or payload.get("workspace_id") != workspace_id
+            or payload.get("scope_type") != "workspace"
+            or payload.get("mission_id") != mission_id
+        ):
+            return None
+        row["payload"] = payload
+        return row
+
+    async def sync_workspace_task_status(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        mission_id: str,
+        target_status: str,
+        expected_statuses: Sequence[str],
+        result: Mapping[str, Any] | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        """Idempotently synchronize the canonical task row after a mission event."""
+        allowed_targets = {
+            "approval_required", "approved", "executing", "completed",
+            "failed", "blocked", "flagged", "verified",
+        }
+        if target_status not in allowed_targets:
+            raise ValueError("canonical_task_target_status_invalid")
+        row = await self.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if row is None:
+            raise MissionRuntimeStoreError("canonical_workspace_task_not_found")
+        current_status = str(row.get("status") or "")
+        if current_status == target_status:
+            return row
+        if current_status not in set(expected_statuses):
+            raise MissionRuntimeStoreError(
+                f"canonical_task_status_conflict:{current_status}->{target_status}"
+            )
+
+        payload = dict(row["payload"])
+        payload["status"] = target_status
+        if result is not None:
+            payload["result"] = safe(dict(result))
+        if error is not None:
+            payload["error"] = str(error)[:2000]
+        if target_status == "executing":
+            payload["executed_at"] = datetime.now(timezone.utc).isoformat()
+        elif target_status == "approved":
+            payload.setdefault("approved_at", datetime.now(timezone.utc).isoformat())
+
+        params = {
+            "status": target_status,
+            "payload": safe(payload),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        query = (
+            self._store.supabase.table("director_tasks")
+            .update(params)
+            .eq("id", task_id)
+            .eq("workspace_id", workspace_id)
+            .eq("scope_type", "workspace")
+            .eq("status", current_status)
+        )
+        response = await self._execute(
+            "synchronize canonical Director task status",
+            lambda: query.execute(),
+        )
+        rows = getattr(response, "data", None) or []
+        if rows:
+            updated = dict(rows[0])
+            updated["payload"] = payload
+            return updated
+
+        latest = await self.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if latest and latest.get("status") == target_status:
+            return latest
+        raise MissionRuntimeStoreError("canonical_task_status_sync_unacknowledged")
 
     async def list_events(
         self,
