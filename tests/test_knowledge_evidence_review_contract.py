@@ -49,7 +49,9 @@ def test_review_api_uses_server_service_client_and_never_promotes_verified_flag(
     assert 'supabase_service.client' not in source
     assert "evidence_promoted" in source
     assert '"evidence_promoted": False' in source
-    assert "metadata.verified" not in source
+    assert 'metadata["verified"]' not in source
+    assert '"verified": True' not in source
+    assert '"verified": true' not in source
 
 
 def test_database_guard_binds_case_to_locked_current_content_and_tenant():
