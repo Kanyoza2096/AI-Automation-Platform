@@ -30,6 +30,11 @@ on:
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
+      - "services/director/orchestration/**"
+      - "services/content_intelligence.py"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_content_intelligence_automation_stage.py"
+      - "migrations/175_director_mission_admission_scope_contract.sql"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   push:
     branches:
@@ -57,6 +62,11 @@ on:
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
+      - "services/director/orchestration/**"
+      - "services/content_intelligence.py"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_content_intelligence_automation_stage.py"
+      - "migrations/175_director_mission_admission_scope_contract.sql"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   workflow_dispatch:
 
@@ -89,7 +99,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
       - name: Compile governed chat route and proposal module
-        run: python -m compileall -q api/chat_action_proposals.py api/engine_handoff_evidence.py api/routers/ai_chat.py
+        run: python -m compileall -q api/chat_action_proposals.py api/engine_handoff_evidence.py api/routers/ai_chat.py services/director/orchestration services/content_intelligence.py
       - name: Verify Director event lifecycle and architecture contracts
         run: |
           python -m pytest -q \
@@ -108,7 +118,7 @@ jobs:
             tests/test_director_decision_evidence.py \
             tests/test_director_learning_evidence.py \
             tests/test_director_capability_audit.py \
-            tests/test_engine_handoff_evidence.py \
+            tests/test_engine_handoff_evidence.py \\\n            tests/test_director_native_engine_adapters.py \\\n            tests/test_content_intelligence_automation_stage.py \\
             tests/test_engine_truth.py \
             tests/test_meta_engine_lifecycle_identity.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
