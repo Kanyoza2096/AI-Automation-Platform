@@ -133,7 +133,7 @@ class ValidateArticleStep(Step):
                         key: review.get(key)
                         for key in (
                             "decision", "reason", "rationale", "evidence_coverage",
-                            "unsupported_claims", "claims", "scores", "request_id",
+                            "unsupported_claims", "uncertain_claims", "claims", "scores", "request_id",
                             "provider", "model", "status", "approved",
                         )
                     } if isinstance(review, dict) else {},
