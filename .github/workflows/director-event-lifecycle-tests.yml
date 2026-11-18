@@ -3,6 +3,9 @@ name: Cross-Subsystem Event Lifecycle Tests
 on:
   pull_request:
     paths:
+      - "api/chat_action_proposals.py"
+      - "api/routers/ai_chat.py"
+      - "tests/test_ai_chat_action_proposals.py"
       - "services/director/core.py"
       - "services/director/planning.py"
       - "ai/gateway.py"
@@ -11,6 +14,7 @@ on:
       - "services/ai_provider.py"
       - "services/ai_policy.py"
       - "tests/test_ai_provider_fabric.py"
+            tests/test_ai_chat_action_proposals.py \
       - "lifecycle.py"
       - "services/director/stores.py"
       - "services/director/api.py"
