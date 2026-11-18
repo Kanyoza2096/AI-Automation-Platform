@@ -30,9 +30,11 @@ async def test_mission_dependency_is_persisted_and_graph_exposes_edge():
 @pytest.mark.asyncio
 async def test_workspace_ownership_survives_task_persistence_and_restore():
     director = Director(supabase_client=None)
-    task = _task("workspace-task")
-    task.workspace_id = "workspace-alpha"
-    task.mission_id = "mission-alpha"
+    task = Task(
+        id="workspace-task", sector=Sector.SELF, description="workspace-task",
+        capability="self_diagnostic", authority=Authority.SUGGEST, risk=Risk.LOW,
+        workspace_id="workspace-alpha", mission_id="mission-alpha",
+    )
     await director.store.save_task(task)
 
     restarted = Director(supabase_client=None)
@@ -199,7 +201,9 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
     director.bind_capability("calculate_brand_health", bound_brand_health)
     director.capability_binding_report["calculate_brand_health"] = "bound"
     director.store = _MissionAdmissionStore()
-    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
+    async def load_plan(plan_id):
+        return _stageable_health_plan()
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
     async def verified(plan, max_age_seconds=300):
         return {"verdict": "verified_for_governance_review"}
     monkeypatch.setattr(director, "verify_strategic_plan", verified)
@@ -236,7 +240,9 @@ async def test_strategic_mission_admission_rejects_unlisted_params_and_unowned_b
     director.store = _MissionAdmissionStore()
     plan = _stageable_health_plan()
     plan["steps"][0].update(capability="calculate_brand_health", sector="brands")
-    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: plan)
+    async def load_plan(plan_id):
+        return plan
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
     async def verified(plan, max_age_seconds=300):
         return {"verdict": "verified_for_governance_review"}
     monkeypatch.setattr(director, "verify_strategic_plan", verified)
@@ -304,7 +310,9 @@ async def test_strategic_mission_admission_can_use_v2_runtime_atomically(monkeyp
     monkeypatch.setattr(runtime_store_module, "MissionRuntimeStore", runtime_factory)
     monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_V2", "true")
     director.store = LegacyStoreMustNotBeUsed()
-    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
+    async def load_plan(plan_id):
+        return _stageable_health_plan()
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
 
     async def verified(plan, max_age_seconds=300):
         return {"verdict": "verified_for_governance_review"}
