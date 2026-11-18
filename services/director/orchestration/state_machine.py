@@ -93,6 +93,8 @@ class MissionStateMachine:
     def initial_state(task_ids: Sequence[str], *, max_tokens: int | None = None,
                       max_provider_calls: int | None = None,
                       max_reasoning_rounds: int = 3) -> dict[str, Any]:
+        if not 1 <= int(max_reasoning_rounds) <= 10:
+            raise ValueError("max_reasoning_rounds_out_of_range")
         return {
             "task_ids": list(task_ids),
             "task_status": {str(task_id): "approval_required" for task_id in task_ids},
@@ -101,6 +103,7 @@ class MissionStateMachine:
             "evidence_refs": [],
             "unresolved_disagreements": [],
             "pending_handoffs": {},
+            "pending_questions": {},
             "active_reasoning_round": 0,
             "budget": {
                 "max_rounds": int(max_reasoning_rounds),
@@ -149,7 +152,7 @@ class MissionStateMachine:
         """Preflight a provider call before dispatch; daily workspace limits still apply."""
         if current.status not in {"admitted", "queued", "running"}:
             raise MissionTransitionRejected("mission_not_accepting_provider_calls")
-        if estimated_tokens < 0 or estimated_provider_calls < 0:
+        if isinstance(estimated_tokens, bool) or isinstance(estimated_provider_calls, bool) or estimated_tokens < 0 or estimated_provider_calls < 0:
             raise MissionTransitionRejected("provider_estimate_must_be_nonnegative")
         budget = dict((current.state_snapshot or {}).get("budget") or {})
         if budget.get("exhausted"):
@@ -228,8 +231,8 @@ class MissionStateMachine:
             capability = self._require_text(payload, "capability")
             if task_id not in task_ids:
                 raise MissionTransitionRejected("task_not_in_mission")
-            if task_id in assignments:
-                raise MissionTransitionRejected("task_already_assigned_use_reassignment")
+            if task_id in assignments or task_status.get(task_id) != "approval_required":
+                raise MissionTransitionRejected("task_already_assigned_or_not_approval_required")
             if command.actor_type not in {"director", "system"}:
                 raise MissionTransitionRejected("task_assignment_requires_director_or_system")
             assignments[task_id] = {"engine_id": engine_id, "capability": capability}
@@ -301,7 +304,7 @@ class MissionStateMachine:
         elif event_type == "task.verified":
             self._require_active(current.status)
             task_id = command.task_id or self._require_text(payload, "task_id")
-            if task_status.get(task_id) != "completed":
+            if task_id not in task_ids or task_status.get(task_id) != "completed":
                 raise MissionTransitionRejected("task_must_complete_before_verification")
             verification_ref = str(payload.get("verification_ref") or "").strip()
             if not command.evidence_refs and not verification_ref:
@@ -370,7 +373,7 @@ class MissionStateMachine:
             if not command.message_id:
                 raise MissionTransitionRejected("engine_question_requires_message_id")
             round_number = int(command.round_number)
-            max_rounds = int(budget.get("max_rounds") or self.max_reasoning_rounds)
+            max_rounds = int(budget.get("max_rounds", self.max_reasoning_rounds))
             if round_number < 1 or round_number > min(max_rounds, self.max_reasoning_rounds):
                 raise MissionTransitionRejected("reasoning_round_limit_exceeded")
             if round_number > int(state["active_reasoning_round"]) + 1:
