@@ -142,8 +142,11 @@ class MissionRuntimeStore:
             "p_state_snapshot": safe(dict(event.state_snapshot)),
         }
         response = await self._execute(
-            "append Director mission event",
-            lambda: self._store.supabase.rpc("append_director_mission_event", params).execute(),
+            "append Director mission event with atomic task sync",
+            lambda: self._store.supabase.rpc(
+                "append_director_mission_event_with_task_sync",
+                {"p_event": params, "p_task_sync": safe(dict(event.task_sync)) if event.task_sync else None},
+            ).execute(),
         )
         return self._payload(response)
 
