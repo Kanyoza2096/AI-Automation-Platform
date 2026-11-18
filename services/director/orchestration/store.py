@@ -39,6 +39,7 @@ class MissionEventWrite:
     round_number: int = 0
     status: str | None = None
     phase: str | None = None
+    task_sync: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.scope_type not in {"workspace", "platform"}:
