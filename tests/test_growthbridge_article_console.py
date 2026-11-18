@@ -34,3 +34,20 @@ async def test_growthbridge_article_preview_page_fails_closed_without_template(m
             request=SimpleNamespace(),
         )
     assert exc.value.status_code == 500
+
+def test_growthbridge_article_console_renders_semantic_review_diagnostics():
+    template = (
+        Path(console.__file__).resolve().parents[1]
+        / "templates"
+        / "growthbridge_article_preview.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="diagnostics"' in template
+    assert "function renderDiagnostics(payload)" in template
+    assert "payload?.review_diagnostics" in template
+    assert "unsupported_claims" in template
+    assert "uncertain_claims" in template
+    assert "evidence_coverage" in template
+    assert "request_id" in template
+    assert "renderDiagnostics(data)" in template
+
