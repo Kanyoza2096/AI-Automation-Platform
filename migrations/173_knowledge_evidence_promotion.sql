@@ -39,7 +39,7 @@ CREATE OR REPLACE FUNCTION public.promote_approved_knowledge_evidence(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions, pg_temp
+SET search_path = pg_catalog
 AS $$
 DECLARE
     review_case public.knowledge_evidence_review_cases%ROWTYPE;
@@ -90,7 +90,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        digest(convert_to(entry_content, 'UTF8'), 'sha256'),
+        extensions.digest(convert_to(entry_content, 'UTF8'), 'sha256'),
         'hex'
     );
     IF current_hash IS DISTINCT FROM review_case.content_sha256 THEN
@@ -156,7 +156,7 @@ GRANT EXECUTE ON FUNCTION public.promote_approved_knowledge_evidence(UUID, TEXT)
 CREATE OR REPLACE FUNCTION public.invalidate_knowledge_evidence_on_content_change()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-SET search_path = public, pg_temp
+SET search_path = pg_catalog
 AS $$
 BEGIN
     IF NEW.content IS DISTINCT FROM OLD.content
@@ -199,7 +199,7 @@ BEGIN
     END IF;
 
     current_hash := encode(
-        digest(convert_to(NEW.content, 'UTF8'), 'sha256'),
+        extensions.digest(convert_to(NEW.content, 'UTF8'), 'sha256'),
         'hex'
     );
 
