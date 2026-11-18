@@ -586,6 +586,24 @@ class MissionOrchestrationRuntime:
             payload={"disagreement_id": disagreement_id, "resolution": resolution[:4000]},
         )
 
+    async def complete_mission(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> MissionRuntimeSnapshot:
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        return await self._commit(
+            current,
+            event_type="mission.completed",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id="director",
+            correlation_id=correlation_id,
+        )
+
     async def timeline(
         self, *, mission_id: str, workspace_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
