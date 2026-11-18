@@ -177,3 +177,80 @@ CREATE TRIGGER knowledge_evidence_review_case_touch
     ON public.knowledge_evidence_review_cases
     FOR EACH ROW
     EXECUTE FUNCTION public.touch_knowledge_evidence_review_case();
+
+
+-- Database-enforced binding: a case can only be submitted/approved for the
+-- exact current knowledge content and its real tenant. FOR UPDATE serializes
+-- the check against concurrent edits to the knowledge row.
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
+
+CREATE OR REPLACE FUNCTION public.guard_knowledge_evidence_review_case()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, extensions, pg_temp
+AS $$
+DECLARE
+    current_content TEXT;
+    current_brand_id TEXT;
+    current_workspace_id TEXT;
+    current_hash TEXT;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.knowledge_entry_id IS DISTINCT FROM OLD.knowledge_entry_id
+           OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+           OR NEW.brand_id IS DISTINCT FROM OLD.brand_id
+           OR NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256
+           OR NEW.metadata_snapshot IS DISTINCT FROM OLD.metadata_snapshot
+           OR NEW.claim_scope IS DISTINCT FROM OLD.claim_scope
+           OR NEW.submitted_by IS DISTINCT FROM OLD.submitted_by
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Evidence review case identity and snapshot are immutable';
+        END IF;
+        IF OLD.review_status = 'approved'
+           AND NEW.review_status <> 'superseded' THEN
+            RAISE EXCEPTION 'Approved evidence review cases are immutable';
+        END IF;
+        IF OLD.review_status IN ('rejected', 'superseded')
+           AND NEW.review_status <> 'pending' THEN
+            RAISE EXCEPTION 'Only rejected or superseded cases may be reopened';
+        END IF;
+    END IF;
+
+    IF NEW.review_status = 'approved' OR TG_OP = 'INSERT' THEN
+        SELECT content, brand_id, workspace_id
+          INTO current_content, current_brand_id, current_workspace_id
+          FROM public.knowledge_entries
+         WHERE id = NEW.knowledge_entry_id
+         FOR UPDATE;
+
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Knowledge entry does not exist';
+        END IF;
+        IF current_brand_id IS DISTINCT FROM NEW.brand_id
+           OR current_workspace_id IS DISTINCT FROM NEW.workspace_id THEN
+            RAISE EXCEPTION 'Evidence review tenant binding does not match knowledge entry';
+        END IF;
+
+        current_hash := encode(
+            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            'hex'
+        );
+        IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
+            RAISE EXCEPTION 'Knowledge content changed; evidence review case is stale';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.guard_knowledge_evidence_review_case()
+    FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS knowledge_evidence_review_case_guard
+    ON public.knowledge_evidence_review_cases;
+CREATE TRIGGER knowledge_evidence_review_case_guard
+    BEFORE INSERT OR UPDATE
+    ON public.knowledge_evidence_review_cases
+    FOR EACH ROW
+    EXECUTE FUNCTION public.guard_knowledge_evidence_review_case();
