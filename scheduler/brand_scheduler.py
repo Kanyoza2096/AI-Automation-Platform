@@ -99,6 +99,21 @@ def _brand_status_value(brand: Any) -> str:
     return str(raw or "").lower()
 
 
+def _brand_publish_platform(brand: Any) -> str:
+    """Resolve a brand's configured primary publishing platform.
+
+    Brand.metadata is the existing extensibility surface; legacy brands
+    without a platform setting retain the historical Facebook default.
+    """
+    explicit = getattr(brand, "platform", None)
+    metadata = getattr(brand, "metadata", None)
+    configured = None
+    if isinstance(metadata, dict):
+        configured = metadata.get("primary_platform") or metadata.get("platform")
+    value = explicit or configured or "facebook"
+    return str(value).strip().lower() or "facebook"
+
+
 def _coerce_date(value):
     """Return a `date` from a date/datetime/ISO string; None otherwise."""
     if value is None:
@@ -1249,7 +1264,7 @@ class BrandScheduler:
 
             wf_kwargs = dict(
                 job_id=job_id,
-                platform=getattr(self.brand, "platform", "facebook"),
+                platform=_brand_publish_platform(self.brand),
                 source=source,
                 risk_level="low",
                 scheduled_post_id=scheduled_post_id,

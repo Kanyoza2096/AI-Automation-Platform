@@ -40,6 +40,7 @@ class WebsiteIntegrationRegistration(BaseModel):
     app_name: str = Field(min_length=1, max_length=160)
     environment: str = Field(default="production", min_length=1, max_length=32)
     base_url: str = Field(min_length=1, max_length=2048)
+    brand_id: str | None = Field(default=None, min_length=1, max_length=128)
     publish_path: str = Field(default="/api/kdo/content", min_length=1, max_length=512)
     lookup_path_template: str = Field(default="", max_length=512)
     edit_path_template: str = Field(default="", max_length=512)

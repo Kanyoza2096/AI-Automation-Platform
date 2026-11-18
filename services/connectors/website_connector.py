@@ -49,7 +49,11 @@ class WebsiteConnector:
         self._lookup_template = str(config.get("lookup_path_template") or "").strip()
         self._delete_template = str(config.get("delete_path_template") or "").strip()
         self._edit_template = str(config.get("edit_path_template") or "").strip()
-        self._status = str(config.get("status") or "publish").strip()
+        self._capabilities = {str(x).strip().upper() for x in (config.get("capabilities") or [])}
+        # Fail closed: an account without explicit publish authority defaults to drafts.
+        self._status = str(config.get("status") or (
+            "publish" if "PUBLISH_ARTICLE" in self._capabilities else "draft"
+        )).strip().lower()
         self._token = str(getattr(social_account, "access_token", "") or "").strip()
 
     def _validate_url(self, path: str) -> str:
@@ -79,13 +83,20 @@ class WebsiteConnector:
             return ConnectorResult(False, self.platform, error=str(exc), outcome="failed")
         if not self._token:
             return ConnectorResult(False, self.platform, error="Website API credential is not configured", outcome="failed")
+        requested_status = str(kwargs.get("status") or self._status).strip().lower()
+        if requested_status == "publish" and "PUBLISH_ARTICLE" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="PUBLISH_ARTICLE capability is not enabled", outcome="failed")
+        if requested_status == "draft" and "CREATE_DRAFT" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="CREATE_DRAFT capability is not enabled", outcome="failed")
+        if requested_status not in {"publish", "draft"}:
+            return ConnectorResult(False, self.platform, error="Unsupported website publication status", outcome="failed")
         title = str(kwargs.get("title") or kwargs.get("topic") or "KDO publication").strip()
         slug = str(kwargs.get("slug") or "").strip()
         idempotency_key = str(kwargs.get("idempotency_key") or "").strip()
         payload = {
             "title": title,
             "content": str(content or ""),
-            "status": self._status,
+            "status": requested_status,
             "slug": slug or None,
             "image_url": image_url,
             "idempotency_key": idempotency_key,
@@ -126,9 +137,13 @@ class WebsiteConnector:
             return None
 
     def delete(self, post_id: str) -> ConnectorResult:
+        if "DELETE_ARTICLE" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="DELETE_ARTICLE capability is not enabled", outcome="failed")
         return self._mutate_template(self._delete_template, post_id, "delete")
 
     def edit(self, post_id: str, content: str) -> ConnectorResult:
+        if "UPDATE_ARTICLE" not in self._capabilities:
+            return ConnectorResult(False, self.platform, error="UPDATE_ARTICLE capability is not enabled", outcome="failed")
         return self._mutate_template(self._edit_template, post_id, "edit", {"content": content})
 
     def _mutate_template(self, template: str, post_id: str, operation: str, extra: Optional[dict[str, Any]] = None) -> ConnectorResult:
