@@ -78,7 +78,12 @@ The audited backend repository contains Director APIs and read-only AI Control P
 
 1. **Meta Engine** — native methods include fresh health observation and diagnosis. Use health/diagnosis and dependency evidence only. Recovery methods (`_perform_recovery`, `_start_recovery`, recovery handlers) must not be reachable from advisory collaboration.
 2. **Condition Engine** — `observe(Observation)` performs native deterministic analysis and records its decision. Its plan execution methods (`execute_plan`, `execute_plan_async`) are a separate boundary and must not be called by the advisory adapter. The adapter must require structured, workspace-scoped observations and must preserve the distinction between a recommendation and an executed action.
-3. **Content Intelligence Engine** — `ContentIntelligenceEngine.analyze(..., workspace_id=...)` is a native research-oriented path with explicit workspace context. Validate its provider/web-source budgets, evidence references, and side-effect profile before registering it as a task adapter.
+3. **Content Intelligence Engine** — `ContentIntelligenceEngine.analyze(..., workspace_id=...)` is a native research-oriented path with explicit workspace context. Audit found it awaited the gateway's synchronous `complete()` method, causing the LLM synthesis path to fall into its degraded handler; the call now uses `complete_async()`, and regression tests assert workspace propagation and reject use of the sync method. The first Director adapter wraps this native method, preserves source references, and is constrained to external read-only research.
+
+### Additional adapter readiness constraints
+
+- **Condition Engine** is not yet registered. Its `observe(Observation)` method is synchronous and persists decision state; before orchestration can safely invoke it, the adapter needs a trusted brand-to-workspace resolver and an idempotent observation/decision contract so an interrupted mission cannot create duplicate decisions. Its separate action-plan and execution methods remain excluded.
+- **Meta Engine** is platform-supervisory, not workspace-tenant analysis. Its initial adapter must be restricted to `workspace_id='platform'` until a tenant-safe diagnostic contract exists.
 
 ### OODA and Guardian constraints
 
@@ -116,3 +121,11 @@ The audited backend repository contains Director APIs and read-only AI Control P
 - No backend/frontend runtime code was changed.
 - No deployment was triggered.
 - PR #349 remains a draft architecture-only PR.
+
+
+## 7. First code increment
+
+- Added `services/director/orchestration/contracts.py` with explicit task context, contribution schema, adapter protocol, registry, per-engine concurrency semaphores, bounded timeouts, and identity/authority/side-effect validation.
+- Added `ContentIntelligenceMissionAdapter` as the first native adapter. It passes the mission workspace into the existing engine, carries evidence URLs/fingerprints, and returns advisory contributions only.
+- Added adapter and gateway regression tests. The focused CI suite now includes the workspace-aware async gateway test through `tests/test_ai_provider_fabric.py`.
+- The registry is not yet wired into the Director API or scheduler; it remains opt-in and has no production execution path. Durable mission journaling and native task execution integration are still next-phase work.
