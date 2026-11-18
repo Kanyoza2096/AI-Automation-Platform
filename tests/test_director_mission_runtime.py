@@ -156,7 +156,12 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
     reviewer = FakeNativeAdapter("meta_engine", "Independent review supports the finding.")
     registry.register(researcher)
     registry.register(reviewer)
-    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+    task_state_changes = []
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=registry,
+        task_state_callback=lambda task_id, status, result, error: task_state_changes.append((task_id, status)),
+    )
 
     await runtime.assign_task(
         mission_id=store.mission_id,
@@ -242,6 +247,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         correlation_id="corr-runtime-1",
     )
     assert store.task["status"] == "verified"
+    assert [status for _, status in task_state_changes] == ["executing", "completed", "verified"]
     completed = await runtime.complete_mission(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
