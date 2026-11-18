@@ -518,6 +518,11 @@ class MissionOrchestrationRuntime:
         question_text = str(question_payload.get("question") or "").strip()
         if not question_text:
             raise MissionTaskNotReady("persisted_engine_question_text_missing")
+        self.state_machine.ensure_budget_available(
+            current,
+            estimated_tokens=1800,
+            estimated_provider_calls=1,
+        )
 
         context = MissionTaskContext(
             task_id=task_id,
