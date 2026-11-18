@@ -46,6 +46,21 @@ def test_job_stats_health_recovers_after_a_successful_query():
     assert recovered["stats"]["status_counts"]["FAILED"] == 12
 
 
+def test_job_stats_health_is_unknown_for_malformed_metrics_not_healthy():
+    service = JobStatsService(supabase_client=object())
+    service.get_stats = lambda brand_id=None: {
+        "status_counts": {"FAILED": "not-a-number", "STALE": 0},
+        "active_jobs": 0,
+        "oldest_active_minutes": 0,
+    }
+
+    result = service.health_check()
+
+    assert result["status"] == "unknown"
+    assert result["stats"] is None
+    assert "invalid_stats_payload" in result["error"]
+
+
 def test_failure_intelligence_classifies_evidence_gate_without_retrying():
     diagnosis = JobStatsService._classify_failed_job({
         "job_id": "job-evidence",
