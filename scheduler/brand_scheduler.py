@@ -718,9 +718,14 @@ class BrandScheduler:
 
         self._supabase_circuit = SupabaseCircuitBreaker()
 
+        # One Redis key shared by every brand scheduler. This is the
+        # cross-brand publication mutex: only one publish pipeline may run
+        # at a time across all brands and service instances.
         self._distributed_lock = DistributedLock(
-            name=f"brand:{brand.id}:publish",
+            name="global:publish",
             redis_client=redis_client,
+            timeout_seconds=1800,
+            allow_local_fallback=False,
         )
 
         self._publish_semaphore = threading.Semaphore(
