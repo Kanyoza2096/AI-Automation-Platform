@@ -317,15 +317,15 @@ class MissionStateMachine:
                 task_results[task_id] = {
                     "engine_id": assignments[task_id]["engine_id"],
                     "capability": assignments[task_id]["capability"],
-                    "summary": str(payload.get("summary") or "").strip()[:3000],
-                    "findings": _bounded_strings("findings"),
-                    "recommendations": _bounded_strings("recommendations"),
-                    "limitations": _bounded_strings("limitations"),
+                    "summary": str(payload.get("summary") or "").strip()[:700],
+                    "findings": _bounded_strings("findings", limit=3, width=160),
+                    "recommendations": _bounded_strings("recommendations", limit=2, width=140),
+                    "limitations": _bounded_strings("limitations", limit=2, width=100),
                     "evidence_refs": [
-                        str(item.get("ref"))[:300]
+                        str(item.get("ref"))[:100]
                         for item in state["evidence_refs"]
                         if isinstance(item, Mapping) and item.get("ref")
-                    ][:30],
+                    ][:4],
                     "confidence": float(confidence) if confidence is not None else None,
                     "completed_at": str(payload.get("completed_at") or "")[:64],
                 }
@@ -482,7 +482,9 @@ class MissionStateMachine:
                 if not ref:
                     raise MissionTransitionRejected("evidence_reference_id_required")
                 if ref not in known:
-                    state["evidence_refs"].append({"ref": ref, "source_engine": command.actor_id})
+                    if len(state["evidence_refs"]) >= 50:
+                        raise MissionTransitionRejected("mission_evidence_reference_limit_exceeded")
+                    state["evidence_refs"].append({"ref": ref[:100], "source_engine": command.actor_id[:128]})
                     known.add(ref)
             event_task_id = command.task_id
             next_status, next_phase = "running", "collaboration"
@@ -494,6 +496,8 @@ class MissionStateMachine:
             disagreement_id = self._require_text(payload, "disagreement_id")
             self._require_text(payload, "summary")
             if disagreement_id not in unresolved:
+                if len(unresolved) >= 25:
+                    raise MissionTransitionRejected("mission_disagreement_limit_exceeded")
                 unresolved.append(disagreement_id)
             event_task_id = command.task_id
             next_status, next_phase = "running", "collaboration"
