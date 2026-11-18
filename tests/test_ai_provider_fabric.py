@@ -567,3 +567,48 @@ def test_content_intelligence_uses_workspace_aware_async_gateway():
         assert llm.kwargs["capability"] == "chat"
 
     asyncio.run(run())
+
+
+
+def test_director_native_adapter_registry_invokes_content_engine_with_workspace_scope():
+    from types import SimpleNamespace
+    from services.director.orchestration.contracts import AdapterRegistry, MissionTaskContext
+    from services.director.orchestration.native_adapters import ContentIntelligenceMissionAdapter
+
+    class FakeEngine:
+        async def analyze(self, topic, **kwargs):
+            assert kwargs["workspace_id"] == "workspace-adapter-ci"
+            return SimpleNamespace(to_dict=lambda: {
+                "mode": "full",
+                "summary": "Native research result.",
+                "claims": ["Supported finding."],
+                "recommendations": ["Review the source."],
+                "risks": [],
+                "evidence": [{
+                    "fingerprint": "evidence-1",
+                    "title": "Source",
+                    "url": "https://example.com/source",
+                    "source": "test",
+                    "snippet": "Evidence excerpt",
+                }],
+                "sources_count": 1,
+                "providers": ["test"],
+                "confidence": 0.75,
+                "warnings": [],
+            })
+
+    context = MissionTaskContext(
+        task_id="adapter-task",
+        mission_id="adapter-mission",
+        workspace_id="workspace-adapter-ci",
+        capability="research.analyze",
+        objective="Research a question",
+        correlation_id="adapter-correlation",
+    )
+    registry = AdapterRegistry()
+    registry.register(ContentIntelligenceMissionAdapter(engine=FakeEngine()))
+    result = asyncio.run(registry.invoke("content_intelligence", context))
+    assert result.status == "completed"
+    assert result.evidence[0]["ref"] == "evidence-1"
+    assert result.authority == "none"
+    assert result.side_effect_class == "external_read_only"
