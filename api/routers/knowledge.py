@@ -462,7 +462,7 @@ async def submit_knowledge_evidence_review(
 
         content_hash = _sha256(entry.content.encode("utf-8")).hexdigest()
         metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
-        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or f"unverified-entry:{entry.id}")
+        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or f"unverified-entry:{entry.id}").strip()
         source_url = metadata.get("source_url") or metadata.get("sourceUrl")
         if source_url and not _valid_evidence_url(str(source_url)):
             source_url = None
@@ -597,7 +597,7 @@ async def decide_knowledge_evidence_review(
             raise HTTPException(status_code=409, detail="Knowledge content changed; this review case was superseded")
 
         if body.decision == "approved":
-            if not body.source_id or body.source_id.startswith("unverified-entry:"):
+            if not body.source_id or body.source_id.strip().startswith("unverified-entry:"):
                 raise HTTPException(status_code=422, detail="Approval requires a stable source ID")
             if not _valid_evidence_url(body.source_url):
                 raise HTTPException(status_code=422, detail="Approval requires an HTTP(S) source URL")
