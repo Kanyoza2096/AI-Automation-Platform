@@ -100,6 +100,7 @@ class MissionStateMachine:
             "task_status": {str(task_id): "approval_required" for task_id in task_ids},
             "task_assignments": {},
             "engine_progress": {},
+            "task_results": {},
             "evidence_refs": [],
             "unresolved_disagreements": [],
             "pending_handoffs": {},
@@ -185,6 +186,7 @@ class MissionStateMachine:
         state.setdefault("task_status", {})
         state.setdefault("task_assignments", {})
         state.setdefault("engine_progress", {})
+        state.setdefault("task_results", {})
         state.setdefault("evidence_refs", [])
         state.setdefault("unresolved_disagreements", [])
         state.setdefault("pending_handoffs", {})
@@ -209,6 +211,8 @@ class MissionStateMachine:
         state["task_assignments"] = assignments
         progress = {key: value for key, value in dict(state["engine_progress"]).items() if key in task_ids}
         state["engine_progress"] = progress
+        task_results = {key: value for key, value in dict(state["task_results"]).items() if key in task_ids}
+        state["task_results"] = task_results
         unresolved = state["unresolved_disagreements"]
         pending_handoffs = {key: value for key, value in dict(state["pending_handoffs"]).items() if key in task_ids}
         state["pending_handoffs"] = pending_handoffs
@@ -297,9 +301,43 @@ class MissionStateMachine:
             }[event_type]
             event_task_id = task_id
             if event_type == "task.completed":
+                def _bounded_strings(key: str, limit: int = 12, width: int = 600) -> list[str]:
+                    values = payload.get(key) or []
+                    if not isinstance(values, list):
+                        return []
+                    return [str(value).strip()[:width] for value in values[:limit] if str(value).strip()]
+
+                confidence = payload.get("confidence")
+                if confidence is not None and (
+                    isinstance(confidence, bool)
+                    or not isinstance(confidence, (int, float))
+                    or not 0.0 <= float(confidence) <= 1.0
+                ):
+                    raise MissionTransitionRejected("task_result_confidence_out_of_range")
+                task_results[task_id] = {
+                    "engine_id": assignments[task_id]["engine_id"],
+                    "capability": assignments[task_id]["capability"],
+                    "summary": str(payload.get("summary") or "").strip()[:3000],
+                    "findings": _bounded_strings("findings"),
+                    "recommendations": _bounded_strings("recommendations"),
+                    "limitations": _bounded_strings("limitations"),
+                    "evidence_refs": [
+                        str(item.get("ref"))[:300]
+                        for item in state["evidence_refs"]
+                        if isinstance(item, Mapping) and item.get("ref")
+                    ][:30],
+                    "confidence": float(confidence) if confidence is not None else None,
+                    "completed_at": str(payload.get("completed_at") or "")[:64],
+                }
                 next_phase = "synthesis"
             elif event_type in {"task.failed", "task.blocked"}:
                 payload.setdefault("reason", "Task did not complete successfully.")
+                task_results[task_id] = {
+                    "engine_id": assignments[task_id]["engine_id"],
+                    "capability": assignments[task_id]["capability"],
+                    "status": task_status[task_id],
+                    "reason": str(payload.get("reason") or "")[:1000],
+                }
 
         elif event_type == "task.verified":
             self._require_active(current.status)
