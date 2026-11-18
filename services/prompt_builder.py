@@ -169,17 +169,22 @@ preference. Sentences may vary in length; fragments are allowed.
 Avoid corporate verbs ("leverage", "optimize", "deploy", "enable",
 "scale") unless the topic is literally about those operations.
 
-8. CLOSE WITH A SPECIFIC QUESTION.
-The post must close with a specific question directed at the reader
-that invites a real reply — not rhetorical, not "What do you think?",
-not "Let me know your thoughts!", not a summary of the point. The
-question should be one the reader has an actual opinion about, based
-on their own experience. Forbidden closes:
-  - "What do you think?" (too generic)
-  - "Let me know your thoughts!" (says nothing)
-  - "Follow for more content like this."
+8. CLOSE WITH A SPECIFIC, NON-ASSUMPTIVE QUESTION.
+The post may close with one specific question that invites a useful reply.
+The question must arise directly from the technical point in this post and
+must not assume the reader has implemented, deployed, measured, or operated
+the system being discussed. Do not ask readers to report production
+experience, implementation history, metrics, or strategies unless the post
+has established that this audience is expected to have that experience.
+Prefer a question about a concrete trade-off, diagnostic signal, design
+choice, or decision raised by the post. Forbidden closes include:
+  - "What do you think?" or "What are your thoughts?"
+  - "What specific strategies have you implemented in your production environment?"
+  - Any generic question that could be appended unchanged to an unrelated post.
+  - "Let me know your thoughts!" or "Follow for more content like this."
+  - A question that presumes the reader has deployed or operated the system.
   - "Next step is to..." (fabricated case-study close)
-  - Any sentence that sounds like a summary of the post.
+  - Any sentence that merely summarizes the post.
 
 9. EMOJI, IF USED, MUST BE SPECIFIC.
 An emoji may appear only when it carries meaning — it points at the
