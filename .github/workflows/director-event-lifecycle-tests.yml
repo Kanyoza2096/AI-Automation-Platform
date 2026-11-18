@@ -14,7 +14,6 @@ on:
       - "services/ai_provider.py"
       - "services/ai_policy.py"
       - "tests/test_ai_provider_fabric.py"
-            tests/test_ai_chat_action_proposals.py \
       - "lifecycle.py"
       - "services/director/stores.py"
       - "services/director/api.py"
@@ -94,6 +93,7 @@ jobs:
             tests/test_director_strategic_context.py \
             tests/test_director_strategic_planning.py \
             tests/test_ai_provider_fabric.py \
+            tests/test_ai_chat_action_proposals.py \
             tests/test_director_strategic_plan_persistence.py \
             tests/test_director_auth_boundary.py \
             tests/test_director_executive_report_truth.py \
