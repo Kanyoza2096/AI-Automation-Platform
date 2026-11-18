@@ -97,6 +97,25 @@ class MemoryMissionStore:
             return {"replayed": True, "version": self.row["version"]}
         if event.expected_version != self.row["version"]:
             return {"error": "director_mission_version_conflict"}
+        # Mirror the production RPC transaction: validate and update the
+        # canonical task before committing the mission snapshot/event.
+        if event.task_sync:
+            sync = dict(event.task_sync)
+            target = sync["target_status"]
+            current = self.task["status"]
+            if current != target and current not in set(sync["expected_statuses"]):
+                return {"error": "atomic_task_sync_status_conflict"}
+            if current != target:
+                next_payload = copy.deepcopy(self.task["payload"])
+                next_payload["status"] = target
+                if sync.get("result") is not None:
+                    next_payload["result"] = copy.deepcopy(sync["result"])
+                if sync.get("error") is not None:
+                    next_payload["error"] = sync["error"]
+                elif target in {"approved", "executing", "completed", "verified", "approval_required"}:
+                    next_payload["error"] = None
+                self.task["status"] = target
+                self.task["payload"] = next_payload
         version = self.row["version"] + 1
         self.row.update({
             "version": version,
