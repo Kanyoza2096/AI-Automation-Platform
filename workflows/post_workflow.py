@@ -423,7 +423,7 @@ class GenerateContentStep(Step):
     def _build_compliance_repair_prompt(
         base_prompt: str, caption: str, rejection_reason: str,
     ) -> str:
-        """Build one bounded repair request without weakening source policy."""
+        """Build a bounded repair request without weakening source policy."""
         return (
             f"{base_prompt.strip()}\n\n"
             "BOUNDED CAPTION COMPLIANCE REPAIR — ONE ATTEMPT ONLY\n"
