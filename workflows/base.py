@@ -127,6 +127,8 @@ class WorkflowResult:
             "provider", "model", "assessed", "supported", "unsupported",
             "uncertain", "supported_rate", "claim_coverage", "brand_relevance",
             "originality", "audience_value", "genericity",
+            "invalid_source_ids", "allowed_source_ids", "citation_count",
+            "invalid_citation_count",
         }
 
         def safe_detail(detail: Any) -> dict[str, Any]:
@@ -149,8 +151,10 @@ class WorkflowResult:
                             safe_detail(item) for item in value[:100]
                             if isinstance(item, dict)
                         ]
-                    elif key == "source_ids":
+                    elif key in {"source_ids", "invalid_source_ids"}:
                         safe[key] = [str(item)[:200] for item in value[:20]]
+                    elif key == "allowed_source_ids":
+                        safe[key] = [str(item)[:200] for item in value[:50]]
                 elif isinstance(value, str):
                     safe[key] = value[:1000]
                 elif isinstance(value, (int, float, bool)) or value is None:
