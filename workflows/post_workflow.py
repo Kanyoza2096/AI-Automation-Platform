@@ -425,25 +425,29 @@ class GenerateContentStep(Step):
         if not isinstance(result, dict):
             return None
         artifact = result.get("media_artifact")
-        error_code = (
-            result.get("error_code")
-            or getattr(artifact, "error_code", None)
-            or (artifact.get("error_code") if isinstance(artifact, dict) else None)
+        artifact_code = (
+            artifact.get("error_code")
+            if isinstance(artifact, dict)
+            else getattr(artifact, "error_code", None)
         )
-        error = (
-            result.get("error")
-            or result.get("degraded_reason")
-            or getattr(artifact, "error", None)
-            or (artifact.get("error") if isinstance(artifact, dict) else None)
-            or ""
+        artifact_error = (
+            artifact.get("error")
+            if isinstance(artifact, dict)
+            else getattr(artifact, "error", None)
         )
-        reason = str(error).strip()
-        if (
-            str(error_code or "").strip() == "CONTENT_PIPELINE_FAILED"
-            and "caption_quality:" in reason
-            and str(result.get("caption") or "").strip()
-        ):
-            return reason
+        failure_pairs = (
+            (result.get("error_code"), result.get("error") or result.get("degraded_reason")),
+            (artifact_code, artifact_error),
+        )
+        if not str(result.get("caption") or "").strip():
+            return None
+        for error_code, error in failure_pairs:
+            reason = str(error or "").strip()
+            if (
+                str(error_code or "").strip() == "CONTENT_PIPELINE_FAILED"
+                and "caption_quality:" in reason
+            ):
+                return reason
         return None
 
     @staticmethod
