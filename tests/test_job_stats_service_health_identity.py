@@ -44,3 +44,47 @@ def test_job_stats_health_recovers_after_a_successful_query():
 
     assert recovered["status"] == "degraded"
     assert recovered["stats"]["status_counts"]["FAILED"] == 12
+
+
+def test_failure_intelligence_classifies_evidence_gate_without_retrying():
+    diagnosis = JobStatsService._classify_failed_job({
+        "job_id": "job-evidence",
+        "last_error_code": "WORKFLOW_FAILED",
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "result": {
+            "failed_steps": [{
+                "step": "generate_content",
+                "error_code": "AI_VALIDATION_ERROR",
+                "error": "Factual evidence gate rejected content: requires a verified KB source with a stable source ID",
+            }]
+        },
+    })
+
+    assert diagnosis["category"] == "evidence_grounding"
+    assert diagnosis["job_id"] == "job-evidence"
+    assert "verified knowledge-base source" in diagnosis["recommended_action"]
+
+
+def test_failure_intelligence_classifies_voice_and_caption_failures():
+    voice = JobStatsService._classify_failed_job({
+        "result": {"failed_steps": [{"step": "validate_content", "error": "first-person violation"}]}
+    })
+    caption = JobStatsService._classify_failed_job({
+        "result": {"failed_steps": [{"step": "validate_content", "error": "caption too short: 79 words; minimum 80"}]}
+    })
+
+    assert voice["category"] == "voice_compliance"
+    assert caption["category"] == "caption_quality"
+
+
+def test_failure_intelligence_preserves_unknown_failures_for_investigation():
+    diagnosis = JobStatsService._classify_failed_job({
+        "job_id": "job-unknown",
+        "last_error_code": "WORKFLOW_FAILED",
+        "result": {"failed_steps": [{"step": "publish", "error": "unrecognized provider response"}]},
+    })
+
+    assert diagnosis["category"] == "unclassified"
+    assert diagnosis["job_id"] == "job-unknown"
+    assert "Inspect" in diagnosis["recommended_action"]
