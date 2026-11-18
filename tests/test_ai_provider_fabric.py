@@ -618,7 +618,7 @@ def test_director_native_adapter_registry_invokes_content_engine_with_workspace_
 
 def test_director_mission_runtime_store_uses_governed_rpcs_and_scoped_reads():
     from types import SimpleNamespace
-    from services.director.orchestration.store import MissionEventWrite, MissionRuntimeStore
+    from services.director.orchestration import MissionEventWrite, MissionRuntimeStore
 
     class Query:
         def __init__(self, table, owner):
