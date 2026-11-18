@@ -343,7 +343,8 @@ class MissionStateMachine:
                 }
 
         elif event_type == "task.verified":
-            self._require_active(current.status)
+            if current.status not in {"admitted", "queued", "running", "awaiting_review"}:
+                raise MissionTransitionRejected("mission_not_accepting_task_verification")
             task_id = command.task_id or self._require_text(payload, "task_id")
             if task_id not in task_ids or task_status.get(task_id) != "completed":
                 raise MissionTransitionRejected("task_must_complete_before_verification")
@@ -535,7 +536,7 @@ class MissionStateMachine:
             if exhausted:
                 budget["exhausted"] = True
                 budget["exhaustion_reason"] = "mission_resource_ceiling_reached"
-                next_status, next_phase = "paused", "recovery"
+                next_status, next_phase = "awaiting_review", "review"
 
         elif event_type == "mission.awaiting_review":
             if command.actor_type not in {"director", "system"} or current.status not in {"admitted", "running"}:
@@ -550,7 +551,7 @@ class MissionStateMachine:
         elif event_type == "mission.resumed":
             if command.actor_type not in {"operator", "system"}:
                 raise MissionTransitionRejected("mission_resume_requires_operator_or_system")
-            if current.status not in {"paused", "needs_reconciliation"}:
+            if current.status not in {"paused", "needs_reconciliation", "awaiting_review"}:
                 raise MissionTransitionRejected("mission_not_resumable")
             if budget.get("exhausted"):
                 raise MissionTransitionRejected("mission_budget_exhausted")
