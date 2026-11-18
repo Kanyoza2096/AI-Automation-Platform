@@ -678,6 +678,7 @@ class MissionStateMachine:
             status=next_status,
             phase=next_phase,
             state_snapshot=state,
+            task_sync=dict(command.task_sync) if command.task_sync else None,
         )
         next_snapshot = MissionRuntimeSnapshot(
             mission_id=current.mission_id,
