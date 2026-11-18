@@ -54,6 +54,9 @@ on:
       - "council/integration/condition_engine_integration.py"
       - "tests/test_condition_engine_event_context.py"
       - "tests/test_condition_engine_council_approval_fence.py"
+      - "api/engine_handoff_evidence.py"
+      - "api/routers/ai_chat.py"
+      - "tests/test_engine_handoff_evidence.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   workflow_dispatch:
 
@@ -86,7 +89,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
       - name: Compile governed chat route and proposal module
-        run: python -m compileall -q api/chat_action_proposals.py api/routers/ai_chat.py
+        run: python -m compileall -q api/chat_action_proposals.py api/engine_handoff_evidence.py api/routers/ai_chat.py
       - name: Verify Director event lifecycle and architecture contracts
         run: |
           python -m pytest -q \
