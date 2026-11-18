@@ -72,6 +72,76 @@ class Diagnostician:
                     cause = "service_health_degraded"
                     confidence = 0.7
 
+        # Prefer domain evidence over a generic "service degraded" label.
+        # JobService attaches a bounded read-only sample from automation_jobs
+        # to its HealthReport.metadata; PulseCollector must preserve that metadata.
+        job_report = registry.get("job_service") if isinstance(registry, dict) else None
+        job_metadata = job_report.get("metadata") if isinstance(job_report, dict) else None
+        failure_diagnostics = (
+            job_metadata.get("failure_diagnostics")
+            if isinstance(job_metadata, dict)
+            else None
+        )
+        if (
+            isinstance(failure_diagnostics, dict)
+            and failure_diagnostics.get("status") == "available"
+        ):
+            failed_jobs = failure_diagnostics.get("jobs")
+            if not isinstance(failed_jobs, list):
+                failed_jobs = []
+            try:
+                total_failed = max(
+                    0,
+                    int(
+                        failure_diagnostics.get("total_failed")
+                        or failure_diagnostics.get("total_returned")
+                        or 0
+                    ),
+                )
+            except (TypeError, ValueError, OverflowError):
+                total_failed = 0
+
+            if total_failed > 0:
+                categories = failure_diagnostics.get("counts_by_category")
+                if not isinstance(categories, dict):
+                    categories = {}
+                category_summary = ", ".join(
+                    f"{str(name)[:64]}={max(0, int(count))}"
+                    for name, count in sorted(categories.items())
+                    if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+                ) or "category evidence unavailable"
+                step_codes = [
+                    str(job.get("step_error_code") or "").strip().upper()
+                    for job in failed_jobs
+                    if isinstance(job, dict)
+                ]
+                validation_only = (
+                    bool(failed_jobs)
+                    and len(step_codes) == len(failed_jobs)
+                    and not bool(failure_diagnostics.get("truncated"))
+                    and all(code == "AI_VALIDATION_ERROR" for code in step_codes)
+                )
+
+                cause = (
+                    "job_content_validation_backlog"
+                    if validation_only
+                    else "job_failure_backlog"
+                )
+                confidence = 0.95 if failed_jobs else 0.8
+                related = ["job_service", "job_stats_service"]
+                if validation_only:
+                    related.extend(["content_engine", "post_workflow"])
+                summary.append(
+                    f"Persisted automation_jobs evidence: {total_failed} FAILED job(s)"
+                    + (" (sample truncated)" if failure_diagnostics.get("truncated") else "")
+                )
+                summary.append(f"Failure categories: {category_summary}")
+                if validation_only:
+                    summary.append(
+                        "Sampled failures are AI_VALIDATION_ERROR content/policy rejections, "
+                        "not evidence of a stopped JobService process"
+                    )
+
         # Symptom-specific overrides
         symptom = (incident.symptom or "").lower()
         if "workspace_id" in symptom or "nerve" in symptom or "legacy" in symptom:

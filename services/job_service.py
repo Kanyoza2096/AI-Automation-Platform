@@ -507,11 +507,39 @@ class JobService:
             from services.job_stats_service import get_job_stats_service
             stats_service = get_job_stats_service()
             result = stats_service.health_check()
+            if not isinstance(result, dict):
+                result = {"status": "unknown", "error": "JobStatsService returned an invalid health payload"}
+            result = dict(result)
             # v5.0.1: Propagate unknown/not_configured so MetaEngine investigates
             if result.get("status") in ("not_configured", "unknown"):
                 result["status"] = "unknown"
+
+            # Preserve a bounded sample of persisted FAILED rows alongside the
+            # aggregate health count. The Reliability Pulse can then distinguish
+            # a dead worker from deterministic content/policy rejections.
+            stats = result.get("stats")
+            status_counts = stats.get("status_counts") if isinstance(stats, dict) else {}
+            try:
+                failed_count = max(0, int((status_counts or {}).get("FAILED", 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                failed_count = 0
+            if failed_count:
+                diagnostics_reader = getattr(stats_service, "get_failure_diagnostics", None)
+                if callable(diagnostics_reader):
+                    try:
+                        diagnostics = diagnostics_reader(limit=20)
+                        if isinstance(diagnostics, dict):
+                            diagnostics = dict(diagnostics)
+                            diagnostics["total_failed"] = failed_count
+                            diagnostics["truncated"] = int(diagnostics.get("total_returned", 0) or 0) < failed_count
+                            result["failure_diagnostics"] = diagnostics
+                    except Exception as diagnostics_error:
+                        logger.warning(
+                            "JobService failed-job diagnostics unavailable: %s",
+                            diagnostics_error,
+                        )
+
             from core.director_signal_contract import director_signal_metrics
-            result = dict(result)
             metrics = dict(result.get("metrics") or {}) if isinstance(result.get("metrics"), dict) else {}
             signals = self._director_backlog_signals(result)
             metrics.update(director_signal_metrics(signals))

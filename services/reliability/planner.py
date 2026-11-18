@@ -28,6 +28,8 @@ CAUSE_PLAYBOOK = {
     # repeatedly scheduling a known-unimplemented remediation.
     "degraded_engines": RemediationAction.ESCALATE_HUMAN,
     "service_health_degraded": RemediationAction.ESCALATE_HUMAN,
+    "job_content_validation_backlog": RemediationAction.ESCALATE_HUMAN,
+    "job_failure_backlog": RemediationAction.ESCALATE_HUMAN,
     "nerve_event_scope_mismatch": RemediationAction.RECONCILE_HEALTH_SCOPE,
     "activity_stagnation": RemediationAction.ESCALATE_HUMAN,
     "connector_auth_failure": RemediationAction.ESCALATE_HUMAN,
@@ -44,7 +46,12 @@ class RepairPlanner:
         # These generic diagnoses currently have no connection-refresh adapter.
         # Do not let historical memory resurrect the unsupported action; require
         # human review until a component-specific, tested executor exists.
-        if diagnosis.probable_cause in {"degraded_engines", "service_health_degraded"}:
+        if diagnosis.probable_cause in {
+            "degraded_engines",
+            "service_health_degraded",
+            "job_content_validation_backlog",
+            "job_failure_backlog",
+        }:
             action = RemediationAction.ESCALATE_HUMAN
         else:
             # Memory can override the default playbook for supported actions.

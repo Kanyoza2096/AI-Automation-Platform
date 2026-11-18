@@ -334,6 +334,122 @@ class JobStatsService:
         full_stats = self.get_stats(brand_id=brand_id)
         return full_stats.get("status_counts", {})
 
+    @staticmethod
+    def _classify_failure_category(error: str, error_code: str = "") -> str:
+        """Return a stable, non-sensitive category for persisted workflow failures."""
+        message = str(error or "").lower()
+        code = str(error_code or "").strip().upper()
+        if any(term in message for term in (
+            "factual evidence", "evidence support", "source citation",
+            "verified kb source", "stable source id",
+        )):
+            return "evidence_or_citation_failure"
+        if "first_person_violation" in message or "first-person" in message:
+            return "first_person_policy_failure"
+        if "too short" in message and ("word" in message or "caption_quality" in message):
+            return "caption_length_failure"
+        if "semantic review" in message or "semantic-repair" in message:
+            return "semantic_review_failure"
+        if code == "AI_VALIDATION_ERROR":
+            return "content_validation_failure"
+        return "workflow_failure"
+
+    def get_failure_diagnostics(self, limit: int = 20) -> dict:
+        """Read a bounded sample of failed automation jobs for evidence-based diagnosis.
+
+        This method is read-only. It deliberately returns failure evidence, not
+        content drafts or instructions to replay an external publishing side effect.
+        """
+        if self._shared_client is None:
+            return {
+                "status": "unavailable",
+                "error": "Supabase client not injected.",
+                "jobs": [],
+                "counts_by_category": {},
+            }
+
+        try:
+            safe_limit = max(1, min(int(limit), 50))
+            shared = self._get_shared_client()
+
+            def _query(client):
+                return (
+                    client.table("automation_jobs")
+                    .select(
+                        "job_id,brand_id,platform,source,workflow_type,attempt_count,"
+                        "max_attempts,last_error,last_error_code,result,platform_post_id,updated_at"
+                    )
+                    .eq("status", "FAILED")
+                    .order("updated_at", desc=True)
+                    .limit(safe_limit)
+                    .execute()
+                )
+
+            response = shared.execute(_query)
+            jobs = []
+            counts_by_category: dict = {}
+            for row in (response.data or []):
+                if not isinstance(row, dict):
+                    continue
+                payload = row.get("result")
+                if not isinstance(payload, dict):
+                    payload = {}
+                raw_steps = payload.get("failed_steps")
+                if not isinstance(raw_steps, list):
+                    raw_steps = []
+                normalized_steps = []
+                for item in raw_steps[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    detail = item.get("detail")
+                    if not isinstance(detail, dict):
+                        detail = {}
+                    normalized_steps.append({
+                        "step": str(item.get("step") or item.get("step_name") or "")[:80],
+                        "error_code": str(item.get("error_code") or "")[:80],
+                        "error": str(item.get("error") or item.get("message") or "")[:500],
+                        "exception_type": str(detail.get("exception_type") or "")[:100],
+                    })
+
+                primary = normalized_steps[0] if normalized_steps else {}
+                error = primary.get("error") or str(row.get("last_error") or "")[:500]
+                step_code = primary.get("error_code") or ""
+                category = self._classify_failure_category(error, step_code or row.get("last_error_code", ""))
+                counts_by_category[category] = counts_by_category.get(category, 0) + 1
+                jobs.append({
+                    "job_id": str(row.get("job_id") or "")[:120],
+                    "brand_id": str(row.get("brand_id") or "")[:120],
+                    "platform": str(row.get("platform") or "")[:40],
+                    "source": str(row.get("source") or "")[:40],
+                    "workflow_type": str(row.get("workflow_type") or "")[:80],
+                    "attempt_count": row.get("attempt_count"),
+                    "max_attempts": row.get("max_attempts"),
+                    "job_error_code": str(row.get("last_error_code") or "")[:80],
+                    "step_error_code": str(step_code)[:80],
+                    "error": error[:500],
+                    "failed_step": str(primary.get("step") or "")[:80],
+                    "failure_category": category,
+                    "failed_steps": normalized_steps,
+                    "has_confirmed_platform_post": bool(row.get("platform_post_id")),
+                    "updated_at": row.get("updated_at"),
+                })
+
+            return {
+                "status": "available",
+                "limit": safe_limit,
+                "total_returned": len(jobs),
+                "counts_by_category": counts_by_category,
+                "jobs": jobs,
+            }
+        except Exception as exc:
+            logger.error("JobStatsService failure diagnostics failed: %s", exc)
+            return {
+                "status": "unavailable",
+                "error": str(exc)[:200],
+                "jobs": [],
+                "counts_by_category": {},
+            }
+
     def health_check(self) -> dict:
         """Derive status from the stats, not from the query's success alone.
 

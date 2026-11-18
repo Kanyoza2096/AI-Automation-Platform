@@ -69,8 +69,18 @@ class HealCommandConsumer:
                 logger.warning("heal_command missing engine — skipping")
                 return
 
-            # Look up the correct governed command for this engine.
-            command_id = HEAL_COMMANDS.get(engine, "service.restart")
+            # Only dispatch a component-specific, explicitly registered action.
+            # Falling back to service.restart for an unknown engine can restart
+            # a healthy process while leaving durable failed jobs untouched.
+            command_id = HEAL_COMMANDS.get(engine)
+            if not command_id:
+                self._events_handled += 1
+                logger.warning(
+                    "heal_command skipped: no component-specific recovery action "
+                    "is registered for engine=%s; generic service.restart suppressed",
+                    engine,
+                )
+                return
 
             # Route the command through Action Kernel. The kernel enforces
             # approval tier and creates a pending transaction.
