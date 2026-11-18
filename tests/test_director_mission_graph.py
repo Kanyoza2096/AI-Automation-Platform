@@ -264,3 +264,63 @@ def test_global_diagnostic_capabilities_cannot_be_staged_as_workspace_missions()
         assert catalog[name]["runtime_binding_confirmed"] is True
         assert catalog[name]["workspace_target_bound"] is False
         assert catalog[name]["mission_staging_ready"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_strategic_mission_admission_can_use_v2_runtime_atomically(monkeypatch):
+    from services.director.orchestration import store as runtime_store_module
+
+    director = Director(supabase_client=None)
+    director.bind_capability("calculate_brand_health", lambda params: {"ok": True})
+    director.capability_binding_report["calculate_brand_health"] = "bound"
+
+    class LegacyStoreMustNotBeUsed(_MissionAdmissionStore):
+        async def stage_mission_admission(self, **kwargs):
+            raise AssertionError("v2 admission must not call the legacy RPC")
+
+    class FakeMissionRuntimeStore:
+        def __init__(self, director_store):
+            self.director_store = director_store
+            self.admission = None
+
+        async def admit_workspace_mission(self, **kwargs):
+            self.admission = kwargs
+            return {
+                "mission_id": kwargs["mission_id"],
+                "task_ids": [row["id"] for row in kwargs["tasks"]],
+                "replayed": False,
+                "mission_version": 1,
+                "mission_status": "admitted",
+            }
+
+    runtime_instances = []
+
+    def runtime_factory(director_store):
+        instance = FakeMissionRuntimeStore(director_store)
+        runtime_instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(runtime_store_module, "MissionRuntimeStore", runtime_factory)
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_V2", "true")
+    director.store = LegacyStoreMustNotBeUsed()
+    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
+
+    async def verified(plan, max_age_seconds=300):
+        return {"verdict": "verified_for_governance_review"}
+
+    monkeypatch.setattr(director, "verify_strategic_plan", verified)
+
+    result = await director.stage_strategic_mission(
+        plan_id="plan-health-1",
+        workspace_id="workspace-a",
+        idempotency_key="operator-request-v2",
+        step_parameters={"health": {"brand_id": "brand-owned"}},
+        actor="operator-1",
+    )
+
+    assert result["durable_runtime"] == "v2"
+    assert result["approval_required"] is True
+    assert result["execution_permitted"] is False
+    assert runtime_instances[0].admission["workspace_id"] == "workspace-a"
+    assert runtime_instances[0].admission["tasks"][0]["payload"]["scope_type"] == "workspace"
