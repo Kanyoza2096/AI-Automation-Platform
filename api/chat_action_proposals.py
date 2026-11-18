@@ -11,12 +11,12 @@ import re
 from typing import Any
 
 _ACTION_REQUEST_RE = re.compile(
-    r"^\\s*(?:please\\s+)?(?:create|prepare|draft|stage|run|scan|investigate|"
-    r"generate|review|check|launch|start)\\b"
-    r"|\\b(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?"
-    r"(?:create|prepare|draft|stage|run|scan|investigate|generate|review|check|launch|start)\\b"
-    r"|\\b(?:i need you to|i want you to|please go ahead and|proceed to)\\s+"
-    r"(?:create|prepare|draft|stage|run|scan|investigate|generate|review|check|launch|start)\\b",
+    r"^\s*(?:please\s+)?(?:create|prepare|draft|stage|run|scan|investigate|"
+    r"generate|review|check|launch|start)\b"
+    r"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:create|prepare|draft|stage|run|scan|investigate|generate|review|check|launch|start)\b"
+    r"|\b(?:i need you to|i want you to|please go ahead and|proceed to)\s+"
+    r"(?:create|prepare|draft|stage|run|scan|investigate|generate|review|check|launch|start)\b",
     re.IGNORECASE,
 )
 
