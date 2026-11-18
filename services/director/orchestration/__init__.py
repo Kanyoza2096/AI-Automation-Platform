@@ -12,6 +12,14 @@ from .contracts import (
 )
 from .native_adapters import ContentIntelligenceMissionAdapter
 from .store import MissionEventWrite, MissionRuntimeStore, MissionRuntimeStoreError
+from .state_machine import (
+    MissionEventCommand,
+    MissionRuntimeConflict,
+    MissionRuntimeSnapshot,
+    MissionStateMachine,
+    MissionTransition,
+    MissionTransitionRejected,
+)
 
 __all__ = [
     "AdapterInvocationTimeout",
@@ -23,4 +31,10 @@ __all__ = [
     "MissionEventWrite",
     "MissionRuntimeStore",
     "MissionRuntimeStoreError",
+    "MissionEventCommand",
+    "MissionRuntimeConflict",
+    "MissionRuntimeSnapshot",
+    "MissionStateMachine",
+    "MissionTransition",
+    "MissionTransitionRejected",
 ]
