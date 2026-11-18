@@ -251,10 +251,12 @@ class MissionRuntimeStore:
         elif target_status == "approved":
             payload.setdefault("approved_at", datetime.now(timezone.utc).isoformat())
 
+        # director_tasks has no updated_at column in the production schema.
+        # Keep this write aligned with the canonical table contract; mission
+        # aggregate timestamps are maintained by the versioned mission RPC.
         params = {
             "status": target_status,
             "payload": safe(payload),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         query = (
             self._store.supabase.table("director_tasks")
