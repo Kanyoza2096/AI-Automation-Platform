@@ -201,6 +201,7 @@ class MissionRuntimeStore:
             or payload.get("workspace_id") != workspace_id
             or payload.get("scope_type") != "workspace"
             or payload.get("mission_id") != mission_id
+            or payload.get("status") != row.get("status")
         ):
             return None
         row["payload"] = payload
@@ -243,6 +244,8 @@ class MissionRuntimeStore:
             payload["result"] = safe(dict(result))
         if error is not None:
             payload["error"] = str(error)[:2000]
+        elif target_status in {"approved", "executing", "completed", "verified", "approval_required"}:
+            payload["error"] = None
         if target_status == "executing":
             payload["executed_at"] = datetime.now(timezone.utc).isoformat()
         elif target_status == "approved":
