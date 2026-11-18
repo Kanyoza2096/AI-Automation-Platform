@@ -12,13 +12,19 @@ class ArticleSemanticReviewer:
     MAX_EVIDENCE_CHARS = 2200
 
     @staticmethod
-    def _blocked(reason: str) -> dict[str, Any]:
+    def _blocked(reason: str, *, request_id=None, provider=None, model=None) -> dict[str, Any]:
         return {
             "approved": False,
             "status": "needs_review",
             "reason": reason,
             "claims": [],
             "scores": {},
+            "decision": None,
+            "evidence_coverage": {"assessed": 0, "supported": 0, "unsupported": 0, "uncertain": 0, "supported_rate": 0.0},
+            "unsupported_claims": [],
+            "request_id": request_id,
+            "provider": provider,
+            "model": model,
         }
 
     async def review(
@@ -111,20 +117,25 @@ class ArticleSemanticReviewer:
             return self._blocked(f"article reviewer unavailable: {type(exc).__name__}")
         data = getattr(result, "data", None)
         if not getattr(result, "ok", False) or not isinstance(data, dict):
-            return self._blocked("article reviewer returned no valid structured result")
+            return self._blocked(
+                "article reviewer returned no valid structured result",
+                request_id=getattr(result, "request_id", None),
+                provider=getattr(result, "provider", None),
+                model=getattr(result, "model", None),
+            )
 
         decision = str(data.get("decision") or "").lower().strip()
         claims = data.get("claims")
         if decision not in {"approve", "reject", "needs_review"} or not isinstance(claims, list):
-            return self._blocked("article reviewer response schema is invalid")
+            return self._blocked("article reviewer response schema is invalid", request_id=getattr(result, "request_id", None), provider=getattr(result, "provider", None), model=getattr(result, "model", None))
         scores = {}
         for key in ("claim_coverage", "brand_relevance", "originality", "audience_value", "genericity"):
             value = data.get(key)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                return self._blocked(f"article reviewer returned invalid {key}")
+                return self._blocked(f"article reviewer returned invalid {key}", request_id=getattr(result, "request_id", None), provider=getattr(result, "provider", None), model=getattr(result, "model", None))
             value = float(value)
             if not math.isfinite(value) or not 0 <= value <= 1:
-                return self._blocked(f"article reviewer returned out-of-range {key}")
+                return self._blocked(f"article reviewer returned out-of-range {key}", request_id=getattr(result, "request_id", None), provider=getattr(result, "provider", None), model=getattr(result, "model", None))
             scores[key] = value
 
         reviewed_claims = []
@@ -146,6 +157,21 @@ class ArticleSemanticReviewer:
                 "source_ids": normalized, "rationale": str(claim.get("rationale") or "")[:1000],
             })
 
+        counts = {
+            "assessed": len(reviewed_claims),
+            "supported": sum(1 for claim in reviewed_claims if claim["support_status"] == "supported"),
+            "unsupported": sum(1 for claim in reviewed_claims if claim["support_status"] == "unsupported"),
+            "uncertain": sum(1 for claim in reviewed_claims if claim["support_status"] == "uncertain"),
+        }
+        evidence_coverage = {
+            **counts,
+            "supported_rate": round(counts["supported"] / counts["assessed"], 4) if counts["assessed"] else 0.0,
+        }
+        unsupported_claims = [
+            claim for claim in reviewed_claims
+            if claim["support_status"] in {"unsupported", "uncertain"}
+        ]
+
         quality_ok = (
             scores["claim_coverage"] >= 0.90
             and scores["brand_relevance"] >= 0.60
@@ -159,7 +185,22 @@ class ArticleSemanticReviewer:
         return {
             "approved": approved,
             "status": "approved" if approved else ("rejected" if decision == "reject" else "needs_review"),
-            "reason": str(data.get("rationale") or "")[:2000],
+            "reason": (
+                "independent reviewer rejected the article"
+                if decision == "reject" else
+                "one or more material claims are unsupported or uncertain"
+                if unsupported_claims else
+                "one or more article quality thresholds were not met"
+                if not quality_ok else
+                str(data.get("rationale") or "independent reviewer requested human review")[:2000]
+            ) if not approved else str(data.get("rationale") or "independent full-text review passed")[:2000],
+            "rationale": str(data.get("rationale") or "")[:2000],
+            "decision": decision,
             "claims": reviewed_claims,
+            "unsupported_claims": unsupported_claims,
+            "evidence_coverage": evidence_coverage,
             "scores": scores,
+            "request_id": getattr(result, "request_id", None),
+            "provider": getattr(result, "provider", None),
+            "model": getattr(result, "model", None),
         }
