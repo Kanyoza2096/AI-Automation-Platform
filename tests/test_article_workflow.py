@@ -43,6 +43,10 @@ def test_article_validation_requires_known_citations_before_review():
     with pytest.raises(StepFailure) as exc:
         asyncio.run(ValidateArticleStep(reviewer).async_run(context))
     assert exc.value.code == "article_citations_invalid"
+    assert exc.value.detail["invalid_source_ids"] == ["not-in-evidence"]
+    assert exc.value.detail["allowed_source_ids"] == ["kb-1"]
+    assert exc.value.detail["citation_count"] == 1
+    assert exc.value.detail["invalid_citation_count"] == 1
     assert reviewer.called is False
 
 
