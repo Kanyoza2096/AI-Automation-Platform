@@ -187,7 +187,7 @@ CREATE OR REPLACE FUNCTION public.audit_knowledge_evidence_content_change()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions, pg_temp
+SET search_path = pg_catalog
 AS $$
 DECLARE
     current_hash TEXT;
