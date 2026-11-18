@@ -122,6 +122,12 @@ on:
       - "scripts/audit_route_wiring.py"
       - "tests/test_route_wiring_audit.py"
       - "tests/architecture/test_vnext_connector_fabric_evidence_read_model.py"
+      # Article semantic-review diagnostics and workflow failure evidence.
+      - "services/article_semantic_reviewer.py"
+      - "workflows/article_workflow.py"
+      - "workflows/base.py"
+      - "api/routers/workflows.py"
+      - "tests/test_article_workflow.py"
       # Structured article-generation provider fallback and schema validation.
       - "ai/gateway.py"
       - "services/ai_policy.py"
