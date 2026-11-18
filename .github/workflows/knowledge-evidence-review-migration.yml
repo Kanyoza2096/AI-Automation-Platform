@@ -1,0 +1,44 @@
+name: Knowledge Evidence Review Governance
+
+on:
+  pull_request:
+    paths:
+      - "api/routers/knowledge.py"
+      - "tests/test_knowledge_evidence_review_contract.py"
+      - "migrations/172_knowledge_evidence_review_governance.sql"
+      - "migrations/173_knowledge_evidence_promotion.sql"
+      - "docs/knowledge-evidence-review-governance.md"
+      - ".github/workflows/knowledge-evidence-review-migration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  review-governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test and SQL parser
+        run: python -m pip install "pytest>=8,<9" pglast
+      - name: Compile review API module
+        run: python -m py_compile api/routers/knowledge.py
+      - name: Parse evidence review and promotion migrations
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from pglast import parse_sql
+
+          for name in (
+              "migrations/172_knowledge_evidence_review_governance.sql",
+              "migrations/173_knowledge_evidence_promotion.sql",
+          ):
+              statements = parse_sql(Path(name).read_text())
+              assert statements, f"{name} contains no SQL statements"
+              print(f"{name}: parsed {len(statements)} PostgreSQL statements")
+          PY
+      - name: Run governance contract tests
+        run: python -m pytest -q tests/test_knowledge_evidence_review_contract.py
