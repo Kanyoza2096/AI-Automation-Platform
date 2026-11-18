@@ -151,13 +151,13 @@ class MissionStateMachine:
         estimated_provider_calls: int = 1,
     ) -> None:
         """Preflight a provider call before dispatch; daily workspace limits still apply."""
-        if current.status not in {"admitted", "queued", "running"}:
-            raise MissionTransitionRejected("mission_not_accepting_provider_calls")
         if isinstance(estimated_tokens, bool) or isinstance(estimated_provider_calls, bool) or estimated_tokens < 0 or estimated_provider_calls < 0:
             raise MissionTransitionRejected("provider_estimate_must_be_nonnegative")
         budget = dict((current.state_snapshot or {}).get("budget") or {})
         if budget.get("exhausted"):
             raise MissionTransitionRejected("mission_budget_exhausted")
+        if current.status not in {"admitted", "queued", "running"}:
+            raise MissionTransitionRejected("mission_not_accepting_provider_calls")
         max_tokens = budget.get("max_tokens")
         max_calls = budget.get("max_provider_calls")
         if max_tokens is not None and int(budget.get("tokens_used", 0)) + estimated_tokens > int(max_tokens):
