@@ -111,7 +111,7 @@ class MissionOrchestrationRuntime:
             "task.failed": ("failed", {"executing"}),
             "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
             "task.verified": ("verified", {"completed"}),
-            "task.reassigned": ("approval_required", {"failed", "blocked", "flagged"}),
+            "task.reassigned": ("approval_required", {"approval_required", "approved", "failed", "blocked", "flagged"}),
             "task.handoff.accepted": ("approval_required", {"executing"}),
         }
         rule = sync_rules.get(event_type)
