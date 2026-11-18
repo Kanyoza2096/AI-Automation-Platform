@@ -1,0 +1,33 @@
+name: Knowledge Evidence Review Migration SQL
+
+on:
+  pull_request:
+    paths:
+      - "migrations/172_knowledge_evidence_review_governance.sql"
+      - ".github/workflows/knowledge-evidence-review-migration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parse-review-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PostgreSQL parser
+        run: python -m pip install pglast
+      - name: Parse migration SQL
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from pglast import parse_sql
+
+          path = Path("migrations/172_knowledge_evidence_review_governance.sql")
+          statements = parse_sql(path.read_text())
+          assert statements, "Migration contains no SQL statements"
+          print(f"Parsed {len(statements)} PostgreSQL statements")
+          PY
