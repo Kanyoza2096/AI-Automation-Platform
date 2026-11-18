@@ -67,3 +67,20 @@ def test_review_approval_requires_human_identity_and_stable_source():
     assert "A human reviewer identity is required" in source
     assert "Approval requires a stable source ID" in source
     assert "Approval requires an HTTP(S) source URL" in source
+
+
+def test_candidate_submission_can_be_automated_but_decisions_require_a_human():
+    source = API_PATH.read_text()
+    submit_start = source.index("async def submit_knowledge_evidence_review")
+    list_start = source.index("async def list_knowledge_evidence_reviews")
+    decision_start = source.index("async def decide_knowledge_evidence_review")
+    assert "_evidence_review_actor(require_human=False)" in source[submit_start:list_start]
+    assert "_evidence_review_actor(require_human=False)" in source[list_start:decision_start]
+    assert "_evidence_review_actor(require_human=True)" in source[decision_start:]
+
+
+def test_approved_source_metadata_cannot_be_rewritten():
+    migration = MIGRATION_PATH.read_text()
+    guard = migration[migration.index("CREATE OR REPLACE FUNCTION public.guard_knowledge_evidence_review_case"):]
+    for field in ("source_id", "source_url", "source_title", "source_type", "trust_class"):
+        assert f"NEW.{field} IS DISTINCT FROM OLD.{field}" in guard
