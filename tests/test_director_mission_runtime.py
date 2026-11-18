@@ -517,3 +517,44 @@ def test_default_registry_requires_explicit_workspace_brand_verifier():
 
     with pytest.raises(ValueError, match="director_store_brand_ownership_verifier_required"):
         build_default_adapter_registry(director_store=object(), condition_engine=FakeConditionEngine())
+
+
+
+def test_condition_engine_brand_health_snapshot_is_locked_and_workspace_scoped(monkeypatch):
+    import services.condition_engine.core as condition_core
+    from services.condition_engine.models import Observation
+
+    engine = condition_core.AutonomousConditionEngine(supabase_client=None)
+    observation = Observation(
+        post_id="post-condition-1",
+        brand_id="brand-condition-1",
+        likes=30,
+        comments=5,
+        shares=4,
+        clicks=8,
+        impressions=1000,
+        reach=900,
+        topic="education",
+        correlation_id="condition-observation-1",
+    ).normalize()
+    engine._observations["brand-condition-1"].append(observation)
+
+    published = []
+    monkeypatch.setattr(condition_core, "_publish_event", lambda name, payload: published.append((name, payload)))
+
+    health = engine.calculate_brand_health(
+        "brand-condition-1",
+        emit_event=False,
+        workspace_id="workspace-condition-1",
+    )
+    assert health["observation_count"] == 1
+    assert health["observation_refs"][0]["ref"] == "condition-observation:condition-observation-1"
+    assert published == []
+
+    engine.calculate_brand_health(
+        "brand-condition-1",
+        emit_event=True,
+        workspace_id="workspace-condition-1",
+    )
+    assert published[-1][0] == "brand_health_updated"
+    assert published[-1][1]["workspace_id"] == "workspace-condition-1"
