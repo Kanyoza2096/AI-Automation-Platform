@@ -33,7 +33,7 @@ CREATE OR REPLACE FUNCTION public.stage_director_mission(
     p_tasks JSONB
 ) RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY DEFINER
+SECURITY INVOKER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
