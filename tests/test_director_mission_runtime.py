@@ -5,6 +5,8 @@ from services.director.orchestration import (
     AdapterRegistry,
     EngineContribution,
     MissionOrchestrationRuntime,
+    MissionRuntimeStore,
+    MissionRuntimeStoreError,
     MissionRuntimeNotFound,
     MissionStateMachine,
     MissionTaskNotReady,
@@ -294,3 +296,124 @@ async def test_runtime_cannot_assign_task_to_unregistered_engine_or_cross_worksp
             idempotency_key="assign-cross-tenant",
             correlation_id="corr-runtime-2",
         )
+
+
+
+def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_status():
+    from types import SimpleNamespace
+
+    class Query:
+        def __init__(self, owner, table):
+            self.owner = owner
+            self.table = table
+            self.filters = []
+            self.update_values = None
+            self.limit_value = None
+
+        def select(self, *args, **kwargs):
+            return self
+
+        def update(self, values):
+            self.update_values = copy.deepcopy(values)
+            return self
+
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+
+        def limit(self, value):
+            self.limit_value = value
+            return self
+
+        def execute(self):
+            row = self.owner.rows.get(self.table)
+            if row is None or any(row.get(key) != value for key, value in self.filters):
+                return SimpleNamespace(data=[])
+            if self.update_values is not None:
+                row.update(copy.deepcopy(self.update_values))
+            return SimpleNamespace(data=[copy.deepcopy(row)])
+
+    class Supabase:
+        def __init__(self):
+            self.rows = {
+                "director_tasks": {
+                    "id": "task-store-runtime",
+                    "workspace_id": "workspace-store-runtime",
+                    "scope_type": "workspace",
+                    "status": "approved",
+                    "payload": {
+                        "id": "task-store-runtime",
+                        "workspace_id": "workspace-store-runtime",
+                        "scope_type": "workspace",
+                        "mission_id": "mission-store-runtime",
+                        "status": "approved",
+                        "approved_by": "operator-1",
+                    },
+                }
+            }
+
+        def table(self, name):
+            return Query(self, name)
+
+    class Backend:
+        def __init__(self):
+            self.supabase = Supabase()
+
+        async def _execute_with_retry(self, operation, fn):
+            return fn()
+
+    async def run():
+        backend = Backend()
+        store = MissionRuntimeStore(backend)
+        row = await store.get_workspace_task(
+            task_id="task-store-runtime",
+            workspace_id="workspace-store-runtime",
+            mission_id="mission-store-runtime",
+        )
+        assert row["status"] == "approved"
+
+        assert await store.get_workspace_task(
+            task_id="task-store-runtime",
+            workspace_id="different-workspace",
+            mission_id="mission-store-runtime",
+        ) is None
+        assert await store.get_workspace_task(
+            task_id="task-store-runtime",
+            workspace_id="workspace-store-runtime",
+            mission_id="different-mission",
+        ) is None
+
+        updated = await store.sync_workspace_task_status(
+            task_id="task-store-runtime",
+            workspace_id="workspace-store-runtime",
+            mission_id="mission-store-runtime",
+            target_status="executing",
+            expected_statuses=("approved",),
+        )
+        assert updated["status"] == "executing"
+        assert updated["payload"]["status"] == "executing"
+
+        replayed = await store.sync_workspace_task_status(
+            task_id="task-store-runtime",
+            workspace_id="workspace-store-runtime",
+            mission_id="mission-store-runtime",
+            target_status="executing",
+            expected_statuses=("approved",),
+        )
+        assert replayed["status"] == "executing"
+
+        try:
+            await store.sync_workspace_task_status(
+                task_id="task-store-runtime",
+                workspace_id="workspace-store-runtime",
+                mission_id="mission-store-runtime",
+                target_status="completed",
+                expected_statuses=("approved",),
+            )
+        except MissionRuntimeStoreError as exc:
+            assert "canonical_task_status_conflict" in str(exc)
+        else:
+            raise AssertionError("stale task status update must be rejected")
+
+    import asyncio
+    asyncio.run(run())
