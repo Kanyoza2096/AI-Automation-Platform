@@ -162,3 +162,16 @@ A rollback-only database test exercised:
 - append-only update rejection.
 
 The test transaction was rolled back. Staging remains at 571 Director tasks, 1 strategic plan, 0 admission receipts, 0 mission aggregates, and 0 mission events. No existing rows were modified.
+
+
+## 5. Follow-up implementation after the read-only audit
+
+The audit above records the state observed before implementation. The following additive work was subsequently performed in draft PR #349:
+
+- Staging migrations 175–180 now provide the corrected workspace admission contract, durable mission aggregate/event journal, hardened write boundary, complete initial mission snapshot, and child-side foreign-key indexes.
+- The separately applied migration 178 is retained in the repository because it is already part of staging migration history, even though its task-scope guard duplicates migration 176.
+- Staging-only rollback tests verified mission admission and complete initial runtime state; no test rows remain. Counts remain 571 Director tasks, 1 strategic plan, and zero mission admission receipts, mission aggregates, or mission events.
+- Backend code now contains the versioned mission store, deterministic mission state machine, typed native-engine adapter contracts/registry, and a first Content Intelligence adapter. The v2 strategic mission admission path is feature-gated and defaults off.
+- Cross-subsystem tests passed 197 tests and the engineering-focused suite passed 840 tests on the latest tested Python code. Subsequent changes were limited to additive SQL migrations and CI path coverage.
+- A migration file was briefly committed to the backend `staging` branch by mistake. It was removed from that branch and added to the feature branch. Render confirmed the production backend service was suspended, and its latest deployment remained the earlier live commit; no deployment of that commit occurred.
+- Production Supabase was not migrated or modified. The Render production service remains suspended. End-to-end native multi-engine execution and Mission Control integration remain outstanding.
