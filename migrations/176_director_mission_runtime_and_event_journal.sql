@@ -84,10 +84,10 @@ CREATE INDEX IF NOT EXISTS director_mission_events_workspace_timeline_idx
 ALTER TABLE public.director_missions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.director_mission_events ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE public.director_missions FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON TABLE public.director_mission_events FROM PUBLIC, anon, authenticated;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.director_missions TO service_role;
-GRANT SELECT, INSERT ON TABLE public.director_mission_events TO service_role;
+REVOKE ALL ON TABLE public.director_missions FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON TABLE public.director_mission_events FROM PUBLIC, anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.director_missions TO service_role;
+GRANT SELECT ON TABLE public.director_mission_events TO service_role;
 
 CREATE OR REPLACE FUNCTION public.reject_director_mission_event_mutation()
 RETURNS TRIGGER
@@ -204,9 +204,9 @@ CREATE OR REPLACE FUNCTION public.append_director_mission_event(
     p_state_snapshot JSONB
 ) RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $$
+AS $
 DECLARE
     mission_row public.director_missions%ROWTYPE;
     existing_event public.director_mission_events%ROWTYPE;
@@ -344,9 +344,9 @@ CREATE OR REPLACE FUNCTION public.stage_director_mission_v2(
     p_tasks JSONB
 ) RETURNS JSONB
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $$
+AS $
 DECLARE
     admission_result JSONB;
     mission_row public.director_missions%ROWTYPE;
