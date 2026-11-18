@@ -215,6 +215,14 @@ class MissionOrchestrationRuntime:
         return refs
 
     @staticmethod
+    def _bounded_texts(values: Sequence[Any], *, limit: int = 12, width: int = 600) -> list[str]:
+        return [
+            str(value).strip()[:width]
+            for value in list(values or ())[:limit]
+            if str(value).strip()
+        ]
+
+    @staticmethod
     def _usage_int(value: Any) -> int:
         if isinstance(value, bool):
             return 0
@@ -358,9 +366,9 @@ class MissionOrchestrationRuntime:
             task_id=task_id,
             payload={
                 "summary": contribution.summary,
-                "findings": list(contribution.findings),
-                "recommendations": list(contribution.recommendations),
-                "limitations": list(contribution.limitations),
+                "findings": self._bounded_texts(contribution.findings),
+                "recommendations": self._bounded_texts(contribution.recommendations),
+                "limitations": self._bounded_texts(contribution.limitations),
                 "confidence": contribution.confidence,
                 "completed_at": contribution.finished_at.isoformat(),
             },
@@ -558,8 +566,8 @@ class MissionOrchestrationRuntime:
                 "in_reply_to": question_message_id,
                 "answer": contribution.summary[:4000],
                 "status": contribution.status,
-                "findings": list(contribution.findings),
-                "recommendations": list(contribution.recommendations),
+                "findings": self._bounded_texts(contribution.findings),
+                "recommendations": self._bounded_texts(contribution.recommendations),
                 "evidence_refs": [item["ref"] for item in refs],
             },
         )
