@@ -122,7 +122,7 @@ class WorkflowResult:
             "platform", "provider", "model", "decision_id", "raw_status",
             "reconciliation_required", "media_error_code", "reason", "status",
             "review_diagnostics", "decision", "rationale", "claims",
-            "unsupported_claims", "evidence_coverage", "scores", "request_id",
+            "unsupported_claims", "uncertain_claims", "evidence_coverage", "scores", "request_id",
             "approved", "support_status", "source_ids", "claim",
             "provider", "model", "assessed", "supported", "unsupported",
             "uncertain", "supported_rate", "claim_coverage", "brand_relevance",
