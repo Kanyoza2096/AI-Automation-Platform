@@ -533,7 +533,7 @@ class JobStatsService:
             category, action = "caption_quality", "Regenerate the caption to meet the configured minimum length and quality rules."
         elif "semantic" in evidence or "unsupported material claim" in evidence:
             category, action = "semantic_validation", "Repair claims against cited evidence, then rerun semantic and caption gates."
-        elif code == "AI_PROVIDER_UNAVAILABLE":
+        elif code == "AI_PROVIDER_UNAVAILABLE" or "provider unavailable" in evidence or "provider timeout" in evidence:
             category, action = "provider_availability", "Check provider health and retry only through the governed retry path."
         else:
             category, action = "unclassified", "Inspect the persisted failed-step evidence before selecting a remediation."
@@ -566,11 +566,19 @@ class JobStatsService:
         categories = {}
         for item in classified:
             bucket = categories.setdefault(item["category"], {
-                "count": 0, "recommended_action": item["recommended_action"], "job_ids": []
+                "count": 0,
+                "recommended_action": item["recommended_action"],
+                "job_ids": [],
+                "recovery_proposals": [],
             })
             bucket["count"] += 1
             if item.get("job_id") and len(bucket["job_ids"]) < 20:
                 bucket["job_ids"].append(item["job_id"])
+            if len(bucket["recovery_proposals"]) < 20:
+                bucket["recovery_proposals"].append({
+                    "job_id": item.get("job_id"),
+                    **item["recovery_policy"],
+                })
         return {
             "status": "available",
             "total_failed_jobs_inspected": len(classified),
