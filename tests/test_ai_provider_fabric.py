@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import pytest
 import json
@@ -522,3 +523,47 @@ def test_structured_gateway_skips_provider_with_invalid_article_shape(monkeypatc
     assert result.ok is True
     assert result.data["citations"] == ["kb-1"]
     assert observed == ["gemini", "cloudflare_ai"]
+
+
+
+def test_content_intelligence_uses_workspace_aware_async_gateway():
+    from types import SimpleNamespace
+    from services.content_intelligence import ContentIntelligenceEngine
+
+    class Web:
+        async def search_async(self, *args, **kwargs):
+            return [SimpleNamespace(
+                title="Source", url="https://example.com/source",
+                snippet="Evidence-backed statement", source="test", score=1.0,
+            )]
+
+        async def fetch_async(self, url):
+            return SimpleNamespace(text="Evidence-backed statement")
+
+    class LLM:
+        def __init__(self):
+            self.kwargs = None
+
+        def complete(self, *args, **kwargs):
+            raise AssertionError("Content Intelligence must use complete_async")
+
+        async def complete_async(self, prompt, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                ok=True,
+                text='{"summary":"Sourced summary","angles":[],"claims":["Supported claim"],"risks":[],"recommendations":[],"confidence":0.8}',
+                mode=SimpleNamespace(value="full"),
+            )
+
+    async def run():
+        llm = LLM()
+        result = await ContentIntelligenceEngine(web_gateway=Web(), llm_gateway=llm).analyze(
+            "workspace research", workspace_id="workspace-ci-test"
+        )
+        assert result.mode == "full"
+        assert result.claims == ["Supported claim"]
+        assert llm.kwargs["workspace_id"] == "workspace-ci-test"
+        assert llm.kwargs["caller"] == "content_intelligence"
+        assert llm.kwargs["capability"] == "chat"
+
+    asyncio.run(run())
