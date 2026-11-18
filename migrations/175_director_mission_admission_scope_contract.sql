@@ -112,15 +112,14 @@ BEGIN
         END IF;
 
         INSERT INTO public.director_tasks (
-            id, workspace_id, scope_type, status, payload, created_at, updated_at
+            id, workspace_id, scope_type, status, payload, created_at
         ) VALUES (
             task_row->>'id',
             p_workspace_id,
             'workspace',
             'approval_required',
             task_row->'payload',
-            COALESCE((task_row->>'created_at')::timestamptz, NOW()),
-            NOW()
+            COALESCE((task_row->>'created_at')::timestamptz, NOW())
         );
 
         ids := ids || jsonb_build_array(task_row->>'id');
