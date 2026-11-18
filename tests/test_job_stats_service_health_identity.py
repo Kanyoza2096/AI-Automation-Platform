@@ -106,6 +106,43 @@ def test_failure_intelligence_preserves_unknown_failures_for_investigation():
 
 
 
+def test_recovery_policy_proposes_bounded_caption_repair_without_execution():
+    diagnosis = JobStatsService._classify_failed_job({
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "result": {"failed_steps": [{"step": "validate_content", "error": "caption too short: minimum 80 words"}]},
+    })
+
+    policy = diagnosis["recovery_policy"]
+    assert policy["proposal"] == "bounded_caption_repair"
+    assert policy["execution_mode"] == "proposal_only"
+    assert policy["automatic_execution"] is False
+    assert policy["publication_replay_allowed"] is False
+    assert "semantic_validation" in policy["requires"]
+
+
+def test_recovery_policy_escalates_evidence_failures_to_human_review():
+    diagnosis = JobStatsService._classify_failed_job({
+        "result": {"failed_steps": [{"step": "generate_content", "error": "Factual evidence gate requires verified KB source with stable source ID"}]},
+    })
+
+    policy = diagnosis["recovery_policy"]
+    assert policy["execution_mode"] == "human_review"
+    assert policy["automatic_execution"] is False
+    assert "verified_source_id_or_claim_removal" in policy["requires"]
+
+
+def test_provider_retry_policy_requires_budget_and_publish_state_checks():
+    retry_candidate = JobStatsService._recovery_policy("provider_availability", 1, 3)
+    exhausted = JobStatsService._recovery_policy("provider_availability", 3, 3)
+
+    assert retry_candidate["execution_mode"] == "retry_candidate"
+    assert "idempotency_check" in retry_candidate["requires"]
+    assert "external_publish_state_check" in retry_candidate["requires"]
+    assert exhausted["execution_mode"] == "human_review"
+    assert retry_candidate["automatic_execution"] is False
+
+
 def test_job_stats_query_error_state_is_isolated_between_threads():
     from threading import Thread
 
