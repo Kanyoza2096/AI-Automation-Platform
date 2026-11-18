@@ -176,6 +176,7 @@ def test_knowledge_context_preserves_traceable_source_metadata(monkeypatch):
     assert evidence[0]["source_id"] == "kb-entry-7"
     assert evidence[0]["metadata"]["verified"] is True
     assert "Kruskal's algorithm" in context["knowledge_context"]
+    assert "[SOURCE_ID: kb-entry-7 | VERIFIED: YES]" in context["knowledge_context"]
     assert context["knowledge_evidence"] == evidence
 
 
@@ -418,3 +419,32 @@ def test_validate_content_step_rejects_inconsistent_semantic_approval():
 
     with pytest.raises(Exception, match="Independent semantic review did not approve"):
         asyncio.run(step.async_run(context))
+
+
+def test_knowledge_context_marks_unverified_sources_for_generation(monkeypatch):
+    import services.knowledge_base as knowledge_base
+
+    entry = SimpleNamespace(
+        id="kb-unverified-9",
+        content="A general conceptual reference without verification.",
+        metadata={"source_type": "imported"},
+    )
+
+    class UnverifiedKnowledgeBase:
+        def __init__(self, **kwargs):
+            pass
+
+        async def initialize(self):
+            return None
+
+        async def search(self, topic, top_k=3):
+            return [(entry, 0.88)]
+
+    monkeypatch.setattr(knowledge_base, "KnowledgeBase", UnverifiedKnowledgeBase)
+    context = {"topic": "A conceptual topic"}
+    step = KnowledgeContextStep(_brand(), knowledge_repo=object())
+
+    asyncio.run(step.async_run(context))
+
+    assert "[SOURCE_ID: kb-unverified-9 | VERIFIED: NO]" in context["knowledge_context"]
+    assert context["knowledge_evidence"][0]["metadata"].get("verified") is None
