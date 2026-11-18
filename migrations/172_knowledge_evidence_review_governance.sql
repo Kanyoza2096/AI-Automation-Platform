@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS public.knowledge_evidence_review_cases (
     brand_id TEXT,
     source_id TEXT NOT NULL,
     submitted_by TEXT NOT NULL CHECK (length(btrim(submitted_by)) > 0),
-    source_url TEXT CHECK (source_url IS NULL OR source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?
+    source_url TEXT CHECK (source_url IS NULL OR source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?$'),
     source_title TEXT,
     source_type TEXT,
     trust_class TEXT,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS public.knowledge_evidence_review_cases (
                 reviewed_by IS NOT NULL AND length(btrim(reviewed_by)) > 0
                 AND reviewed_at IS NOT NULL
                 AND source_id IS NOT NULL AND length(btrim(source_id)) > 0
-                AND source_url IS NOT NULL AND source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?
+                AND source_url IS NOT NULL AND source_url ~ '^https?://[^/[:space:]?#]+([/?#].*)?$'
             )
         ),
     CONSTRAINT knowledge_evidence_review_decision_has_reviewer
