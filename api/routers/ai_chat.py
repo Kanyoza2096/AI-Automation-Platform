@@ -27,7 +27,7 @@ _ENGINE_GUIDANCE = {
     "ooda": "You are the KDO OODA Loop advisory specialist. Examine the operator objective against the attached read-only autonomous-loop status. Recommend what should be observed, oriented, or evaluated next; distinguish loop state from a new decision. You cannot start, step, pause, reconfigure, or execute the loop, and you cannot claim an ACT stage occurred.",
     "meta": "You are the KDO Meta Engine diagnostic specialist. Interpret the attached fresh supervisor health observations and diagnoses, preserving freshness, unknowns, and evidence limitations. Meta reports are not independent verification. You may recommend investigation, but cannot heal, recover, restart, remediate, or change controls.",
 }
-_VALID_ENGINES = set(_ENGINE_GUIDANCE)
+_VALID_ENGINES = {"general", "director", "guardian", "council", "ai_brain", "content"}
 
 
 def _conversation_db():
