@@ -463,6 +463,54 @@ class JobStatsService:
         return result
 
     @staticmethod
+    def _recovery_policy(category: str, attempt_count=None, max_attempts=None) -> dict:
+        """Return a governed recovery proposal; this method never executes it."""
+        try:
+            attempts = max(0, int(attempt_count or 0))
+            maximum = max(0, int(max_attempts or 0))
+        except (TypeError, ValueError, OverflowError):
+            attempts, maximum = 0, 0
+
+        policies = {
+            "caption_quality": {
+                "proposal": "bounded_caption_repair",
+                "execution_mode": "proposal_only",
+                "requires": ["caption_word_count", "voice_and_policy_validation", "semantic_validation"],
+            },
+            "voice_compliance": {
+                "proposal": "bounded_voice_rewrite",
+                "execution_mode": "proposal_only",
+                "requires": ["voice_and_policy_validation", "semantic_validation", "caption_word_count"],
+            },
+            "evidence_grounding": {
+                "proposal": "verified_source_or_claim_removal",
+                "execution_mode": "human_review",
+                "requires": ["verified_source_id_or_claim_removal", "semantic_validation"],
+            },
+            "semantic_validation": {
+                "proposal": "evidence_backed_claim_repair",
+                "execution_mode": "human_review",
+                "requires": ["claim_to_source_mapping", "semantic_validation", "voice_and_policy_validation"],
+            },
+            "provider_availability": {
+                "proposal": "transient_provider_retry_review",
+                "execution_mode": "retry_candidate" if maximum > 0 and attempts < maximum else "human_review",
+                "requires": ["provider_recovered", "attempt_budget_available", "idempotency_check", "external_publish_state_check"],
+            },
+            "unclassified": {
+                "proposal": "manual_investigation",
+                "execution_mode": "human_review",
+                "requires": ["root_cause_identified"],
+            },
+        }
+        policy = dict(policies.get(category, policies["unclassified"]))
+        policy["automatic_execution"] = False
+        policy["attempt_count"] = attempts
+        policy["max_attempts"] = maximum
+        policy["publication_replay_allowed"] = False
+        return policy
+
+    @staticmethod
     def _classify_failed_job(job: dict) -> dict:
         """Classify a terminal failure from persisted, structured evidence."""
         result = job.get("result") if isinstance(job.get("result"), dict) else {}
@@ -497,6 +545,9 @@ class JobStatsService:
             "attempt_count": job.get("attempt_count"),
             "max_attempts": job.get("max_attempts"),
             "recommended_action": action,
+            "recovery_policy": self._recovery_policy(
+                category, job.get("attempt_count"), job.get("max_attempts")
+            ),
         }
 
     def get_failure_intelligence(self, limit: int = 100) -> dict:
