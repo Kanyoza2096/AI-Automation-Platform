@@ -88,3 +88,23 @@ def test_failure_intelligence_preserves_unknown_failures_for_investigation():
     assert diagnosis["category"] == "unclassified"
     assert diagnosis["job_id"] == "job-unknown"
     assert "Inspect" in diagnosis["recommended_action"]
+
+
+
+def test_job_stats_query_error_state_is_isolated_between_threads():
+    from threading import Thread
+
+    service = JobStatsService(supabase_client=object())
+    service._last_error = "main-thread failure"
+    observed = []
+
+    def worker():
+        observed.append(service._last_error)
+        service._last_error = "worker-thread failure"
+
+    thread = Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert observed == [None]
+    assert service._last_error == "main-thread failure"
