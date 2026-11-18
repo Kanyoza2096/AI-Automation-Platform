@@ -54,11 +54,12 @@ This should remain the canonical task execution foundation wherever its contract
 Live read-only schema and migration-history inspection found:
 
 - Production has `director_collaboration_runs`, `director_mission_admissions`, and `director_engineering_events`.
-- Staging does not currently have those three tables.
-- Production has the matching Director migrations recorded; staging's Director migration history is behind.
+- Staging initially lacked those three tables and its Director migration chain diverged from production. A forward-only migration 175 has now added `director_mission_admissions` and a workspace-scope-correct, `SECURITY INVOKER` `stage_director_mission` RPC to staging. The collaboration and engineering-event tables remain absent there.
+- The staging migration was verified with RLS/grant checks and a transactionally rolled-back initial-admission/idempotent-replay test. Existing task and plan row counts were unchanged.
+- Production has the Director tables and migrations recorded, but its current `stage_director_mission` function omits `scope_type='workspace'`, which conflicts with the live workspace-scope check constraint. A separate production repair is required; production was not changed.
 - Production tables have RLS enabled and direct access revoked from `anon` and `authenticated`; service-role access is used by the backend.
 
-Do not build or validate the new runtime against an assumed staging schema. First reconcile the staging migration chain with repository migrations and verify it. Do not copy production data or apply schema changes directly to production as part of development.
+Do not replay production migrations wholesale into staging or copy production data. Keep the production RPC repair behind the normal reviewed release gate.
 
 ## 3. Target architecture
 
