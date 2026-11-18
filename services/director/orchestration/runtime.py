@@ -6,7 +6,7 @@ KCPG commands, Action Kernel execution, publishing, or other external actions.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AdapterRegistry, EngineContribution, MissionTaskContext
 from .state_machine import (
@@ -35,6 +35,7 @@ class MissionOrchestrationRuntime:
         store: MissionRuntimeStore,
         adapters: AdapterRegistry,
         state_machine: MissionStateMachine | None = None,
+        task_state_callback: Callable[[str, str, Mapping[str, Any] | None, str | None], None] | None = None,
         default_timeout_seconds: float = 75.0,
     ) -> None:
         if default_timeout_seconds <= 0:
@@ -42,6 +43,7 @@ class MissionOrchestrationRuntime:
         self.store = store
         self.adapters = adapters
         self.state_machine = state_machine or MissionStateMachine()
+        self.task_state_callback = task_state_callback
         self.default_timeout_seconds = float(default_timeout_seconds)
 
     async def load_snapshot(
@@ -77,6 +79,12 @@ class MissionOrchestrationRuntime:
         evidence_refs: Sequence[Mapping[str, Any]] = (),
     ) -> MissionRuntimeSnapshot:
         event_payload = dict(payload or {})
+        sync_event_types = {
+            "task.started", "task.progress", "task.completed", "task.failed",
+            "task.blocked", "task.verified", "task.reassigned", "task.handoff.accepted",
+        }
+        if task_id and event_type in sync_event_types and self.task_state_callback is None:
+            raise MissionTaskNotReady("runtime_task_state_callback_required")
         snapshot = await self.state_machine.commit(
             self.store,
             current,
@@ -128,6 +136,7 @@ class MissionOrchestrationRuntime:
                 result=result,
                 error=error,
             )
+            self.task_state_callback(task_id, target_status, result, error)
         return snapshot
 
     async def assign_task(
