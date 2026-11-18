@@ -93,6 +93,8 @@ Discover adapters from existing service/topology registries and KCPG command con
 
 ### 3.3 Persistent mission state and event journal
 
+The staging implementation now provides the initial persistence boundary: `director_missions` is a versioned aggregate/state snapshot and `director_mission_events` is an append-only collaboration/event journal. The v2 admission RPC creates both atomically, and the append RPC uses idempotency fingerprints plus optimistic version checks. Database guards prevent event mutation, out-of-order appends, scope mismatch, and mission-state updates without a matching event. Service-role table access is read-only; mutation is through narrowly scoped fixed-search-path RPCs.
+
 Reuse:
 - `director_tasks` as the canonical persisted task records where its current schema is sufficient;
 - `director_mission_admissions` for idempotent admission receipts;
