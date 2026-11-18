@@ -121,6 +121,12 @@ class WorkflowResult:
             "semantic_review_request_id", "errors", "brand_id", "brand_name",
             "platform", "provider", "model", "decision_id", "raw_status",
             "reconciliation_required", "media_error_code", "reason", "status",
+            "review_diagnostics", "decision", "rationale", "claims",
+            "unsupported_claims", "uncertain_claims", "evidence_coverage", "scores", "request_id",
+            "approved", "support_status", "source_ids", "claim",
+            "provider", "model", "assessed", "supported", "unsupported",
+            "uncertain", "supported_rate", "claim_coverage", "brand_relevance",
+            "originality", "audience_value", "genericity",
         }
 
         def safe_detail(detail: Any) -> dict[str, Any]:
@@ -131,12 +137,20 @@ class WorkflowResult:
                 if key not in detail:
                     continue
                 value = detail[key]
-                if key == "context":
-                    safe_context = safe_detail(value)
-                    if safe_context:
-                        safe[key] = safe_context
-                elif key == "errors" and isinstance(value, list):
-                    safe[key] = [str(item)[:500] for item in value[:20]]
+                if isinstance(value, dict):
+                    nested = safe_detail(value)
+                    if nested:
+                        safe[key] = nested
+                elif isinstance(value, list):
+                    if key in {"errors"}:
+                        safe[key] = [str(item)[:500] for item in value[:20]]
+                    elif key in {"claims", "unsupported_claims", "uncertain_claims"}:
+                        safe[key] = [
+                            safe_detail(item) for item in value[:100]
+                            if isinstance(item, dict)
+                        ]
+                    elif key == "source_ids":
+                        safe[key] = [str(item)[:200] for item in value[:20]]
                 elif isinstance(value, str):
                     safe[key] = value[:1000]
                 elif isinstance(value, (int, float, bool)) or value is None:

@@ -127,7 +127,17 @@ class ValidateArticleStep(Step):
             raise StepFailure(
                 "Article did not pass independent full-text semantic review",
                 code="article_semantic_review_not_approved",
-                detail={"reason": str((review or {}).get("reason", "review unavailable"))[:1000]},
+                detail={
+                    "reason": str((review or {}).get("reason", "review unavailable"))[:1000],
+                    "review_diagnostics": {
+                        key: review.get(key)
+                        for key in (
+                            "decision", "reason", "rationale", "evidence_coverage",
+                            "unsupported_claims", "uncertain_claims", "claims", "scores", "request_id",
+                            "provider", "model", "status", "approved",
+                        )
+                    } if isinstance(review, dict) else {},
+                },
             )
         context["article_validation"] = {"approved": True, "citations": citations}
         return context["article_validation"]

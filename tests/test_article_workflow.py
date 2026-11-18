@@ -50,11 +50,38 @@ def test_article_validation_requires_independent_full_text_approval():
     class Reviewer:
         async def review(self, **kwargs):
             assert len(kwargs["body"]) > 1200
-            return {"approved": False, "status": "needs_review", "reason": "claim support is uncertain"}
+            return {
+                "approved": False,
+                "status": "needs_review",
+                "decision": "needs_review",
+                "reason": "claim support is uncertain",
+                "rationale": "Two claims need stronger evidence.",
+                "evidence_coverage": {
+                    "assessed": 4, "supported": 2, "unsupported": 1,
+                    "uncertain": 1, "supported_rate": 0.5,
+                },
+                "unsupported_claims": [
+                    {"claim": "Claim X", "support_status": "unsupported", "source_ids": [], "rationale": "No evidence"}
+                ],
+                "scores": {
+                    "claim_coverage": 0.95, "brand_relevance": 0.8,
+                    "originality": 0.6, "audience_value": 0.7, "genericity": 0.2,
+                },
+                "request_id": "req-review-123",
+                "provider": "cloudflare",
+                "model": "llama-review",
+            }
 
     with pytest.raises(StepFailure) as exc:
         asyncio.run(ValidateArticleStep(Reviewer()).async_run(_article_context()))
     assert exc.value.code == "article_semantic_review_not_approved"
+    diagnostics = exc.value.detail["review_diagnostics"]
+    assert diagnostics["decision"] == "needs_review"
+    assert diagnostics["evidence_coverage"]["supported_rate"] == 0.5
+    assert diagnostics["unsupported_claims"][0]["claim"] == "Claim X"
+    assert diagnostics["scores"]["brand_relevance"] == 0.8
+    assert diagnostics["model"] == "llama-review"
+    assert diagnostics["request_id"] == "req-review-123"
 
 
 def test_article_validation_passes_only_after_full_article_review():
