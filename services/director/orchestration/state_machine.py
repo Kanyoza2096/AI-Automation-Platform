@@ -490,7 +490,7 @@ class MissionStateMachine:
                 if ref not in known:
                     if len(state["evidence_refs"]) >= 50:
                         raise MissionTransitionRejected("mission_evidence_reference_limit_exceeded")
-                    state["evidence_refs"].append({"ref": ref[:100], "source_engine": command.actor_id[:128]})
+                    state["evidence_refs"].append({"ref": ref[:100], "source_engine": command.actor_id[:128], "task_id": command.task_id})
                     known.add(ref)
             event_task_id = command.task_id
             next_status, next_phase = "running", "collaboration"
