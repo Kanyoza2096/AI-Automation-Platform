@@ -73,6 +73,14 @@ class PulseCollector:
                 name: {
                     "status": getattr(getattr(r, "status", None), "value", str(getattr(r, "status", ""))),
                     "error": getattr(r, "error_message", None),
+                    # HealthReport.metadata carries the provider's actual
+                    # evidence. Dropping it here reduced diagnosis to a label
+                    # such as "job_service=degraded".
+                    "metadata": (
+                        getattr(r, "metadata", None)
+                        if isinstance(getattr(r, "metadata", None), dict)
+                        else {}
+                    ),
                 }
                 for name, r in (reports or {}).items()
             }
