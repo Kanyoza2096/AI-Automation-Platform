@@ -633,3 +633,41 @@ async def decide_knowledge_evidence_review(
         raise
     except Exception as exc:
         return _safe_err(exc, f"POST evidence review decision {case_id}")
+
+
+@router.post("/brands/{brand_id}/knowledge-evidence-reviews/{case_id}/promote")
+async def promote_approved_knowledge_evidence(
+    brand_id: str,
+    case_id: str,
+    request: Request,
+    _auth: bool = Depends(require_auth),
+):
+    """Promote one approved source through a transactional, audited DB function."""
+    try:
+        await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
+        actor, _identity = _evidence_review_actor(require_human=True)
+        client = _evidence_review_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="Evidence promotion storage unavailable")
+        workspace_id = _resolve_workspace_from_request(request)
+        found = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases").select("id")
+            .eq("id", case_id).eq("brand_id", brand_id)
+            .eq("workspace_id", workspace_id).eq("review_status", "approved")
+            .limit(1).execute()
+        )
+        if not found.data:
+            raise HTTPException(status_code=404, detail="Approved review case not found")
+        promoted = await _async_wrap(
+            lambda: client.rpc(
+                "promote_approved_knowledge_evidence",
+                {"p_case_id": case_id, "p_actor_id": actor},
+            ).execute()
+        )
+        if promoted.data is None:
+            raise HTTPException(status_code=503, detail="Evidence promotion was not confirmed")
+        return _ok({"promotion": promoted.data})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, f"POST evidence promotion {case_id}")
