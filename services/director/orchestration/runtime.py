@@ -188,7 +188,7 @@ class MissionOrchestrationRuntime:
         if (
             not task_row
             or task_row.get("status") != "approved"
-            or not task_row.get("payload", {}).get("approved_by")
+            or task_row.get("payload", {}).get("approved_by") != operator_id
         ):
             raise MissionTaskNotReady("canonical_director_approval_not_persisted")
         return await self._commit(
