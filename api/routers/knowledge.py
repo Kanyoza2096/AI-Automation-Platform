@@ -494,23 +494,35 @@ async def submit_knowledge_evidence_review(
                 raise HTTPException(status_code=503, detail="Review case could not be reopened")
             return _ok({"review_case": _evidence_review_payload(reopened.data), "reused": True})
 
-        inserted = await _async_wrap(
-            lambda: client.table("knowledge_evidence_review_cases").insert({
-                "knowledge_entry_id": entry.id,
-                "workspace_id": entry.workspace_id,
-                "brand_id": brand_id,
-                "source_id": source_id,
-                "submitted_by": actor,
-                "source_url": source_url,
-                "source_title": metadata.get("source_title") or metadata.get("title"),
-                "source_type": metadata.get("source_type") or entry.doc_type,
-                "trust_class": metadata.get("trust_class"),
-                "claim_scope": body.claim_scope,
-                "content_sha256": content_hash,
-                "metadata_snapshot": metadata,
-                "review_status": "pending",
-            }).select("*").single().execute()
-        )
+        try:
+            inserted = await _async_wrap(
+                lambda: client.table("knowledge_evidence_review_cases").insert({
+                    "knowledge_entry_id": entry.id,
+                    "workspace_id": entry.workspace_id,
+                    "brand_id": brand_id,
+                    "source_id": source_id,
+                    "submitted_by": actor,
+                    "source_url": source_url,
+                    "source_title": metadata.get("source_title") or metadata.get("title"),
+                    "source_type": metadata.get("source_type") or entry.doc_type,
+                    "trust_class": metadata.get("trust_class"),
+                    "claim_scope": body.claim_scope,
+                    "content_sha256": content_hash,
+                    "metadata_snapshot": metadata,
+                    "review_status": "pending",
+                }).select("*").single().execute()
+            )
+        except Exception:
+            # A concurrent submitter may have won the unique
+            # (knowledge_entry_id, content_sha256) insert race.
+            raced = await _async_wrap(
+                lambda: client.table("knowledge_evidence_review_cases")
+                .select("*").eq("knowledge_entry_id", entry.id)
+                .eq("content_sha256", content_hash).limit(1).execute()
+            )
+            if raced.data and raced.data[0].get("review_status") in {"pending", "approved"}:
+                return _ok({"review_case": _evidence_review_payload(raced.data[0]), "reused": True})
+            raise
         if not inserted.data:
             raise HTTPException(status_code=503, detail="Review case creation was not confirmed")
         return _ok({"review_case": _evidence_review_payload(inserted.data), "reused": False}, 201)
@@ -623,12 +635,12 @@ async def decide_knowledge_evidence_review(
 
         changed = await _async_wrap(
             lambda: client.table("knowledge_evidence_review_cases").update(updates)
-            .eq("id", case_id).eq("review_status", "pending").select("*").single().execute()
+            .eq("id", case_id).eq("review_status", "pending").select("*").execute()
         )
         if not changed.data:
             raise HTTPException(status_code=409, detail="Review decision lost a concurrent update")
         # Deliberately do not modify knowledge_entries.metadata.verified here.
-        return _ok({"review_case": _evidence_review_payload(changed.data),
+        return _ok({"review_case": _evidence_review_payload(changed.data[0]),
                     "evidence_promoted": False})
     except HTTPException:
         raise
