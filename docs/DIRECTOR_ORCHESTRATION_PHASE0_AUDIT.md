@@ -53,7 +53,9 @@ Production's Director history includes separately named/ordered migrations for:
 
 The staging-specific migration `staging_director_persistence_contracts` has no matching source migration file discoverable in the audited backend repository. The repository contains production-oriented migration files 153–157 and 163–171, but staging has already applied some equivalent schema under different migration names.
 
-**Decision:** do not replay migrations 153–157 wholesale into staging. First author a forward-only, staging-compatible reconciliation migration after reviewing the exact staging table constraints, current records, RPC security, and function grants. Preserve all 571 task rows and the existing proposed plan. Do not mutate production.
+**Additional critical finding:** the production `stage_director_mission` RPC inserts workspace-owned tasks without setting `scope_type`. Migration 170 requires `scope_type = 'workspace'` whenever `workspace_id` is non-null, while the column default is `platform`. The current production function definition therefore conflicts with the live table constraint and is expected to fail on a new workspace mission admission. This was established by comparing the live function definition with the live check constraint; the RPC was not invoked and no rows were changed.
+
+**Decision:** do not replay migrations 153–157 wholesale into staging. A forward-only migration 175 has been authored on this feature branch to create the missing admission receipt table/RPC in staging and explicitly set `scope_type = 'workspace'`, with task contract checks and service-role-only execution. It preserves all existing task/plan rows. It has not yet been applied to production.
 
 ## 2. KCPG command boundary
 
