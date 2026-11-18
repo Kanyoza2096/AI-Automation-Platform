@@ -453,7 +453,7 @@ async def submit_knowledge_evidence_review(
     """Submit one exact knowledge-entry version for reusable source review."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        actor, _identity = _evidence_review_actor()
+        actor, _identity = _evidence_review_actor(require_human=False)
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
         entry = await _async_wrap(repo.find_by_id, knowledge_id)
@@ -530,7 +530,7 @@ async def list_knowledge_evidence_reviews(
     """List evidence review cases within the authenticated brand workspace."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        _evidence_review_actor()
+        _evidence_review_actor(require_human=False)
         if status not in {"pending", "approved", "rejected", "superseded", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
