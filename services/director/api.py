@@ -600,8 +600,18 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        task = director.tasks.get(task_id)
+        previous = (
+            task.status if task is not None else None,
+            task.approved_at if task is not None else None,
+            task.approved_by if task is not None else None,
+        )
         try:
-            return safe(asdict(director.approve(task_id, _trusted_actor(request, body.actor))))
+            approved = director.approve(task_id, _trusted_actor(request, body.actor))
+            if not await director.store.save_task(approved):
+                approved.status, approved.approved_at, approved.approved_by = previous
+                raise HTTPException(503, "Task approval could not be durably persisted")
+            return safe(asdict(approved))
         except KeyError:
             raise HTTPException(404, "Task not found")
         except ValueError as e:
@@ -618,8 +628,17 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        task = director.tasks.get(task_id)
+        previous = (
+            task.status if task is not None else None,
+            task.error if task is not None else None,
+        )
         try:
-            return safe(asdict(director.reject(task_id, _trusted_actor(request, body.actor), body.reason)))
+            rejected = director.reject(task_id, _trusted_actor(request, body.actor), body.reason)
+            if not await director.store.save_task(rejected):
+                rejected.status, rejected.error = previous
+                raise HTTPException(503, "Task rejection could not be durably persisted")
+            return safe(asdict(rejected))
         except KeyError:
             raise HTTPException(404, "Task not found")
 
