@@ -393,8 +393,11 @@ class MissionStateMachine:
             task_id = command.task_id or self._require_text(payload, "task_id")
             if task_id not in task_ids:
                 raise MissionTransitionRejected("task_not_in_mission")
-            if task_status.get(task_id) not in {"approval_required", "approved", "failed", "blocked"}:
-                raise MissionTransitionRejected("task_not_reassignable_from_current_state")
+            if task_status.get(task_id) not in {"approval_required", "approved"}:
+                # Failed/blocked tasks may have crossed an external side-effect
+                # boundary. Reassignment is forbidden until an authoritative
+                # recovery workflow proves the prior attempt safe to reconsider.
+                raise MissionTransitionRejected("task_reassignment_requires_authoritative_recovery")
             engine_id = self._require_text(payload, "engine_id")
             capability = self._require_text(payload, "capability")
             previous = assignments.get(task_id, {})
