@@ -152,6 +152,35 @@ def test_autonomous_review_is_wired_to_submission_and_promotion_is_gated():
     assert '"review_mode": "autonomous"' in source
 
 
+def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
+    source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
+    assert '@router.post("/brands/{brand_id}/knowledge/ingest-source")' in source
+    assert "web.fetch_async(source_url)" in source
+    assert "build_source_snapshot_attestation(" in source
+    assert "KDO_KB_TRUSTED_SOURCE_DOMAINS" in source
+    assert "body.trust_class" not in source
+    assert "KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET" in source
+
+
+def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch):
+    import json
+    import os
+    from api.routers.knowledge import _trusted_source_class_for_url
+
+    monkeypatch.setenv(
+        "KDO_KB_TRUSTED_SOURCE_DOMAINS",
+        json.dumps({"who.int": "government", "docs.vendor.example": "official_documentation"}),
+    )
+    assert _trusted_source_class_for_url("https://who.int/health") == "government"
+    assert _trusted_source_class_for_url(
+        "https://docs.vendor.example/manual"
+    ) == "official_documentation"
+    with pytest.raises(Exception):
+        _trusted_source_class_for_url("https://sub.who.int/health")
+    with pytest.raises(Exception):
+        _trusted_source_class_for_url("https://attacker.example/who.int")
+
+
 def test_quarantine_and_machine_review_audit_are_schema_supported():
     migration = (
         ROOT / "migrations" / "185_autonomous_knowledge_evidence_review.sql"
