@@ -1,0 +1,39 @@
+name: Content evidence pipeline regression tests
+
+on:
+  pull_request:
+    branches:
+      - staging
+    paths:
+      - "workflows/post_workflow.py"
+      - "services/content_semantic_reviewer.py"
+      - "services/content_evidence.py"
+      - "tests/test_post_workflow_compliance_repair.py"
+      - "tests/test_post_workflow_evidence_gate.py"
+      - ".github/workflows/content-evidence-pipeline-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  content-evidence-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev pkg-config python3-dev
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pytest>=8,<9" "pytest-asyncio>=0.23"
+      - name: Compile changed workflow and reviewer modules
+        run: python -m py_compile workflows/post_workflow.py services/content_semantic_reviewer.py services/content_evidence.py
+      - name: Run content evidence regression tests
+        run: python -m pytest -q tests/test_post_workflow_compliance_repair.py tests/test_post_workflow_evidence_gate.py
