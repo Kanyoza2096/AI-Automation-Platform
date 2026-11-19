@@ -32,6 +32,7 @@ def _entry(metadata=None):
         workspace_id="workspace-1",
         source_id="manufacturer-doc-1",
         source_url="https://example.com/manual",
+        trust_class="official_documentation",
         snapshot_text=source_text,
     )
     return SimpleNamespace(
