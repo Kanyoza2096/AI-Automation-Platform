@@ -6,12 +6,14 @@ from typing import Any
 from .contracts import AdapterRegistry
 from .native_adapters import ContentIntelligenceMissionAdapter
 from .condition_engine_adapter import ConditionEngineMissionAdapter
+from .meta_engine_adapter import MetaEngineMissionAdapter
 
 
 def build_default_adapter_registry(
     *,
     director_store: Any,
     condition_engine: Any | None = None,
+    meta_engine: Any | None = None,
 ) -> AdapterRegistry:
     """Build only adapters whose workspace boundaries are explicitly wired."""
     verifier = getattr(director_store, "brand_belongs_to_workspace", None)
@@ -20,6 +22,7 @@ def build_default_adapter_registry(
 
     registry = AdapterRegistry()
     registry.register(ContentIntelligenceMissionAdapter())
+    registry.register(MetaEngineMissionAdapter(meta_engine))
     registry.register(
         ConditionEngineMissionAdapter(
             engine=condition_engine,
