@@ -96,7 +96,13 @@ def assess_execution_recovery(
     start = starts[0]
     started_at = _parse_timestamp(start.get("created_at"))
     start_key = str(start.get("idempotency_key") or "")
-    if not started_at or not start_key.endswith(":started"):
+    if (
+        not started_at
+        or not start_key.endswith(":started")
+        or not str(start.get("correlation_id") or "").strip()
+        or start.get("actor_type") not in {"operator", "director"}
+        or not str(start.get("actor_id") or "").strip()
+    ):
         return RecoveryAssessment(
             "outcome_unknown", mission_id, workspace_id, task_id, None,
             str(start.get("created_at") or "") or None,
