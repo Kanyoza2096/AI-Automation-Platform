@@ -210,6 +210,44 @@ class MissionRuntimeStore:
         row["payload"] = payload
         return row
 
+    async def find_event(
+        self,
+        *,
+        mission_id: str,
+        scope_type: str,
+        workspace_id: str | None,
+        idempotency_key: str,
+        event_type: str,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        """Find one durable event by its scoped idempotency identity."""
+        if not all(str(value or "").strip() for value in (mission_id, idempotency_key, event_type, task_id)):
+            raise ValueError("mission_event_lookup_identity_required")
+        query = self._store.supabase.table("director_mission_events").select("*")
+        query = (
+            query.eq("mission_id", mission_id)
+            .eq("scope_type", scope_type)
+            .eq("idempotency_key", idempotency_key)
+            .eq("event_type", event_type)
+            .eq("task_id", task_id)
+        )
+        if scope_type == "workspace":
+            if not workspace_id:
+                raise ValueError("workspace_id_required_for_mission_event_lookup")
+            query = query.eq("workspace_id", workspace_id)
+        elif scope_type == "platform":
+            if workspace_id is not None:
+                raise ValueError("platform_mission_event_lookup_cannot_include_workspace_id")
+            query = query.is_("workspace_id", "null")
+        else:
+            raise ValueError("invalid_mission_scope_type")
+        response = await self._execute(
+            "find Director mission event by idempotency identity",
+            lambda: query.limit(1).execute(),
+        )
+        rows = getattr(response, "data", None) or []
+        return dict(rows[0]) if rows else None
+
     async def list_events(
         self,
         *,
