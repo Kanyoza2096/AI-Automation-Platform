@@ -81,9 +81,10 @@ def _bounded_input(service_states: Mapping[str, Any], diagnostics: Mapping[str, 
         "diagnostics": safe_diagnostics,
         "evidence": evidence,
         "historical_comparison_available": False,
-        "job_database_failure_records_available": bool(
+        "job_database_failure_records_available": (
             isinstance(safe_diagnostics.get("job_stats_service"), dict)
-            and safe_diagnostics["job_stats_service"].get("failure_intelligence", {}).get("status") == "available"
+            and isinstance(safe_diagnostics["job_stats_service"].get("failure_intelligence"), dict)
+            and safe_diagnostics["job_stats_service"]["failure_intelligence"].get("status") == "available"
         ),
     }
 
