@@ -209,24 +209,16 @@ class MissionOrchestrationRuntime:
         # prepare a new transition (which correctly rejects an already-approved
         # task). The exact idempotency key and actor must match; otherwise fail
         # closed rather than masking conflicting approval provenance.
-        prior_events = await self.store.list_events(
+        prior_event = await self.store.find_event(
             mission_id=mission_id,
             scope_type="workspace",
             workspace_id=workspace_id,
-            limit=self.store.MAX_EVENT_READ_LIMIT,
+            idempotency_key=idempotency_key,
+            event_type="task.approved",
+            task_id=task_id,
         )
-        approval_events = [
-            event for event in prior_events
-            if event.get("event_type") == "task.approved"
-            and event.get("task_id") == task_id
-        ]
-        if approval_events:
-            matching = [
-                event for event in approval_events
-                if event.get("idempotency_key") == idempotency_key
-                and event.get("actor_id") == operator_id
-            ]
-            if matching:
+        if prior_event:
+            if prior_event.get("actor_id") == operator_id:
                 return current
             raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
         if (current.state_snapshot.get("task_status") or {}).get(task_id) != "approval_required":
