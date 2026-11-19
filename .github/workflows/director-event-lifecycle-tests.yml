@@ -1,3 +1,4 @@
+# Manual workflow_dispatch is available for targeted branch certification.
 name: Cross-Subsystem Event Lifecycle Tests
 
 on:
