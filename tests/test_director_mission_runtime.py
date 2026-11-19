@@ -16,6 +16,7 @@ from services.director.orchestration import (
     build_default_adapter_registry,
     ConditionEngineMissionAdapter,
     MetaEngineMissionAdapter,
+    assess_execution_recovery,
 )
 
 
@@ -1201,3 +1202,167 @@ async def test_concurrent_native_execution_dispatches_engine_only_once():
     assert store.task["status"] == "completed"
     assert [event["event_type"] for event in store.events].count("task.started") == 1
     assert [event["event_type"] for event in store.events].count("task.completed") == 1
+
+
+def _recovery_task(status="executing"):
+    return {
+        "id": "task-recovery",
+        "scope_type": "workspace",
+        "workspace_id": "workspace-recovery",
+        "status": status,
+        "payload": {
+            "scope_type": "workspace",
+            "workspace_id": "workspace-recovery",
+            "mission_id": "mission-recovery",
+            "status": status,
+        },
+    }
+
+
+def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", payload=None, event_id=None):
+    return {
+        "event_id": event_id or key,
+        "mission_id": "mission-recovery",
+        "scope_type": "workspace",
+        "workspace_id": "workspace-recovery",
+        "task_id": "task-recovery",
+        "event_type": event_type,
+        "idempotency_key": key,
+        "created_at": created_at,
+        "payload": payload or {},
+    }
+
+
+def test_recovery_assessment_classifies_approved_task_as_not_started():
+    result = assess_execution_recovery(
+        task=_recovery_task("approved"),
+        events=[],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "not_started"
+
+
+def test_recovery_assessment_keeps_stale_started_attempt_outcome_unknown():
+    result = assess_execution_recovery(
+        task=_recovery_task("executing"),
+        events=[_recovery_event("task.started", "attempt-1:started")],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+    assert result.attempt_key == "attempt-1"
+    assert "no_authoritative_terminal_outcome" in result.reason
+
+
+def test_recovery_assessment_does_not_escalate_a_fresh_execution():
+    result = assess_execution_recovery(
+        task=_recovery_task("executing"),
+        events=[_recovery_event("task.started", "attempt-1:started", created_at="2026-11-19T11:59:00+00:00")],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "not_stale"
+
+
+def test_recovery_assessment_reconciles_matching_durable_completion():
+    result = assess_execution_recovery(
+        task=_recovery_task("completed"),
+        events=[
+            _recovery_event("task.started", "attempt-1:started"),
+            _recovery_event("task.completed", "attempt-1:completed", created_at="2026-11-19T10:01:00+00:00"),
+        ],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "completed_response_lost"
+    assert len(result.evidence_event_ids) == 2
+
+
+def test_recovery_assessment_requires_explicit_no_side_effects_evidence():
+    events = [
+        _recovery_event("task.started", "attempt-1:started"),
+        _recovery_event(
+            "task.failed", "attempt-1:failed",
+            payload={"no_side_effects_confirmed": True},
+        ),
+    ]
+    result = assess_execution_recovery(
+        task=_recovery_task("failed"),
+        events=events,
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "failed_reconsiderable"
+
+    events[1]["payload"] = {"reason": "timeout"}
+    result = assess_execution_recovery(
+        task=_recovery_task("failed"),
+        events=events,
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+
+
+def test_recovery_assessment_fails_closed_on_scope_mismatch_or_missing_start():
+    mismatched = _recovery_event("task.started", "attempt-1:started")
+    mismatched["workspace_id"] = "another-workspace"
+    result = assess_execution_recovery(
+        task=_recovery_task("executing"),
+        events=[mismatched],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=__import__("datetime").timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+    assert result.reason == "execution_start_event_missing_or_duplicated"
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
+    store = MemoryMissionStore()
+    store.task["status"] = "executing"
+    store.task["payload"]["status"] = "executing"
+    store.row["state_snapshot"]["task_status"][store.task_id] = "executing"
+    store.events.append({
+        "event_id": "event-start",
+        "mission_id": store.mission_id,
+        "scope_type": "workspace",
+        "workspace_id": store.workspace_id,
+        "task_id": store.task_id,
+        "event_type": "task.started",
+        "idempotency_key": "attempt-read-only:started",
+        "created_at": "2026-11-19T10:00:00+00:00",
+        "payload": {"requested_by": "operator-1"},
+    })
+    before_task = copy.deepcopy(store.task)
+    before_row = copy.deepcopy(store.row)
+    before_events = copy.deepcopy(store.events)
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+
+    result = await runtime.assess_task_recovery(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        stale_after_seconds=300,
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+    )
+
+    assert result.classification == "outcome_unknown"
+    assert store.task == before_task
+    assert store.row == before_row
+    assert store.events == before_events
