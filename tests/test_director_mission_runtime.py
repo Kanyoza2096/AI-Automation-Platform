@@ -306,6 +306,65 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
 
 
 @pytest.mark.asyncio
+async def test_native_engine_invocation_timeout_fails_task_without_hanging():
+    import asyncio
+
+    class SlowAdapter(FakeNativeAdapter):
+        async def invoke(self, context):
+            self.calls.append(context)
+            await asyncio.sleep(1)
+            raise AssertionError("timeout should cancel native adapter invocation")
+
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    slow = SlowAdapter("content_intelligence", "This should never return.")
+    registry.register(slow)
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=registry,
+        task_state_callback=lambda *args: None,
+        default_timeout_seconds=0.01,
+    )
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-timeout",
+        correlation_id="corr-timeout",
+    )
+    store.task["status"] = "approved"
+    store.task["payload"]["status"] = "approved"
+    store.task["payload"]["approved_by"] = "operator-timeout"
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-timeout",
+        idempotency_key="approve-timeout",
+        correlation_id="corr-timeout",
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="Exercise the bounded invocation timeout.",
+            inputs={},
+            idempotency_prefix="execute-timeout",
+            correlation_id="corr-timeout",
+            timeout_seconds=0.01,
+        )
+
+    assert len(slow.calls) == 1
+    assert store.task["status"] == "failed"
+    assert any(event["event_type"] == "task.failed" for event in store.events)
+
+
+@pytest.mark.asyncio
 async def test_runtime_cannot_assign_task_to_unregistered_engine_or_cross_workspace():
     store = MemoryMissionStore()
     registry = AdapterRegistry()
