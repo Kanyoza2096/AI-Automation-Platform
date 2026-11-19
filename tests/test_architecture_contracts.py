@@ -82,3 +82,15 @@ def test_durable_authority_migration_normalizes_execution_tenant_type_and_rpc_si
     assert "user_id = auth.uid()::text" in sql
     assert "claim_publish_outbox(INTEGER, INTEGER)" in sql
     assert "p_lease_seconds < 30 OR p_lease_seconds > 3600" in sql
+
+
+
+def test_director_mission_admission_journals_collaboration_origin():
+    sql = (ROOT / "migrations" / "188_director_mission_admission_provenance.sql").read_text(encoding="utf-8")
+    assert "source_collaboration_run_id TEXT" in sql
+    assert "director_mission_collaboration_provenance_conflict" in sql
+    assert "source_collaboration_run_id', source_collaboration_run_id" in sql
+    assert "'mission.admitted'" in sql
+    # Mission admission remains a journal event, not an execution/approval grant.
+    assert "execution_permitted" not in sql
+    assert "task.approved" not in sql
