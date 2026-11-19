@@ -75,6 +75,56 @@ class StrategicObjectiveBody(BaseModel):
     constraints: list[str] = Field(default_factory=list, max_length=20)
 
 
+class MissionTaskAssignBody(BaseModel):
+    engine_id: str = Field(..., min_length=1, max_length=100)
+    capability: str = Field(..., min_length=1, max_length=120)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class MissionTaskExecuteBody(BaseModel):
+    engine_id: str = Field(..., min_length=1, max_length=100)
+    objective: str = Field(..., min_length=1, max_length=4000)
+    inputs: dict = Field(default_factory=dict)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+    estimated_tokens: int = Field(default=1800, ge=1, le=20000)
+    timeout_seconds: float = Field(default=75.0, gt=0, le=180)
+
+
+class MissionEngineMessageBody(BaseModel):
+    task_id: str = Field(..., min_length=1, max_length=100)
+    recipient_engine_id: str = Field(..., min_length=1, max_length=100)
+    question: str = Field(..., min_length=1, max_length=2000)
+    recipient_capability: str = Field(..., min_length=1, max_length=120)
+    context: str = Field(default="", max_length=4000)
+    recipient_inputs: dict = Field(default_factory=dict)
+    message_id: str = Field(..., min_length=8, max_length=128)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+    round_number: int = Field(..., ge=1, le=3)
+
+
+class MissionEngineAnswerBody(BaseModel):
+    answer_message_id: str = Field(..., min_length=8, max_length=128)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class ApprovalBody(BaseModel):
+    actor: str = Field(
+        default="admin", min_length=1, max_length=100,
+        pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
+    )
+
+
+class RejectBody(BaseModel):
+    actor: str = Field(
+        default="admin", min_length=1, max_length=100,
+        pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
+    )
+    reason: str = Field(default="", max_length=500)
+
 
 try:
     from opentelemetry import trace
@@ -255,51 +305,6 @@ def create_app(director: Director):
                         status_code=403,
                         detail="Director mutation requires operator role or above",
                     )
-
-    class MissionTaskAssignBody(BaseModel):
-        engine_id: str = Field(..., min_length=1, max_length=100)
-        capability: str = Field(..., min_length=1, max_length=120)
-        idempotency_key: str = Field(..., min_length=8, max_length=128)
-        correlation_id: str = Field(..., min_length=8, max_length=128)
-
-    class MissionTaskExecuteBody(BaseModel):
-        engine_id: str = Field(..., min_length=1, max_length=100)
-        objective: str = Field(..., min_length=1, max_length=4000)
-        inputs: dict = Field(default_factory=dict)
-        idempotency_prefix: str = Field(..., min_length=8, max_length=128)
-        correlation_id: str = Field(..., min_length=8, max_length=128)
-        estimated_tokens: int = Field(default=1800, ge=1, le=20000)
-        timeout_seconds: float = Field(default=75.0, gt=0, le=180)
-
-    class MissionEngineMessageBody(BaseModel):
-        task_id: str = Field(..., min_length=1, max_length=100)
-        recipient_engine_id: str = Field(..., min_length=1, max_length=100)
-        question: str = Field(..., min_length=1, max_length=2000)
-        recipient_capability: str = Field(..., min_length=1, max_length=120)
-        context: str = Field(default="", max_length=4000)
-        recipient_inputs: dict = Field(default_factory=dict)
-        message_id: str = Field(..., min_length=8, max_length=128)
-        idempotency_key: str = Field(..., min_length=8, max_length=128)
-        correlation_id: str = Field(..., min_length=8, max_length=128)
-        round_number: int = Field(..., ge=1, le=3)
-
-    class MissionEngineAnswerBody(BaseModel):
-        answer_message_id: str = Field(..., min_length=8, max_length=128)
-        idempotency_prefix: str = Field(..., min_length=8, max_length=128)
-        correlation_id: str = Field(..., min_length=8, max_length=128)
-
-    class ApprovalBody(BaseModel):
-        actor: str = Field(
-            default="admin", min_length=1, max_length=100,
-            pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
-        )
-
-    class RejectBody(BaseModel):
-        actor: str = Field(
-            default="admin", min_length=1, max_length=100,
-            pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
-        )
-        reason: str = Field(default="", max_length=500)
 
     def _mission_runtime_enabled() -> bool:
         return (os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "") or "").strip().lower() in {"1", "true", "yes", "on"}
