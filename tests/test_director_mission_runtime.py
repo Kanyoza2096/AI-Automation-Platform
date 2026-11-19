@@ -92,6 +92,58 @@ class MemoryMissionStore:
             self.task["payload"]["error"] = None
         return copy.deepcopy(self.task)
 
+    async def approve_workspace_task_atomic(
+        self, *, event, task_id, approved_by, approved_at
+    ):
+        existing = self.idempotency.get(event.idempotency_key)
+        if existing:
+            durable = next(
+                (item for item in self.events if item["idempotency_key"] == event.idempotency_key),
+                None,
+            )
+            if (
+                existing["fingerprint"] != event.request_fingerprint
+                or not durable
+                or durable["actor_type"] != "operator"
+                or durable["actor_id"] != approved_by
+                or durable["payload"].get("approved_at") != approved_at
+                or self.task["status"] != "approved"
+                or self.task["payload"].get("approved_by") != approved_by
+                or self.task["payload"].get("approved_at") != approved_at
+            ):
+                return {"error": "director_atomic_task_approval_replay_conflict"}
+            return {"replayed": True, "version": self.row["version"]}
+        if self.task["status"] != "approval_required":
+            return {"error": "director_atomic_task_approval_state_conflict"}
+        if (self.row["state_snapshot"].get("task_status") or {}).get(task_id) != "approval_required":
+            return {"error": "director_atomic_task_approval_state_conflict"}
+
+        # Simulate a single transaction: restore all durable structures if
+        # event append fails, and publish task provenance only on success.
+        previous_row = copy.deepcopy(self.row)
+        previous_task = copy.deepcopy(self.task)
+        previous_events = copy.deepcopy(self.events)
+        previous_idempotency = copy.deepcopy(self.idempotency)
+        result = await self.append_event(event)
+        if result.get("error"):
+            self.row = previous_row
+            self.task = previous_task
+            self.events = previous_events
+            self.idempotency = previous_idempotency
+            return result
+        self.task["status"] = "approved"
+        self.task["payload"].update({
+            "status": "approved",
+            "approved_by": approved_by,
+            "approved_at": approved_at,
+        })
+        return result | {
+            "task_id": task_id,
+            "task_status": "approved",
+            "approved_by": approved_by,
+            "approved_at": approved_at,
+        }
+
     async def append_event(self, event):
         existing = self.idempotency.get(event.idempotency_key)
         if existing:
@@ -130,7 +182,9 @@ class MemoryMissionStore:
             "sequence_number": version,
             "event_type": event.event_type,
             "idempotency_key": event.idempotency_key,
+            "actor_type": event.actor_type,
             "actor_id": event.actor_id,
+            "request_fingerprint": event.request_fingerprint,
             "task_id": event.task_id,
             "message_id": event.message_id,
             "recipient_id": event.recipient_id,
@@ -266,41 +320,45 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         correlation_id="corr-runtime-1",
     )
 
-    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
-        await runtime.approve_task(
-            mission_id=store.mission_id,
-            workspace_id=store.workspace_id,
-            task_id=store.task_id,
-            operator_id="operator-1",
-            idempotency_key="approve-before-save",
-            correlation_id="corr-runtime-1",
-        )
-
-    store.task["status"] = "approved"
-    store.task["payload"]["status"] = "approved"
-    store.task["payload"]["approved_by"] = "operator-1"
+    approved_at = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
     await runtime.approve_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
         task_id=store.task_id,
         operator_id="operator-1",
-        idempotency_key="approve-1",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
         correlation_id="corr-runtime-1",
     )
-    # Simulate a client retry after the first commit succeeded but its
-    # response was lost. It must return the durable snapshot without a
-    # second task.approved event or a false state-transition conflict.
+    assert store.task["status"] == "approved"
+    assert store.task["payload"]["approved_by"] == "operator-1"
+    assert store.task["payload"]["approved_at"] == approved_at.isoformat()
+    assert store.row["state_snapshot"]["task_status"][store.task_id] == "approved"
+
+    # Simulate a lost RPC response: process memory generates a new timestamp,
+    # but runtime recovers the original durable actor/timestamp/event.
     approved_event_count = sum(event["event_type"] == "task.approved" for event in store.events)
     replayed = await runtime.approve_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
         task_id=store.task_id,
         operator_id="operator-1",
-        idempotency_key="approve-1",
+        approved_at=datetime(2026, 11, 19, 12, 5, tzinfo=timezone.utc),
+        idempotency_key="retry-with-new-request-timestamp",
         correlation_id="corr-runtime-1",
     )
     assert replayed.version == store.row["version"]
     assert sum(event["event_type"] == "task.approved" for event in store.events) == approved_event_count == 1
+    with pytest.raises(MissionTaskNotReady, match="canonical_approval_provenance_conflict"):
+        await runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-2",
+            approved_at=approved_at,
+            idempotency_key="conflicting-operator",
+            correlation_id="corr-runtime-1",
+        )
 
     result = await runtime.execute_approved_task(
         mission_id=store.mission_id,
