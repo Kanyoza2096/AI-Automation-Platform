@@ -211,10 +211,11 @@ class AdapterRegistry:
         if not callable(reconcile):
             return unknown
         try:
-            result = await asyncio.wait_for(
-                reconcile(reference),
-                timeout=float(adapter.timeout_seconds),
-            )
+            async with self._semaphores[reference.engine_id]:
+                result = await asyncio.wait_for(
+                    reconcile(reference),
+                    timeout=float(adapter.timeout_seconds),
+                )
         except Exception:
             return unknown
         if not isinstance(result, EngineAttemptReconciliation):
