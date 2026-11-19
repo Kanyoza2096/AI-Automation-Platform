@@ -901,3 +901,70 @@ def test_already_approved_retry_does_not_journal_when_canonical_save_is_unacknow
     assert saves == [task.id]
     assert runtime.calls == 0
     assert task.status == Status.APPROVED
+
+
+def test_concurrent_same_actor_approval_retries_each_acknowledge_canonical_store(monkeypatch):
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+    from services.director import Director, create_app
+    from services.director.models import Authority, Risk, Sector, Status, Task
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    task = Task(
+        id="approval-concurrent-retry",
+        sector=Sector.CONTENT,
+        description="concurrent approval retry",
+        capability="self_diagnostic",
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        status=Status.APPROVED,
+        approved_at=datetime.now(timezone.utc),
+        approved_by="trusted-user-123",
+        workspace_id="ws-a",
+        mission_id="mission-a",
+    )
+    d.tasks[task.id] = task
+
+    saves = []
+    async def save_task(candidate):
+        saves.append(candidate.id)
+        await asyncio.sleep(0.03)
+        return True
+    d.store.save_task = save_task
+
+    class Runtime:
+        def __init__(self):
+            self.calls = []
+        async def approve_task(self, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    runtime = Runtime()
+    app = create_app(d)
+    app.state.director_mission_runtime = runtime
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-user-123",
+            role="owner", species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    def submit_approval():
+        with TestClient(app) as client:
+            return client.post(
+                f"/tasks/{task.id}/approve",
+                headers={"Authorization": "Bearer valid-user-session"},
+                json={"actor": "untrusted-body-actor"},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: submit_approval(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert saves == [task.id, task.id]
+    assert len(runtime.calls) == 2
