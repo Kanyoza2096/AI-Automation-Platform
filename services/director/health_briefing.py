@@ -141,16 +141,37 @@ async def generate_health_briefing(
                 valid_refs = {item["ref"] for item in source["evidence"]}
                 incidents = []
                 for item in data.get("incidents", [])[:12]:
-                    if not isinstance(item, dict) or item.get("service") not in valid_services:
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("service") not in valid_services
+                        or source["service_states"].get(item.get("service")) == "ok"
+                    ):
                         continue
                     refs = [ref for ref in item.get("evidence_refs", []) if ref in valid_refs]
-                    incidents.append({**item, "evidence_refs": refs})
+                    normalized = {**item, "evidence_refs": refs}
+                    if not refs:
+                        normalized["confidence"] = "undetermined"
+                    incidents.append(normalized)
+                reported_services = {item["service"] for item in incidents}
+                for name, status in source["service_states"].items():
+                    if status != "ok" and name not in reported_services and len(incidents) < 12:
+                        incidents.append({
+                            "service": name,
+                            "assessment": f"Observed status: {status}. Cause undetermined.",
+                            "impact": "Operational impact is not established by the available evidence.",
+                            "confidence": "undetermined",
+                            "evidence_refs": [f"health:{name}"],
+                            "next_step": "Collect native service diagnostics and correlated operational records.",
+                        })
                 return {
                     "mode": "llm",
                     "provider": str(getattr(result, "provider", "") or "configured_gateway")[:60],
                     "executive_assessment": str(data["executive_assessment"])[:700],
                     "incidents": incidents,
-                    "trends": [str(v)[:300] for v in data.get("trends", [])[:8]],
+                    "trends": (
+                        [str(v)[:300] for v in data.get("trends", [])[:8]]
+                        if source["historical_comparison_available"] else []
+                    ),
                     "limitations": [str(v)[:300] for v in data.get("limitations", [])[:10]],
                     "evidence": source["evidence"],
                 }
