@@ -20,6 +20,32 @@ CREATE TABLE IF NOT EXISTS public.director_mission_admissions (
         CHECK (jsonb_typeof(task_ids) = 'array')
 );
 
+-- The admission table already exists in some production environments. CREATE
+-- TABLE IF NOT EXISTS does not retrofit constraints onto an existing table.
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'public.director_mission_admissions'::regclass
+           AND conname = 'director_mission_admissions_key_length'
+    ) THEN
+        ALTER TABLE public.director_mission_admissions
+            ADD CONSTRAINT director_mission_admissions_key_length
+            CHECK (length(idempotency_key) BETWEEN 1 AND 128);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = 'public.director_mission_admissions'::regclass
+           AND conname = 'director_mission_admissions_task_ids_array'
+    ) THEN
+        ALTER TABLE public.director_mission_admissions
+            ADD CONSTRAINT director_mission_admissions_task_ids_array
+            CHECK (jsonb_typeof(task_ids) = 'array');
+    END IF;
+END;
+$;
+
 ALTER TABLE public.director_mission_admissions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.director_mission_admissions FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.director_mission_admissions TO service_role;
