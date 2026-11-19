@@ -166,3 +166,15 @@ A second ledger table would duplicate the event identity and task state, creatin
 **Important finding:** none of the three currently registered adapters (`content_intelligence`, `meta_engine`, `condition_engine`) exposes authoritative attempt-status lookup. Their current methods perform research, read an in-process health snapshot, or calculate health from existing observations; none can prove whether a particular prior mission attempt started, completed, or had no side effects. They therefore correctly remain `unknown` after an interrupted attempt. Generic engine health and fresh re-invocation are not accepted as reconciliation evidence.
 
 Regression tests were authored for unsupported adapters, exact-identity authoritative responses, mismatched responses, and read-only runtime behavior. They are unexecuted. No production migration, data write, deployment, merge, or runtime activation was performed.
+
+
+## Phase D implementation update (2026-11-19)
+
+- Added the workspace-scoped POST recovery-review command under the mission orchestration task resource. It uses the signed human workspace actor boundary and operator-level task permission.
+- The append-only `task.recovery.reviewed` event records operator, decision, reason, assessment classification, correlation identity, and idempotency identity.
+- Only `hold` and `request_reconciliation` are accepted. The event is review metadata only: it does not change canonical task status, approval provenance, assignment, or execution authority.
+- `reconsider` is deliberately rejected. No registered adapter can provide authoritative attempt-specific no-side-effect proof, so an operator assertion alone cannot reopen a task or authorize a new attempt.
+- `task.reassigned` now rejects `failed` and `blocked` states. Reassignment is limited to `approval_required` and `approved` tasks until a future authoritative recovery transition exists.
+- Native adapter exceptions/timeouts no longer emit `task.failed`. The durable task remains `executing`, preserving the uncertain attempt for reconciliation instead of implying a safe failure.
+- Regression tests were added for operator-only review, forbidden reconsideration, unchanged task authority, and reassignment rejection. Tests are authored but unexecuted because hosted CI quota is exhausted and no local project runtime is available.
+- No production schema/data change, migration, deployment, merge, runtime-flag activation, or CI retry was performed.
