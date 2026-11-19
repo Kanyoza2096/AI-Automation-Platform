@@ -192,6 +192,15 @@ def test_source_snapshot_attestation_can_be_reused_only_when_every_binding_match
     assert not verify_source_snapshot_attestation(tampered, "workspace-1", "test-secret")
 
 
+def test_sweep_scheduler_trigger_is_secret_gated_and_backgrounded():
+    source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
+    assert '@router.post("/internal/knowledge-evidence-review/sweep")' in source
+    assert "KDO_KB_REVIEW_SWEEP_TRIGGER_TOKEN" in source
+    assert "hmac.compare_digest(expected, supplied)" in source
+    assert "asyncio.create_task(_run_review_sweep_background())" in source
+    assert "await asyncio.to_thread(_run_in_thread)" in source
+
+
 def test_backlog_sweep_reopens_only_when_trusted_snapshot_changes():
     source = (ROOT / "scripts" / "autonomous_knowledge_evidence_review.py").read_text()
     assert "current_snapshot_digest != prior_snapshot_digest" in source
