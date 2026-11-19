@@ -177,6 +177,17 @@ def create_app(director: Director):
             return str(principal_id)[:100]
         return fallback
 
+    def _require_workspace_task_operator(task, request) -> None:
+        if not getattr(task, "workspace_id", None):
+            return
+        context = getattr(request.state, "request_context", None)
+        if (
+            context is None
+            or getattr(context, "species_privileges", False)
+            or str(getattr(context, "workspace_id", "") or "") != str(task.workspace_id)
+        ):
+            raise HTTPException(403, "A signed human workspace operator is required for task decisions")
+
     def _require_platform_scope(request) -> None:
         """Require a trusted platform identity for shared Director state.
 
@@ -769,6 +780,8 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        if task is not None:
+            _require_workspace_task_operator(task, request)
         task = director.tasks.get(task_id)
         previous = (
             task.status if task is not None else None,
@@ -821,6 +834,8 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        if task is not None:
+            _require_workspace_task_operator(task, request)
         task = director.tasks.get(task_id)
         previous = (
             task.status if task is not None else None,
