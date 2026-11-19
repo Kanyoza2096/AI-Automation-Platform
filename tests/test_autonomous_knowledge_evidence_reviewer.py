@@ -237,3 +237,58 @@ def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch
         resolve_trusted_source_class("https://sub.who.int/health", registry)
     with pytest.raises(ValueError):
         resolve_trusted_source_class("https://attacker.example/who.int", registry)
+
+
+@pytest.mark.asyncio
+async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch):
+    from types import SimpleNamespace
+    import scripts.autonomous_knowledge_evidence_review as sweep
+
+    pending_case = {
+        "id": "case-pending",
+        "knowledge_entry_id": "entry-old",
+        "workspace_id": "workspace-1",
+        "brand_id": "brand-1",
+        "review_status": "pending",
+    }
+    entry_row = {
+        "id": "entry-old",
+        "content": "An older knowledge entry awaiting review.",
+        "workspace_id": "workspace-1",
+        "brand_id": "brand-1",
+        "doc_type": "text",
+        "metadata": {},
+    }
+
+    class FakeQuery:
+        def __init__(self, table):
+            self.table = table
+        def select(self, *_args, **_kwargs): return self
+        def eq(self, *_args, **_kwargs): return self
+        def order(self, *_args, **_kwargs): return self
+        def limit(self, *_args, **_kwargs): return self
+        def execute(self):
+            return SimpleNamespace(data=[pending_case] if self.table == "knowledge_evidence_review_cases" else [entry_row])
+
+    class FakeClient:
+        def table(self, name): return FakeQuery(name)
+
+    reviewed = []
+    async def capture(_client, row):
+        return row["metadata"]
+    async def review(_client, case, row):
+        reviewed.append((case["id"], row["id"]))
+        return "quarantined"
+
+    monkeypatch.setattr(sweep, "_capture_trusted_source_snapshot", capture)
+    monkeypatch.setattr(sweep, "_review_case", review)
+    counters = {
+        "scanned": 0, "discovered": 0, "approved": 0,
+        "rejected": 0, "quarantined": 0, "raced": 0, "skipped": 0,
+    }
+
+    await sweep._drain_pending_review_cases(FakeClient(), 10, counters)
+
+    assert reviewed == [("case-pending", "entry-old")]
+    assert counters["discovered"] == 1
+    assert counters["quarantined"] == 1
