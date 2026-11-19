@@ -204,19 +204,33 @@ class MissionOrchestrationRuntime:
         payload = task_row.get("payload") or {}
         approved_at_value = approved_at.astimezone(timezone.utc).isoformat()
         if task_row.get("status") == "approved":
-            # A retried request may reuse only the exact durable operator and
-            # timestamp already committed. The API restores these from its
-            # canonical task cache after restart.
+            # A retried request is a read-only replay: it must identify the
+            # same durable actor, timestamp, and task.approved event.
             if (
                 payload.get("approved_by") != operator_id
                 or payload.get("approved_at") != approved_at_value
+                or (current.state_snapshot.get("task_status") or {}).get(task_id) != "approved"
             ):
                 raise MissionTaskNotReady("canonical_approval_provenance_conflict")
-        elif task_row.get("status") != "approval_required":
+            prior_event = await self.store.find_event(
+                mission_id=mission_id,
+                scope_type="workspace",
+                workspace_id=workspace_id,
+                idempotency_key=idempotency_key,
+                event_type="task.approved",
+                task_id=task_id,
+            )
+            if (
+                not prior_event
+                or prior_event.get("actor_type") != "operator"
+                or prior_event.get("actor_id") != operator_id
+                or (prior_event.get("payload") or {}).get("approved_at") != approved_at_value
+            ):
+                raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
+            return current
+        if task_row.get("status") != "approval_required":
             raise MissionTaskNotReady("canonical_task_not_awaiting_approval")
-        if (current.state_snapshot.get("task_status") or {}).get(task_id) not in {
-            "approval_required", "approved"
-        }:
+        if (current.state_snapshot.get("task_status") or {}).get(task_id) != "approval_required":
             raise MissionTaskNotReady("canonical_approval_journal_state_mismatch")
 
         command = MissionEventCommand(
