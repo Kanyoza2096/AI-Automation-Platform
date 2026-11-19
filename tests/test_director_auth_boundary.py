@@ -781,3 +781,123 @@ def test_native_mission_task_rejection_is_journalled_through_runtime(monkeypatch
     assert response.json()["status"] == "cancelled"
     assert response.json()["error"] == "Rejected by trusted-operator: Evidence was insufficient"
     assert d.tasks["task-cancel"].status == Status.CANCELLED
+
+
+def test_already_approved_retry_rechecks_canonical_persistence_before_journaling(monkeypatch):
+    import asyncio
+    from datetime import datetime, timezone
+    from services.director import Director, create_app
+    from services.director.models import Authority, Risk, Sector, Status, Task
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    task = Task(
+        id="approval-retry-task",
+        sector=Sector.CONTENT,
+        description="approval retry",
+        capability="self_diagnostic",
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        status=Status.APPROVED,
+        approved_at=datetime.now(timezone.utc),
+        approved_by="trusted-user-123",
+        workspace_id="ws-a",
+        mission_id="mission-a",
+    )
+    d.tasks[task.id] = task
+
+    saves = []
+    async def save_task(candidate):
+        saves.append((candidate.status, candidate.approved_by, candidate.approved_at))
+        await asyncio.sleep(0)
+        return True
+    d.store.save_task = save_task
+
+    class Runtime:
+        def __init__(self):
+            self.calls = []
+        async def approve_task(self, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    runtime = Runtime()
+    app = create_app(d)
+    app.state.director_mission_runtime = runtime
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-user-123",
+            role="owner", species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).post(
+        f"/tasks/{task.id}/approve",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={"actor": "untrusted-body-actor"},
+    )
+    assert response.status_code == 200
+    assert len(saves) == 1
+    assert saves[0][0] == Status.APPROVED
+    assert saves[0][1] == "trusted-user-123"
+    assert len(runtime.calls) == 1
+
+
+def test_already_approved_retry_does_not_journal_when_canonical_save_is_unacknowledged(monkeypatch):
+    from datetime import datetime, timezone
+    from services.director import Director, create_app
+    from services.director.models import Authority, Risk, Sector, Status, Task
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    task = Task(
+        id="approval-retry-unacknowledged",
+        sector=Sector.CONTENT,
+        description="approval retry",
+        capability="self_diagnostic",
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        status=Status.APPROVED,
+        approved_at=datetime.now(timezone.utc),
+        approved_by="trusted-user-123",
+        workspace_id="ws-a",
+        mission_id="mission-a",
+    )
+    d.tasks[task.id] = task
+
+    saves = []
+    async def save_task(candidate):
+        saves.append(candidate.id)
+        return False
+    d.store.save_task = save_task
+
+    class Runtime:
+        calls = 0
+        async def approve_task(self, **kwargs):
+            self.calls += 1
+            return None
+
+    runtime = Runtime()
+    app = create_app(d)
+    app.state.director_mission_runtime = runtime
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-user-123",
+            role="owner", species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).post(
+        f"/tasks/{task.id}/approve",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={"actor": "untrusted-body-actor"},
+    )
+    assert response.status_code == 503
+    assert saves == [task.id]
+    assert runtime.calls == 0
+    assert task.status == Status.APPROVED
