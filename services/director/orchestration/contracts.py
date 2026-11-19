@@ -26,6 +26,7 @@ class MissionTaskContext:
     inputs: Mapping[str, Any] = field(default_factory=dict)
     evidence_refs: Sequence[str] = field(default_factory=tuple)
     correlation_id: str = ""
+    attempt_id: str = ""
     timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -73,6 +74,58 @@ class EngineContribution:
             raise ValueError("native_adapter_side_effect_class_not_advisory_safe")
         if self.confidence is not None and not 0.0 <= float(self.confidence) <= 1.0:
             raise ValueError("confidence_out_of_range")
+
+
+@dataclass(frozen=True)
+class ExecutionAttemptReference:
+    attempt_id: str
+    engine_id: str
+    capability: str
+    task_id: str
+    mission_id: str
+    workspace_id: str
+    correlation_id: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "attempt_id", "engine_id", "capability", "task_id",
+            "mission_id", "workspace_id", "correlation_id",
+        ):
+            value = str(getattr(self, name) or "").strip()
+            if not value:
+                raise ValueError(f"execution_attempt_{name}_required")
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True)
+class EngineAttemptReconciliation:
+    attempt_id: str
+    engine_id: str
+    status: str
+    authoritative: bool
+    evidence_ref: str | None = None
+    result: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.status not in {"not_started", "running", "completed", "failed_no_side_effects", "unknown"}:
+            raise ValueError("invalid_engine_attempt_reconciliation_status")
+        if not isinstance(self.authoritative, bool):
+            raise ValueError("engine_attempt_authoritative_flag_required")
+        if self.status != "unknown" and (not self.authoritative or not str(self.evidence_ref or "").strip()):
+            raise ValueError("authoritative_reconciliation_evidence_required")
+        if not isinstance(self.result, Mapping):
+            raise TypeError("engine_attempt_result_must_be_mapping")
+        if self.status == "completed" and not str(self.result.get("summary") or "").strip():
+            raise ValueError("completed_attempt_result_summary_required")
+
+
+class ReconciliableNativeEngineAdapter(Protocol):
+    """Optional adapter extension; absence means the outcome stays unknown."""
+
+    async def reconcile_attempt(
+        self, reference: ExecutionAttemptReference
+    ) -> EngineAttemptReconciliation:
+        """Return authoritative status for this exact attempt; never invoke or replay it."""
 
 
 class NativeEngineAdapter(Protocol):
@@ -125,6 +178,41 @@ class AdapterRegistry:
             return self._adapters[engine_id]
         except KeyError as exc:
             raise KeyError(f"native_engine_adapter_unavailable:{engine_id}") from exc
+
+    async def reconcile_attempt(
+        self, reference: ExecutionAttemptReference
+    ) -> EngineAttemptReconciliation:
+        """Ask an adapter for authoritative status; unsupported/ambiguous stays unknown."""
+        adapter = self.get(reference.engine_id)
+        unknown = EngineAttemptReconciliation(
+            attempt_id=reference.attempt_id,
+            engine_id=reference.engine_id,
+            status="unknown",
+            authoritative=False,
+        )
+        if reference.capability not in adapter.capabilities:
+            return unknown
+        reconcile = getattr(adapter, "reconcile_attempt", None)
+        if not callable(reconcile):
+            return unknown
+        try:
+            result = await asyncio.wait_for(
+                reconcile(reference),
+                timeout=float(adapter.timeout_seconds),
+            )
+        except Exception:
+            return unknown
+        if not isinstance(result, EngineAttemptReconciliation):
+            return unknown
+        if (
+            result.attempt_id != reference.attempt_id
+            or result.engine_id != reference.engine_id
+            or result.status == "unknown"
+            or not result.authoritative
+            or not str(result.evidence_ref or "").strip()
+        ):
+            return unknown
+        return result
 
     def describe(self) -> list[dict[str, Any]]:
         return [
