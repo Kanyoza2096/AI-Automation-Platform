@@ -128,3 +128,6 @@ An optional internal trigger is available at
 server-only `X-KDO-Review-Sweep-Token` header and acknowledges an active sweep
 without starting duplicate work. A scheduler calling this hook needs only the
 backend URL and token, not Supabase or LLM credentials.
+
+
+The scheduler emits structured completion/failure logs and stops itself after a full clean pass.
