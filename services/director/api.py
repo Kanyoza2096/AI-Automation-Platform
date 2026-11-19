@@ -1076,6 +1076,9 @@ def create_app(director: Director):
                         correlation_id=approved.correlation_id,
                     )
                 except Exception as exc:
+                    # Canonical approval is already durable. Queue this exact task
+                    # for bounded background journal repair; never approve again.
+                    director.mark_mission_approval_reconciliation_pending(approved.id)
                     log.error("Director approval committed but mission journal sync needs reconciliation: task=%s error=%s", approved.id, type(exc).__name__)
                     raise HTTPException(503, "Task approval is saved; mission runtime synchronization requires reconciliation") from exc
             return safe(asdict(approved))
