@@ -99,7 +99,6 @@ class MissionTaskExecuteBody(BaseModel):
 class MissionTaskRecoveryReviewBody(BaseModel):
     decision: str = Field(..., pattern="^(hold|request_reconciliation)$")
     reason: str = Field(..., min_length=1, max_length=1000)
-    assessment_classification: str = Field(..., min_length=1, max_length=80)
     idempotency_key: str = Field(..., min_length=8, max_length=128)
     correlation_id: str = Field(..., min_length=8, max_length=128)
 
@@ -460,7 +459,6 @@ def create_app(director: Director):
                 operator_id=_trusted_actor(request),
                 decision=body.decision,
                 reason=body.reason,
-                assessment_classification=body.assessment_classification,
                 idempotency_key=body.idempotency_key,
                 correlation_id=body.correlation_id,
             )
