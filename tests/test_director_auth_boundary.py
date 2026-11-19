@@ -436,14 +436,14 @@ def test_native_mission_timeline_uses_trusted_workspace_and_read_only_access(mon
     assert response.json()["events"][0]["event_type"] == "mission.admitted"
 
 
-def test_native_mission_timeline_rejects_missing_trusted_workspace(monkeypatch):
+def test_native_mission_timeline_rejects_unsigned_species_service_context(monkeypatch):
     monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
     app = _build_director_app(monkeypatch)
 
     @app.middleware("http")
     async def platform_context_without_workspace(request, call_next):
         request.state.request_context = SimpleNamespace(
-            workspace_id=None, principal_id="platform-user", role="admin",
+            workspace_id="ws-a", principal_id="kcpg-service", role="species",
             species_privileges=True,
         )
         request.state.auth_identity = SimpleNamespace(valid=True)
@@ -452,7 +452,7 @@ def test_native_mission_timeline_rejects_missing_trusted_workspace(monkeypatch):
     app.state.director_mission_runtime = SimpleNamespace()
     response = TestClient(app).get(
         "/missions/mission-a/orchestration/timeline",
-        headers={"Authorization": "Bearer master-test-token"},
+        headers={"Authorization": "Bearer valid-user-session"},
     )
     assert response.status_code == 403
 
