@@ -96,6 +96,14 @@ class MissionTaskExecuteBody(BaseModel):
     timeout_seconds: float = Field(default=75.0, gt=0, le=180)
 
 
+class MissionTaskRecoveryReviewBody(BaseModel):
+    decision: str = Field(..., pattern="^(hold|request_reconciliation)$")
+    reason: str = Field(..., min_length=1, max_length=1000)
+    assessment_classification: str = Field(..., min_length=1, max_length=80)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
 class MissionEngineMessageBody(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=100)
     recipient_engine_id: str = Field(..., min_length=1, max_length=100)
@@ -428,6 +436,47 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director mission task assignment failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission task assignment could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/recovery-review")
+    async def review_mission_task_recovery(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskRecoveryReviewBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.review_task_recovery(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                operator_id=_trusted_actor(request),
+                decision=body.decision,
+                reason=body.reason,
+                assessment_classification=body.assessment_classification,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+            )
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "mission_version": snapshot.version,
+                "decision": body.decision,
+                "execution_authority_changed": False,
+            }
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission recovery review failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission recovery review could not be confirmed") from exc
 
     @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/execute")
     async def execute_mission_task(
