@@ -1219,7 +1219,7 @@ def _recovery_task(status="executing"):
     }
 
 
-def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", payload=None, event_id=None):
+def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", payload=None, event_id=None, actor_type="engine", actor_id="content_intelligence"):
     return {
         "event_id": event_id or key,
         "mission_id": "mission-recovery",
@@ -1227,6 +1227,8 @@ def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", 
         "workspace_id": "workspace-recovery",
         "task_id": "task-recovery",
         "event_type": event_type,
+        "actor_type": actor_type,
+        "actor_id": actor_id,
         "idempotency_key": key,
         "created_at": created_at,
         "payload": payload or {},
@@ -1252,7 +1254,7 @@ def test_recovery_assessment_keeps_stale_started_attempt_outcome_unknown():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "outcome_unknown"
     assert result.attempt_key == "attempt-1"
@@ -1266,7 +1268,7 @@ def test_recovery_assessment_does_not_escalate_a_fresh_execution():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "not_stale"
 
@@ -1281,7 +1283,7 @@ def test_recovery_assessment_reconciles_matching_durable_completion():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "completed_response_lost"
     assert len(result.evidence_event_ids) == 2
@@ -1302,7 +1304,7 @@ def test_recovery_assessment_requires_explicit_no_side_effects_evidence():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "failed_reconsiderable"
 
@@ -1313,7 +1315,7 @@ def test_recovery_assessment_requires_explicit_no_side_effects_evidence():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "outcome_unknown"
 
@@ -1327,7 +1329,7 @@ def test_recovery_assessment_fails_closed_on_scope_mismatch_or_missing_start():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "outcome_unknown"
     assert result.reason == "execution_start_event_missing_or_duplicated"
