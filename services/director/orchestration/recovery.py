@@ -37,6 +37,7 @@ def assess_execution_recovery(
     mission_id: str,
     workspace_id: str,
     assigned_engine_id: str | None = None,
+    assigned_capability: str | None = None,
     now: datetime,
     stale_after: timedelta,
 ) -> RecoveryAssessment:
@@ -111,10 +112,21 @@ def assess_execution_recovery(
         )
 
     attempt_key = start_key[:-len(":started")]
-    if not attempt_key:
+    start_payload = start.get("payload")
+    start_payload = start_payload if isinstance(start_payload, Mapping) else {}
+    if (
+        not attempt_key
+        or start_payload.get("attempt_id") != attempt_key
+        or not assigned_engine_id
+        or start_payload.get("engine_id") != assigned_engine_id
+        or not assigned_capability
+        or start_payload.get("capability") != assigned_capability
+    ):
         return RecoveryAssessment(
-            "outcome_unknown", mission_id, workspace_id, task_id, None,
-            started_at.isoformat(), "execution_attempt_identity_empty",
+            "outcome_unknown", mission_id, workspace_id, task_id,
+            attempt_key or None, started_at.isoformat(),
+            "execution_attempt_identity_engine_or_capability_mismatch",
+            (str(start.get("event_id") or ""),),
         )
 
     terminal = [
