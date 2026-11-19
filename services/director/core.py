@@ -451,6 +451,7 @@ class Director:
 
         self.interval = max(10, interval)
         self._mission_approval_reconciliation_pending: set[str] = set()
+        self._mission_approval_reconciliation_scan_pending = False
         self.policy = Policy()
         self.running = False
         self.started = now()
@@ -792,8 +793,10 @@ class Director:
                 if self.last_plan is None or (now() - self.last_plan).total_seconds() >= 1800:
                     await self._build_plan_async()
                 await self._execute_due_async()
-                if self._mission_approval_reconciliation_pending:
-                    await self._reconcile_mission_approvals()
+                if self._mission_approval_reconciliation_scan_pending or self._mission_approval_reconciliation_pending:
+                    await self._reconcile_mission_approvals(
+                        include_all=self._mission_approval_reconciliation_scan_pending
+                    )
 
                 if (
                     self._last_detector_run is None
@@ -844,6 +847,53 @@ class Director:
             "1", "true", "yes", "on"
         }:
             return {"scanned": 0, "reconciled": 0, "failed": 0, "disabled": True}
+
+        if include_all:
+            # The ordinary Director restore is deliberately platform-scoped.
+            # Reconciliation therefore uses a separate, narrow service-side
+            # query for approved workspace tasks instead of widening that restore.
+            list_approved = getattr(self.store, "list_approved_workspace_tasks", None)
+            if not callable(list_approved):
+                self._mission_approval_reconciliation_scan_pending = True
+                return {"scanned": 0, "reconciled": 0, "failed": 1}
+            try:
+                records = await list_approved(limit=5000)
+                for record in records or []:
+                    raw = record.get("payload", record) if isinstance(record, dict) else record
+                    if isinstance(raw, str):
+                        import json
+                        raw = json.loads(raw)
+                    if not isinstance(record, dict) or not isinstance(raw, dict):
+                        continue
+                    workspace_id = str(record.get("workspace_id") or "")
+                    task_id = str(record.get("id") or raw.get("id") or "")
+                    if (
+                        record.get("scope_type") != "workspace"
+                        or not workspace_id
+                        or raw.get("workspace_id") != workspace_id
+                        or raw.get("id") != task_id
+                        or record.get("status") != Status.APPROVED.value
+                        or raw.get("status") != Status.APPROVED.value
+                    ):
+                        continue
+                    fields = {key: raw[key] for key in Task.__dataclass_fields__ if key in raw}
+                    fields["scope_type"] = "workspace"
+                    fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                    fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
+                    fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
+                    fields["status"] = Status(fields.get("status", Status.PLANNED.value))
+                    for key in ("created_at", "executed_at", "approved_at", "evidence_observed_at"):
+                        value = fields.get(key)
+                        if isinstance(value, str) and value:
+                            fields[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    task = Task(**fields)
+                    if task.mission_id and task.approved_by and task.approved_at:
+                        self.tasks.setdefault(task.id, task)
+                self._mission_approval_reconciliation_scan_pending = False
+            except Exception as exc:
+                self._mission_approval_reconciliation_scan_pending = True
+                log.warning("Director workspace approval recovery scan deferred: %s", type(exc).__name__)
+                return {"scanned": 0, "reconciled": 0, "failed": 1}
 
         eligible = {
             task.id: task for task in self.tasks.values()
