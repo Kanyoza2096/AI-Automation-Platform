@@ -383,9 +383,9 @@ async def create_knowledge(
 
 # ── Governed evidence review API ────────────────────────────────────────────
 # These endpoints govern reusable knowledge-source trust, NOT individual posts.
-# Review approval never mutates knowledge_entries.metadata.verified; promotion
-# is a separate, explicitly audited operation and is intentionally not exposed
-# by this API.
+# Routine decisions are made autonomously by KDO; ambiguous cases are quarantined.
+# Promotion remains a separate transactional operation and is only attempted
+# after the autonomous reviewer has passed every deterministic approval gate.
 
 from hashlib import sha256 as _sha256
 from datetime import datetime as _review_datetime, timezone as _review_timezone
@@ -464,12 +464,62 @@ def _valid_evidence_url(value: Optional[str]) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(ch.isspace() for ch in value)
 
 
+async def _run_autonomous_knowledge_evidence_review(
+    *, case: dict, entry: object, client
+) -> dict:
+    """Adjudicate one exact case version and promote only deterministic approvals."""
+    from services.autonomous_knowledge_evidence_reviewer import AutonomousKnowledgeEvidenceReviewer
+
+    actor = "service:kdo-autonomous-knowledge-review"
+    assessment = await AutonomousKnowledgeEvidenceReviewer().review(entry=entry, case=case)
+    decision = assessment.get("decision")
+    if decision not in {"approved", "rejected", "quarantined"}:
+        decision = "quarantined"
+    changed = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").update({
+            "review_status": decision,
+            "reviewed_by": actor,
+            "reviewed_at": _review_datetime.now(_review_timezone.utc).isoformat(),
+            "review_notes": str(assessment.get("reason") or "Autonomous review completed")[:4000],
+            "review_mode": "autonomous",
+            "review_confidence": assessment.get("confidence", 0.0),
+            "review_evidence": {
+                "claims": assessment.get("claims", []),
+                **(assessment.get("evidence") or {}),
+            },
+        }).eq("id", case["id"]).eq("review_status", "pending").select("*").execute()
+    )
+    if not changed.data:
+        latest = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases").select("*")
+            .eq("id", case["id"]).limit(1).execute()
+        )
+        return latest.data[0] if latest.data else case
+
+    reviewed = changed.data[0]
+    if decision == "approved":
+        promoted = await _async_wrap(
+            lambda: client.rpc(
+                "promote_approved_knowledge_evidence",
+                {"p_case_id": case["id"], "p_actor_id": actor},
+            ).execute()
+        )
+        if promoted.data is None:
+            # Approval is durable, but the publishing trust gate remains closed
+            # until the transactional promotion is positively confirmed.
+            reviewed["promotion_pending"] = True
+        else:
+            reviewed["promotion"] = promoted.data
+    return reviewed
+
+
 def _evidence_review_payload(row: dict) -> dict:
     allowed = (
         "id", "knowledge_entry_id", "workspace_id", "brand_id", "source_id",
         "source_url", "source_title", "source_type", "trust_class",
         "claim_scope", "content_sha256", "review_status", "review_notes",
-        "reviewed_by", "reviewed_at", "created_at", "updated_at",
+        "reviewed_by", "reviewed_at", "review_mode", "review_confidence",
+        "review_evidence", "created_at", "updated_at",
     )
     return {key: row.get(key) for key in allowed}
 
@@ -510,7 +560,16 @@ async def submit_knowledge_evidence_review(
         )
         if existing.data:
             case = existing.data[0]
-            if case.get("review_status") in {"pending", "approved"}:
+            if case.get("review_status") == "pending":
+                from repositories.knowledge_repository import KnowledgeRepository
+                repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
+                current_entry = await _async_wrap(repo.find_by_id, entry.id)
+                if current_entry and current_entry.workspace_id == entry.workspace_id:
+                    case = await _run_autonomous_knowledge_evidence_review(
+                        case=case, entry=current_entry, client=client
+                    )
+                return _ok({"review_case": _evidence_review_payload(case), "reused": True})
+            if case.get("review_status") == "approved":
                 return _ok({"review_case": _evidence_review_payload(case), "reused": True})
             reopened = await _async_wrap(
                 lambda: client.table("knowledge_evidence_review_cases")
@@ -524,7 +583,10 @@ async def submit_knowledge_evidence_review(
             )
             if not reopened.data:
                 raise HTTPException(status_code=503, detail="Review case could not be reopened")
-            return _ok({"review_case": _evidence_review_payload(reopened.data), "reused": True})
+            reopened_case = await _run_autonomous_knowledge_evidence_review(
+                case=reopened.data, entry=entry, client=client
+            )
+            return _ok({"review_case": _evidence_review_payload(reopened_case), "reused": True})
 
         try:
             inserted = await _async_wrap(
@@ -557,7 +619,10 @@ async def submit_knowledge_evidence_review(
             raise
         if not inserted.data:
             raise HTTPException(status_code=503, detail="Review case creation was not confirmed")
-        return _ok({"review_case": _evidence_review_payload(inserted.data), "reused": False}, 201)
+        reviewed_case = await _run_autonomous_knowledge_evidence_review(
+            case=inserted.data, entry=entry, client=client
+        )
+        return _ok({"review_case": _evidence_review_payload(reviewed_case), "reused": False}, 201)
     except HTTPException:
         raise
     except Exception as exc:
@@ -580,7 +645,7 @@ async def list_knowledge_evidence_reviews(
         if not workspace_id:
             raise HTTPException(status_code=403, detail="Authenticated workspace is required")
         _evidence_review_actor(request, require_human=False, permission="read")
-        if status not in {"pending", "approved", "rejected", "superseded", "all"}:
+        if status not in {"pending", "approved", "rejected", "superseded", "quarantined", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
         if client is None:
@@ -609,7 +674,7 @@ async def decide_knowledge_evidence_review(
     request: Request,
     _auth: bool = Depends(require_auth),
 ):
-    """Approve/reject a source for one immutable content version; no auto-promotion."""
+    """Human exception override for one immutable content version."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
         actor, _identity = _evidence_review_actor(request, require_human=True)
