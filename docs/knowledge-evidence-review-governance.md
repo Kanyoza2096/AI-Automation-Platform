@@ -54,3 +54,20 @@ Approval is reusable source governance, not per-post moderation. It does not pro
 A separate human-authorized endpoint promotes an approved case into the existing deterministic evidence gate. It invokes the database RPC promote_approved_knowledge_evidence, which locks the review case and knowledge row, rechecks the content hash and tenant binding, writes the verified source metadata, and records an append-only promotion event in the same transaction. Repeated promotion calls are idempotent.
 
 If the knowledge content is later edited, a database trigger automatically sets the promoted entry's verified flag to false, marks the evidence stale, supersedes the old review case, and appends a revocation event. A new content version therefore needs a new review and promotion. No existing records are bulk-promoted.
+
+
+## Read-only candidate backlog
+
+The brand-scoped endpoint
+`GET /api/v1/brands/{brand_id}/knowledge-evidence-backlog`
+provides a paginated view of entries whose `metadata.verified` value is not
+explicitly true. It computes the current content hash, shows a bounded content
+preview, distinguishes explicitly unverified from verification-unspecified
+records, and reports the latest matching review state. If the content hash no
+longer matches the latest case, the candidate is surfaced as superseded rather
+than inheriting an earlier decision.
+
+The endpoint is read-only. It does not create review cases, change knowledge
+metadata, approve sources, or invoke promotion. A reviewer opens the full
+knowledge entry, submits that exact version to the existing review API, records
+a human decision, and invokes promotion separately only after approval.
