@@ -90,7 +90,7 @@ batch per run (default 100 candidates, configurable with
 `KDO_KB_REVIEW_BATCH_SIZE`), creates idempotent review cases for existing
 workspace/brand knowledge entries, reviews pending cases, retries idempotent
 promotion for approved cases, and reopens quarantined cases only when a captured
-source snapshot becomes available. The sweep uses the durable cursor table introduced in migration 186 so bounded runs advance through the corpus rather than repeatedly scanning only the first page. Schedule it as a Render Cron Job only after migrations 185–186 and trusted-ingestion attestation are deployed. Do not run it against
+source snapshot becomes available. The sweep uses the durable cursor table introduced in migration 186 so bounded runs advance through the corpus rather than repeatedly scanning only the first page. Schedule it as a Render Cron Job only after migrations 185–187 and trusted-ingestion attestation are deployed. Do not run it against
 an unconfirmed database project.
 
 No historical entries are bulk-approved by migration. Existing records without
@@ -107,3 +107,6 @@ The server-side ingestion route requires two backend-only environment variables:
 - `KDO_KB_TRUSTED_SOURCE_DOMAINS`: a JSON object mapping exact hostnames to one allowed trust class. Example shape (configure only hosts actually vetted by the operator): `{"who.int":"government","docs.example.org":"official_documentation"}`.
 
 Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. The trust registry must be curated; do not add a domain merely because it appears in a submitted URL.
+
+
+Migration 187 limits the service-role grants on review cases and sweep state to the read/insert/update operations used by the backend; it does not need delete or truncate authority.
