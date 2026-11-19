@@ -1400,6 +1400,7 @@ def test_recovery_assessment_rejects_terminal_event_conflicting_with_executing_t
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
         stale_after=timedelta(minutes=5),
     )
@@ -1418,3 +1419,21 @@ def test_recovery_assessment_rejects_approved_task_with_orphan_terminal_event():
     )
     assert result.classification == "outcome_unknown"
     assert result.reason == "approved_task_has_execution_lifecycle_event"
+
+
+
+def test_recovery_assessment_rejects_attempt_key_payload_mismatch():
+    start = _recovery_event("task.started", "attempt-1:started")
+    start["payload"]["attempt_id"] = "another-attempt"
+    result = assess_execution_recovery(
+        task=_recovery_task("executing"),
+        events=[start],
+        assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+    assert result.reason == "execution_attempt_identity_engine_or_capability_mismatch"
