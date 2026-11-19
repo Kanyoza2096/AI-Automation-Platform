@@ -450,6 +450,7 @@ class Director:
         log.info("Director storage: %s", "Supabase" if supabase_client else "In-Memory")
 
         self.interval = max(10, interval)
+        self._mission_approval_reconciliation_pending: set[str] = set()
         self.policy = Policy()
         self.running = False
         self.started = now()
@@ -791,6 +792,8 @@ class Director:
                 if self.last_plan is None or (now() - self.last_plan).total_seconds() >= 1800:
                     await self._build_plan_async()
                 await self._execute_due_async()
+                if self._mission_approval_reconciliation_pending:
+                    await self._reconcile_mission_approvals()
 
                 if (
                     self._last_detector_run is None
@@ -825,7 +828,13 @@ class Director:
             await asyncio.sleep(15)
         self._drain_events()
 
-    async def _reconcile_mission_approvals(self) -> dict:
+    def mark_mission_approval_reconciliation_pending(self, task_id: str) -> None:
+        """Queue a durably approved task for journal repair without granting authority."""
+        value = str(task_id or "").strip()
+        if value:
+            self._mission_approval_reconciliation_pending.add(value)
+
+    async def _reconcile_mission_approvals(self, *, include_all: bool = False) -> dict:
         """Repair missing approval journal events from canonical approved tasks.
 
         This never grants approval: it only mirrors already-persisted operator
@@ -838,7 +847,8 @@ class Director:
 
         candidates = [
             task for task in self.tasks.values()
-            if task.status == Status.APPROVED
+            if (include_all or task.id in self._mission_approval_reconciliation_pending)
+            and task.status == Status.APPROVED
             and task.workspace_id
             and task.mission_id
             and task.approved_by
@@ -871,8 +881,10 @@ class Director:
                     idempotency_key=f"director-task-approval:{task.id}:{task.approved_at.isoformat()}",
                     correlation_id=str(task.correlation_id or task.id),
                 )
+                self._mission_approval_reconciliation_pending.discard(task.id)
                 reconciled += 1
             except Exception as exc:
+                self._mission_approval_reconciliation_pending.add(task.id)
                 failed += 1
                 log.warning(
                     "Director approval journal reconciliation deferred: task=%s error=%s",
@@ -888,7 +900,7 @@ class Director:
         try:
             await self._restore_decisions()
             await self._restore_tasks()
-            await self._reconcile_mission_approvals()
+            await self._reconcile_mission_approvals(include_all=True)
             await self._replay_learning_history()
             await self._observe_async()
             await self._build_plan_async()
