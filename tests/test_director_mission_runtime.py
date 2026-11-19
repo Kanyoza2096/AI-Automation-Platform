@@ -127,6 +127,8 @@ class MemoryMissionStore:
         self.events.append({
             "sequence_number": version,
             "event_type": event.event_type,
+            "idempotency_key": event.idempotency_key,
+            "actor_id": event.actor_id,
             "task_id": event.task_id,
             "message_id": event.message_id,
             "recipient_id": event.recipient_id,
@@ -269,6 +271,20 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         idempotency_key="approve-1",
         correlation_id="corr-runtime-1",
     )
+    # Simulate a client retry after the first commit succeeded but its
+    # response was lost. It must return the durable snapshot without a
+    # second task.approved event or a false state-transition conflict.
+    approved_event_count = sum(event["event_type"] == "task.approved" for event in store.events)
+    replayed = await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-1",
+        idempotency_key="approve-1",
+        correlation_id="corr-runtime-1",
+    )
+    assert replayed.version == store.row["version"]
+    assert sum(event["event_type"] == "task.approved" for event in store.events) == approved_event_count == 1
 
     result = await runtime.execute_approved_task(
         mission_id=store.mission_id,
