@@ -102,5 +102,5 @@ class MetaEngineMissionAdapter:
             started_at=started,
             finished_at=datetime.now(timezone.utc),
             authority="none",
-            side_effect_class="internal_observation",
+            side_effect_class="read_only",
         )
