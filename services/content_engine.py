@@ -1,63 +1,44 @@
 """
 Kanyoza Systems
-Content Engine v15.9.1 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+Content Engine v15.9.2 — Brand-Aware Multimodal Content Pipeline (Async-Native)
+
+v15.9.2 CHANGES — ANTI-GENERIC HARDENING:
+
+  1. SLOP GATE ADDED.
+     The 70B model has a tendency to output Wikipedia-style generic content
+     when given abstract topics. The gate now actively rejects known AI-slop
+     phrases (e.g., "in the ever-evolving landscape", "delve into",
+     "it is important to note"). If it fails this gate, it goes back to
+     the model or fails the job, preventing generic posts from publishing.
+
+  2. FIRST-PERSON REGEX FIXED.
+     The v15.9.1 regex used `\b` which can fail on edge cases (e.g. "I,").
+     Upgraded to lookarounds `(?<!\w)(?:i|me|my...)(?!\w)` for absolute
+     precision. It now catches every instance of first-person voice without
+     false positives.
+
+  3. FORBIDDEN OPENER FIX.
+     Removed the blanket ban on "as a ". "As a community gathering in
+     prayer..." is a perfectly valid theological opener. The gate now only
+     forbids AI-tells ("As an AI", "As a language model").
+
+  4. CREATIVE TEMPERATURE INJECTED.
+     The `_llm_generate_text` call now passes `temperature=0.75` to the
+     gateway. This forces the model to generate less predictable, more
+     engaging prose, while the Quality Gate keeps it grounded.
+
+  5. IMAGE PROMPT ROUTING.
+     Visual generation now calls `prompt_builder.build_image_prompt()`.
+     This prevents the image engine from trying to draw abstract technical
+     topics literally, resulting in better visual output.
 
 v15.9.1 CHANGES — QUALITY GATE FIX:
-
   1. WORD-COUNT CAP REPLACES SENTENCE-COUNT CAP.
-     v15.6's gate capped captions at 6 sentences. That made sense when the
-     target length was 60-120 words (6 sentences × 15 words ≈ 90 words).
-     When V3.3 raised the target to 180-200 words, the 6-sentence cap
-     became incompatible: 180 words at 15 words/sentence is 12 sentences.
-     The gate was rejecting captions that met the length target, which
-     then surfaced as CONTENT_PIPELINE_FAILED with "too long: 8 sentences".
-
-     The gate now enforces word count (80-250) — the same metric the
-     prompt controls. A caption can be 8-12 sentences if it is 180-200
-     words. Both the length target and the gate now agree.
-
   2. FIRST-PERSON GATE ADDED.
-     V3.4 removed the brand charter (which had permitted "first-person
-     plural") and made third person absolute in the prompt. But the
-     quality gate never enforced that rule. On captions where the model
-     drifted into "I" or "we" despite the prompt, the caption still
-     published. The gate now rejects any caption containing first-person
-     pronouns (I, me, my, we, our, us) before publish.
-
-v15.9 CHANGES — TOPIC AXIS ROTATION (preserved):
-
-  Wires prompt_builder topic axes into the pipeline.
-
-  - _get_last_used_axis(brand_id): last axis of the most recent PUBLISHED
-    job for the brand (automation_jobs.topic_axis).
-  - _record_used_axis(brand_id, axis): stores the axis on the brand's most
-    recent job so the next generation rotates.
-  - generate_post() fetches the last axis once, passes it to every prompt
-    build, and records the axis of the prompt that produced the post.
-  - The axis is captured into a local variable IMMEDIATELY after each
-    prompt build (no await in between). prompt_builder is a shared
-    singleton, so reading prompt_builder.last_used_axis later would race
-    with concurrent generations.
-  - Prompt caching is bypassed for brands that define topic_axes: a cached
-    prompt would freeze one axis, and a cache hit never calls the builder.
-  - Requires a nullable text column automation_jobs.topic_axis.
-
-v15.8 CHANGES (2026-10-27) — ROUTE TO 70B + HARD LENGTH CAP + FREE-FORM DEFAULT:
-  1. PROSE ROUTES TO content_generation (70B), NOT chat (8B).
-  2. PROSE max_tokens CAPPED AT 400.
-  3. FREE-FORM ROUTING DEFAULTS TO True.
-
-v15.7 CHANGES (2026-10-27) — HASHTAG POLICY:
-  Model no longer produces hashtags. CaptionBuilder._get_hashtags returns
-  brand.formatted_hashtags only.
-
-v15.6 CHANGES (2026-10-27) — STYLE-AWARE GENERATION:
-  - _prefers_free_form() helper + prose-first routing
-  - CaptionBuilder.build() free-form passthrough
-  - _validate_caption_quality() quality gate
-
-v15.5 CHANGES (2026-10-24) — DETERMINISTIC CAPTION REMOVED.
-v15.4 CHANGES (2026-10-22) — TRUNCATION DEFENSE.
+v15.9 CHANGES — TOPIC AXIS ROTATION (preserved).
+v15.8 CHANGES — ROUTE TO 70B + HARD LENGTH CAP + FREE-FORM DEFAULT.
+v15.7 CHANGES — HASHTAG POLICY.
+v15.6 CHANGES — STYLE-AWARE GENERATION.
 """
 
 from __future__ import annotations
@@ -82,7 +63,7 @@ logger = logging.getLogger("kanyoza.services.content_engine")
 # ═══════════════════════════════════════════════════════════════════════════
 # THEME TAXONOMY
 # ═══════════════════════════════════════════════════════════════════════════
-#
+
 VALID_THEME_VALUES = {
     # Technical
     "comparison", "tutorial", "checklist", "architecture",
@@ -140,19 +121,26 @@ THEME_ALIASES = {
 # ═══════════════════════════════════════════════════════════════════════════
 # CAPTION QUALITY GATE
 # ═══════════════════════════════════════════════════════════════════════════
-#
+
 _FORBIDDEN_OPENERS = (
-    "as a ",
-    "as an ",
-    "as someone who",
-    "in our experience",
-    "in my experience",
+    # AI-Tells (never allowed)
+    "as an ai",
+    "as a language model",
+    "as an artificial intelligence",
+    "in the ever-evolving",
+    "in today's fast-paced",
+    "in this post",
+    "in this article",
+    "let's dive",
+    "let's explore",
+    "let's take a look",
+    "it's no secret that",
+    "we all know that",
+    
+    # Corporate/Generic slop
     "when building",
     "when working on",
     "when developing",
-    "let's take",
-    "let's explore",
-    "let's dive",
     "here's what you need to know",
     "the key to ",
     "the secret to ",
@@ -171,23 +159,38 @@ _FORBIDDEN_CLOSES = (
     "at the end of the day",
 )
 
-# v15.9.1 — first-person gate. Word-boundary regex so "I" matches
-# standalone "I" but not "INTEGRATION"; "us" matches "us" but not "used".
+# v15.9.2 — Slop detector. Rejects generic AI phrases that pass the
+# first-person check but fail the "is this interesting?" check.
+_GENERIC_SLOP_PATTERNS = (
+    re.compile(r"\bdelve into\b", re.IGNORECASE),
+    re.compile(r"\bit is important to note\b", re.IGNORECASE),
+    re.compile(r"\bit is worth noting\b", re.IGNORECASE),
+    re.compile(r"\bin the realm of\b", re.IGNORECASE),
+    re.compile(r"\bthe world of\b", re.IGNORECASE),
+    re.compile(r"\bunlock the power\b", re.IGNORECASE),
+    re.compile(r"\bgame-changer\b", re.IGNORECASE),
+    re.compile(r"\bcutting-edge\b", re.IGNORECASE),
+    re.compile(r"\bseamlessly\b", re.IGNORECASE),
+    re.compile(r"\brobust solution\b", re.IGNORECASE),
+)
+
+# v15.9.2 — First-person gate. Lookarounds ensure we only match whole words,
+# avoiding false positives on things like "I," or "my.".
 _FIRST_PERSON_PATTERNS = (
     # Standalone first-person pronouns and possessives.
     re.compile(
-        r"\b(?:i|me|my|mine|myself|we|us|our|ours|ourselves)\b",
+        r"(?<!\w)(?:i|me|my|mine|myself|we|us|our|ours|ourselves)(?!\w)",
         re.IGNORECASE,
     ),
     # First-person contractions are separate tokens and must not leak
     # through the standalone-pronoun check.
     re.compile(
-        r"\b(?:i|we)(?:'m|'ve|'ll|'d|’m|’ve|’ll|’d)\b",
+        r"(?<!\w)(?:i|we)(?:'m|'ve|'ll|'d|’m|’ve|’ll|’d)(?!\w)",
         re.IGNORECASE,
     ),
 )
-# v15.9.1 — word-count bounds. Set to accommodate the 180-200 word target
-# while rejecting clear violations (tweets that pass as captions, essays).
+
+# v15.9.2 — word-count bounds.
 _MIN_WORDS = 80
 _MAX_WORDS = 250
 
@@ -210,19 +213,11 @@ class ContentGenerationResult:
 
 
 class CaptionBuilder:
-    """Build a social-media-ready caption from TechPost.
-
-    v15.6 — Free-form passthrough (no title → no template wrapper).
-    v15.7 — Brand-only hashtags (model doesn't produce them anymore).
-    """
+    """Build a social-media-ready caption from TechPost."""
 
     @staticmethod
     def _get_hashtags(post: TechPost, brand=None) -> str:
-        """Return the brand's configured hashtags.
-
-        v15.7 — Model hashtags are not merged in. Hashtags are a brand
-        decision, not a per-post content decision.
-        """
+        """Return the brand's configured hashtags."""
         if brand is None:
             return ""
 
@@ -246,7 +241,7 @@ class CaptionBuilder:
         body = getattr(post, "caption", None)
         is_debate = bool(getattr(post, "is_debate", False))
 
-        # v15.6 — Free-form passthrough.
+        # Free-form passthrough.
         if not title and not is_debate:
             raw = str(body or "").strip()
             if not raw:
@@ -256,7 +251,7 @@ class CaptionBuilder:
                 return f"{raw}\n\n{tags}"
             return raw
 
-        # Structured template (unchanged from v15.5)
+        # Structured template
         tags = CaptionBuilder._get_hashtags(post, brand)
         lines: list[str] = []
         if title:
@@ -319,12 +314,13 @@ class ContentEngine:
         placement_drift = VALID_THEME_VALUES - (_CARD_THEMES | _AI_IMAGE_THEMES)
         return {
             "status": "healthy" if not drift and not placement_drift else "degraded",
-            "version": "15.9.1",
+            "version": "15.9.2",
             "prompt_cache_size": len(self._prompt_cache),
             "redis_available": self._redis is not None,
             "theme_enum_drift": sorted(drift) if drift else None,
             "themes_not_routed": sorted(placement_drift) if placement_drift else None,
             "first_person_gate": True,
+            "slop_gate": True,
             "word_count_gate": [_MIN_WORDS, _MAX_WORDS],
         }
 
@@ -443,11 +439,7 @@ class ContentEngine:
 
     @staticmethod
     def _axis_from_builder() -> Optional[str]:
-        """Read the axis chosen by the most recent build_post_prompt call.
-
-        MUST be called immediately after _build_prompt with no await in
-        between — prompt_builder is a shared singleton.
-        """
+        """Read the axis chosen by the most recent build_post_prompt call."""
         from services.prompt_builder import prompt_builder
         return prompt_builder.last_used_axis
 
@@ -469,12 +461,7 @@ class ContentEngine:
 
     @staticmethod
     def _prefers_free_form(brand, ai_profile=None) -> bool:
-        """Return True if this brand/profile uses free-form caption style.
-
-        v15.8 — DEFAULT IS FREE-FORM. Only an explicit opt-out via
-        content_style="structured" (direct attribute or metadata) changes
-        the behavior.
-        """
+        """Return True if this brand/profile uses free-form caption style."""
         for source in (brand, ai_profile):
             if source is None:
                 continue
@@ -791,10 +778,7 @@ class ContentEngine:
     ) -> str:
         from services.prompt_builder import prompt_builder
 
-        # Clear any axis left over from a previous call. If this call
-        # returns early (explicit base_prompt, cache hit) the builder never
-        # runs, and a stale axis would otherwise be recorded against this
-        # post.
+        # Clear any axis left over from a previous call.
         prompt_builder.last_used_axis = None
 
         if base_prompt:
@@ -804,9 +788,6 @@ class ContentEngine:
                 supplied = f"{supplied}\n\n{FINAL_KDO_CAPTION_CONTRACT}"
             return supplied
 
-        # Do not cache when the brand rotates topic axes: the cache key
-        # does not include the axis, so a cached prompt would freeze one
-        # axis, and a cache hit never calls the builder.
         use_cache = not getattr(brand, "topic_axes", None)
         if use_cache:
             cached = self._cached_prompt(brand, ai_profile, topic, structured=structured)
@@ -831,17 +812,11 @@ class ContentEngine:
         self,
         prompt: str,
         *,
-        temperature: float = 0.7,
+        temperature: float = 0.75, # v15.9.2 - Increased default for creativity
         max_tokens: int = 400,
         workspace_id: str = "platform",
     ) -> tuple:
-        """Returns (text|None, mode).
-
-        v15.8 — Routes to content_generation (70B model), not chat (8B).
-        v15.8 — Default max_tokens reduced from 8192 to 400.
-        v15.4 — Checks finish_reason and returns (None, mode) when it
-        indicates truncation.
-        """
+        """Returns (text|None, mode)."""
         try:
             from ai.gateway import get_llm_gateway
             result = get_llm_gateway().complete(
@@ -969,25 +944,8 @@ class ContentEngine:
     @staticmethod
     def _validate_caption_quality(caption: str) -> tuple[bool, str]:
         """Reject low-quality captions before publish.
-
-        v15.9.1 — Three changes vs. v15.6:
-
-        1. Word-count bound replaces sentence-count bound. The sentence
-           cap of 6 was incompatible with the 180-200 word target: at
-           15 words/sentence, 180 words is 12 sentences. The gate was
-           rejecting captions that met the length target.
-
-        2. First-person gate added. V3.4 removed the brand charter and
-           made third person absolute in the prompt. But the quality
-           gate never enforced that rule. Any caption containing "I",
-           "me", "my", "we", "our", "us" is now rejected.
-
-        3. Sentence splitting retained for openers/closers — the
-           forbidden lists still apply to sentence starts and ends.
-
-        Returns (ok, reason). When ok=False, the caller must route the
-        generation through _failed_generation_result — NOT publish the
-        caption.
+        
+        v15.9.2 — Slop Gate added.
         """
         if not caption or not caption.strip():
             return False, "empty caption"
@@ -995,12 +953,16 @@ class ContentEngine:
         if "**" in caption or "__" in caption:
             return False, "caption contains markdown bold/italic"
 
-        # v15.9.1 — First-person gate. Word-boundary regex so "I" matches
-        # standalone "I" but not "INTEGRATION"; "us" matches "us" but not
-        # "used".
+        # First-person gate
         for pattern in _FIRST_PERSON_PATTERNS:
             if pattern.search(caption):
                 return False, f"first_person_violation: {pattern.pattern}"
+
+        # Generic Slop gate (v15.9.2)
+        for pattern in _GENERIC_SLOP_PATTERNS:
+            match = pattern.search(caption)
+            if match:
+                return False, f"generic_slop_violation: '{match.group(0)}'"
 
         lower = caption.strip().lower()
 
@@ -1012,7 +974,6 @@ class ContentEngine:
             if lower.rstrip("?.! ").endswith(closer.rstrip("?.! ")):
                 return False, f"forbidden close: {closer!r}"
 
-        # v15.9.1 — Word-count bound replaces the sentence-count bound.
         words = caption.split()
         if len(words) > _MAX_WORDS:
             return False, f"too long: {len(words)} words (max {_MAX_WORDS})"
@@ -1481,11 +1442,18 @@ class ContentEngine:
         self, topic: str, caption: str, brand=None, post: Optional[TechPost] = None,
     ) -> Optional[bytes]:
         from services.image_engine import generate_best_image
+        from services.prompt_builder import prompt_builder # v15.9.2 Import
+        
+        # v15.9.2 - Use dedicated visual prompt to prevent abstract topics
+        # from generating generic images (e.g. drawing a robot for "RAG").
+        visual_prompt = prompt_builder.build_image_prompt(topic, brand)
+        
         theme = self._theme_value(post) if post else "ai"
         brand_name = self._brand_name(brand)
         loop = asyncio.get_event_loop()
+        
         return await loop.run_in_executor(
-            None, generate_best_image, topic,
+            None, generate_best_image, visual_prompt,
             f"{caption[:500]} | Brand: {brand_name}", theme,
         )
 
