@@ -421,7 +421,7 @@ def test_validate_content_step_rejects_inconsistent_semantic_approval():
         asyncio.run(step.async_run(context))
 
 
-def test_knowledge_context_marks_unverified_sources_for_generation(monkeypatch):
+def test_knowledge_context_blocks_generation_when_only_unverified_sources_exist(monkeypatch):
     import services.knowledge_base as knowledge_base
 
     entry = SimpleNamespace(
@@ -444,7 +444,10 @@ def test_knowledge_context_marks_unverified_sources_for_generation(monkeypatch):
     context = {"topic": "A conceptual topic"}
     step = KnowledgeContextStep(_brand(), knowledge_repo=object())
 
-    asyncio.run(step.async_run(context))
+    with pytest.raises(StepFailure) as exc:
+        asyncio.run(step.async_run(context))
 
-    assert "[source_id=kb-unverified-9;verified=false]" in context["knowledge_context"]
-    assert context["knowledge_evidence"][0]["metadata"].get("verified") is None
+    assert exc.value.code == "knowledge_evidence_unverified"
+    assert exc.value.detail["unverified_count"] == 1
+    assert "knowledge_context" not in context
+    assert "knowledge_evidence" not in context
