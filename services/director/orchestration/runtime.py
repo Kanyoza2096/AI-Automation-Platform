@@ -439,6 +439,49 @@ class MissionOrchestrationRuntime:
         )
         return await self.adapters.reconcile_attempt(reference)
 
+    async def review_task_recovery(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        operator_id: str,
+        decision: str,
+        reason: str,
+        assessment_classification: str,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> MissionRuntimeSnapshot:
+        """Append an operator's hold/reconciliation decision without changing task authority."""
+        if decision not in {"hold", "request_reconciliation"}:
+            raise MissionTransitionRejected("task_recovery_decision_not_permitted")
+        if not str(reason or "").strip():
+            raise ValueError("task_recovery_review_reason_required")
+        if not str(assessment_classification or "").strip():
+            raise ValueError("task_recovery_assessment_classification_required")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task:
+            raise MissionRuntimeNotFound("workspace_mission_task_not_found")
+        if task.get("status") not in {"executing", "failed", "blocked"}:
+            raise MissionTaskNotReady("canonical_task_not_in_recovery_review_state")
+        return await self._commit(
+            current,
+            event_type="task.recovery.reviewed",
+            idempotency_key=idempotency_key,
+            actor_type="operator",
+            actor_id=operator_id,
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload={
+                "decision": decision,
+                "reason": str(reason).strip()[:1000],
+                "assessment_classification": str(assessment_classification).strip()[:80],
+            },
+        )
+
     async def assess_task_recovery(
         self,
         *,
