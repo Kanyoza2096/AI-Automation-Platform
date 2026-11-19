@@ -769,6 +769,10 @@ class MissionStateMachine:
         if result.get("error"):
             raise MissionRuntimeConflict(str(result["error"]))
         if result.get("replayed"):
+            # A replayed start event proves that the attempt claim already exists.
+            # It must never be interpreted as permission to invoke the adapter again.
+            if command.event_type == "task.started":
+                raise MissionRuntimeConflict("task_start_claim_already_committed")
             row = await store.get_mission(
                 mission_id=current.mission_id,
                 scope_type=current.scope_type,
