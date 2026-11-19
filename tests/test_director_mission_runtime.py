@@ -1404,4 +1404,4 @@ def test_recovery_assessment_rejects_approved_task_with_orphan_terminal_event():
         stale_after=timedelta(minutes=5),
     )
     assert result.classification == "outcome_unknown"
-    assert result.reason == "approved_task_has_durable_start_event"
+    assert result.reason == "approved_task_has_execution_lifecycle_event"
