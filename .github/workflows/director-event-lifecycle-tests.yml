@@ -7,6 +7,9 @@ on:
       - "api/routers/ai_chat.py"
       - "tests/test_ai_chat_action_proposals.py"
       - "services/director/core.py"
+      - "services/director/health_briefing.py"
+      - "services/health_monitor_service.py"
+      - "tests/test_director_health_briefing.py"
       - "services/director/planning.py"
       - "ai/gateway.py"
       - "services/connectors/cloudflare_ai_adapter.py"
@@ -138,6 +141,7 @@ jobs:
             tests/test_director_mission_graph.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
+            tests/test_director_health_briefing.py \
             tests/test_meta_engine_lifecycle_identity.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \
