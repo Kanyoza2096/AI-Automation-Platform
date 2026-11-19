@@ -968,3 +968,64 @@ def test_concurrent_same_actor_approval_retries_each_acknowledge_canonical_store
     assert [response.status_code for response in responses] == [200, 200]
     assert saves == [task.id, task.id]
     assert len(runtime.calls) == 2
+
+
+
+def test_legacy_non_mission_task_approval_keeps_existing_persistence_path(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import Authority, Risk, Sector, Status, Task
+
+    monkeypatch.delenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", raising=False)
+    director = Director(supabase_client=None)
+    task = Task(
+        id="legacy-non-mission-approval",
+        sector=Sector.CONTENT,
+        description="legacy task approval compatibility",
+        capability="self_diagnostic",
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        status=Status.APPROVAL,
+        workspace_id="ws-legacy",
+    )
+    director.tasks[task.id] = task
+    persisted = []
+
+    async def save_task(candidate):
+        persisted.append({
+            "id": candidate.id,
+            "status": candidate.status,
+            "approved_by": candidate.approved_by,
+            "approved_at": candidate.approved_at,
+        })
+        return True
+
+    director.store.save_task = save_task
+    app = create_app(director)
+
+    @app.middleware("http")
+    async def trusted_workspace_operator(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-legacy",
+            principal_id="trusted-legacy-operator",
+            role="operator",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).post(
+        f"/tasks/{task.id}/approve",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={"actor": "attacker-controlled-body-actor"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(persisted) == 1
+    assert persisted[0]["id"] == task.id
+    assert persisted[0]["status"] == Status.APPROVED
+    assert persisted[0]["approved_by"] == "trusted-legacy-operator"
+    assert persisted[0]["approved_at"] is not None
+    assert response.json()["approved_by"] == "trusted-legacy-operator"
+    assert task.status == Status.APPROVED
+    assert task.approved_by == "trusted-legacy-operator"
+    assert task.approved_at is not None
