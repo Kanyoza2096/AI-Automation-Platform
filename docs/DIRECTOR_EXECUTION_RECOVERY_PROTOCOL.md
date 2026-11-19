@@ -171,7 +171,7 @@ Regression tests were authored for unsupported adapters, exact-identity authorit
 ## Phase D implementation update (2026-11-19)
 
 - Added the workspace-scoped POST recovery-review command under the mission orchestration task resource. It uses the signed human workspace actor boundary and operator-level task permission.
-- The append-only `task.recovery.reviewed` event records operator, decision, reason, assessment classification, correlation identity, and idempotency identity.
+- The append-only `task.recovery.reviewed` event records operator, decision, reason, a server-computed recovery classification/reason, correlation identity, and idempotency identity. The client cannot supply or forge the classification.
 - Only `hold` and `request_reconciliation` are accepted. The event is review metadata only: it does not change canonical task status, approval provenance, assignment, or execution authority.
 - `reconsider` is deliberately rejected. No registered adapter can provide authoritative attempt-specific no-side-effect proof, so an operator assertion alone cannot reopen a task or authorize a new attempt.
 - `task.reassigned` now rejects `failed` and `blocked` states. Reassignment is limited to `approval_required` and `approved` tasks until a future authoritative recovery transition exists.
