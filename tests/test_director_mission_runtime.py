@@ -476,15 +476,14 @@ async def test_native_engine_invocation_timeout_fails_task_without_hanging():
         idempotency_key="assign-timeout",
         correlation_id="corr-timeout",
     )
-    store.task["status"] = "approved"
-    store.task["payload"]["status"] = "approved"
-    store.task["payload"]["approved_by"] = "operator-timeout"
+    approved_at = datetime(2026, 11, 19, 12, 10, tzinfo=timezone.utc)
     await runtime.approve_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
         task_id=store.task_id,
         operator_id="operator-timeout",
-        idempotency_key="approve-timeout",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
         correlation_id="corr-timeout",
     )
 
@@ -785,15 +784,14 @@ async def test_native_execution_rejects_dependencies_until_canonical_task_is_com
         idempotency_key="assign-with-dependency",
         correlation_id="corr-dependency",
     )
-    store.task["status"] = "approved"
-    store.task["payload"]["status"] = "approved"
-    store.task["payload"]["approved_by"] = "operator-dependency"
+    approved_at = datetime(2026, 11, 19, 12, 15, tzinfo=timezone.utc)
     await runtime.approve_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
         task_id=store.task_id,
         operator_id="operator-dependency",
-        idempotency_key="approve-with-dependency",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
         correlation_id="corr-dependency",
     )
 
