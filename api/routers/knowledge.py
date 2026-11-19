@@ -46,7 +46,6 @@ async def _periodic_knowledge_review_sweep() -> None:
         await asyncio.sleep(interval)
 
 
-@router.on_event("startup")
 async def start_knowledge_review_sweep_scheduler() -> None:
     global _review_sweep_scheduler_task
     if not os.getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET") or not os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS"):
@@ -54,6 +53,24 @@ async def start_knowledge_review_sweep_scheduler() -> None:
         return
     if _review_sweep_scheduler_task is None or _review_sweep_scheduler_task.done():
         _review_sweep_scheduler_task = asyncio.create_task(_periodic_knowledge_review_sweep())
+        _review_sweep_logger.info("knowledge_review_scheduler_started")
+
+
+async def stop_knowledge_review_sweep_scheduler() -> None:
+    global _review_sweep_scheduler_task, _review_sweep_task
+    tasks = [task for task in (_review_sweep_scheduler_task, _review_sweep_task) if task is not None]
+    _review_sweep_scheduler_task = None
+    _review_sweep_task = None
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _review_sweep_logger.exception("knowledge_review_sweep_shutdown_failed")
 
 
 @router.post("/internal/knowledge-evidence-review/sweep")
