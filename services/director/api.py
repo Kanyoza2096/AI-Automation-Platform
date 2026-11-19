@@ -455,6 +455,7 @@ def create_app(director: Director):
                 correlation_id=body.correlation_id,
                 estimated_tokens=body.estimated_tokens,
                 timeout_seconds=body.timeout_seconds,
+                operator_id=_trusted_actor(request),
             )
             return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
                     "engine_id": contribution.engine_id, "status": contribution.status,
