@@ -290,6 +290,22 @@ class MissionOrchestrationRuntime:
             or not task_row.get("payload", {}).get("approved_by")
         ):
             raise MissionTaskNotReady("canonical_director_approval_not_persisted")
+        task_payload = task_row.get("payload") if isinstance(task_row.get("payload"), Mapping) else {}
+        dependency_ids = [
+            str(value).strip()
+            for value in (task_payload.get("depends_on") or [])
+            if str(value).strip()
+        ]
+        for dependency_id in dependency_ids:
+            dependency_row = await self.store.get_workspace_task(
+                task_id=dependency_id,
+                workspace_id=workspace_id,
+                mission_id=mission_id,
+            )
+            if not dependency_row:
+                raise MissionTaskNotReady("mission_dependency_missing_or_out_of_scope")
+            if dependency_row.get("status") not in {"completed", "verified"}:
+                raise MissionTaskNotReady("mission_dependency_not_completed")
         state = dict(current.state_snapshot or {})
         assignments = dict(state.get("task_assignments") or {})
         assignment = assignments.get(task_id)
