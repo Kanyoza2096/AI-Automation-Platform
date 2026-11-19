@@ -999,10 +999,18 @@ def create_app(director: Director):
                 rejected = director.tasks.get(task_id)
                 if rejected is None:
                     raise HTTPException(404, "Task not found")
-                # The durable runtime commit is authoritative. Rebuild this
-                # in-memory projection even if its post-commit callback failed.
+                canonical = await runtime.store.get_workspace_task(
+                    task_id=task.id,
+                    workspace_id=task.workspace_id,
+                    mission_id=task.mission_id,
+                )
+                if not canonical or canonical.get("status") != "cancelled":
+                    raise HTTPException(503, "Task cancellation is not yet confirmed in canonical storage")
+                # Rebuild the in-memory projection from the durable row so
+                # retries cannot overwrite the original cancellation reason.
                 rejected.status = Status.CANCELLED
-                rejected.error = reason
+                canonical_payload = canonical.get("payload") if isinstance(canonical.get("payload"), dict) else {}
+                rejected.error = str(canonical_payload.get("error") or "")[:2000]
                 return safe(asdict(rejected))
 
             rejected = director.reject(task_id, trusted_actor, body.reason)
