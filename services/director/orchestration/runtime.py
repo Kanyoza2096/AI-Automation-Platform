@@ -373,6 +373,7 @@ class MissionOrchestrationRuntime:
         correlation_id: str,
         estimated_tokens: int = 1800,
         timeout_seconds: float | None = None,
+        operator_id: str = "director",
     ) -> EngineContribution:
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         task_row = await self.store.get_workspace_task(
@@ -422,10 +423,11 @@ class MissionOrchestrationRuntime:
             current,
             event_type="task.started",
             idempotency_key=f"{idempotency_prefix}:started",
-            actor_type="director",
-            actor_id="director",
+            actor_type="operator" if operator_id != "director" else "director",
+            actor_id=operator_id,
             correlation_id=correlation_id,
             task_id=task_id,
+            payload={"requested_by": operator_id},
         )
         dependency_task_ids = {
             str(value) for value in (task_row.get("payload", {}).get("depends_on") or [])
