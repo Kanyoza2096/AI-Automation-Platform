@@ -317,19 +317,33 @@ class MissionOrchestrationRuntime:
             correlation_id=correlation_id,
             task_id=task_id,
         )
+        dependency_task_ids = {
+            str(value) for value in (task_row.get("payload", {}).get("depends_on") or [])
+            if str(value).strip()
+        }
+        evidence_task_ids = dependency_task_ids | {task_id}
+        task_evidence_refs = tuple(
+            str(item.get("ref"))
+            for item in (state.get("evidence_refs") or [])
+            if isinstance(item, Mapping)
+            and item.get("ref")
+            and item.get("task_id") in evidence_task_ids
+        )
+        effective_timeout = (
+            self.default_timeout_seconds
+            if timeout_seconds is None
+            else float(timeout_seconds)
+        )
         context = MissionTaskContext(
             task_id=task_id,
             mission_id=mission_id,
             workspace_id=workspace_id,
             capability=capability,
-            objective=objective,
-            inputs=dict(inputs),
-            evidence_refs=tuple(
-                str(item.get("ref")) for item in (state.get("evidence_refs") or [])
-                if isinstance(item, Mapping) and item.get("ref")
-            ),
+            objective=str(objective)[:4000],
+            inputs=self._bounded_input_mapping(inputs),
+            evidence_refs=task_evidence_refs,
             correlation_id=correlation_id,
-            timeout_seconds=timeout_seconds or self.default_timeout_seconds,
+            timeout_seconds=effective_timeout,
         )
 
         try:
