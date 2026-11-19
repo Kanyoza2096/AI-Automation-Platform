@@ -11,7 +11,13 @@ import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
 
-from .contracts import AdapterRegistry, EngineContribution, MissionTaskContext
+from .contracts import (
+    AdapterRegistry,
+    EngineAttemptReconciliation,
+    EngineContribution,
+    ExecutionAttemptReference,
+    MissionTaskContext,
+)
 from .recovery import RecoveryAssessment, assess_execution_recovery
 from .state_machine import (
     MissionEventCommand,
@@ -362,6 +368,73 @@ class MissionOrchestrationRuntime:
         except (TypeError, ValueError):
             return 0
         return max(0, number)
+
+    async def reconcile_task_attempt(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+    ) -> EngineAttemptReconciliation:
+        """Read-only authoritative adapter lookup for one persisted execution attempt."""
+        snapshot = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task:
+            raise MissionRuntimeNotFound("workspace_mission_task_not_found")
+        if task.get("status") not in {"executing", "failed"}:
+            raise MissionTaskNotReady("task_has_no_unresolved_execution_attempt")
+
+        event_limit = min(500, int(getattr(self.store, "MAX_EVENT_READ_LIMIT", 500)))
+        events = await self.store.list_events(
+            mission_id=mission_id,
+            scope_type="workspace",
+            workspace_id=workspace_id,
+            limit=event_limit,
+        )
+        if len(events) >= event_limit:
+            raise MissionRuntimeConflict("mission_event_history_may_be_truncated")
+        starts = [
+            event for event in events
+            if event.get("task_id") == task_id
+            and event.get("event_type") == "task.started"
+            and event.get("scope_type") == "workspace"
+            and event.get("workspace_id") == workspace_id
+            and event.get("mission_id") == mission_id
+        ]
+        if len(starts) != 1:
+            raise MissionRuntimeConflict("execution_attempt_start_event_missing_or_duplicated")
+        start = starts[0]
+        start_key = str(start.get("idempotency_key") or "")
+        payload = start.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        attempt_id = start_key[:-len(":started")] if start_key.endswith(":started") else ""
+        assignments = snapshot.state_snapshot.get("task_assignments") or {}
+        assignment = assignments.get(task_id) if isinstance(assignments, Mapping) else None
+        engine_id = str((assignment or {}).get("engine_id") or "")
+        capability = str((assignment or {}).get("capability") or "")
+        if (
+            not attempt_id
+            or payload.get("attempt_id") != attempt_id
+            or payload.get("engine_id") != engine_id
+            or payload.get("capability") != capability
+            or not engine_id
+            or not capability
+            or not str(start.get("correlation_id") or "").strip()
+        ):
+            raise MissionRuntimeConflict("execution_attempt_identity_or_assignment_mismatch")
+
+        reference = ExecutionAttemptReference(
+            attempt_id=attempt_id,
+            engine_id=engine_id,
+            capability=capability,
+            task_id=task_id,
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            correlation_id=str(start["correlation_id"]),
+        )
+        return await self.adapters.reconcile_attempt(reference)
 
     async def assess_task_recovery(
         self,
