@@ -212,7 +212,7 @@ class HealthMonitorService:
                 logger.exception("Health monitor cycle failed")
 
             try:
-                self._check_daily_summary()
+                await self._check_daily_summary()
             except Exception:
                 logger.exception("Daily summary check failed")
 
@@ -614,7 +614,7 @@ class HealthMonitorService:
     # DAILY SUMMARY
     # ═══════════════════════════════════════════════════════════════
 
-    def _check_daily_summary(self):
+    async def _check_daily_summary(self):
         now_utc = datetime.now(timezone.utc)
         today_str = now_utc.strftime("%Y-%m-%d")
 
@@ -637,7 +637,7 @@ class HealthMonitorService:
             if self._summary_already_sent_today(today_str):
                 self._last_summary_sent_date = today_str
                 return
-            self._send_daily_summary()
+            await self._send_daily_summary()
             self._mark_summary_sent(today_str)
             self._last_summary_sent_date = today_str
 
@@ -670,30 +670,35 @@ class HealthMonitorService:
         except Exception:
             logger.debug("Daily summary dedup write failed", exc_info=True)
 
-    def _send_daily_summary(self):
+    async def _send_daily_summary(self):
+        """Generate a Director intelligence brief from the latest health evidence."""
         try:
-            services = self._collect_service_health_sync()
-            healthy_count = sum(1 for v in services.values() if v == "ok")
-            total_count = len(services)
-
-            health_lines = []
-            for name, status in services.items():
-                icon = "✅" if status == "ok" else ("⚠️" if status == "unknown" else "❌")
-                health_lines.append(f"• {icon} {name}")
-
-            summary = (
-                f"📊 <b>Daily System Health Report</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💻 <b>Services</b>: {healthy_count}/{total_count} healthy\n\n"
-                f"{chr(10).join(health_lines)}\n\n"
-                f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            from services.director.health_briefing import (
+                generate_health_briefing,
+                render_health_briefing,
             )
 
-            # Route through the alert queue so delivery is serialized.
+            services = self._collect_service_health_sync()
+            brief = await generate_health_briefing(
+                services,
+                diagnostics=self._last_service_diagnostics,
+            )
+            summary = render_health_briefing(brief, services)
+
+            # The dispatcher adds the single notification timestamp. Keep the
+            # report itself timestamp-free to avoid duplicate clock lines.
             self._enqueue_alert("alert", summary)
-            logger.info("Daily health summary enqueued.")
+            logger.info(
+                "Director health intelligence brief enqueued",
+                extra={
+                    "event": "director.health_briefing.enqueued",
+                    "mode": brief.get("mode"),
+                    "incident_count": len(brief.get("incidents") or []),
+                    "service_count": len(services),
+                },
+            )
         except Exception:
-            logger.error("Failed to generate daily summary", exc_info=True)
+            logger.exception("Failed to generate Director health intelligence brief")
 
     def _collect_service_health_sync(self) -> Dict[str, str]:
         """Return the last collected snapshot without blocking."""
