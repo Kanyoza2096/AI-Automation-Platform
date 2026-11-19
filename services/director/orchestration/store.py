@@ -149,6 +149,57 @@ class MissionRuntimeStore:
         )
         return self._payload(response)
 
+    async def approve_workspace_task_atomic(
+        self,
+        *,
+        event: MissionEventWrite,
+        task_id: str,
+        approved_by: str,
+        approved_at: str,
+    ) -> dict[str, Any] | None:
+        """Commit operator approval provenance and its mission event atomically."""
+        if event.scope_type != "workspace" or event.event_type != "task.approved":
+            raise ValueError("atomic_task_approval_requires_workspace_task_approved_event")
+        if event.actor_type != "operator" or event.actor_id != approved_by or event.task_id != task_id:
+            raise ValueError("atomic_task_approval_actor_or_task_mismatch")
+        params = {
+            "p_event": {
+                "p_scope_type": event.scope_type,
+                "p_workspace_id": event.workspace_id,
+                "p_mission_id": event.mission_id,
+                "p_expected_version": event.expected_version,
+                "p_idempotency_key": event.idempotency_key,
+                "p_request_fingerprint": event.request_fingerprint,
+                "p_event_type": event.event_type,
+                "p_actor_type": event.actor_type,
+                "p_actor_id": event.actor_id,
+                "p_recipient_type": event.recipient_type,
+                "p_recipient_id": event.recipient_id,
+                "p_task_id": event.task_id,
+                "p_message_id": event.message_id,
+                "p_thread_id": event.thread_id,
+                "p_round_number": event.round_number,
+                "p_correlation_id": event.correlation_id,
+                "p_payload": safe(dict(event.payload)),
+                "p_evidence_refs": safe(list(event.evidence_refs)),
+                "p_status": event.status,
+                "p_phase": event.phase,
+                "p_state_snapshot": safe(dict(event.state_snapshot)),
+            },
+            "p_task_approval": {
+                "task_id": task_id,
+                "approved_by": approved_by,
+                "approved_at": approved_at,
+            },
+        }
+        response = await self._execute(
+            "atomically approve Director mission task",
+            lambda: self._store.supabase.rpc(
+                "approve_director_mission_task_atomic", params
+            ).execute(),
+        )
+        return self._payload(response)
+
     async def get_mission(
         self, *, mission_id: str, scope_type: str, workspace_id: str | None = None
     ) -> dict[str, Any] | None:
