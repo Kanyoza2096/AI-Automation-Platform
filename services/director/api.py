@@ -384,6 +384,8 @@ def create_app(director: Director):
                 "task_assignments": state.get("task_assignments", {}),
                 "engine_progress": state.get("engine_progress", {}),
                 "pending_questions": state.get("pending_questions", {}),
+                "evidence_refs": state.get("evidence_refs", []),
+                "unresolved_disagreements": state.get("unresolved_disagreements", []),
                 "budget": state.get("budget", {}),
                 "events": events,
             }
