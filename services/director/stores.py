@@ -279,6 +279,20 @@ class AsyncSupabaseStore:
         )
         return [dict(row) for row in (result.data or [])] if result else []
 
+    async def list_approved_workspace_tasks(self, limit: int = 5000) -> List[dict]:
+        """Internal recovery scan; never exposed to workspace-facing API callers."""
+        bounded_limit = max(1, min(int(limit), 5000))
+        result = await self._execute_with_retry(
+            "list approved workspace tasks for Director journal reconciliation",
+            lambda: self.supabase.table("director_tasks").select("*")
+            .eq("scope_type", "workspace")
+            .eq("status", Status.APPROVED.value)
+            .order("created_at", desc=True)
+            .limit(bounded_limit)
+            .execute(),
+        )
+        return [dict(row) for row in (result.data or [])] if result else []
+
     MAX_PERSISTED_OBSERVATIONS = 500
     MAX_PERSISTED_DECISIONS = 250
     MAX_PERSISTED_LEARNINGS = 500
@@ -690,6 +704,14 @@ class InMemoryStore:
                 continue
             rows.append(row)
         return rows[-limit:]
+
+    async def list_approved_workspace_tasks(self, limit: int = 5000) -> List[dict]:
+        """Internal recovery scan; returns only approved tenant task rows."""
+        rows = [
+            row for row in self.tasks.values()
+            if row.get("scope_type") == "workspace" and row.get("status") == Status.APPROVED.value
+        ]
+        return rows[-max(1, min(int(limit), 5000)):]
 
     async def save_decision(self, decision: Decision) -> None:
         self.decisions.append(safe(asdict(decision)))
