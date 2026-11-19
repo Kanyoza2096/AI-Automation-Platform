@@ -116,3 +116,13 @@ def test_verified_collaboration_digest_survives_plan_to_mission_admission():
     assert '"source_collaboration_provenance_sha256": source_provenance_sha256' in core
     assert '"collaboration_provenance_sha256:" + source_provenance_sha256' in core
     assert '"source_collaboration_provenance": dict(source_provenance)' in planning
+
+
+def test_finalized_collaboration_runs_are_database_immutable():
+    sql = (ROOT / "migrations" / "189_director_collaboration_run_finalization_guard.sql").read_text(encoding="utf-8")
+    assert "BEFORE UPDATE OR DELETE ON public.director_collaboration_runs" in sql
+    assert "OLD.status <> 'running'" in sql
+    assert "director_collaboration_run_finalized_immutable" in sql
+    assert "director_collaboration_run_delete_forbidden" in sql
+    assert "director_collaboration_run_completed_synthesis_unavailable" in sql
+    assert "director_collaboration_run_identity_immutable" in sql
