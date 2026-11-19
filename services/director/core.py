@@ -825,11 +825,70 @@ class Director:
             await asyncio.sleep(15)
         self._drain_events()
 
+    async def _reconcile_mission_approvals(self) -> dict:
+        """Repair missing approval journal events from canonical approved tasks.
+
+        This never grants approval: it only mirrors already-persisted operator
+        approval into the mission journal. The runtime flag remains the gate.
+        """
+        if (os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "") or "").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            return {"scanned": 0, "reconciled": 0, "failed": 0, "disabled": True}
+
+        candidates = [
+            task for task in self.tasks.values()
+            if task.status == Status.APPROVED
+            and task.workspace_id
+            and task.mission_id
+            and task.approved_by
+            and task.approved_at
+        ]
+        if not candidates:
+            return {"scanned": 0, "reconciled": 0, "failed": 0}
+
+        try:
+            from .orchestration.runtime import MissionOrchestrationRuntime
+            from .orchestration.store import MissionRuntimeStore
+            from .orchestration.registry_factory import build_default_adapter_registry
+
+            runtime = MissionOrchestrationRuntime(
+                store=MissionRuntimeStore(self.store),
+                adapters=build_default_adapter_registry(director_store=self.store),
+            )
+        except Exception as exc:
+            log.warning("Director approval reconciliation unavailable: %s", type(exc).__name__)
+            return {"scanned": len(candidates), "reconciled": 0, "failed": len(candidates)}
+
+        reconciled = failed = 0
+        for task in candidates:
+            try:
+                await runtime.approve_task(
+                    mission_id=task.mission_id,
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    operator_id=str(task.approved_by),
+                    idempotency_key=f"director-task-approval:{task.id}:{task.approved_at.isoformat()}",
+                    correlation_id=str(task.correlation_id or task.id),
+                )
+                reconciled += 1
+            except Exception as exc:
+                failed += 1
+                log.warning(
+                    "Director approval journal reconciliation deferred: task=%s error=%s",
+                    task.id,
+                    type(exc).__name__,
+                )
+        summary = {"scanned": len(candidates), "reconciled": reconciled, "failed": failed}
+        log.info("Director approval journal reconciliation: %s", summary)
+        return summary
+
     async def _startup(self) -> None:
         await asyncio.sleep(2)
         try:
             await self._restore_decisions()
             await self._restore_tasks()
+            await self._reconcile_mission_approvals()
             await self._replay_learning_history()
             await self._observe_async()
             await self._build_plan_async()
