@@ -294,7 +294,9 @@ class AsyncSupabaseStore:
                 .range(offset, offset + page_size - 1)
                 .execute(),
             )
-            page = [dict(row) for row in (result.data or [])] if result else []
+            if result is None:
+                raise RuntimeError("approved_workspace_task_recovery_scan_unavailable")
+            page = [dict(row) for row in (result.data or [])]
             rows.extend(page)
             if len(page) < page_size:
                 break
