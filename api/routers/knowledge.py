@@ -398,6 +398,32 @@ class EvidenceReviewSubmission(_ReviewBaseModel):
     claim_scope: str = _ReviewField(default="empirical_claim_support", min_length=3, max_length=500)
 
 
+class TrustedSourceIngestion(_ReviewBaseModel):
+    source_url: str = _ReviewField(..., min_length=10, max_length=2048)
+    claim_scope: str = _ReviewField(default="empirical_claim_support", min_length=3, max_length=500)
+
+
+def _trusted_source_class_for_url(source_url: str) -> str:
+    """Resolve trust only from an operator-configured exact-host registry."""
+    import json as _json
+    import os as _os
+    host = (_urlparse(source_url).hostname or "").lower().rstrip(".")
+    try:
+        registry = _json.loads(_os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS", "{}"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=503, detail="Trusted source registry is invalid")
+    if not isinstance(registry, dict):
+        raise HTTPException(status_code=503, detail="Trusted source registry is invalid")
+    trust_class = str(registry.get(host) or "").strip().lower()
+    allowed = {
+        "government", "regulatory", "peer_reviewed", "academic",
+        "official_documentation", "publisher_primary",
+    }
+    if trust_class not in allowed:
+        raise HTTPException(status_code=422, detail="Source host is not in the trusted-source registry")
+    return trust_class
+
+
 class EvidenceReviewDecision(_ReviewBaseModel):
     decision: str = _ReviewField(..., pattern="^(approved|rejected)$")
     notes: str = _ReviewField(..., min_length=3, max_length=4000)
@@ -522,6 +548,121 @@ def _evidence_review_payload(row: dict) -> dict:
         "review_evidence", "created_at", "updated_at",
     )
     return {key: row.get(key) for key in allowed}
+
+
+@router.post("/brands/{brand_id}/knowledge/ingest-source")
+async def ingest_trusted_knowledge_source(
+    brand_id: str,
+    body: TrustedSourceIngestion,
+    request: Request,
+    _auth: bool = Depends(require_auth),
+):
+    """Fetch an allowlisted public source server-side, attest its exact text, then review it."""
+    try:
+        workspace_id = await require_workspace_ownership(
+            "brand", brand_id, request, request.app.state.container
+        )
+        if not workspace_id or str(workspace_id).lower() in {"default", "unbound", "platform"}:
+            raise HTTPException(status_code=403, detail="A concrete tenant workspace is required")
+        source_url = body.source_url.strip()
+        if not _valid_evidence_url(source_url):
+            raise HTTPException(status_code=422, detail="A valid HTTP(S) source URL is required")
+        trust_class = _trusted_source_class_for_url(source_url)
+
+        from services.web_intelligence.base import validate_external_url
+        allowed, reason = await _async_wrap(validate_external_url, source_url)
+        if not allowed:
+            raise HTTPException(status_code=422, detail=f"Source URL blocked: {reason}")
+        from services.web_intelligence import get_web_intelligence, init_web_intelligence
+        web = get_web_intelligence() or init_web_intelligence()
+        page = await web.fetch_async(source_url)
+        source_text = str(getattr(page, "text", "") or "").strip()
+        status_code = getattr(page, "status_code", None)
+        if getattr(page, "error", None) or not status_code or not 200 <= int(status_code) < 300:
+            raise HTTPException(status_code=422, detail="Source could not be fetched successfully")
+        if not source_text or len(source_text) > 30000:
+            raise HTTPException(status_code=422, detail="Fetched source is empty or exceeds the 30,000 character limit")
+
+        from services.autonomous_knowledge_evidence_reviewer import build_source_snapshot_attestation
+        from repositories.brand_repository import BrandRepository
+        from repositories.knowledge_repository import KnowledgeRepository
+        from services.knowledge_base import KnowledgeBase
+        brand_repo = await _async_wrap(request.app.state.container.resolve, BrandRepository)
+        brand = await _async_wrap(brand_repo.find_by_id, brand_id)
+        if not brand or str(brand.workspace_id) != str(workspace_id):
+            raise HTTPException(status_code=404, detail="Brand not found in this workspace")
+
+        secret = __import__("os").getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
+        if not secret:
+            raise HTTPException(status_code=503, detail="Trusted source attestation is not configured")
+        source_id = "web-source:" + _sha256(f"{workspace_id}|{source_url}".encode("utf-8")).hexdigest()
+        source_title = str(getattr(page, "title", "") or "").strip()[:500]
+        attestation = build_source_snapshot_attestation(
+            secret=secret,
+            workspace_id=str(workspace_id),
+            source_id=source_id,
+            source_url=source_url,
+            trust_class=trust_class,
+            snapshot_text=source_text,
+        )
+        metadata = {
+            **attestation,
+            "source_id": source_id,
+            "source_url": source_url,
+            "source_title": source_title,
+            "source_type": "url",
+            "trust_class": trust_class,
+            "ingestion_method": "server_side_web_fetch",
+            "source_http_status": int(status_code),
+        }
+
+        from repositories.knowledge_repository import KnowledgeRepository
+        repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
+        kb = KnowledgeBase(brand_id=brand_id, workspace_id=str(workspace_id), repository=repo)
+        await kb.initialize()
+        entry = await kb.add_document(content=source_text, doc_type="url", metadata=metadata)
+
+        client = _evidence_review_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="Evidence review storage unavailable")
+        content_hash = _sha256(entry.content.encode("utf-8")).hexdigest()
+        inserted = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases").insert({
+                "knowledge_entry_id": entry.id,
+                "workspace_id": str(workspace_id),
+                "brand_id": brand_id,
+                "source_id": source_id,
+                "submitted_by": "service:kdo-trusted-source-ingestion",
+                "source_url": source_url,
+                "source_title": source_title,
+                "source_type": "url",
+                "trust_class": trust_class,
+                "claim_scope": body.claim_scope,
+                "content_sha256": content_hash,
+                "metadata_snapshot": metadata,
+                "review_status": "pending",
+            }).select("*").single().execute()
+        )
+        if not inserted.data:
+            raise HTTPException(status_code=503, detail="Review case creation was not confirmed")
+        reviewed = await _run_autonomous_knowledge_evidence_review(
+            case=inserted.data, entry=entry, client=client
+        )
+        return _ok({
+            "knowledge_entry": entry.model_dump(mode="json"),
+            "review_case": _evidence_review_payload(reviewed),
+            "source_capture": {
+                "url": source_url,
+                "title": source_title,
+                "trust_class": trust_class,
+                "captured_characters": len(source_text),
+                "sha256": attestation["source_snapshot_sha256"],
+            },
+        }, 201)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, f"POST trusted knowledge source ingestion for {brand_id}")
 
 
 @router.post("/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review")
