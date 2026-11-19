@@ -748,7 +748,19 @@ def test_native_mission_task_rejection_is_journalled_through_runtime(monkeypatch
         request.state.auth_identity = SimpleNamespace(valid=True)
         return await call_next(request)
 
+    class FakeStore:
+        async def get_workspace_task(self, **kwargs):
+            assert kwargs["task_id"] == "task-cancel"
+            assert kwargs["workspace_id"] == "ws-a"
+            assert kwargs["mission_id"] == "mission-a"
+            return {
+                "status": "cancelled",
+                "payload": {"status": "cancelled", "error": "Rejected by trusted-operator: Evidence was insufficient"},
+            }
+
     class FakeRuntime:
+        store = FakeStore()
+
         async def cancel_task(self, **kwargs):
             assert kwargs["mission_id"] == "mission-a"
             assert kwargs["workspace_id"] == "ws-a"
