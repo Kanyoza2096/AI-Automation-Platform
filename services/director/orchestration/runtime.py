@@ -5,6 +5,7 @@ KCPG commands, Action Kernel execution, publishing, or other external actions.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import logging
 from typing import Any, Callable, Mapping, Sequence
@@ -332,7 +333,10 @@ class MissionOrchestrationRuntime:
         )
 
         try:
-            contribution = await self.adapters.invoke(engine_id, context)
+            contribution = await asyncio.wait_for(
+                self.adapters.invoke(engine_id, context),
+                timeout=context.timeout_seconds,
+            )
         except Exception as exc:
             latest = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
             if (latest.state_snapshot.get("task_status") or {}).get(task_id) == "executing":
@@ -580,7 +584,10 @@ class MissionOrchestrationRuntime:
             correlation_id=correlation_id,
             timeout_seconds=self.default_timeout_seconds,
         )
-        contribution = await self.adapters.invoke(recipient_id, context)
+        contribution = await asyncio.wait_for(
+            self.adapters.invoke(recipient_id, context),
+            timeout=context.timeout_seconds,
+        )
         refs = self._evidence_refs(contribution)
         if refs:
             current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
