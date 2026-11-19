@@ -83,7 +83,7 @@ def test_semantic_reviewer_approves_supported_specific_content():
     assert result["status"] == "approved"
     assert result["supporting_source_ids"] == ["kb-kruskal-1"]
     assert gateway.calls[0][1]["workspace_id"] == "workspace-test"
-    assert gateway.calls[0][1]["caller"] == "content"
+    assert gateway.calls[0][1]["caller"] == "content_review"
 
 
 def test_semantic_reviewer_rejects_unsupported_claim_even_if_model_says_approve():
