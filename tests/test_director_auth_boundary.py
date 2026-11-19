@@ -402,3 +402,56 @@ def test_proposal_capability_has_explicit_governed_handoff_slot():
     # An ordinary handler is not evidence of canonical governed execution.
     assert capability.governed_handoff is None
     assert capability.handler is handler
+
+
+def test_native_mission_runtime_routes_are_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", raising=False)
+    app = _workspace_context_app(monkeypatch, "ws-a", role="viewer")
+    response = TestClient(app).get(
+        "/missions/mission-a/orchestration/timeline",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Director native mission runtime is disabled"
+
+
+def test_native_mission_timeline_uses_trusted_workspace_and_read_only_access(monkeypatch):
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    app = _workspace_context_app(monkeypatch, "ws-a", role="viewer")
+
+    class FakeRuntime:
+        async def timeline(self, *, mission_id, workspace_id, limit):
+            assert mission_id == "mission-a"
+            assert workspace_id == "ws-a"
+            assert limit == 25
+            return [{"event_type": "mission.admitted", "sequence_number": 1}]
+
+    app.state.director_mission_runtime = FakeRuntime()
+    response = TestClient(app).get(
+        "/missions/mission-a/orchestration/timeline?limit=25",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+    assert response.status_code == 200
+    assert response.json()["workspace_id"] == "ws-a"
+    assert response.json()["events"][0]["event_type"] == "mission.admitted"
+
+
+def test_native_mission_timeline_rejects_missing_trusted_workspace(monkeypatch):
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def platform_context_without_workspace(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id=None, principal_id="platform-user", role="admin",
+            species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    app.state.director_mission_runtime = SimpleNamespace()
+    response = TestClient(app).get(
+        "/missions/mission-a/orchestration/timeline",
+        headers={"Authorization": "Bearer valid-user-session"},
+    )
+    assert response.status_code == 403
