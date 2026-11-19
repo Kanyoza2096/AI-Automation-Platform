@@ -90,7 +90,7 @@ batch per run (default 100 candidates, configurable with
 `KDO_KB_REVIEW_BATCH_SIZE`), creates idempotent review cases for existing
 workspace/brand knowledge entries, reviews pending cases, retries idempotent
 promotion for approved cases, and reopens quarantined cases only when a captured
-source snapshot becomes available. The sweep uses the durable cursor table introduced in migration 186 so bounded runs advance through the corpus rather than repeatedly scanning only the first page. Schedule it as a Render Cron Job only after migrations 185–187 and trusted-ingestion attestation are deployed. Do not run it against
+source snapshot becomes available. The sweep uses the durable cursor table introduced in migration 186 so bounded runs advance through the corpus rather than repeatedly scanning only the first page. For historical entries with an exact-host allowlisted source URL, the sweep fetches the source server-side, verifies/rebuilds the HMAC snapshot attestation, and then reviews the entry. Already-approved entries are not refetched. Entries without valid provenance are quarantined. Schedule it as a Render Cron Job only after migrations 185–187 and trusted-ingestion attestation are deployed. Do not run it against
 an unconfirmed database project.
 
 No historical entries are bulk-approved by migration. Existing records without
