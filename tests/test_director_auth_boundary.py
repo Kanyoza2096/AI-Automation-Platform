@@ -452,6 +452,6 @@ def test_native_mission_timeline_rejects_missing_trusted_workspace(monkeypatch):
     app.state.director_mission_runtime = SimpleNamespace()
     response = TestClient(app).get(
         "/missions/mission-a/orchestration/timeline",
-        headers={"Authorization": "Bearer valid-user-session"},
+        headers={"Authorization": "Bearer master-test-token"},
     )
     assert response.status_code == 403
