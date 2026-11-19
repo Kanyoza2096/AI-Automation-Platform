@@ -420,6 +420,12 @@ def test_native_mission_timeline_uses_trusted_workspace_and_read_only_access(mon
     app = _workspace_context_app(monkeypatch, "ws-a", role="viewer")
 
     class FakeRuntime:
+        async def load_snapshot(self, *, mission_id, workspace_id):
+            return SimpleNamespace(
+                version=3, status="running",
+                state_snapshot={"task_assignments": {"task-a": {"engine_id": "content_intelligence"}}},
+            )
+
         async def timeline(self, *, mission_id, workspace_id, limit):
             assert mission_id == "mission-a"
             assert workspace_id == "ws-a"
@@ -477,6 +483,12 @@ def test_native_mission_runtime_accepts_only_signed_kcpg_human_actor_context(mon
         return await call_next(request)
 
     class FakeRuntime:
+        async def load_snapshot(self, *, mission_id, workspace_id):
+            return SimpleNamespace(
+                version=1, status="admitted",
+                state_snapshot={"task_assignments": {}, "engine_progress": {}, "pending_questions": {}, "budget": {}},
+            )
+
         async def timeline(self, *, mission_id, workspace_id, limit):
             assert workspace_id == "ws-a"
             return [{"event_type": "mission.admitted"}]
