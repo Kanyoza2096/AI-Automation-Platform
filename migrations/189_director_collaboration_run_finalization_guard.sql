@@ -42,12 +42,25 @@ BEGIN
 
     IF NEW.status = 'completed' THEN
         IF jsonb_typeof(NEW.consultations) IS DISTINCT FROM 'array'
+           OR jsonb_array_length(NEW.consultations) <> cardinality(NEW.requested_engines)
+           OR EXISTS (
+               SELECT 1
+                 FROM unnest(NEW.requested_engines) AS requested(engine)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
+                     WHERE consultation.item->>'engine' = requested.engine
+                       AND consultation.item->>'status' = 'completed'
+                       AND NOT COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
+                )
+           )
            OR EXISTS (
                SELECT 1
                  FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
                 WHERE consultation.item->>'status' IS DISTINCT FROM 'completed'
                    OR COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
-           ) THEN
+           )
+           OR NULLIF(btrim(NEW.synthesis), '') IS NULL THEN
             RAISE EXCEPTION 'director_collaboration_run_completed_consultations_incomplete';
         END IF;
 
