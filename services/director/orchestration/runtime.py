@@ -466,6 +466,17 @@ class MissionOrchestrationRuntime:
             estimated_provider_calls=1,
         )
 
+        if (
+            not isinstance(idempotency_prefix, str)
+            or not idempotency_prefix.strip()
+            or idempotency_prefix != idempotency_prefix.strip()
+            or len(idempotency_prefix) > 150
+        ):
+            raise MissionTransitionRejected("execution_attempt_identity_invalid")
+
+        # The existing append-only mission event is the durable attempt claim.
+        # Its atomic task sync changes approved -> executing in the same DB transaction.
+        # Reuse that ledger rather than maintaining a second table that could drift.
         current = await self._commit(
             current,
             event_type="task.started",
@@ -474,7 +485,12 @@ class MissionOrchestrationRuntime:
             actor_id=operator_id,
             correlation_id=correlation_id,
             task_id=task_id,
-            payload={"requested_by": operator_id},
+            payload={
+                "attempt_id": idempotency_prefix,
+                "engine_id": engine_id,
+                "capability": capability,
+                "requested_by": operator_id,
+            },
         )
         dependency_task_ids = {
             str(value) for value in (task_row.get("payload", {}).get("depends_on") or [])
