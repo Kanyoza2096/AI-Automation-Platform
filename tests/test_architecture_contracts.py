@@ -91,6 +91,8 @@ def test_director_mission_admission_journals_collaboration_origin():
     assert "director_mission_collaboration_provenance_conflict" in sql
     assert "source_collaboration_run_id', source_collaboration_run_id" in sql
     assert "'mission.admitted'" in sql
+    assert "source_collaboration_provenance_sha256" in sql
+    assert "director_mission_collaboration_digest_conflict" in sql
     # Mission admission remains a journal event, not an execution/approval grant.
     assert "execution_permitted" not in sql
     assert "task.approved" not in sql
@@ -104,4 +106,13 @@ def test_strategic_plan_requires_server_verified_collaboration_provenance():
     assert 'recommendation.get("status") != "available"' in api
     assert 'hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()' in api
     assert 'source_collaboration_provenance_required' in planning
+    assert '"source_collaboration_provenance": dict(source_provenance)' in planning
+
+
+def test_verified_collaboration_digest_survives_plan_to_mission_admission():
+    core = (ROOT / "services" / "director" / "core.py").read_text(encoding="utf-8")
+    planning = (ROOT / "services" / "director" / "planning.py").read_text(encoding="utf-8")
+    assert 'source_provenance.get("workspace_id") != workspace_id' in core
+    assert '"source_collaboration_provenance_sha256": source_provenance_sha256' in core
+    assert '"collaboration_provenance_sha256:" + source_provenance_sha256' in core
     assert '"source_collaboration_provenance": dict(source_provenance)' in planning
