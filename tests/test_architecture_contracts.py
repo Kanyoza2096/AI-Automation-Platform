@@ -105,6 +105,8 @@ def test_strategic_plan_requires_server_verified_collaboration_provenance():
     assert 'source_run.get("status") != "completed"' in api
     assert 'recommendation.get("status") != "available"' in api
     assert 'hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()' in api
+    assert 'Source collaboration record changed after strategic-plan creation' in api
+    assert 'provenance.get("sha256") != current_digest' in api
     assert 'source_collaboration_provenance_required' in planning
     assert '"source_collaboration_provenance": dict(source_provenance)' in planning
 
