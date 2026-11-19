@@ -199,7 +199,7 @@ def test_brand_knowledge_list_passes_authenticated_workspace_to_repository():
 def test_evidence_queue_requires_read_permission_while_mutations_keep_write():
     source = API_PATH.read_text()
     helper_start = source.index("def _evidence_review_actor")
-    helper_end = source.index("\\ndef _valid_evidence_url", helper_start)
+    helper_end = source.index("def _valid_evidence_url", helper_start)
     helper = source[helper_start:helper_end]
     assert 'permission: str = "write"' in helper
     assert 'identity.has_permission(permission)' in helper
