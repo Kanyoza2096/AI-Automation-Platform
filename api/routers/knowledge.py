@@ -92,10 +92,12 @@ async def list_knowledge_entries(
 ):
     """List knowledge entries for a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, request, container)
+        workspace_id = await require_workspace_ownership("brand", brand_id, request, container)
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="Authenticated workspace is required")
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(container.resolve, KnowledgeRepository)
-        entries = await _async_wrap(repo.find_by_brand, brand_id)
+        entries = await _async_wrap(repo.find_by_brand, brand_id, workspace_id)
         return _ok({"knowledge_entries": [e.model_dump(mode="json") for e in entries]})
     except HTTPException:
         raise
@@ -412,15 +414,45 @@ def _evidence_review_client():
     return getattr(supabase_service, "service_client", None)
 
 
-def _evidence_review_actor(*, require_human: bool = True) -> tuple[str, object]:
+def _evidence_review_actor(
+    request: Request, *, require_human: bool = True, permission: str = "write"
+) -> tuple[str, object]:
+    """Resolve the audit actor from canonical auth or a verified KCPG human envelope.
+
+    KCPG authenticates upstream to this API with a species service credential.
+    For governed human decisions, the gateway additionally signs the actor,
+    role, workspace and request ID. Never trust unsigned X-User-* headers.
+    """
     identity = _review_identity_var.get()
     if identity is None:
         raise HTTPException(status_code=401, detail="Authenticated identity required")
-    if not identity.has_permission("write"):
-        raise HTTPException(status_code=403, detail="Workspace write permission required")
+    if permission not in {"read", "write"}:
+        raise ValueError("Unsupported evidence review permission")
+    if not identity.has_permission(permission):
+        label = "read" if permission == "read" else "write"
+        raise HTTPException(status_code=403, detail=f"Workspace {label} permission required")
+
+    # A signed gateway context is installed by the canonical request-context
+    # dependency only after HMAC, freshness and workspace-binding checks pass.
+    context = getattr(request.state, "request_context", None)
+    metadata = getattr(context, "metadata", None) or {}
+    actor_id = getattr(context, "principal_id", None)
+    actor_role = str(getattr(context, "role", "") or "").lower()
+    workspace_id = _resolve_workspace_from_request(request)
+    verified_gateway_human = (
+        getattr(context, "principal_type", "") == "human"
+        and metadata.get("authority_source") == "verified_kcpg_hmac"
+        and bool(actor_id)
+        and bool(workspace_id)
+        and str(getattr(context, "workspace_id", "")) == str(workspace_id)
+        and actor_role in {"operator", "admin", "owner"}
+    )
+    if verified_gateway_human:
+        return str(actor_id), context
+
     user_id = getattr(identity, "user_id", None)
     if require_human and (getattr(identity, "is_species", False) or not user_id):
-        raise HTTPException(status_code=403, detail="A human reviewer identity is required")
+        raise HTTPException(status_code=403, detail="A verified human reviewer identity is required")
     actor = str(user_id or f"service:{getattr(identity, 'method', 'unknown')}")
     return actor, identity
 
@@ -453,7 +485,7 @@ async def submit_knowledge_evidence_review(
     """Submit one exact knowledge-entry version for reusable source review."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        actor, _identity = _evidence_review_actor(require_human=False)
+        actor, _identity = _evidence_review_actor(request, require_human=False)
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
         entry = await _async_wrap(repo.find_by_id, knowledge_id)
@@ -542,8 +574,12 @@ async def list_knowledge_evidence_reviews(
 ):
     """List evidence review cases within the authenticated brand workspace."""
     try:
-        await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        _evidence_review_actor(require_human=False)
+        workspace_id = await require_workspace_ownership(
+            "brand", brand_id, request, request.app.state.container
+        )
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+        _evidence_review_actor(request, require_human=False, permission="read")
         if status not in {"pending", "approved", "rejected", "superseded", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
@@ -552,7 +588,7 @@ async def list_knowledge_evidence_reviews(
         query = (
             client.table("knowledge_evidence_review_cases").select("*")
             .eq("brand_id", brand_id)
-            .eq("workspace_id", _resolve_workspace_from_request(request))
+            .eq("workspace_id", workspace_id)
             .order("created_at", desc=True).limit(min(100, max(1, limit)))
         )
         if status != "all":
@@ -576,7 +612,7 @@ async def decide_knowledge_evidence_review(
     """Approve/reject a source for one immutable content version; no auto-promotion."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        actor, _identity = _evidence_review_actor(require_human=True)
+        actor, _identity = _evidence_review_actor(request, require_human=True)
         client = _evidence_review_client()
         if client is None:
             raise HTTPException(status_code=503, detail="Evidence review storage unavailable")
@@ -658,7 +694,7 @@ async def promote_approved_knowledge_evidence(
     """Promote one approved source through a transactional, audited DB function."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        actor, _identity = _evidence_review_actor(require_human=True)
+        actor, _identity = _evidence_review_actor(request, require_human=True)
         client = _evidence_review_client()
         if client is None:
             raise HTTPException(status_code=503, detail="Evidence promotion storage unavailable")
