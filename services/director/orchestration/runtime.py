@@ -485,30 +485,6 @@ class MissionOrchestrationRuntime:
             "provider_calls": max(1, min(provider_calls, 12)),
         }
 
-    async def _record_engine_usage(
-        self,
-        *,
-        mission_id: str,
-        workspace_id: str,
-        contribution: EngineContribution,
-        idempotency_key: str,
-        correlation_id: str,
-    ) -> MissionRuntimeSnapshot:
-        providers = contribution.source_metadata.get("providers")
-        provider_calls = len(providers) if isinstance(providers, list) else 1
-        provider_calls = max(1, min(provider_calls, 12))
-        usage_tokens = self._usage_int(contribution.source_metadata.get("usage_tokens"))
-        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
-        return await self._commit(
-            current,
-            event_type="engine.call.completed",
-            idempotency_key=idempotency_key,
-            actor_type="system",
-            actor_id="director_orchestrator",
-            correlation_id=correlation_id,
-            payload={"usage_tokens": usage_tokens, "provider_calls": provider_calls},
-        )
-
     async def verify_task(
         self,
         *,
