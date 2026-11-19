@@ -232,3 +232,34 @@ async def test_replayed_task_start_claim_is_rejected_before_adapter_dispatch():
             "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
             payload={"attempt_id": "attempt-state-test", "engine_id": "content_intelligence", "capability": "research.analyze"},
         ))
+
+
+def test_failed_or_blocked_task_cannot_be_reassigned_without_recovery_proof():
+    machine = MissionStateMachine()
+    for prior_status in ("failed", "blocked"):
+        current = _snapshot()
+        copy_state = dict(current.state_snapshot)
+        copy_state["task_status"] = {"task-a": prior_status}
+        copy_state["task_assignments"] = {
+            "task-a": {"engine_id": "content_intelligence", "capability": "research.analyze", "attempt": 1}
+        }
+        current = MissionRuntimeSnapshot(
+            mission_id=current.mission_id,
+            scope_type=current.scope_type,
+            workspace_id=current.workspace_id,
+            version=current.version,
+            status=current.status,
+            phase=current.phase,
+            task_ids=current.task_ids,
+            state_snapshot=copy_state,
+        )
+        with pytest.raises(
+            MissionTransitionRejected,
+            match="task_reassignment_requires_authoritative_recovery",
+        ):
+            machine.prepare(current, _command(
+                "task.reassigned",
+                actor_type="director",
+                task_id="task-a",
+                payload={"engine_id": "meta_engine", "capability": "review.analyze"},
+            ))
