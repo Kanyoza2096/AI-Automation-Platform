@@ -130,3 +130,6 @@ def test_finalized_collaboration_runs_are_database_immutable():
     assert "cardinality(NEW.requested_engines)" in sql
     assert "NULLIF(btrim(NEW.synthesis), '') IS NULL" in sql
     assert "director_collaboration_run_identity_immutable" in sql
+    assert "jsonb_typeof(NEW.consultations) IS DISTINCT FROM 'array'" in sql
+    assert "director_collaboration_run_completed_consultations_invalid" in sql
+    assert "SET search_path = pg_catalog, public, pg_temp" in sql
