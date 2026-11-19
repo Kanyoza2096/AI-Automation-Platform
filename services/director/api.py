@@ -231,6 +231,21 @@ def create_app(director: Director):
                         detail="Director mutation requires operator role or above",
                     )
 
+    class MissionTaskAssignBody(BaseModel):
+        engine_id: str = Field(..., min_length=1, max_length=100)
+        capability: str = Field(..., min_length=1, max_length=120)
+        idempotency_key: str = Field(..., min_length=8, max_length=128)
+        correlation_id: str = Field(..., min_length=8, max_length=128)
+
+    class MissionTaskExecuteBody(BaseModel):
+        engine_id: str = Field(..., min_length=1, max_length=100)
+        objective: str = Field(..., min_length=1, max_length=4000)
+        inputs: dict = Field(default_factory=dict)
+        idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+        correlation_id: str = Field(..., min_length=8, max_length=128)
+        estimated_tokens: int = Field(default=1800, ge=1, le=20000)
+        timeout_seconds: float = Field(default=75.0, gt=0, le=180)
+
     class ApprovalBody(BaseModel):
         actor: str = Field(
             default="admin", min_length=1, max_length=100,
@@ -243,6 +258,139 @@ def create_app(director: Director):
             pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
         )
         reason: str = Field(default="", max_length=500)
+
+    def _mission_runtime_enabled() -> bool:
+        return (os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _get_mission_runtime():
+        if not _mission_runtime_enabled():
+            raise HTTPException(404, "Director native mission runtime is disabled")
+        runtime = getattr(app.state, "director_mission_runtime", None)
+        if runtime is not None:
+            return runtime
+        try:
+            from .orchestration.runtime import MissionOrchestrationRuntime
+            from .orchestration.store import MissionRuntimeStore
+            from .orchestration.registry_factory import build_default_adapter_registry
+
+            def _sync_task_state(task_id, status, result, error):
+                task = director.tasks.get(task_id)
+                if task is None:
+                    return
+                task.status = Status(status)
+                if result is not None:
+                    task.result = dict(result)
+                if error is not None:
+                    task.error = str(error)[:2000]
+
+            runtime = MissionOrchestrationRuntime(
+                store=MissionRuntimeStore(director.store),
+                adapters=build_default_adapter_registry(director_store=director.store),
+                task_state_callback=_sync_task_state,
+            )
+            app.state.director_mission_runtime = runtime
+            return runtime
+        except Exception as exc:
+            log.exception("Director native mission runtime initialization failed")
+            raise HTTPException(503, "Director native mission runtime is not ready") from exc
+
+    def _require_workspace_mission(request):
+        workspace_id = _workspace_id(request)
+        context = getattr(request.state, "request_context", None)
+        if not workspace_id or context is None or getattr(context, "species_privileges", False):
+            raise HTTPException(403, "A trusted workspace identity is required")
+        return workspace_id
+
+    @app.get("/missions/{mission_id}/orchestration/timeline")
+    async def get_mission_orchestration_timeline(
+        mission_id: str,
+        request: Request,
+        limit: int = 100,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials)
+        workspace_id = _require_workspace_mission(request)
+        if limit < 1 or limit > 200:
+            raise HTTPException(422, "limit must be between 1 and 200")
+        runtime = _get_mission_runtime()
+        try:
+            events = await runtime.timeline(
+                mission_id=mission_id, workspace_id=workspace_id, limit=limit
+            )
+            return {"mission_id": mission_id, "workspace_id": workspace_id, "events": events}
+        except Exception as exc:
+            log.warning("Director mission timeline read failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission timeline is temporarily unavailable") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/assign")
+    async def assign_mission_task(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskAssignBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.assign_task(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                engine_id=body.engine_id,
+                capability=body.capability,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+                director_id=_trusted_actor(request),
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "mission_version": snapshot.version, "status": "assigned"}
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission task assignment failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission task assignment could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/execute")
+    async def execute_mission_task(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskExecuteBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        runtime = _get_mission_runtime()
+        try:
+            contribution = await runtime.execute_approved_task(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                engine_id=body.engine_id,
+                objective=body.objective,
+                inputs=body.inputs,
+                idempotency_prefix=body.idempotency_prefix,
+                correlation_id=body.correlation_id,
+                estimated_tokens=body.estimated_tokens,
+                timeout_seconds=body.timeout_seconds,
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "engine_id": contribution.engine_id, "status": contribution.status,
+                    "summary": contribution.summary, "confidence": contribution.confidence,
+                    "evidence": list(contribution.evidence), "limitations": list(contribution.limitations)}
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission task execution failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Native engine execution could not be confirmed") from exc
 
     # ── Core ─────────────────────────────────────────────────────────
 
@@ -611,6 +759,20 @@ def create_app(director: Director):
             if not await director.store.save_task(approved):
                 approved.status, approved.approved_at, approved.approved_by = previous
                 raise HTTPException(503, "Task approval could not be durably persisted")
+            if _mission_runtime_enabled() and approved.mission_id and approved.workspace_id:
+                try:
+                    runtime = _get_mission_runtime()
+                    await runtime.approve_task(
+                        mission_id=approved.mission_id,
+                        workspace_id=approved.workspace_id,
+                        task_id=approved.id,
+                        operator_id=str(approved.approved_by),
+                        idempotency_key=f"director-task-approval:{approved.id}:{approved.approved_at.isoformat()}",
+                        correlation_id=approved.correlation_id,
+                    )
+                except Exception as exc:
+                    log.error("Director approval committed but mission journal sync needs reconciliation: task=%s error=%s", approved.id, type(exc).__name__)
+                    raise HTTPException(503, "Task approval is saved; mission runtime synchronization requires reconciliation") from exc
             return safe(asdict(approved))
         except KeyError:
             raise HTTPException(404, "Task not found")
