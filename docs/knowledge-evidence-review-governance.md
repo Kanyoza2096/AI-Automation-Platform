@@ -114,11 +114,17 @@ Migration 187 limits the service-role grants on review cases and sweep state to 
 
 ## Scheduled backlog processing
 
-The existing backend service exposes an internal scheduler hook at
+The backend starts the bounded historical sweep automatically on startup when
+both `KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET` and
+`KDO_KB_TRUSTED_SOURCE_DOMAINS` are configured. It runs on the existing
+single web instance in a background thread, advances the durable database cursor
+once per interval, and stops after reaching the end of the corpus with no pending
+cases. The default interval is one hour (bounded by
+`KDO_KB_REVIEW_SWEEP_INTERVAL_SECONDS`). This avoids a separate paid worker or
+cron service.
+
+An optional internal trigger is available at
 `POST /api/v1/internal/knowledge-evidence-review/sweep`. It requires the
-server-only `X-KDO-Review-Sweep-Token` header and starts one bounded sweep in a
-background thread; repeated triggers while a sweep is active are idempotently
-acknowledged. A small scheduled trigger can call this endpoint without receiving
-Supabase or LLM credentials. Configure the trigger token on the backend as
-`KDO_KB_REVIEW_SWEEP_TRIGGER_TOKEN`, and give the scheduler only the backend URL
-and matching trigger token.
+server-only `X-KDO-Review-Sweep-Token` header and acknowledges an active sweep
+without starting duplicate work. A scheduler calling this hook needs only the
+backend URL and token, not Supabase or LLM credentials.
