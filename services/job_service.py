@@ -436,6 +436,14 @@ class JobService:
                 update_data["completed_at"] = job.completed_at.isoformat()
             if job.duration_ms is not None:
                 update_data["duration_ms"] = job.duration_ms
+            # State transitions must persist receipt metadata set before the
+            # transition, especially PUBLISHING -> PUBLISHED.
+            if getattr(job, "social_account_id", None):
+                update_data["social_account_id"] = job.social_account_id
+            if getattr(job, "platform_post_id", None):
+                update_data["platform_post_id"] = job.platform_post_id
+            if getattr(job, "result", None) is not None:
+                update_data["result"] = job.result
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
@@ -580,8 +588,15 @@ class JobService:
             return await self.transition(job, JobStatus.QUEUED)
         return job
 
-    async def mark_published(self, job: AutomationJob, *, post_id: Optional[str] = None, result: Optional[dict] = None) -> AutomationJob:
-        """Persist PUBLISHED only when the provider returned a concrete post ID."""
+    async def mark_published(
+        self,
+        job: AutomationJob,
+        *,
+        post_id: Optional[str] = None,
+        social_account_id: Optional[str] = None,
+        result: Optional[dict] = None,
+    ) -> AutomationJob:
+        """Persist PUBLISHED together with its confirmed provider receipt."""
         post_id = str(post_id or "").strip()
         if not post_id:
             raise ValueError(
@@ -594,11 +609,30 @@ class JobService:
             current = await self.transition(current, JobStatus.PUBLISHING)
         if current.status == JobStatus.PUBLISHING:
             current.platform_post_id = post_id
-            if result:
+            if social_account_id:
+                current.social_account_id = str(social_account_id)
+            if result is not None:
                 current.result = result
             return await self.transition(current, JobStatus.PUBLISHED)
         if current.status == JobStatus.PUBLISHED:
-            return current
+            existing_post_id = str(getattr(current, "platform_post_id", None) or "").strip()
+            if existing_post_id and existing_post_id != post_id:
+                raise ValueError(
+                    f"Conflicting provider receipt for published job {job.job_id}"
+                )
+            changed = False
+            if not existing_post_id:
+                current.platform_post_id = post_id
+                changed = True
+            if social_account_id and not getattr(current, "social_account_id", None):
+                current.social_account_id = str(social_account_id)
+                changed = True
+            if result is not None and current.result != result:
+                current.result = result
+                changed = True
+            # Repair legacy PUBLISHED rows whose transition persisted status
+            # but dropped the provider receipt fields.
+            return await self._persist_job(current) if changed else current
         raise ValueError(f"Cannot mark job {job.job_id} published from {current.status.value}")
 
     async def mark_failed(self, job: AutomationJob, *, error: str, error_code: Optional[str] = None, retryable: bool = False) -> AutomationJob:
