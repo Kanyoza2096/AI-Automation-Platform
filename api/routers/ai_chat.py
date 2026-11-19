@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
 import asyncio
+import hashlib
 import logging
 import json
 import re
@@ -108,6 +109,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
     """
     evidence = {}
     source_status = {}
+    evidence_manifest = []
 
     async def read_table(key: str, table: str, columns: str, time_column: str, limit: int):
         try:
@@ -116,8 +118,35 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
                 .order(time_column, desc=True)
                 .limit(limit))
             result = await _db_call(lambda: query.execute())
-            rows = _safe_context_value(_rows(result))
+            raw_rows = _rows(result)
+            rows = _safe_context_value(raw_rows)
             evidence[key] = rows
+            for raw_row, safe_row in zip(raw_rows, rows):
+                if not isinstance(safe_row, dict):
+                    continue
+                record_id = (
+                    safe_row.get("id")
+                    or safe_row.get("event_id")
+                    or safe_row.get("date")
+                )
+                observed_at = (
+                    safe_row.get(time_column)
+                    or safe_row.get("created_at")
+                    or safe_row.get("updated_at")
+                    or safe_row.get("occurred_at")
+                    or safe_row.get("timestamp")
+                )
+                canonical_record = json.dumps(
+                    safe_row, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, default=str,
+                ).encode("utf-8")
+                evidence_manifest.append({
+                    "source_table": table,
+                    "record_id": str(record_id) if record_id is not None else None,
+                    "identity_quality": "stable_record_id" if record_id is not None else "content_fingerprint_only",
+                    "observed_at": str(observed_at) if observed_at is not None else None,
+                    "content_sha256": hashlib.sha256(canonical_record).hexdigest(),
+                })
             source_status[table] = {
                 "status": "available" if rows else "empty",
                 "records": len(rows),
@@ -199,6 +228,11 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             "unavailable_tables": unavailable,
         },
         "evidence": evidence,
+        "evidence_manifest": evidence_manifest,
+        "evidence_manifest_sha256": hashlib.sha256(json.dumps(
+            evidence_manifest, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, default=str,
+        ).encode("utf-8")).hexdigest(),
         "execution_authority": "none",
     }
 
@@ -270,6 +304,8 @@ async def _persist_collaboration_progress(db, workspace_id, run_id, consultation
             "completed_at": item.get("completed_at"),
             "follow_up_questions": len(item.get("follow_up_questions") or []),
             "follow_up_responses": len(item.get("follow_up_responses") or []),
+            "evidence_record_count": len((item.get("sources") or {}).get("evidence_manifest") or []),
+            "evidence_manifest_sha256": (item.get("sources") or {}).get("evidence_manifest_sha256"),
         })
     event = {
         "event_id": str(uuid.uuid4()),
@@ -598,6 +634,8 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
         "follow_up_questions": item.get("follow_up_questions", []),
         "follow_up_responses": item.get("follow_up_responses", []),
         "sources": item["sources"],
+        "evidence_manifest": item["sources"].get("evidence_manifest", []),
+        "evidence_manifest_sha256": item["sources"].get("evidence_manifest_sha256"),
         "observed_at": item["observed_at"],
     } for item in consultations]
     synthesis_prompt = (
