@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS public.director_mission_admissions (
 
 -- The admission table already exists in some production environments. CREATE
 -- TABLE IF NOT EXISTS does not retrofit constraints onto an existing table.
-DO $
+DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
