@@ -167,3 +167,23 @@ def test_evidence_audit_ledgers_revoke_service_role_mutation_privileges():
     assert "UPDATE" not in migration
     assert "DELETE" not in migration
     assert "TRUNCATE" not in migration
+
+
+def test_read_only_backlog_lists_unverified_entries_and_exact_version_review_state():
+    source = API_PATH.read_text()
+    routes = _route_contracts(source)
+    assert (
+        "GET",
+        "/brands/{brand_id}/knowledge-evidence-backlog",
+    ) in routes
+    start = source.index("async def list_knowledge_evidence_backlog")
+    end = source.index('@router.get("/brands/{brand_id}/knowledge-evidence-reviews")', start)
+    backlog = source[start:end]
+    assert 'meta.get("verified") is True' in backlog
+    assert 'content_sha256' in backlog
+    assert 'review_case_id' in backlog
+    assert '"read_only": True' in backlog
+    assert '"promotion_performed": False' in backlog
+    assert '.insert(' not in backlog
+    assert '.update(' not in backlog
+    assert 'rpc(' not in backlog
