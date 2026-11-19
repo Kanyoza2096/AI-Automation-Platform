@@ -50,6 +50,7 @@ class MemoryMissionStore:
         }
         self.events = []
         self.idempotency = {}
+        self.fail_atomic_approval = False
 
     async def get_mission(self, *, mission_id, scope_type, workspace_id=None):
         if (
@@ -95,6 +96,8 @@ class MemoryMissionStore:
     async def approve_workspace_task_atomic(
         self, *, event, task_id, approved_by, approved_at
     ):
+        if self.fail_atomic_approval:
+            raise RuntimeError("simulated_atomic_approval_rpc_failure")
         existing = self.idempotency.get(event.idempotency_key)
         if existing:
             durable = next(
@@ -293,6 +296,40 @@ async def test_meta_engine_adapter_uses_fresh_read_only_snapshot_and_marks_stale
     stale_result = await stale.invoke(context)
     assert stale_result.status == "partial"
     assert stale_result.source_metadata["freshness_window_seconds"] == 300
+
+
+@pytest.mark.asyncio
+async def test_atomic_approval_failure_leaves_task_and_mission_journal_unchanged():
+    store = MemoryMissionStore()
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-atomic-failure",
+        correlation_id="corr-atomic-failure",
+    )
+    before_row = copy.deepcopy(store.row)
+    before_task = copy.deepcopy(store.task)
+    before_events = copy.deepcopy(store.events)
+    store.fail_atomic_approval = True
+
+    with pytest.raises(RuntimeError, match="simulated_atomic_approval_rpc_failure"):
+        await runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-failure",
+            approved_at=datetime(2026, 11, 19, 12, 20, tzinfo=timezone.utc),
+            idempotency_key="approval-failure",
+            correlation_id="corr-atomic-failure",
+        )
+
+    assert store.task == before_task
+    assert store.row == before_row
+    assert store.events == before_events
 
 
 @pytest.mark.asyncio
