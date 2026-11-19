@@ -190,53 +190,70 @@ class MissionOrchestrationRuntime:
         workspace_id: str,
         task_id: str,
         operator_id: str,
+        approved_at: datetime,
         idempotency_key: str,
         correlation_id: str,
     ) -> MissionRuntimeSnapshot:
+        """Atomically persist canonical approval provenance and task.approved."""
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         task_row = await self.store.get_workspace_task(
             task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
         )
-        if (
-            not task_row
-            or task_row.get("status") != "approved"
-            or task_row.get("payload", {}).get("approved_by") != operator_id
-        ):
-            raise MissionTaskNotReady("canonical_director_approval_not_persisted")
-
-        # A successful journal write may have committed even when its response
-        # was lost. Check the durable event before asking the state machine to
-        # prepare a new transition (which correctly rejects an already-approved
-        # task). The exact idempotency key and actor must match; otherwise fail
-        # closed rather than masking conflicting approval provenance.
-        prior_event = await self.store.find_event(
-            mission_id=mission_id,
-            scope_type="workspace",
-            workspace_id=workspace_id,
-            idempotency_key=idempotency_key,
-            event_type="task.approved",
-            task_id=task_id,
-        )
-        if prior_event:
-            if prior_event.get("actor_id") == operator_id:
-                # Re-read after the event lookup so a concurrent commit cannot
-                # make this replay return a stale mission version.
-                return await self.load_snapshot(
-                    mission_id=mission_id, workspace_id=workspace_id
-                )
-            raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
-        if (current.state_snapshot.get("task_status") or {}).get(task_id) != "approval_required":
+        if not task_row:
+            raise MissionTaskNotReady("canonical_workspace_task_not_found")
+        payload = task_row.get("payload") or {}
+        approved_at_value = approved_at.astimezone(timezone.utc).isoformat()
+        if task_row.get("status") == "approved":
+            # A retried request may reuse only the exact durable operator and
+            # timestamp already committed. The API restores these from its
+            # canonical task cache after restart.
+            if (
+                payload.get("approved_by") != operator_id
+                or payload.get("approved_at") != approved_at_value
+            ):
+                raise MissionTaskNotReady("canonical_approval_provenance_conflict")
+        elif task_row.get("status") != "approval_required":
+            raise MissionTaskNotReady("canonical_task_not_awaiting_approval")
+        if (current.state_snapshot.get("task_status") or {}).get(task_id) not in {
+            "approval_required", "approved"
+        }:
             raise MissionTaskNotReady("canonical_approval_journal_state_mismatch")
 
-        return await self._commit(
-            current,
+        command = MissionEventCommand(
             event_type="task.approved",
             idempotency_key=idempotency_key,
             actor_type="operator",
             actor_id=operator_id,
             correlation_id=correlation_id,
+            payload={"approved_at": approved_at_value},
             task_id=task_id,
         )
+        transition = self.state_machine.prepare(current, command)
+        result = await self.store.approve_workspace_task_atomic(
+            event=transition.event,
+            task_id=task_id,
+            approved_by=operator_id,
+            approved_at=approved_at_value,
+        )
+        if not result:
+            raise MissionTaskNotReady("atomic_task_approval_not_acknowledged")
+        if result.get("error"):
+            raise MissionTaskNotReady(str(result["error"]))
+        if result.get("replayed"):
+            return await self.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+        if int(result.get("version", -1)) != transition.next_snapshot.version:
+            raise MissionTaskNotReady("atomic_task_approval_version_acknowledgement_mismatch")
+        if self.task_state_callback is not None:
+            try:
+                self.task_state_callback(task_id, "approved", None, None)
+            except Exception:
+                logger.exception(
+                    "director_task_registry_sync_failed_after_atomic_approval",
+                    extra={"task_id": task_id},
+                )
+        return transition.next_snapshot
 
     async def cancel_task(
         self,
