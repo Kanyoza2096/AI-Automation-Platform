@@ -290,6 +290,7 @@ class KnowledgeContextStep(Step):
             results = await kb.search(topic, top_k=3)
             facts = []
             evidence = []
+            unverified_count = 0
             for entry, score in (results or []):
                 text = str(getattr(entry, "content", "") or "").strip()
                 if not text:
@@ -302,16 +303,18 @@ class KnowledgeContextStep(Step):
                     or getattr(entry, "id", "")
                     or ""
                 ).strip()
+                verified = metadata.get("verified") in (True, 1, "true", "yes", "1", "True")
+                if not verified:
+                    unverified_count += 1
+                    continue
                 if not source_id:
                     continue
-                verified = metadata.get("verified") is True
-                # Make provenance visible to the model. The deterministic
-                # evidence gate remains authoritative, but without this
-                # annotation the model sees unverified passages as plain
-                # prose and may invent empirical claims that the gate must
-                # reject later.
+                # Only verified, traceable passages enter the generation
+                # prompt. The independent semantic reviewer uses the same
+                # trust boundary, so generating from unverified material
+                # would waste model/image calls and fail publication later.
                 facts.append(
-                    f"[source_id={source_id};verified={'true' if verified else 'false'}]\\n{text}"
+                    f"[source_id={source_id};verified=true]\\n{text}"
                 )
                 evidence.append({
                     "source_id": source_id,
@@ -321,16 +324,21 @@ class KnowledgeContextStep(Step):
                 })
 
             if not evidence:
+                unverified_only = unverified_count > 0
                 raise StepFailure(
                     message=(
-                        f"No traceable knowledge evidence was retrieved for topic '{topic}'. "
-                        "Content generation and publishing are blocked."
+                        f"Knowledge retrieval for topic '{topic}' returned no verified, "
+                        "traceable evidence. Content generation and publishing are blocked."
                     ),
-                    code="knowledge_evidence_missing",
+                    code=(
+                        "knowledge_evidence_unverified"
+                        if unverified_only else "knowledge_evidence_missing"
+                    ),
                     detail={
                         "brand_id": getattr(self._brand, "id", None),
                         "topic": topic,
                         "result_count": len(results or []),
+                        "unverified_count": unverified_count,
                     },
                 )
 
@@ -880,7 +888,22 @@ class GenerateContentStep(Step):
 
 # ── 3. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
-    """Validate content, with one evidence-preserving repair after semantic rejection."""
+    """Validate content; repair semantic rejection only when trusted evidence exists."""
+
+    @staticmethod
+    def _has_verified_knowledge_evidence(evidence: Any) -> bool:
+        """Mirror the semantic reviewer's accepted verified-flag representations."""
+        if not isinstance(evidence, list):
+            return False
+        accepted = (True, 1, "true", "yes", "1", "True")
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("verified") in accepted
+            and bool(str(item.get("source_id") or "").strip())
+            and bool(str(item.get("text") or "").strip())
+            for item in evidence
+        )
     name = "validate_content"
 
     def __init__(
@@ -955,6 +978,9 @@ class ValidateContentStep(Step):
             and self._content_engine is not None
             and isinstance(context.get("base_prompt"), str)
             and context["base_prompt"].strip()
+            and self._has_verified_knowledge_evidence(
+                context.get("knowledge_evidence")
+            )
         ):
             context["_semantic_repair_attempted"] = True
             feedback = {
@@ -1009,6 +1035,19 @@ class ValidateContentStep(Step):
                 context["validation_result"] = validation_result
                 semantic_review = await self._semantic_review(context, caption)
                 context["semantic_review"] = semantic_review
+
+        if (
+            isinstance(semantic_review, dict)
+            and semantic_review.get("approved") is not True
+            and not self._has_verified_knowledge_evidence(
+                context.get("knowledge_evidence")
+            )
+        ):
+            logger.info(
+                "PostWorkflow: semantic repair skipped because no verified "
+                "traceable knowledge evidence is available (topic=%s)",
+                str(topic)[:80],
+            )
 
         if (
             not isinstance(semantic_review, dict)
