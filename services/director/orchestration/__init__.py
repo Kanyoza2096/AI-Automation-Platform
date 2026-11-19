@@ -12,6 +12,7 @@ from .contracts import (
 )
 from .native_adapters import ContentIntelligenceMissionAdapter
 from .condition_engine_adapter import ConditionEngineMissionAdapter
+from .meta_engine_adapter import MetaEngineMissionAdapter
 from .registry_factory import build_default_adapter_registry
 from .runtime import MissionOrchestrationRuntime, MissionRuntimeNotFound, MissionTaskNotReady
 from .store import MissionEventWrite, MissionRuntimeStore, MissionRuntimeStoreError
@@ -32,6 +33,7 @@ __all__ = [
     "NativeEngineAdapter",
     "ContentIntelligenceMissionAdapter",
     "ConditionEngineMissionAdapter",
+    "MetaEngineMissionAdapter",
     "build_default_adapter_registry",
     "MissionOrchestrationRuntime",
     "MissionRuntimeNotFound",
