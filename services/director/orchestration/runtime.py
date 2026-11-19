@@ -373,7 +373,7 @@ class MissionOrchestrationRuntime:
         """Read-only recovery assessment; this method never changes task state or dispatches work."""
         if isinstance(stale_after_seconds, bool) or stale_after_seconds <= 0:
             raise ValueError("recovery_stale_after_seconds_must_be_positive")
-        await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        snapshot = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         task = await self.store.get_workspace_task(
             task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
         )
@@ -390,6 +390,7 @@ class MissionOrchestrationRuntime:
             events=events,
             mission_id=mission_id,
             workspace_id=workspace_id,
+            assigned_engine_id=str(((snapshot.state_snapshot.get("task_assignments") or {}).get(task_id) or {}).get("engine_id") or "") or None,
             now=now or datetime.now(timezone.utc),
             stale_after=timedelta(seconds=float(stale_after_seconds)),
         )
