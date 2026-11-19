@@ -1232,7 +1232,7 @@ def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", 
         "idempotency_key": key,
         "created_at": created_at,
         "correlation_id": "corr-attempt-1",
-        "payload": payload or {},
+        "payload": payload if payload is not None else ({"attempt_id": key[:-8], "engine_id": "content_intelligence", "capability": "research.analyze"} if event_type == "task.started" else {}),
     }
 
 
@@ -1252,6 +1252,8 @@ def test_recovery_assessment_keeps_stale_started_attempt_outcome_unknown():
     result = assess_execution_recovery(
         task=_recovery_task("executing"),
         events=[_recovery_event("task.started", "attempt-1:started")],
+        assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
@@ -1266,6 +1268,8 @@ def test_recovery_assessment_does_not_escalate_a_fresh_execution():
     result = assess_execution_recovery(
         task=_recovery_task("executing"),
         events=[_recovery_event("task.started", "attempt-1:started", created_at="2026-11-19T11:59:00+00:00")],
+        assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
@@ -1284,6 +1288,7 @@ def test_recovery_assessment_reconciles_matching_durable_completion():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
         stale_after=timedelta(minutes=5),
     )
@@ -1303,6 +1308,8 @@ def test_recovery_assessment_requires_explicit_no_side_effects_evidence():
     result = assess_execution_recovery(
         task=_recovery_task("failed"),
         events=events,
+        assigned_engine_id="content_intelligence",
+        assigned_capability="research.analyze",
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
@@ -1358,7 +1365,7 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
         "idempotency_key": "attempt-read-only:started",
         "created_at": "2026-11-19T10:00:00+00:00",
         "correlation_id": "corr-attempt-1",
-        "payload": {"requested_by": "operator-1"},
+        "payload": {"requested_by": "operator-1", "attempt_id": "attempt-read-only", "engine_id": "content_intelligence", "capability": "research.analyze"},
     })
     before_task = copy.deepcopy(store.task)
     before_row = copy.deepcopy(store.row)
