@@ -526,7 +526,7 @@ async def _run_autonomous_knowledge_evidence_review(
     return reviewed
 
 
-async def _autonomously_review_new_entry(*, entry, brand_id: str, claim_scope: str, client) -> dict:
+async def _autonomously_review_new_entry(*, entry, brand_id: str, claim_scope: str, client, knowledge_repo) -> dict:
     """Create/reuse an autonomous review case for every newly ingested KB entry."""
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     source_url = metadata.get("source_url") or metadata.get("sourceUrl")
@@ -563,8 +563,18 @@ async def _autonomously_review_new_entry(*, entry, brand_id: str, claim_scope: s
                             "ingestion_method": "server_side_web_fetch",
                         }
                         entry.metadata = metadata
-                        from repositories.knowledge_repository import KnowledgeRepository
-                        repo = await _async_wrap(entry_repo_container.resolve, KnowledgeRepository) if False else None
+                        try:
+                            await _async_wrap(knowledge_repo.save, entry)
+                        except Exception:
+                            entry.metadata = dict(entry.metadata or {})
+                            for key in (
+                                "source_snapshot_text", "source_snapshot_sha256",
+                                "source_snapshot_signature", "source_snapshot_source_id",
+                                "source_snapshot_trust_class", "source_snapshot_url",
+                                "source_snapshot_origin",
+                            ):
+                                entry.metadata.pop(key, None)
+                            trust_class = None
         except Exception:
             # Missing or inaccessible provenance must never become approval.
             trust_class = None
