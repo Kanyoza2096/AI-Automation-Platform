@@ -204,6 +204,7 @@ def test_sweep_scheduler_trigger_is_secret_gated_and_backgrounded():
     assert "await stop_knowledge_review_sweep_scheduler()" in main
     assert "async def stop_knowledge_review_sweep_scheduler" in source
     assert "async def _periodic_knowledge_review_sweep" in source
+    assert "_review_sweep_task = asyncio.create_task(_run_review_sweep_background())" in source
     assert 'result.get("discovered") == 0 and result.get("reached_end")' in source
     sweep = (ROOT / "scripts" / "autonomous_knowledge_evidence_review.py").read_text()
     assert 'counters["reached_end"] = int(reached_end)' in sweep
