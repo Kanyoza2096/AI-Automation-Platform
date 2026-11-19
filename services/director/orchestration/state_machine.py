@@ -651,7 +651,7 @@ class MissionStateMachine:
         # result. A separate usage event could fail after task completion and
         # leave a completed task with an uncharged mission budget.
         usage_keys = {"usage_tokens", "provider_calls"}
-        if usage_keys.intersection(payload):
+        if usage_keys.intersection(payload) and event_type != "engine.call.completed":
             if event_type not in {
                 "task.completed", "task.failed", "task.blocked", "engine.answer.received"
             }:
