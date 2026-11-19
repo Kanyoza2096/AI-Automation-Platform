@@ -647,6 +647,36 @@ class MissionStateMachine:
         else:
             raise MissionTransitionRejected(f"unsupported_mission_event:{event_type}")
 
+        # Persist provider usage in the same durable event as the engine
+        # result. A separate usage event could fail after task completion and
+        # leave a completed task with an uncharged mission budget.
+        usage_keys = {"usage_tokens", "provider_calls"}
+        if usage_keys.intersection(payload):
+            if event_type not in {
+                "task.completed", "task.failed", "task.blocked", "engine.answer.received"
+            }:
+                raise MissionTransitionRejected("provider_usage_event_type_invalid")
+            if not usage_keys.issubset(payload):
+                raise MissionTransitionRejected("provider_usage_contract_incomplete")
+            usage = payload["usage_tokens"]
+            calls = payload["provider_calls"]
+            if (
+                isinstance(usage, bool) or not isinstance(usage, int) or usage < 0
+                or isinstance(calls, bool) or not isinstance(calls, int) or not 1 <= calls <= 12
+            ):
+                raise MissionTransitionRejected("provider_usage_invalid")
+            budget["tokens_used"] = int(budget["tokens_used"]) + usage
+            budget["provider_calls"] = int(budget["provider_calls"]) + calls
+            max_tokens = budget.get("max_tokens")
+            max_calls = budget.get("max_provider_calls")
+            if (
+                (max_tokens is not None and budget["tokens_used"] >= int(max_tokens))
+                or (max_calls is not None and budget["provider_calls"] >= int(max_calls))
+            ):
+                budget["exhausted"] = True
+                budget["exhaustion_reason"] = "mission_resource_ceiling_reached"
+                next_status, next_phase = "awaiting_review", "review"
+
         if next_status not in MISSION_STATUSES or next_phase not in MISSION_PHASES:
             raise MissionTransitionRejected("mission_transition_target_invalid")
         if not self._status_transition_allowed(current.status, next_status):
