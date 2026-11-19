@@ -1343,6 +1343,9 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
     store.task["status"] = "executing"
     store.task["payload"]["status"] = "executing"
     store.row["state_snapshot"]["task_status"][store.task_id] = "executing"
+    store.row["state_snapshot"]["task_assignments"][store.task_id] = {
+        "engine_id": "content_intelligence", "capability": "research.analyze"
+    }
     store.events.append({
         "event_id": "event-start",
         "mission_id": store.mission_id,
@@ -1350,6 +1353,8 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
         "workspace_id": store.workspace_id,
         "task_id": store.task_id,
         "event_type": "task.started",
+        "actor_type": "operator",
+        "actor_id": "operator-1",
         "idempotency_key": "attempt-read-only:started",
         "created_at": "2026-11-19T10:00:00+00:00",
         "correlation_id": "corr-attempt-1",
@@ -1369,6 +1374,7 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
     )
 
     assert result.classification == "outcome_unknown"
+    assert result.reason == "stale_execution_has_no_authoritative_terminal_outcome_hold_and_reconcile"
     assert store.task == before_task
     assert store.row == before_row
     assert store.events == before_events
