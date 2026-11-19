@@ -38,6 +38,8 @@ class MissionTaskContext:
         if not str(self.correlation_id or "").strip():
             raise ValueError("correlation_id_required")
         object.__setattr__(self, "correlation_id", str(self.correlation_id).strip())
+        if self.attempt_id:
+            object.__setattr__(self, "attempt_id", str(self.attempt_id).strip())
         if not isinstance(self.inputs, Mapping):
             raise TypeError("task_inputs_must_be_mapping")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
