@@ -263,3 +263,32 @@ def test_failed_or_blocked_task_cannot_be_reassigned_without_recovery_proof():
                 task_id="task-a",
                 payload={"engine_id": "meta_engine", "capability": "review.analyze"},
             ))
+
+
+def test_recovery_review_is_operator_only_and_cannot_authorize_reconsideration():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    state = dict(current.state_snapshot)
+    state["task_status"] = {"task-a": "executing"}
+    current = MissionRuntimeSnapshot(
+        mission_id=current.mission_id, scope_type=current.scope_type,
+        workspace_id=current.workspace_id, version=current.version,
+        status=current.status, phase=current.phase, task_ids=current.task_ids,
+        state_snapshot=state,
+    )
+    with pytest.raises(MissionTransitionRejected, match="task_recovery_review_requires_operator"):
+        machine.prepare(current, _command(
+            "task.recovery.reviewed", actor_type="director", task_id="task-a",
+            payload={"decision": "hold", "reason": "Uncertain", "assessment_classification": "outcome_unknown"},
+        ))
+    with pytest.raises(MissionTransitionRejected, match="task_recovery_decision_not_permitted"):
+        machine.prepare(current, _command(
+            "task.recovery.reviewed", actor_type="operator", actor_id="operator-1", task_id="task-a",
+            payload={"decision": "reconsider", "reason": "Retry", "assessment_classification": "outcome_unknown"},
+        ))
+    transition = machine.prepare(current, _command(
+        "task.recovery.reviewed", actor_type="operator", actor_id="operator-1", task_id="task-a",
+        payload={"decision": "hold", "reason": "Uncertain", "assessment_classification": "outcome_unknown"},
+    ))
+    assert transition.next_snapshot.state_snapshot["task_status"]["task-a"] == "executing"
+    assert transition.event.payload["decision"] == "hold"
