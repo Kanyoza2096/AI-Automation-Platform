@@ -11,10 +11,11 @@ from api.v1_stores import *
 
 router = APIRouter()
 _review_sweep_task: asyncio.Task | None = None
+_review_sweep_scheduler_task: asyncio.Task | None = None
 _review_sweep_logger = logging.getLogger("kdo.knowledge_review_sweep")
 
 
-async def _run_review_sweep_background() -> None:
+async def _run_review_sweep_background() -> dict | None:
     global _review_sweep_task
     try:
         def _run_in_thread():
@@ -23,6 +24,7 @@ async def _run_review_sweep_background() -> None:
 
         result = await asyncio.to_thread(_run_in_thread)
         _review_sweep_logger.info("knowledge_review_sweep_finished", extra={"result": result})
+        return result
     except Exception as exc:
         _review_sweep_logger.exception(
             "knowledge_review_sweep_failed",
@@ -30,6 +32,28 @@ async def _run_review_sweep_background() -> None:
         )
     finally:
         _review_sweep_task = None
+
+
+async def _periodic_knowledge_review_sweep() -> None:
+    """Use the existing web instance to drain the bounded backlog without a paid worker."""
+    interval = max(600, min(86400, int(os.getenv("KDO_KB_REVIEW_SWEEP_INTERVAL_SECONDS", "3600"))))
+    await asyncio.sleep(30)
+    while True:
+        result = await _run_review_sweep_background()
+        if result and result.get("discovered") == 0 and result.get("reached_end"):
+            _review_sweep_logger.info("knowledge_review_backlog_drained")
+            return
+        await asyncio.sleep(interval)
+
+
+@router.on_event("startup")
+async def start_knowledge_review_sweep_scheduler() -> None:
+    global _review_sweep_scheduler_task
+    if not os.getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET") or not os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS"):
+        _review_sweep_logger.info("knowledge_review_scheduler_not_configured")
+        return
+    if _review_sweep_scheduler_task is None or _review_sweep_scheduler_task.done():
+        _review_sweep_scheduler_task = asyncio.create_task(_periodic_knowledge_review_sweep())
 
 
 @router.post("/internal/knowledge-evidence-review/sweep")
