@@ -19,6 +19,8 @@ from services.director.orchestration import (
 
 
 class MemoryMissionStore:
+    MAX_EVENT_READ_LIMIT = 500
+
     def __init__(self):
         self.workspace_id = "workspace-runtime-test"
         self.mission_id = "mission-runtime-test"
