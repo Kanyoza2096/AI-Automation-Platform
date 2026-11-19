@@ -3,6 +3,18 @@
 Workers AI is an interpretation provider here. This adapter has no ActionIntent
 or execution methods and never calls the KDO Action Kernel.
 
+v1.2 (2026-11-19) — ACCEPTS temperature/max_tokens FROM GATEWAY:
+  - analyze() now accepts `temperature` and `max_output_tokens` kwargs
+    forwarded by LLMGateway. Previously these were silently dropped,
+    causing every Cloudflare Workers AI call to run at the provider's
+    default temperature (0.7 for most models), which produced flatter
+    and more predictable captions than the caller intended.
+  - temperature is injected as a top-level body field, matching the
+    OpenAI-compatible /chat/completions contract that Workers AI
+    implements.
+  - If temperature is not supplied, no explicit value is sent, preserving
+    the provider default.
+
 v1.1 (2026-10-22) — FINISH_REASON:
   Extracts finish_reason from the Cloudflare response body and normalizes
   it into the AIReceipt vocabulary. Values observed from Workers AI:
@@ -154,6 +166,7 @@ class CloudflareAIAdapter:
         model: Optional[str] = None,
         correlation_id: str,
         structured: bool = False,
+        temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
     ) -> AIReceipt:
         selected_model = (model or self.model).strip()
@@ -170,6 +183,14 @@ class CloudflareAIAdapter:
             content += "\nReturn only a JSON object. Do not return markdown."
         messages.append({"role": "user", "content": content})
         body = {"model": selected_model, "messages": messages, "stream": False}
+
+        # v1.2 — temperature flows through to the OpenAI-compatible
+        # /chat/completions body. Workers AI ignores unknown top-level
+        # keys, so omitting this when temperature is None preserves the
+        # provider default without changing behavior.
+        if isinstance(temperature, (int, float)) and temperature >= 0:
+            body["temperature"] = float(temperature)
+
         if structured:
             # Use Workers AI JSON mode as a provider-level constraint, not just a prompt hint.
             body["response_format"] = {"type": "json_object"}
