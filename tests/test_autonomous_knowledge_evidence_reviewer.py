@@ -147,6 +147,9 @@ async def test_low_confidence_or_incomplete_coverage_cannot_auto_approve():
 def test_autonomous_review_is_wired_to_submission_and_promotion_is_gated():
     source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
     assert "_run_autonomous_knowledge_evidence_review(" in source
+    assert "_autonomously_review_new_entry(" in source
+    assert "review_status" in source
+    assert "bulk_knowledge_autonomous_review_unavailable" in source
     assert 'if decision == "approved":' in source
     assert '"p_actor_id": actor' in source
     assert '"review_mode": "autonomous"' in source
