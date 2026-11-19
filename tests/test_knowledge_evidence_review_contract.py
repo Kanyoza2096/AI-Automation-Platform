@@ -66,7 +66,7 @@ def test_database_guard_binds_case_to_locked_current_content_and_tenant():
 def test_review_approval_requires_human_identity_and_stable_source():
     source = API_PATH.read_text()
     assert "require_human: bool = True" in source
-    assert "verified KCPG context" in source
+    assert 'metadata.get("authority_source") == "verified_kcpg_hmac"' in source
     assert "verified_kcpg_hmac" in source
     assert 'principal_type", "") == "human"' in source
     assert "Approval requires a stable source ID" in source
