@@ -60,7 +60,9 @@ def test_mission_requires_operator_approval_and_verification_before_completion()
     current = _advance(machine, current, _command(
         "task.approved", actor_type="operator", actor_id="operator-1", task_id="task-a"
     ))
-    current = _advance(machine, current, _command("task.started", task_id="task-a"))
+    current = _advance(machine, current, _command(
+        "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a"
+    ))
     with pytest.raises(MissionTransitionRejected, match="task_result_engine_assignment_mismatch"):
         machine.prepare(current, _command(
             "task.completed", actor_type="engine", actor_id="meta_engine",
