@@ -35,6 +35,7 @@ on:
       - "migrations/178_director_mission_event_task_scope_guard.sql"
       - "migrations/179_director_mission_runtime_initial_state.sql"
       - "migrations/180_director_mission_foreign_key_indexes.sql"
+      - "migrations/181_director_atomic_task_event_sync.sql"
       - "tests/test_director_executive_report_truth.py"
       - "tests/test_director_decision_evidence.py"
       - "tests/test_director_learning_evidence.py"
