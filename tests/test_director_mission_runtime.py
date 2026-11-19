@@ -650,3 +650,70 @@ def test_condition_engine_brand_health_snapshot_is_locked_and_workspace_scoped(m
     )
     assert published[-1][0] == "brand_health_updated"
     assert published[-1][1]["workspace_id"] == "workspace-condition-1"
+
+
+@pytest.mark.asyncio
+async def test_native_execution_rejects_dependencies_until_canonical_task_is_completed():
+    store = MemoryMissionStore()
+    dependency_id = "task-dependency"
+    store.task["payload"]["depends_on"] = [dependency_id]
+    original_get_task = store.get_workspace_task
+
+    async def get_task_with_dependency(*, task_id, workspace_id, mission_id):
+        if task_id == dependency_id:
+            return {
+                "id": dependency_id,
+                "scope_type": "workspace",
+                "workspace_id": workspace_id,
+                "status": "approved",
+                "payload": {
+                    "id": dependency_id,
+                    "mission_id": mission_id,
+                    "workspace_id": workspace_id,
+                    "status": "approved",
+                },
+            }
+        return await original_get_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+
+    store.get_workspace_task = get_task_with_dependency
+    registry = AdapterRegistry()
+    adapter = FakeNativeAdapter("content_intelligence", "Should not execute.")
+    registry.register(adapter)
+    runtime = MissionOrchestrationRuntime(
+        store=store, adapters=registry, task_state_callback=lambda *args: None
+    )
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-with-dependency",
+        correlation_id="corr-dependency",
+    )
+    store.task["status"] = "approved"
+    store.task["payload"]["status"] = "approved"
+    store.task["payload"]["approved_by"] = "operator-dependency"
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-dependency",
+        idempotency_key="approve-with-dependency",
+        correlation_id="corr-dependency",
+    )
+
+    with pytest.raises(MissionTaskNotReady, match="mission_dependency_not_completed"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="Must wait for its dependency.",
+            inputs={},
+            idempotency_prefix="execute-with-dependency",
+            correlation_id="corr-dependency",
+        )
+    assert adapter.calls == []
