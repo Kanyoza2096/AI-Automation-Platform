@@ -219,7 +219,11 @@ class MissionOrchestrationRuntime:
         )
         if prior_event:
             if prior_event.get("actor_id") == operator_id:
-                return current
+                # Re-read after the event lookup so a concurrent commit cannot
+                # make this replay return a stale mission version.
+                return await self.load_snapshot(
+                    mission_id=mission_id, workspace_id=workspace_id
+                )
             raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
         if (current.state_snapshot.get("task_status") or {}).get(task_id) != "approval_required":
             raise MissionTaskNotReady("canonical_approval_journal_state_mismatch")
