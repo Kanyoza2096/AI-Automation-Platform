@@ -92,10 +92,12 @@ async def list_knowledge_entries(
 ):
     """List knowledge entries for a brand."""
     try:
-        await require_workspace_ownership("brand", brand_id, request, container)
+        workspace_id = await require_workspace_ownership("brand", brand_id, request, container)
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="Authenticated workspace is required")
         from repositories.knowledge_repository import KnowledgeRepository
         repo = await _async_wrap(container.resolve, KnowledgeRepository)
-        entries = await _async_wrap(repo.find_by_brand, brand_id)
+        entries = await _async_wrap(repo.find_by_brand, brand_id, workspace_id)
         return _ok({"knowledge_entries": [e.model_dump(mode="json") for e in entries]})
     except HTTPException:
         raise
