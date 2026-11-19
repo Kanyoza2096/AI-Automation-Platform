@@ -821,6 +821,72 @@ def create_app(director: Director):
         workspace_id = _workspace_id(request)
         if not workspace_id:
             raise HTTPException(400, "A trusted workspace context is required")
+        plan = await director.load_strategic_plan(plan_id)
+        if plan is None:
+            raise HTTPException(404, "Strategic plan not found")
+        plan_objective = plan.get("objective") if isinstance(plan, dict) else None
+        if isinstance(plan_objective, dict):
+            source_run_id = plan_objective.get("source_collaboration_run_id")
+            provenance = plan_objective.get("source_collaboration_provenance")
+        else:
+            source_run_id, provenance = None, None
+        if source_run_id:
+            if not isinstance(provenance, dict):
+                raise HTTPException(409, "Strategic plan collaboration provenance is missing")
+            try:
+                from services.supabase import supabase_service
+                db = supabase_service.service_client
+                if db is None:
+                    raise RuntimeError("persistent collaboration storage unavailable")
+                query = (db.table("director_collaboration_runs")
+                    .select("id,workspace_id,objective,requested_engines,status,consultations,synthesis,evidence_summary,completed_at")
+                    .eq("id", source_run_id)
+                    .eq("workspace_id", workspace_id)
+                    .limit(1))
+                result = await asyncio.to_thread(lambda: query.execute())
+                rows = list(getattr(result, "data", None) or [])
+            except Exception as exc:
+                log.exception("Unable to re-verify collaboration provenance before mission admission")
+                raise HTTPException(503, "Collaboration provenance could not be re-verified") from exc
+            if not rows:
+                raise HTTPException(409, "Source collaboration run is no longer available in this workspace")
+            source_run = rows[0]
+            summary = source_run.get("evidence_summary") or {}
+            comparison = summary.get("comparison") if isinstance(summary, dict) else None
+            recommendation = summary.get("recommendation") if isinstance(summary, dict) else None
+            if (
+                source_run.get("status") != "completed"
+                or not source_run.get("completed_at")
+                or not isinstance(comparison, dict)
+                or comparison.get("status") != "available"
+                or not isinstance(recommendation, dict)
+                or recommendation.get("status") != "available"
+            ):
+                raise HTTPException(409, "Source collaboration run is no longer a complete recommendation")
+            canonical_source = {
+                "schema_version": "kdo.director.collaboration-provenance.v1",
+                "run_id": str(source_run["id"]),
+                "workspace_id": str(source_run["workspace_id"]),
+                "status": source_run["status"],
+                "completed_at": source_run["completed_at"],
+                "objective": source_run.get("objective") or "",
+                "requested_engines": source_run.get("requested_engines") or [],
+                "consultations": source_run.get("consultations") or [],
+                "synthesis": source_run.get("synthesis") or "",
+                "comparison": comparison,
+                "recommendation": recommendation,
+            }
+            canonical_json = json.dumps(
+                canonical_source, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
+            )
+            current_digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+            if (
+                provenance.get("run_id") != str(source_run["id"])
+                or provenance.get("workspace_id") != workspace_id
+                or provenance.get("sha256") != current_digest
+            ):
+                raise HTTPException(409, "Source collaboration record changed after strategic-plan creation")
         try:
             return await director.stage_strategic_mission(
                 plan_id=plan_id,
