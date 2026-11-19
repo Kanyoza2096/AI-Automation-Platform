@@ -60,7 +60,11 @@ If the knowledge content is later edited, a database trigger automatically sets 
 ## Autonomous KDO review and promotion
 
 Routine evidence review is autonomous; an operator is not expected to approve each
-case. The KDO reviewer makes one of three decisions:
+case. New single and bulk knowledge submissions automatically enter the review
+queue. When a supplied source URL belongs to an exact-host allowlist, the backend
+fetches it, signs the captured text, and reviews it immediately. Entries without
+valid captured provenance are still reviewed but quarantined. The KDO reviewer
+makes one of three decisions:
 
 - `approved`: every material claim is directly supported by the captured source,
   the source identity and scope match, claim coverage is at least 0.98, and
