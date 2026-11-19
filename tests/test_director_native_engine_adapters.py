@@ -156,7 +156,7 @@ def test_adapter_reconciliation_requires_exact_attempt_identity_and_evidence():
                 status="completed",
                 authoritative=True,
                 evidence_ref="engine-receipt:attempt-1",
-                result={"summary": "The original attempt completed."},
+                result={"summary": "The original attempt completed.", "completed_at": "2026-11-19T12:00:00+00:00"},
             )
 
     registry = AdapterRegistry()
@@ -184,7 +184,7 @@ def test_adapter_reconciliation_identity_mismatch_fails_closed():
                 status="completed",
                 authoritative=True,
                 evidence_ref="engine-receipt:wrong-attempt",
-                result={"summary": "Wrong attempt."},
+                result={"summary": "Wrong attempt.", "completed_at": "2026-11-19T12:00:00+00:00"},
             )
 
     registry = AdapterRegistry()
