@@ -708,11 +708,14 @@ def test_director_mission_runtime_store_uses_governed_rpcs_and_scoped_reads():
             status="running",
             phase="collaboration",
             state_snapshot={"active_reasoning_round": 1},
+            task_sync={"target_status": "executing", "expected_statuses": ["approved"]},
         )
         appended = await store.append_event(event)
         assert appended["version"] == 1
         assert backend.supabase.rpc_calls[1][0] == "append_director_mission_event_with_task_sync"
-        assert backend.supabase.rpc_calls[1][1]["p_task_sync"] is None
+        assert backend.supabase.rpc_calls[1][1]["p_task_sync"] == {
+            "target_status": "executing", "expected_statuses": ["approved"]
+        }
         assert backend.supabase.rpc_calls[1][1]["p_event"]["p_recipient_id"] == "meta_engine"
 
         mission = await store.get_mission(
