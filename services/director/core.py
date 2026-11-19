@@ -1440,6 +1440,22 @@ class Director:
         ):
             raise ValueError("strategic_plan_source_collaboration_run_id_invalid")
         source_collaboration_run_id = source_collaboration_run_id.strip() if source_collaboration_run_id else None
+        source_provenance = (
+            plan.get("objective", {}).get("source_collaboration_provenance")
+            if isinstance(plan.get("objective"), dict) else None
+        )
+        source_provenance_sha256 = None
+        if source_provenance is not None:
+            if (
+                not isinstance(source_provenance, dict)
+                or source_provenance.get("run_id") != source_collaboration_run_id
+                or source_provenance.get("workspace_id") != workspace_id
+                or not isinstance(source_provenance.get("sha256"), str)
+                or len(source_provenance["sha256"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in source_provenance["sha256"])
+            ):
+                raise ValueError("strategic_plan_source_collaboration_provenance_invalid")
+            source_provenance_sha256 = source_provenance["sha256"]
 
         steps = plan.get("steps")
         if not isinstance(steps, list) or not 1 <= len(steps) <= 12:
@@ -1520,6 +1536,7 @@ class Director:
                         "; " + str(step.get("rationale") or "Review plan evidence before approval"))[:1000],
                 sources=(["strategic_plan:" + str(plan_id)]
                          + (["collaboration_run:" + source_collaboration_run_id] if source_collaboration_run_id else [])
+                         + (["collaboration_provenance_sha256:" + source_provenance_sha256] if source_provenance_sha256 else [])
                          + ["operator:" + str(actor or "operator")[:100]]),
                 workspace_id=workspace_id,
                 depends_on=dependencies,
@@ -1542,6 +1559,7 @@ class Director:
             "workspace_id": workspace_id,
             "plan_id": plan_id,
             "source_collaboration_run_id": source_collaboration_run_id,
+            "source_collaboration_provenance_sha256": source_provenance_sha256,
             "plan_fingerprint": plan.get("source_context_fingerprint"),
             "step_parameters": step_parameters,
             "task_ids": [task.id for task in tasks],
@@ -1602,6 +1620,7 @@ class Director:
             "status": "staged_for_approval",
             "plan_id": str(plan_id),
             "source_collaboration_run_id": source_collaboration_run_id,
+            "source_collaboration_provenance_sha256": source_provenance_sha256,
             "mission_id": mission_id,
             "workspace_id": workspace_id,
             "task_ids": [task.id for task in tasks],
