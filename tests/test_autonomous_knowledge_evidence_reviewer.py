@@ -128,7 +128,7 @@ async def test_unknown_source_citation_fails_closed():
         "source_ids": ["forged-source-id"],
         "rationale": "Citation mismatch.",
     }]))
-    result = await AutonomousKnowledgeEvidenceReviewer(gateway).review(
+    result = await AutonomousKnowledgeEvidenceReviewer(gateway, snapshot_secret="test-secret").review(
         entry=_entry(), case=_case()
     )
     assert result["decision"] == "quarantine"
