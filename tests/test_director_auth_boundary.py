@@ -626,3 +626,88 @@ def test_unsigned_species_service_cannot_approve_workspace_mission_task(monkeypa
     )
     assert response.status_code == 403
     assert d.tasks["workspace-task"].approved_by is None
+
+
+def test_native_mission_engine_message_routes_are_workspace_scoped_and_use_assigned_actor(monkeypatch):
+    from types import SimpleNamespace
+    from services.director import Director, create_app
+    from services.director.models import Task, Sector, Authority, Risk, Status
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    d.tasks["task-a"] = Task(
+        id="task-a", sector=Sector.CONTENT, description="mission task",
+        capability="self_diagnostic", authority=Authority.AUTO, risk=Risk.LOW,
+        status=Status.APPROVAL, workspace_id="ws-a", mission_id="mission-a",
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-operator", role="owner",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    class FakeRuntime:
+        async def load_snapshot(self, *, mission_id, workspace_id):
+            assert mission_id == "mission-a"
+            assert workspace_id == "ws-a"
+            return SimpleNamespace(
+                version=4,
+                state_snapshot={
+                    "task_assignments": {"task-a": {"engine_id": "content_intelligence"}},
+                    "pending_questions": {
+                        "question-123": {
+                            "task_id": "task-a",
+                            "from_engine": "content_intelligence",
+                            "to_engine": "meta_engine",
+                        }
+                    },
+                },
+            )
+
+        async def ask_engine(self, **kwargs):
+            assert kwargs["actor_engine_id"] == "content_intelligence"
+            assert kwargs["recipient_engine_id"] == "meta_engine"
+            return SimpleNamespace(version=5)
+
+        async def answer_engine_question(self, **kwargs):
+            assert kwargs["question_message_id"] == "question-123"
+            return SimpleNamespace(
+                engine_id="meta_engine", status="completed", summary="Independent review",
+                confidence=0.88, evidence=({"ref": "review:evidence"},), limitations=(),
+            )
+
+    app.state.director_mission_runtime = FakeRuntime()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer valid-user-session"}
+    asked = client.post(
+        "/missions/mission-a/orchestration/messages",
+        headers=headers,
+        json={
+            "task_id": "task-a", "recipient_engine_id": "meta_engine",
+            "question": "Challenge the source evidence.",
+            "recipient_capability": "review.analyze",
+            "message_id": "question-123", "idempotency_key": "question-idempotency-123",
+            "correlation_id": "correlation-message-123", "round_number": 1,
+        },
+    )
+    assert asked.status_code == 200
+    assert asked.json()["from_engine"] == "content_intelligence"
+    assert asked.json()["status"] == "pending_response"
+
+    answered = client.post(
+        "/missions/mission-a/orchestration/messages/question-123/answer",
+        headers=headers,
+        json={
+            "answer_message_id": "answer-message-123",
+            "idempotency_prefix": "answer-idempotency-123",
+            "correlation_id": "correlation-message-123",
+        },
+    )
+    assert answered.status_code == 200
+    assert answered.json()["engine_id"] == "meta_engine"
+    assert answered.json()["summary"] == "Independent review"
