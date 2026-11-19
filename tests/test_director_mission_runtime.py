@@ -143,6 +143,20 @@ class MemoryMissionStore:
         }
         return {"replayed": False, "version": version}
 
+    async def find_event(
+        self, *, mission_id, scope_type, workspace_id, idempotency_key, event_type, task_id
+    ):
+        if mission_id != self.mission_id or workspace_id != self.workspace_id:
+            return None
+        for event in self.events:
+            if (
+                event.get("idempotency_key") == idempotency_key
+                and event.get("event_type") == event_type
+                and event.get("task_id") == task_id
+            ):
+                return copy.deepcopy(event)
+        return None
+
     async def list_events(self, *, mission_id, scope_type, workspace_id=None, limit=100):
         if mission_id != self.mission_id or workspace_id != self.workspace_id:
             return []
