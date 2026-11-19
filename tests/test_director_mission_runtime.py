@@ -52,6 +52,8 @@ class MemoryMissionStore:
         self.events = []
         self.idempotency = {}
         self.fail_atomic_approval = False
+        # Model the database row-lock boundary for concurrent approval tests.
+        self._approval_lock = asyncio.Lock()
 
     async def get_mission(self, *, mission_id, scope_type, workspace_id=None):
         if (
@@ -95,6 +97,18 @@ class MemoryMissionStore:
         return copy.deepcopy(self.task)
 
     async def approve_workspace_task_atomic(
+        self, *, event, task_id, approved_by, approved_at
+    ):
+        # The production RPC serializes contenders by locking mission then task.
+        # Yield while holding this lock so the test exercises a real async race.
+        async with self._approval_lock:
+            await asyncio.sleep(0)
+            return await self._approve_workspace_task_atomic_unlocked(
+                event=event, task_id=task_id,
+                approved_by=approved_by, approved_at=approved_at,
+            )
+
+    async def _approve_workspace_task_atomic_unlocked(
         self, *, event, task_id, approved_by, approved_at
     ):
         if self.fail_atomic_approval:
