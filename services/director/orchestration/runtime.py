@@ -203,6 +203,35 @@ class MissionOrchestrationRuntime:
             or task_row.get("payload", {}).get("approved_by") != operator_id
         ):
             raise MissionTaskNotReady("canonical_director_approval_not_persisted")
+
+        # A successful journal write may have committed even when its response
+        # was lost. Check the durable event before asking the state machine to
+        # prepare a new transition (which correctly rejects an already-approved
+        # task). The exact idempotency key and actor must match; otherwise fail
+        # closed rather than masking conflicting approval provenance.
+        prior_events = await self.store.list_events(
+            mission_id=mission_id,
+            scope_type="workspace",
+            workspace_id=workspace_id,
+            limit=self.store.MAX_EVENT_READ_LIMIT,
+        )
+        approval_events = [
+            event for event in prior_events
+            if event.get("event_type") == "task.approved"
+            and event.get("task_id") == task_id
+        ]
+        if approval_events:
+            matching = [
+                event for event in approval_events
+                if event.get("idempotency_key") == idempotency_key
+                and event.get("actor_id") == operator_id
+            ]
+            if matching:
+                return current
+            raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
+        if (current.state_snapshot.get("task_status") or {}).get(task_id) != "approval_required":
+            raise MissionTaskNotReady("canonical_approval_journal_state_mismatch")
+
         return await self._commit(
             current,
             event_type="task.approved",
