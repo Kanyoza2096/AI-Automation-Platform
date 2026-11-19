@@ -141,7 +141,8 @@ def test_collaboration_consultations_persist_record_level_evidence_fingerprints(
     assert '"evidence_manifest": evidence_manifest' in chat
     assert '"source_table": table' in chat
     assert '"record_id": str(record_id) if record_id is not None else None' in chat
-    assert '"content_sha256": hashlib.sha256(canonical_record).hexdigest()' in chat
+    assert '"sanitized_snapshot_sha256": hashlib.sha256(canonical_record).hexdigest()' in chat
     assert '"identity_quality": "stable_record_id" if record_id is not None else "content_fingerprint_only"' in chat
+    assert '"evidence_manifest_scope": "workspace_database_rows_only; platform_runtime_aggregates_not_record_fingerprinted"' in chat
     assert '"evidence_manifest_sha256": hashlib.sha256(json.dumps(' in chat
     assert '"evidence_manifest": item["sources"].get("evidence_manifest", [])' in chat
