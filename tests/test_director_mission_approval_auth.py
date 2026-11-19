@@ -6,9 +6,16 @@ import time
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+import pytest
 
 
-def test_mission_task_approval_uses_signed_kcpg_actor_not_body_actor(monkeypatch):
+@pytest.mark.parametrize(
+    ("signature_mode", "expected_status"),
+    [("valid", 200), ("missing", 403), ("tampered", 403)],
+)
+def test_mission_task_approval_requires_signed_kcpg_actor_not_body_actor(
+    monkeypatch, signature_mode, expected_status
+):
     from services.director import Director, create_app
     from services.director.models import Authority, Risk, Sector, Status, Task
 
@@ -78,23 +85,35 @@ def test_mission_task_approval_uses_signed_kcpg_actor_not_body_actor(monkeypatch
     canonical = "|".join((timestamp, request_id, "ws-auth", actor_id, actor_role))
     signature = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
 
+    headers = {
+        "Authorization": "Bearer valid-user-session",
+        "X-Workspace-ID": "ws-auth",
+        "X-Correlation-ID": request_id,
+        "X-KCPG-Context-Timestamp": timestamp,
+        "X-KCPG-Context-Request-ID": request_id,
+        "X-KCPG-Context-Workspace-ID": "ws-auth",
+        "X-KCPG-Context-Actor-ID": actor_id,
+        "X-KCPG-Context-Actor-Role": actor_role,
+        "X-KCPG-Context-Signature": signature,
+    }
+    if signature_mode == "missing":
+        headers.pop("X-KCPG-Context-Signature")
+    elif signature_mode == "tampered":
+        headers["X-KCPG-Context-Signature"] = "0" * 64
+
     response = TestClient(app).post(
         f"/tasks/{task.id}/approve",
-        headers={
-            "Authorization": "Bearer valid-user-session",
-            "X-Workspace-ID": "ws-auth",
-            "X-Correlation-ID": request_id,
-            "X-KCPG-Context-Timestamp": timestamp,
-            "X-KCPG-Context-Request-ID": request_id,
-            "X-KCPG-Context-Workspace-ID": "ws-auth",
-            "X-KCPG-Context-Actor-ID": actor_id,
-            "X-KCPG-Context-Actor-Role": actor_role,
-            "X-KCPG-Context-Signature": signature,
-        },
+        headers=headers,
         json={"actor": "attacker-controlled-body-actor"},
     )
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == expected_status, response.text
+    if expected_status == 403:
+        assert runtime.calls == []
+        assert task.status == Status.APPROVAL
+        assert task.approved_by is None
+        return
+
     assert len(runtime.calls) == 1
     assert runtime.calls[0]["operator_id"] == actor_id
     assert runtime.calls[0]["workspace_id"] == "ws-auth"
