@@ -416,7 +416,7 @@ def test_mission_runtime_store_reads_canonical_task_only_with_workspace_and_miss
 
 
 @pytest.mark.asyncio
-def test_condition_engine_adapter_is_workspace_verified_advisory_only():
+async def test_condition_engine_adapter_is_workspace_verified_advisory_only():
     now = datetime.now(timezone.utc).isoformat()
 
     class FakeConditionEngine:
