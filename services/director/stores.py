@@ -282,16 +282,23 @@ class AsyncSupabaseStore:
     async def list_approved_workspace_tasks(self, limit: int = 5000) -> List[dict]:
         """Internal recovery scan; never exposed to workspace-facing API callers."""
         bounded_limit = max(1, min(int(limit), 5000))
-        result = await self._execute_with_retry(
-            "list approved workspace tasks for Director journal reconciliation",
-            lambda: self.supabase.table("director_tasks").select("*")
-            .eq("scope_type", "workspace")
-            .eq("status", Status.APPROVED.value)
-            .order("created_at", desc=True)
-            .limit(bounded_limit)
-            .execute(),
-        )
-        return [dict(row) for row in (result.data or [])] if result else []
+        page_size = min(1000, bounded_limit)
+        rows: List[dict] = []
+        for offset in range(0, bounded_limit, page_size):
+            result = await self._execute_with_retry(
+                "list approved workspace tasks for Director journal reconciliation",
+                lambda offset=offset: self.supabase.table("director_tasks").select("*")
+                .eq("scope_type", "workspace")
+                .eq("status", Status.APPROVED.value)
+                .order("created_at", desc=True)
+                .range(offset, offset + page_size - 1)
+                .execute(),
+            )
+            page = [dict(row) for row in (result.data or [])] if result else []
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+        return rows
 
     MAX_PERSISTED_OBSERVATIONS = 500
     MAX_PERSISTED_DECISIONS = 250
