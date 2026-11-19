@@ -448,7 +448,6 @@ class MissionOrchestrationRuntime:
         operator_id: str,
         decision: str,
         reason: str,
-        assessment_classification: str,
         idempotency_key: str,
         correlation_id: str,
     ) -> MissionRuntimeSnapshot:
@@ -457,8 +456,12 @@ class MissionOrchestrationRuntime:
             raise MissionTransitionRejected("task_recovery_decision_not_permitted")
         if not str(reason or "").strip():
             raise ValueError("task_recovery_review_reason_required")
-        if not str(assessment_classification or "").strip():
-            raise ValueError("task_recovery_assessment_classification_required")
+        assessment = await self.assess_task_recovery(
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            stale_after_seconds=300,
+        )
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         task = await self.store.get_workspace_task(
             task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
@@ -478,7 +481,8 @@ class MissionOrchestrationRuntime:
             payload={
                 "decision": decision,
                 "reason": str(reason).strip()[:1000],
-                "assessment_classification": str(assessment_classification).strip()[:80],
+                "assessment_classification": assessment.classification,
+                "assessment_reason": assessment.reason[:300],
             },
         )
 
