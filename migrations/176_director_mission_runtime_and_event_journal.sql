@@ -212,7 +212,7 @@ CREATE OR REPLACE FUNCTION public.append_director_mission_event(
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $
+AS $$
 DECLARE
     mission_row public.director_missions%ROWTYPE;
     existing_event public.director_mission_events%ROWTYPE;
@@ -352,7 +352,7 @@ CREATE OR REPLACE FUNCTION public.stage_director_mission_v2(
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
-AS $
+AS $$
 DECLARE
     admission_result JSONB;
     mission_row public.director_missions%ROWTYPE;
