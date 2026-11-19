@@ -221,6 +221,20 @@ def create_app(director: Director):
                     )
             raise HTTPException(status_code=401, detail="Authentication required")
 
+        # KCPG authenticates with the species service credential, then binds
+        # the actual human actor through the shared, short-lived HMAC envelope.
+        # Never infer the human actor from unsigned X-User headers.
+        if request is not None and any(
+            request.headers.get(name)
+            for name in (
+                "X-KCPG-Context-Timestamp",
+                "X-KCPG-Context-Signature",
+                "X-KCPG-Context-Actor-ID",
+            )
+        ):
+            from core.security.deps import require_auth_context
+            await require_auth_context(request)
+
         if write and request is not None:
             context = getattr(request.state, "request_context", None)
             if context is not None and not getattr(context, "species_privileges", False):
@@ -294,9 +308,16 @@ def create_app(director: Director):
             log.exception("Director native mission runtime initialization failed")
             raise HTTPException(503, "Director native mission runtime is not ready") from exc
 
-    def _require_workspace_mission(request):
+    async def _require_workspace_mission(request):
         workspace_id = _workspace_id(request)
         context = getattr(request.state, "request_context", None)
+        # A species service credential alone is not a human workspace actor.
+        # KCPG must provide a signed actor envelope; verify it and replace the
+        # machine context with the trusted user before workspace-scoped work.
+        if context is not None and getattr(context, "species_privileges", False):
+            from core.security.deps import require_auth_context
+            context = await require_auth_context(request)
+            workspace_id = str(getattr(context, "workspace_id", "") or "")
         if not workspace_id or context is None or getattr(context, "species_privileges", False):
             raise HTTPException(403, "A trusted workspace identity is required")
         return workspace_id
@@ -309,7 +330,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials)
-        workspace_id = _require_workspace_mission(request)
+        workspace_id = await _require_workspace_mission(request)
         if limit < 1 or limit > 200:
             raise HTTPException(422, "limit must be between 1 and 200")
         runtime = _get_mission_runtime()
