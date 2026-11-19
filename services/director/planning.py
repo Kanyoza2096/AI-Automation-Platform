@@ -73,10 +73,17 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         not isinstance(item, str) or not item.strip() for item in constraints
     ):
         raise StrategicPlanningError("objective_constraints_invalid")
+    source_run_id = objective.get("source_collaboration_run_id")
+    if source_run_id is not None and (
+        not isinstance(source_run_id, str) or not source_run_id.strip()
+        or len(source_run_id.strip()) > 128
+    ):
+        raise StrategicPlanningError("source_collaboration_run_id_invalid")
     normalized_objective = {
         "objective_id": objective_id.strip(), "title": title.strip(),
         "description": description.strip(), "success_criteria": criteria,
         "constraints": [item.strip() for item in constraints],
+        **({"source_collaboration_run_id": source_run_id.strip()} if source_run_id else {}),
     }
 
     if context.get("schema_version") != "kdo.director.strategic-context.v1":
