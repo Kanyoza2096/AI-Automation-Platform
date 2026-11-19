@@ -22,6 +22,8 @@ DECLARE
     initial_task_status JSONB;
     source_collaboration_run_id TEXT;
     source_collaboration_run_count INTEGER := 0;
+    source_collaboration_provenance_sha256 TEXT;
+    source_collaboration_provenance_count INTEGER := 0;
 BEGIN
     admission_result := public.stage_director_mission(
         p_workspace_id, p_idempotency_key, p_plan_id,
@@ -46,6 +48,24 @@ BEGIN
 
     IF source_collaboration_run_count > 1 THEN
         RAISE EXCEPTION 'director_mission_collaboration_provenance_conflict';
+    END IF;
+
+    SELECT count(DISTINCT substring(source_value FROM length('collaboration_provenance_sha256:') + 1)),
+           min(substring(source_value FROM length('collaboration_provenance_sha256:') + 1))
+      INTO source_collaboration_provenance_count, source_collaboration_provenance_sha256
+      FROM jsonb_array_elements(p_tasks) AS supplied(task_row)
+      CROSS JOIN LATERAL jsonb_array_elements_text(
+          COALESCE(supplied.task_row->'payload'->'sources', '[]'::jsonb)
+      ) AS sources(source_value)
+     WHERE source_value LIKE 'collaboration_provenance_sha256:%';
+
+    IF source_collaboration_provenance_count > 1 THEN
+        RAISE EXCEPTION 'director_mission_collaboration_digest_conflict';
+    END IF;
+
+    IF source_collaboration_provenance_sha256 IS NOT NULL
+       AND source_collaboration_run_id IS NULL THEN
+        RAISE EXCEPTION 'director_mission_collaboration_digest_without_run';
     END IF;
 
     SELECT COALESCE(
@@ -117,7 +137,9 @@ BEGIN
         NULL,
         0,
         p_mission_id,
-        jsonb_build_object('plan_id', p_plan_id, 'task_ids', admission_result->'task_ids') || CASE WHEN source_collaboration_run_id IS NOT NULL THEN jsonb_build_object('source_collaboration_run_id', source_collaboration_run_id) ELSE '{}'::jsonb END,
+        jsonb_build_object('plan_id', p_plan_id, 'task_ids', admission_result->'task_ids')
+            || CASE WHEN source_collaboration_run_id IS NOT NULL THEN jsonb_build_object('source_collaboration_run_id', source_collaboration_run_id) ELSE '{}'::jsonb END
+            || CASE WHEN source_collaboration_provenance_sha256 IS NOT NULL THEN jsonb_build_object('source_collaboration_provenance_sha256', source_collaboration_provenance_sha256) ELSE '{}'::jsonb END,
         '[]'::jsonb,
         'admitted',
         'admission',
