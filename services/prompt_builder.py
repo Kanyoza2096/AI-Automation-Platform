@@ -2,34 +2,20 @@
 Prompt Builder Service.
 Assembles complete LLM prompts using Brand and AIProfile contexts.
 
-V3.5-SELF — Production hardening, single file, no external format module.
-
-  1. PER-PLATFORM FORMAT BLOCKS. Format specs (length range, paragraph
-     count, markdown policy, output shape) are inline per platform. The
-     prompt builder assembles the correct block from one source.
-
-  2. LENGTH TARGET COMPUTED FROM RETRIEVED WORD COUNT. Instead of a
-     static range, the target scales with the source's substance.
-
-  3. KNOWLEDGE FENCING + EMPTY CASE. Retrieved passages are wrapped as
-     data between explicit markers. If no passages are supplied, an
-     explicit "concept-only" instruction replaces them.
-
-  4. NO SHARED MUTABLE STATE. `build_post_prompt_with_axis()` returns
-     `PromptResult(prompt, axis)` — the caller stores the axis in its
-     own per-request context. `last_used_axis` is a deprecated
-     context-local property for backward compatibility.
-
-  5. FIRST-PERSON LEAKS REMOVED from the quality contract and fallback
-     style guide. Third person absolute.
-
-  6. LOUD STYLE-REGISTRY FAILURES. A failed reload keeps the last good
-     styles, logs at ERROR, and is surfaced by health_check().
-
-V3.4 — CHARTER REMOVED, THIRD PERSON ABSOLUTE (preserved).
-V3.3 — PADDING FORBIDDEN + FABRICATION BANNED (preserved).
-V3.0 — DIRECTION TOPIC GENERATION REMOVED + GROUNDING (preserved).
-V2.6 — KB-DRIVEN TOPIC AXIS ROTATION (preserved).
+V3.6 — PROSE TENSION & VISUAL ROUTING:
+  1. RELAXED OPENERS. The blanket ban on "As a ..." is removed. Only
+     AI-tells ("As an AI...") are forbidden. This allows natural 
+     rhetorical structures for theological and community brands.
+  2. RULE 11 ADDED (TENSION). Models default to Wikipedia summaries. 
+     Rule 11 forces the model to take a stance, highlight tradeoffs, 
+     and inject a sense of stakes into the prose.
+  3. CONDITIONAL MARKDOWN. Technical brands (like Ships & Shrugs) can 
+     now use bold formatting and lists to prevent the "wall of text" 
+     aesthetic that Gemini rejects as generic.
+  4. IMAGE PROMPT EXTRACTION. Added `build_image_prompt()` so visual
+     engines (Flux-1) get descriptive visual prompts, not abstract 
+     technical topics.
+  5. KB-DRIVEN TOPIC AXIS ROTATION (preserved).
 """
 
 from __future__ import annotations
@@ -60,12 +46,10 @@ guides, custom prompts, retrieved passages, examples, and topic instructions.
    and plural pronouns and contractions (I, me, my, mine, we, us, our, ours,
    I've, I'm, we'll, we've, etc.), including inside quotations or source
    material. Paraphrase source wording neutrally; never fabricate testimony.
-2. FORBIDDEN GENERIC OPENERS. Never begin with "As a ...", "As an AI ...",
-   "In today's ...", "In this post", "In this article", "Today we'll",
-   "Let's dive in", "Let's explore", "It's no secret", "We all know", or
-   a dictionary-style definition. In particular, do not use "As a" as a
-   filler opening. Start directly with a specific, source-grounded
-   observation, scene, question, or claim.
+2. FORBIDDEN AI-TELLS. Never begin with "As an AI...", "As a language model...", 
+   "In today's...", "In this post", "Let's dive in", "It's no secret", or 
+   a dictionary-style definition. Start directly with a specific, 
+   source-grounded observation, scene, question, or claim.
 3. PRESERVE BRAND IDENTITY. Keep the brand's actual subject, audience,
    tone, and vertical vocabulary. Do not replace the brand's voice with
    generic motivational or generic technical language.
@@ -81,7 +65,6 @@ Before returning, silently scan the entire caption—including quotations,
 contractions, and the opening sentence—and revise any violation. Do not
 weaken or bypass the pre-publish validators.
 """.strip()
-
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -150,7 +133,6 @@ measured values), not when they categorize abstract ideas.
 6. FORBIDDEN OPENERS.
 Do not open with:
   - "In this post" / "In this article" / "Today we'll"
-  - "As [group], we..." — describing the reader back to themselves
   - "As a seasoned [role]..." or any variant
   - "In today's fast-paced world" or any variant
   - "Let's dive in" / "Let's explore" / "Let's take a look"
@@ -191,6 +173,13 @@ Never emit markdown syntax in a plain-text platform caption: no
 **bold**, no *italic*, no # headers, no - bullets, no `code`
 backticks. These platforms render the characters literally. Use blank
 lines between paragraphs and sentence structure for emphasis.
+
+11. TENSION AND STAKES.
+Do not write like a Wikipedia article. An elite post takes a definitive 
+stance. If the topic is technical, highlight the hardest tradeoff or the 
+most common mistake. If the topic is theological or philosophical, 
+highlight the tension between the ideal and the human reality. The reader 
+must feel that something is at stake. Do not summarize; argue.
 """.strip()
 
 
@@ -199,18 +188,17 @@ lines between paragraphs and sentence structure for emphasis.
 # ═══════════════════════════════════════════════════════════════════════════
 _PLAIN_TEXT_RULES = """
 PLAIN-TEXT RULES — the caption is published to a plain-text platform:
-- Do NOT use Markdown syntax. No **, __, *, _, ##, `, or >.
+- Do NOT use Markdown headers (##), italics (*), or code backticks.
 - For lists, use the bullet character "•" followed by a space.
+- For emphasis, use sentence structure and strong verbs.
 - For line breaks, use actual blank lines between paragraphs.
-- For emphasis, use sentence structure — not asterisks.
 """.strip()
 
 _MARKDOWN_RULES = """
-MARKDOWN IS PERMITTED — this platform renders it:
-- Use markdown headers (## or ###) to structure sections.
-- Use bold for key terms, sparingly.
-- Use bulleted or numbered lists where they carry information.
-- Use fenced code blocks for code.
+MARKDOWN IS PERMITTED — this platform renders basic formatting:
+- Use **bold** for key technical terms or crucial takeaways.
+- Use bulleted lists where they carry information (steps, metrics).
+- Use fenced code blocks for code snippets.
 """.strip()
 
 _FIRST_PERSON_RULE = """
@@ -284,7 +272,7 @@ def _facebook_format() -> FormatSpec:
         target_words=180,
         min_paragraphs=3,
         max_paragraphs=5,
-        allow_markdown=False,
+        allow_markdown=True,  # Facebook supports basic bolding
         allow_title=False,
         contract="""
 PLATFORM CONTRACT — Facebook.
@@ -310,7 +298,7 @@ def _linkedin_format() -> FormatSpec:
         target_words=200,
         min_paragraphs=3,
         max_paragraphs=6,
-        allow_markdown=False,
+        allow_markdown=True, # LinkedIn supports basic bolding and lists
         allow_title=False,
         contract="""
 PLATFORM CONTRACT — LinkedIn.
@@ -833,11 +821,6 @@ class PromptBuilder:
         return _AIProfile.create_default("default")
 
     @staticmethod
-    def _brand_charter_block(brand: Brand) -> str:
-        """DEPRECATED — charter removed in V3.4. Always returns ""."""
-        return ""
-
-    @staticmethod
     def _brand_context_block(brand: Brand) -> str:
         lines = [
             f"Brand Tone: {brand.tone}",
@@ -1037,6 +1020,26 @@ Then write the post. Do not include the three decisions in the output.
         )
         self.last_used_axis = result.axis
         return result.prompt
+
+    def build_image_prompt(
+        self,
+        topic: str,
+        brand: Optional[Brand] = None,
+    ) -> str:
+        """
+        Generates a dedicated visual prompt for image models (Flux/Cloudflare).
+        Prevents the image engine from trying to render abstract text literally.
+        """
+        if brand is None:
+            brand = self._default_brand()
+            
+        tone = getattr(brand, "tone", "professional")
+        
+        return (
+            f"A high-quality, {tone}, conceptual illustration representing the theme of '{topic}'. "
+            f"Do not include any text, words, or letters in the image. "
+            f"Modern aesthetic, visually striking, suitable for a social media post."
+        )
 
     def build_chat_prompt(
         self,
