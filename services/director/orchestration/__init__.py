@@ -15,6 +15,7 @@ from .condition_engine_adapter import ConditionEngineMissionAdapter
 from .meta_engine_adapter import MetaEngineMissionAdapter
 from .registry_factory import build_default_adapter_registry
 from .runtime import MissionOrchestrationRuntime, MissionRuntimeNotFound, MissionTaskNotReady
+from .recovery import RecoveryAssessment, assess_execution_recovery
 from .store import MissionEventWrite, MissionRuntimeStore, MissionRuntimeStoreError
 from .state_machine import (
     MissionEventCommand,
@@ -38,6 +39,8 @@ __all__ = [
     "MissionOrchestrationRuntime",
     "MissionRuntimeNotFound",
     "MissionTaskNotReady",
+    "RecoveryAssessment",
+    "assess_execution_recovery",
     "MissionEventWrite",
     "MissionRuntimeStore",
     "MissionRuntimeStoreError",
