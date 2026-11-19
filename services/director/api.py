@@ -368,10 +368,24 @@ def create_app(director: Director):
             raise HTTPException(422, "limit must be between 1 and 200")
         runtime = _get_mission_runtime()
         try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
             events = await runtime.timeline(
                 mission_id=mission_id, workspace_id=workspace_id, limit=limit
             )
-            return {"mission_id": mission_id, "workspace_id": workspace_id, "events": events}
+            state = snapshot.state_snapshot if isinstance(snapshot.state_snapshot, dict) else {}
+            return {
+                "mission_id": mission_id,
+                "workspace_id": workspace_id,
+                "mission_version": snapshot.version,
+                "mission_status": snapshot.status,
+                "task_assignments": state.get("task_assignments", {}),
+                "engine_progress": state.get("engine_progress", {}),
+                "pending_questions": state.get("pending_questions", {}),
+                "budget": state.get("budget", {}),
+                "events": events,
+            }
         except Exception as exc:
             log.warning("Director mission timeline read failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission timeline is temporarily unavailable") from exc
