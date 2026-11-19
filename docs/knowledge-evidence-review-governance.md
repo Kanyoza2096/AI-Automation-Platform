@@ -54,3 +54,42 @@ Approval is reusable source governance, not per-post moderation. It does not pro
 A separate human-authorized endpoint promotes an approved case into the existing deterministic evidence gate. It invokes the database RPC promote_approved_knowledge_evidence, which locks the review case and knowledge row, rechecks the content hash and tenant binding, writes the verified source metadata, and records an append-only promotion event in the same transaction. Repeated promotion calls are idempotent.
 
 If the knowledge content is later edited, a database trigger automatically sets the promoted entry's verified flag to false, marks the evidence stale, supersedes the old review case, and appends a revocation event. A new content version therefore needs a new review and promotion. No existing records are bulk-promoted.
+
+
+## Autonomous KDO review and promotion
+
+Routine evidence review is autonomous; an operator is not expected to approve each
+case. The KDO reviewer makes one of three decisions:
+
+- `approved`: every material claim is directly supported by the captured source,
+  the source identity and scope match, claim coverage is at least 0.98, and
+  independently assessed confidence is at least 0.97. KDO then invokes the
+  existing transactional promotion RPC.
+- `rejected`: clear contradiction, fabricated attribution, or a demonstrably
+  unrelated/unsafe source.
+- `quarantined`: missing or ambiguous provenance, uncertain claims, malformed
+  model output, unavailable reviewer, or any failed deterministic gate.
+
+A URL, title, source ID, source excerpt, or model confidence score is never
+sufficient by itself. The trusted ingestion boundary must capture the actual
+source text and attach an HMAC attestation using the server-only
+`KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET`. The attestation binds workspace, source
+ID, URL, trust class, and SHA-256 of the exact captured text. Use
+`services.autonomous_knowledge_evidence_reviewer.build_source_snapshot_attestation`
+only inside trusted server-side ingestion code; never expose the secret to a
+browser or accept a client-provided signature.
+
+The unattended sweep is available as
+`python -m scripts.autonomous_knowledge_evidence_review`. It processes a bounded
+batch per run (default 100 candidates, configurable with
+`KDO_KB_REVIEW_BATCH_SIZE`), creates idempotent review cases for existing
+workspace/brand knowledge entries, reviews pending cases, retries idempotent
+promotion for approved cases, and reopens quarantined cases only when a captured
+source snapshot becomes available. Schedule it as a Render Cron Job after the
+migration and trusted-ingestion attestation are deployed. Do not run it against
+an unconfirmed database project.
+
+No historical entries are bulk-approved by migration. Existing records without
+a valid signed source snapshot are automatically quarantined, not silently
+trusted. This is intentional: KDO reviews everything, but it only approves
+evidence it can actually verify.
