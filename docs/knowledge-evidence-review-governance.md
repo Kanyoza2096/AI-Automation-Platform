@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Knowledge passages are useful context, but they are not automatically evidence for empirical or quantitative claims. This workflow provides a human-reviewed, auditable path for establishing source provenance without silently trusting imported or historical knowledge.
+Knowledge passages are useful context, but they are not automatically evidence for empirical or quantitative claims. This workflow provides an autonomous, auditable path for establishing source provenance without silently trusting imported or historical knowledge. Human review is reserved for quarantined exceptions, not routine approval.
 
 ## Review case requirements
 
@@ -17,7 +17,7 @@ A content edit changes the content hash and therefore requires a new review case
 ## Decision policy
 
 - `pending`: awaiting source inspection.
-- `approved`: a human reviewer has checked the source and confirmed the exact entry is traceable to it.
+- `approved`: KDO has independently checked the captured source and confirmed the exact entry is traceable to it.
 - `rejected`: the source is missing, inaccessible, mismatched, unreliable, or insufficient for the proposed claim scope.
 - `superseded`: the reviewed content has changed or a newer review case replaces it.
 
@@ -40,11 +40,12 @@ No record should be batch-approved based only on a URL being present, a generate
 ## API lifecycle
 
 The authenticated API exposes:
+- POST /api/v1/brands/{brand_id}/knowledge/ingest-source to fetch a public URL server-side, capture its text, attach a server-generated HMAC attestation, and immediately run autonomous review. The hostname must be explicitly allowlisted by an operator.
 - POST /api/v1/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review to submit an exact content version. Repeated submissions reuse the same case; rejected/superseded cases can be reopened.
 - GET /api/v1/brands/{brand_id}/knowledge-evidence-reviews to list brand-scoped cases by status.
 - POST /api/v1/brands/{brand_id}/knowledge-evidence-reviews/{case_id}/decision for a human reviewer to approve or reject a pending case.
 
-All endpoints require workspace write access and use the service-role client only on the server. Decisions are restricted to the authenticated human identity. Approval requires a stable source ID and HTTP(S) source URL. The API rechecks the entry content hash before decision, and the database guard locks the knowledge row and rechecks the hash and tenant binding in the same transaction. Approved snapshots are immutable; a later content edit cannot inherit the approval.
+All endpoints require workspace write access and use the service-role client only on the server. Autonomous decisions are recorded under the KDO service actor. The exception decision endpoint remains human-governed. The API rechecks the entry content hash before decision, and the database guard locks the knowledge row and rechecks the hash and tenant binding in the same transaction. Approved snapshots are immutable; a later content edit cannot inherit the approval.
 
 Approval is reusable source governance, not per-post moderation. It does not promote evidence into the publishing validator; evidence_promoted remains false until a separate audited promotion operation is implemented and reviewed.
 
@@ -85,11 +86,20 @@ batch per run (default 100 candidates, configurable with
 `KDO_KB_REVIEW_BATCH_SIZE`), creates idempotent review cases for existing
 workspace/brand knowledge entries, reviews pending cases, retries idempotent
 promotion for approved cases, and reopens quarantined cases only when a captured
-source snapshot becomes available. Schedule it as a Render Cron Job after the
-migration and trusted-ingestion attestation are deployed. Do not run it against
+source snapshot becomes available. The sweep uses the durable cursor table introduced in migration 186 so bounded runs advance through the corpus rather than repeatedly scanning only the first page. Schedule it as a Render Cron Job only after migrations 185–186 and trusted-ingestion attestation are deployed. Do not run it against
 an unconfirmed database project.
 
 No historical entries are bulk-approved by migration. Existing records without
 a valid signed source snapshot are automatically quarantined, not silently
 trusted. This is intentional: KDO reviews everything, but it only approves
 evidence it can actually verify.
+
+
+## Trusted source configuration
+
+The server-side ingestion route requires two backend-only environment variables:
+
+- `KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET`: a high-entropy secret used to bind the captured text to its tenant and source identity.
+- `KDO_KB_TRUSTED_SOURCE_DOMAINS`: a JSON object mapping exact hostnames to one allowed trust class. Example shape (configure only hosts actually vetted by the operator): `{"who.int":"government","docs.example.org":"official_documentation"}`.
+
+Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. The trust registry must be curated; do not add a domain merely because it appears in a submitted URL.
