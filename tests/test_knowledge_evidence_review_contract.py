@@ -169,3 +169,54 @@ def test_evidence_audit_ledgers_revoke_service_role_mutation_privileges():
     assert "UPDATE" not in migration
     assert "DELETE" not in migration
     assert "TRUNCATE" not in migration
+
+
+
+def test_brand_knowledge_list_passes_authenticated_workspace_to_repository():
+    tree = ast.parse(API_PATH.read_text())
+    handler = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_knowledge_entries"
+    )
+    calls = [
+        node for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_async_wrap"
+        and len(node.args) >= 3
+        and isinstance(node.args[0], ast.Attribute)
+        and node.args[0].attr == "find_by_brand"
+    ]
+    assert len(calls) == 1
+    assert len(calls[0].args) == 3
+    assert isinstance(calls[0].args[1], ast.Name)
+    assert calls[0].args[1].id == "brand_id"
+    assert isinstance(calls[0].args[2], ast.Name)
+    assert calls[0].args[2].id == "workspace_id"
+    assert "workspace_id = await require_workspace_ownership" in ast.get_source_segment(
+        API_PATH.read_text(), handler
+    )
+
+
+def test_evidence_queue_requires_read_permission_while_mutations_keep_write():
+    source = API_PATH.read_text()
+    helper_start = source.index("def _evidence_review_actor")
+    helper_end = source.index("def _valid_evidence_url", helper_start)
+    helper = source[helper_start:helper_end]
+    assert 'permission: str = "write"' in helper
+    assert 'identity.has_permission(permission)' in helper
+
+    list_start = source.index("async def list_knowledge_evidence_reviews")
+    decision_start = source.index("async def decide_knowledge_evidence_review")
+    submit_start = source.index("async def submit_knowledge_evidence_review")
+    promote_start = source.index("async def promote_approved_knowledge_evidence")
+    queue = source[list_start:decision_start]
+    decision = source[decision_start:promote_start]
+    submission = source[submit_start:list_start]
+    promotion = source[promote_start:]
+    assert '_evidence_review_actor(request, require_human=False, permission="read")' in queue
+    assert '_evidence_review_actor(request, require_human=False)' in submission
+    assert '_evidence_review_actor(request, require_human=True)' in decision
+    assert '_evidence_review_actor(request, require_human=True)' in promotion
+    assert "workspace_id = await require_workspace_ownership" in queue
+    assert '.eq("workspace_id", workspace_id)' in queue
