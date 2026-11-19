@@ -271,6 +271,23 @@ def create_app(director: Director):
         estimated_tokens: int = Field(default=1800, ge=1, le=20000)
         timeout_seconds: float = Field(default=75.0, gt=0, le=180)
 
+    class MissionEngineMessageBody(BaseModel):
+        task_id: str = Field(..., min_length=1, max_length=100)
+        recipient_engine_id: str = Field(..., min_length=1, max_length=100)
+        question: str = Field(..., min_length=1, max_length=2000)
+        recipient_capability: str = Field(..., min_length=1, max_length=120)
+        context: str = Field(default="", max_length=4000)
+        recipient_inputs: dict = Field(default_factory=dict)
+        message_id: str = Field(..., min_length=8, max_length=128)
+        idempotency_key: str = Field(..., min_length=8, max_length=128)
+        correlation_id: str = Field(..., min_length=8, max_length=128)
+        round_number: int = Field(..., ge=1, le=3)
+
+    class MissionEngineAnswerBody(BaseModel):
+        answer_message_id: str = Field(..., min_length=8, max_length=128)
+        idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+        correlation_id: str = Field(..., min_length=8, max_length=128)
+
     class ApprovalBody(BaseModel):
         actor: str = Field(
             default="admin", min_length=1, max_length=100,
@@ -423,6 +440,108 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director mission task execution failed: %s", type(exc).__name__)
             raise HTTPException(503, "Native engine execution could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/messages")
+    async def ask_mission_engine(
+        mission_id: str,
+        body: MissionEngineMessageBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(body.task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            assignment = (snapshot.state_snapshot.get("task_assignments") or {}).get(body.task_id) or {}
+            actor_engine_id = str(assignment.get("engine_id") or "")
+            if not actor_engine_id:
+                raise HTTPException(409, "Mission task has no assigned source engine")
+            updated = await runtime.ask_engine(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=body.task_id,
+                actor_engine_id=actor_engine_id,
+                recipient_engine_id=body.recipient_engine_id,
+                question=body.question,
+                message_id=body.message_id,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+                round_number=body.round_number,
+                context=body.context,
+                recipient_capability=body.recipient_capability,
+                recipient_inputs=body.recipient_inputs,
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": body.task_id,
+                    "message_id": body.message_id, "from_engine": actor_engine_id,
+                    "to_engine": body.recipient_engine_id, "round_number": body.round_number,
+                    "mission_version": updated.version, "status": "pending_response"}
+        except HTTPException:
+            raise
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director engine question failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Engine question could not be durably recorded") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/messages/{message_id}/answer")
+    async def answer_mission_engine(
+        mission_id: str,
+        message_id: str,
+        body: MissionEngineAnswerBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        _require_workspace_task_operator(
+            director.tasks.get(
+                str(
+                    ((getattr(request.state, "director_message_task_map", {}) or {}).get(message_id))
+                    or ""
+                )
+            ),
+            request,
+        ) if getattr(request.state, "director_message_task_map", None) else None
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            pending = (snapshot.state_snapshot.get("pending_questions") or {}).get(message_id)
+            if not pending:
+                raise HTTPException(404, "Pending engine question not found")
+            task_id = str(pending.get("task_id") or "")
+            task = director.tasks.get(task_id)
+            if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+                raise HTTPException(404, "Mission task not found")
+            _require_workspace_task_operator(task, request)
+            contribution = await runtime.answer_engine_question(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                question_message_id=message_id,
+                answer_message_id=body.answer_message_id,
+                correlation_id=body.correlation_id,
+                idempotency_prefix=body.idempotency_prefix,
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "message_id": body.answer_message_id, "in_reply_to": message_id,
+                    "engine_id": contribution.engine_id, "status": contribution.status,
+                    "summary": contribution.summary, "confidence": contribution.confidence,
+                    "evidence": list(contribution.evidence), "limitations": list(contribution.limitations)}
+        except HTTPException:
+            raise
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director engine answer failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Engine response could not be confirmed") from exc
 
     # ── Core ─────────────────────────────────────────────────────────
 
