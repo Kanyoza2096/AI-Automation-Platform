@@ -845,14 +845,19 @@ class Director:
         }:
             return {"scanned": 0, "reconciled": 0, "failed": 0, "disabled": True}
 
-        candidates = [
-            task for task in self.tasks.values()
-            if (include_all or task.id in self._mission_approval_reconciliation_pending)
-            and task.status == Status.APPROVED
+        eligible = {
+            task.id: task for task in self.tasks.values()
+            if task.status == Status.APPROVED
             and task.workspace_id
             and task.mission_id
             and task.approved_by
             and task.approved_at
+        }
+        # Drop queued IDs that no longer represent a canonical approved task.
+        self._mission_approval_reconciliation_pending.intersection_update(eligible)
+        candidates = [
+            task for task in eligible.values()
+            if include_all or task.id in self._mission_approval_reconciliation_pending
         ]
         if not candidates:
             return {"scanned": 0, "reconciled": 0, "failed": 0}
@@ -867,6 +872,7 @@ class Director:
                 adapters=build_default_adapter_registry(director_store=self.store),
             )
         except Exception as exc:
+            self._mission_approval_reconciliation_pending.update(task.id for task in candidates)
             log.warning("Director approval reconciliation unavailable: %s", type(exc).__name__)
             return {"scanned": len(candidates), "reconciled": 0, "failed": len(candidates)}
 
