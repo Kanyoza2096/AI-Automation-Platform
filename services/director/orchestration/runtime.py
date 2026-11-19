@@ -91,6 +91,7 @@ class MissionOrchestrationRuntime:
             "task.failed": ("failed", {"executing"}),
             "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
             "task.verified": ("verified", {"completed"}),
+            "task.cancelled": ("cancelled", {"approval_required", "approved"}),
             "task.reassigned": ("approval_required", {"approval_required", "approved", "failed", "blocked", "flagged"}),
             "task.handoff.accepted": ("approval_required", {"executing"}),
         }
@@ -108,7 +109,7 @@ class MissionOrchestrationRuntime:
                     for key in ("summary", "findings", "recommendations", "limitations", "confidence")
                     if key in event_payload
                 }
-            elif event_type in {"task.failed", "task.blocked"}:
+            elif event_type in {"task.failed", "task.blocked", "task.cancelled"}:
                 callback_error = str(event_payload.get("reason") or event_type)[:2000]
             task_sync = {
                 "target_status": target_status,
@@ -210,6 +211,40 @@ class MissionOrchestrationRuntime:
             actor_id=operator_id,
             correlation_id=correlation_id,
             task_id=task_id,
+        )
+
+    async def cancel_task(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        operator_id: str,
+        reason: str,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> MissionRuntimeSnapshot:
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task_row = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task_row:
+            raise MissionTaskNotReady("canonical_workspace_task_not_found")
+        if task_row.get("status") == "cancelled":
+            if (current.state_snapshot.get("task_status") or {}).get(task_id) == "cancelled":
+                return current
+            raise MissionTaskNotReady("cancelled_task_requires_mission_journal_reconciliation")
+        if task_row.get("status") not in {"approval_required", "approved"}:
+            raise MissionTaskNotReady("task_not_cancellable_from_canonical_status")
+        return await self._commit(
+            current,
+            event_type="task.cancelled",
+            idempotency_key=idempotency_key,
+            actor_type="operator",
+            actor_id=operator_id,
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload={"reason": str(reason or "Task cancelled by operator")[:1000]},
         )
 
     @staticmethod
