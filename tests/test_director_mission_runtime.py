@@ -14,6 +14,7 @@ from services.director.orchestration import (
     MissionTaskNotReady,
     build_default_adapter_registry,
     ConditionEngineMissionAdapter,
+    MetaEngineMissionAdapter,
 )
 
 
@@ -171,6 +172,55 @@ class FakeNativeAdapter:
             source_metadata={"providers": ["test-provider"], "usage_tokens": 125},
             correlation_id=context.correlation_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_meta_engine_adapter_uses_fresh_read_only_snapshot_and_marks_stale_data_partial():
+    class FakeMetaEngine:
+        def __init__(self, timestamp):
+            self.timestamp = timestamp
+            self.calls = 0
+
+        def get_status(self):
+            self.calls += 1
+            return {
+                "timestamp": self.timestamp,
+                "overall": "degraded",
+                "health_score": 62.0,
+                "risk_score": 31.0,
+                "active_incidents": 2,
+                "monitoring": {"running": True},
+                "engines": {
+                    "job_service": {"status": "degraded", "health_score": 55.0},
+                    "content_engine": {"status": "healthy", "health_score": 90.0},
+                },
+            }
+
+    now = datetime.now(timezone.utc).isoformat()
+    engine = FakeMetaEngine(now)
+    adapter = MetaEngineMissionAdapter(engine)
+    context = MissionTaskContext(
+        task_id="meta-task",
+        mission_id="meta-mission",
+        workspace_id="workspace-runtime-test",
+        capability="platform.health.snapshot",
+        objective="Review the platform health snapshot.",
+        inputs={},
+        correlation_id="meta-correlation",
+    )
+    result = await adapter.invoke(context)
+    assert result.status == "completed"
+    assert result.engine_id == "meta_engine"
+    assert result.authority == "none"
+    assert result.source_metadata["recovery_invoked"] is False
+    assert result.evidence[0]["ref"].startswith("meta_engine:snapshot:")
+    assert "job_service: degraded" in result.findings
+    assert engine.calls == 1
+
+    stale = MetaEngineMissionAdapter(FakeMetaEngine("2020-01-01T00:00:00+00:00"))
+    stale_result = await stale.invoke(context)
+    assert stale_result.status == "partial"
+    assert stale_result.source_metadata["freshness_window_seconds"] == 300
 
 
 @pytest.mark.asyncio
@@ -542,12 +592,18 @@ def test_default_registry_requires_explicit_workspace_brand_verifier():
         async def brand_belongs_to_workspace(self, brand_id, workspace_id):
             return True
 
+    class FakeMetaEngine:
+        def get_status(self):
+            return {"timestamp": datetime.now(timezone.utc).isoformat(), "overall": "nominal", "engines": {}}
+
     registry = build_default_adapter_registry(
         director_store=DirectorStore(),
         condition_engine=FakeConditionEngine(),
+        meta_engine=FakeMetaEngine(),
     )
     descriptions = {item["engine_id"]: item for item in registry.describe()}
-    assert set(descriptions) == {"content_intelligence", "condition_engine"}
+    assert set(descriptions) == {"content_intelligence", "condition_engine", "meta_engine"}
+    assert "platform.health.snapshot" in descriptions["meta_engine"]["capabilities"]
     assert "calculate_brand_health" in descriptions["condition_engine"]["capabilities"]
     assert descriptions["condition_engine"]["authority"] == "none"
 
