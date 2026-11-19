@@ -138,7 +138,7 @@ async def test_unknown_source_citation_fails_closed():
 @pytest.mark.asyncio
 async def test_low_confidence_or_incomplete_coverage_cannot_auto_approve():
     gateway = FakeGateway(_assessment(confidence=0.91))
-    result = await AutonomousKnowledgeEvidenceReviewer(gateway).review(
+    result = await AutonomousKnowledgeEvidenceReviewer(gateway, snapshot_secret="test-secret").review(
         entry=_entry(), case=_case()
     )
     assert result["decision"] == "quarantined"
