@@ -1231,6 +1231,7 @@ def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", 
         "actor_id": actor_id,
         "idempotency_key": key,
         "created_at": created_at,
+        "correlation_id": "corr-attempt-1",
         "payload": payload or {},
     }
 
@@ -1282,6 +1283,7 @@ def test_recovery_assessment_reconciles_matching_durable_completion():
         ],
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
+        assigned_engine_id="content_intelligence",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
         stale_after=timedelta(minutes=5),
     )
@@ -1350,6 +1352,7 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
         "event_type": "task.started",
         "idempotency_key": "attempt-read-only:started",
         "created_at": "2026-11-19T10:00:00+00:00",
+        "correlation_id": "corr-attempt-1",
         "payload": {"requested_by": "operator-1"},
     })
     before_task = copy.deepcopy(store.task)
