@@ -276,8 +276,8 @@ class MissionStateMachine:
             task_id = command.task_id or self._require_text(payload, "task_id")
             if task_id not in assignments or task_status.get(task_id) != "approved":
                 raise MissionTransitionRejected("task_approval_required_before_start")
-            if command.actor_type not in {"director", "system"}:
-                raise MissionTransitionRejected("task_start_requires_director_or_system")
+            if command.actor_type not in {"operator", "director", "system"}:
+                raise MissionTransitionRejected("task_start_requires_governed_actor")
             task_status[task_id] = "executing"
             event_task_id = task_id
             next_status, next_phase = "running", "execution"
