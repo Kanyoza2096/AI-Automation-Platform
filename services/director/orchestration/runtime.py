@@ -6,6 +6,7 @@ KCPG commands, Action Kernel execution, publishing, or other external actions.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AdapterRegistry, EngineContribution, MissionTaskContext
@@ -16,6 +17,9 @@ from .state_machine import (
     MissionTransitionRejected,
 )
 from .store import MissionRuntimeStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class MissionRuntimeNotFound(LookupError):
@@ -132,7 +136,17 @@ class MissionOrchestrationRuntime:
             ),
         )
         if task_id and rule and self.task_state_callback is not None:
-            self.task_state_callback(task_id, task_sync["target_status"], callback_result, callback_error)
+            try:
+                self.task_state_callback(task_id, task_sync["target_status"], callback_result, callback_error)
+            except Exception:
+                # The database RPC already committed both the mission event and
+                # canonical task row. A cache/registry callback failure must not
+                # make callers retry a completed transition as if it rolled back.
+                # The canonical row is authoritative and can rebuild in-memory state.
+                logger.exception(
+                    "director_task_registry_sync_failed_after_durable_commit",
+                    extra={"task_id": task_id, "target_status": task_sync["target_status"]},
+                )
         return snapshot
 
     async def assign_task(
