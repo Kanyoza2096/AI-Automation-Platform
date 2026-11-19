@@ -75,16 +75,19 @@ def _bounded_input(service_states: Mapping[str, Any], diagnostics: Mapping[str, 
                 "service": name,
                 "observed_status": status,
             })
+    job_stats = safe_diagnostics.get("job_stats_service")
+    job_stats = job_stats if isinstance(job_stats, dict) else {}
+    failure_intelligence = job_stats.get("failure_intelligence")
     return {
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "service_states": states,
         "diagnostics": safe_diagnostics,
         "evidence": evidence,
         "historical_comparison_available": False,
-        "job_database_failure_records_available": (
-            isinstance(safe_diagnostics.get("job_stats_service"), dict)
-            and isinstance(safe_diagnostics["job_stats_service"].get("failure_intelligence"), dict)
-            and safe_diagnostics["job_stats_service"]["failure_intelligence"].get("status") == "available"
+        "job_database_failure_records_available": isinstance(job_stats.get("status_counts"), dict),
+        "job_failure_intelligence_available": (
+            isinstance(failure_intelligence, dict)
+            and failure_intelligence.get("status") == "available"
         ),
     }
 
