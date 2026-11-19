@@ -712,8 +712,8 @@ def create_app(director: Director):
             comparison = evidence_summary.get("comparison")
             if not isinstance(recommendation, dict) or recommendation.get("status") != "available":
                 raise HTTPException(409, "A completed Director recommendation is required")
-            if not isinstance(comparison, dict):
-                raise HTTPException(409, "Structured collaboration evidence comparison is required")
+            if not isinstance(comparison, dict) or comparison.get("status") != "available":
+                raise HTTPException(409, "A completed structured collaboration evidence comparison is required")
             canonical_source = {
                 "schema_version": "kdo.director.collaboration-provenance.v1",
                 "run_id": str(source_run["id"]),
