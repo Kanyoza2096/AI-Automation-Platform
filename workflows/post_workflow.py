@@ -311,7 +311,7 @@ class KnowledgeContextStep(Step):
                 # prose and may invent empirical claims that the gate must
                 # reject later.
                 facts.append(
-                    f"[source_id={source_id};verified={'true' if verified else 'false'}]\\n{text}"
+                    f"[source_id={source_id};verified={'true' if verified else 'false'}]\n{text}"
                 )
                 evidence.append({
                     "source_id": source_id,
