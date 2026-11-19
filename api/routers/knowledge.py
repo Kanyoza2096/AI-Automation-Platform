@@ -1,4 +1,8 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
+import asyncio
+import hmac
+import logging
+import os
 from typing import Optional
 from api.dependencies import *
 from api.v1_models import *
@@ -6,6 +10,40 @@ from api.v1_helpers import *
 from api.v1_stores import *
 
 router = APIRouter()
+_review_sweep_task: asyncio.Task | None = None
+_review_sweep_logger = logging.getLogger("kdo.knowledge_review_sweep")
+
+
+async def _run_review_sweep_background() -> None:
+    global _review_sweep_task
+    try:
+        def _run_in_thread():
+            from scripts.autonomous_knowledge_evidence_review import _run
+            return asyncio.run(_run())
+
+        result = await asyncio.to_thread(_run_in_thread)
+        _review_sweep_logger.info("knowledge_review_sweep_finished", extra={"result": result})
+    except Exception as exc:
+        _review_sweep_logger.exception(
+            "knowledge_review_sweep_failed",
+            extra={"error_class": type(exc).__name__},
+        )
+    finally:
+        _review_sweep_task = None
+
+
+@router.post("/internal/knowledge-evidence-review/sweep")
+async def trigger_autonomous_knowledge_review_sweep(request: Request):
+    """Internal scheduler hook; the sweep runs in a thread using backend credentials."""
+    global _review_sweep_task
+    expected = os.getenv("KDO_KB_REVIEW_SWEEP_TRIGGER_TOKEN", "")
+    supplied = request.headers.get("x-kdo-review-sweep-token", "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(status_code=404, detail="Not found")
+    if _review_sweep_task is not None and not _review_sweep_task.done():
+        return _ok({"status": "already_running"}, 202)
+    _review_sweep_task = asyncio.create_task(_run_review_sweep_background())
+    return _ok({"status": "started"}, 202)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # KNOWLEDGE BASE
