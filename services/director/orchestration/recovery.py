@@ -75,7 +75,7 @@ def assess_execution_recovery(
     starts = [event for event in scoped_events if event.get("event_type") == "task.started"]
 
     if status == "approved":
-        if starts:
+        if starts or any(event.get("event_type") in {"task.completed", "task.failed", "task.blocked"} for event in scoped_events):
             return RecoveryAssessment(
                 "outcome_unknown", mission_id, workspace_id, task_id, None, None,
                 "approved_task_has_durable_start_event",
@@ -129,6 +129,13 @@ def assess_execution_recovery(
             "outcome_unknown", mission_id, workspace_id, task_id, attempt_key,
             started_at.isoformat(), "multiple_terminal_events_for_one_attempt",
             tuple(str(item.get("event_id") or "") for item in terminal),
+        )
+
+    if status == "executing" and terminal:
+        return RecoveryAssessment(
+            "outcome_unknown", mission_id, workspace_id, task_id, attempt_key,
+            started_at.isoformat(), "terminal_event_conflicts_with_executing_canonical_task",
+            (str(start.get("event_id") or ""),) + tuple(str(item.get("event_id") or "") for item in terminal),
         )
 
     if status == "completed":
