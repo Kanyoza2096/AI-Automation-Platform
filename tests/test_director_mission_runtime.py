@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.director.orchestration import (
@@ -1240,7 +1240,7 @@ def test_recovery_assessment_classifies_approved_task_as_not_started():
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
         now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
-        stale_after=__import__("datetime").timedelta(minutes=5),
+        stale_after=timedelta(minutes=5),
     )
     assert result.classification == "not_started"
 
@@ -1292,7 +1292,8 @@ def test_recovery_assessment_requires_explicit_no_side_effects_evidence():
         _recovery_event("task.started", "attempt-1:started"),
         _recovery_event(
             "task.failed", "attempt-1:failed",
-            payload={"no_side_effects_confirmed": True},
+            payload={"no_side_effects_confirmed": True, "no_side_effects_evidence_ref": "engine-receipt:attempt-1"},
+            actor_type="system", actor_id="director_recovery_reconciler",
         ),
     ]
     result = assess_execution_recovery(
