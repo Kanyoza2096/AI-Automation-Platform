@@ -45,6 +45,16 @@ class MetaEngineMissionAdapter:
             )
 
         timestamp = str(snapshot.get("timestamp") or "").strip()
+        age_seconds = None
+        if timestamp:
+            try:
+                observed_at = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                age_seconds = max(0.0, (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds())
+            except ValueError:
+                timestamp = ""
+        fresh = age_seconds is not None and age_seconds <= 300
         overall = str(snapshot.get("overall") or "unknown")
         health_score = snapshot.get("health_score")
         risk_score = snapshot.get("risk_score")
@@ -62,7 +72,7 @@ class MetaEngineMissionAdapter:
             task_id=context.task_id,
             mission_id=context.mission_id,
             workspace_id=context.workspace_id,
-            status="completed" if timestamp and engines else "unavailable",
+            status="completed" if fresh and engines else "partial" if timestamp and engines else "unavailable",
             summary=summary,
             findings=tuple(findings[:12]),
             recommendations=(
@@ -76,6 +86,8 @@ class MetaEngineMissionAdapter:
             confidence=0.6 if timestamp and engines else 0.0,
             source_metadata={
                 "observed_at": timestamp or None,
+                "observation_age_seconds": age_seconds,
+                "freshness_window_seconds": 300,
                 "overall": overall,
                 "engine_count": len(engines),
                 "health_score": health_score,
