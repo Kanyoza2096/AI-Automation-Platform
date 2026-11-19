@@ -678,10 +678,69 @@ def create_app(director: Director):
         """Create a validated advisory plan from a platform objective."""
         await _require_auth(request, credentials, write=True)
         _require_platform_scope(request)
-        try:
-            plan = await director.create_strategic_plan(
-                body.dict(exclude_none=True)
+        objective = body.dict(exclude_none=True)
+        source_run_id = objective.get("source_collaboration_run_id")
+        if source_run_id:
+            workspace_id = _workspace_id(request)
+            if not workspace_id:
+                raise HTTPException(400, "A trusted workspace context is required for collaboration provenance")
+            try:
+                from services.supabase import supabase_service
+                db = supabase_service.service_client
+                if db is None:
+                    raise RuntimeError("persistent collaboration storage unavailable")
+                query = (db.table("director_collaboration_runs")
+                    .select("id,workspace_id,status,consultations,synthesis,evidence_summary,completed_at")
+                    .eq("id", source_run_id)
+                    .eq("workspace_id", workspace_id)
+                    .limit(1))
+                result = await asyncio.to_thread(lambda: query.execute())
+                rows = list(getattr(result, "data", None) or [])
+            except Exception as exc:
+                log.exception("Unable to verify strategic-plan collaboration provenance")
+                raise HTTPException(503, "Collaboration provenance could not be verified") from exc
+            if not rows:
+                raise HTTPException(404, "Source collaboration run not found in this workspace")
+            source_run = rows[0]
+            if source_run.get("status") != "completed" or not source_run.get("completed_at"):
+                raise HTTPException(409, "Only completed collaboration runs can be strategic-plan sources")
+            evidence_summary = source_run.get("evidence_summary")
+            if not isinstance(evidence_summary, dict):
+                raise HTTPException(409, "Source collaboration evidence summary is unavailable")
+            recommendation = evidence_summary.get("recommendation")
+            comparison = evidence_summary.get("comparison")
+            if not isinstance(recommendation, dict) or recommendation.get("status") != "available":
+                raise HTTPException(409, "A completed Director recommendation is required")
+            if not isinstance(comparison, dict):
+                raise HTTPException(409, "Structured collaboration evidence comparison is required")
+            canonical_source = {
+                "schema_version": "kdo.director.collaboration-provenance.v1",
+                "run_id": str(source_run["id"]),
+                "workspace_id": str(source_run["workspace_id"]),
+                "status": source_run["status"],
+                "completed_at": source_run["completed_at"],
+                "consultations": source_run.get("consultations") or [],
+                "synthesis": source_run.get("synthesis") or "",
+                "comparison": comparison,
+                "recommendation": recommendation,
+            }
+            canonical_json = json.dumps(
+                canonical_source, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
             )
+            objective["source_collaboration_provenance"] = {
+                "schema_version": canonical_source["schema_version"],
+                "run_id": canonical_source["run_id"],
+                "workspace_id": canonical_source["workspace_id"],
+                "completed_at": canonical_source["completed_at"],
+                "sha256": hashlib.sha256(canonical_json.encode("utf-8")).hexdigest(),
+                "consultation_count": len(canonical_source["consultations"])
+                    if isinstance(canonical_source["consultations"], list) else 0,
+                "evidence_comparison_status": str(comparison.get("status") or "unknown")[:64],
+                "recommendation_status": recommendation["status"],
+            }
+        try:
+            plan = await director.create_strategic_plan(objective)
         except StrategicPlannerUnavailable as exc:
             # Provider failures occur before persistence. Return an explicit
             # no-side-effect retry contract so KCPG can safely reconcile the
