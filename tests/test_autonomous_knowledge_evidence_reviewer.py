@@ -167,6 +167,40 @@ def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
     assert "KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET" in source
 
 
+def test_source_snapshot_attestation_can_be_reused_only_when_every_binding_matches():
+    from services.autonomous_knowledge_evidence_reviewer import (
+        build_source_snapshot_attestation,
+        verify_source_snapshot_attestation,
+    )
+
+    metadata = {
+        "source_id": "web-source:abc",
+        "source_url": "https://who.int/health",
+        "trust_class": "government",
+        **build_source_snapshot_attestation(
+            secret="test-secret",
+            workspace_id="workspace-1",
+            source_id="web-source:abc",
+            source_url="https://who.int/health",
+            trust_class="government",
+            snapshot_text="Captured source text.",
+        ),
+    }
+    assert verify_source_snapshot_attestation(metadata, "workspace-1", "test-secret")
+    assert not verify_source_snapshot_attestation(metadata, "workspace-2", "test-secret")
+    tampered = {**metadata, "source_snapshot_text": "Tampered source text."}
+    assert not verify_source_snapshot_attestation(tampered, "workspace-1", "test-secret")
+
+
+def test_backlog_sweep_captures_allowlisted_sources_before_case_review():
+    source = (ROOT / "scripts" / "autonomous_knowledge_evidence_review.py").read_text()
+    assert "async def _capture_trusted_source_snapshot" in source
+    assert "resolve_trusted_source_class(source_url)" in source
+    assert "build_source_snapshot_attestation(" in source
+    assert "await _capture_trusted_source_snapshot(client, row)" in source
+    assert "prior_case.data[0].get(\"review_status\") == \"approved\"" in source
+
+
 def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch):
     import json
     from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
