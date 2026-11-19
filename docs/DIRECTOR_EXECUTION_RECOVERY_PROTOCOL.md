@@ -96,3 +96,19 @@ Evidence must be scoped to the same workspace, mission, task, engine, and attemp
 - No merge, deployment, or CI retry until the recovery contract and integration tests are reviewed and certified.
 
 **Current implementation status:** Existing `task.started` and terminal mission events provide the foundation. A durable per-attempt claim and authoritative outcome reconciliation are not yet implemented. Tests authored in the open PRs remain unexecuted because hosted CI quota is exhausted and no local project runtime is available.
+
+
+## Phase A implementation update (2026-11-19)
+
+A first read-only recovery assessment is now implemented on the backend feature branch:
+
+- `services/director/orchestration/recovery.py` provides a pure evidence classifier.
+- `MissionOrchestrationRuntime.assess_task_recovery(...)` reads the workspace-scoped canonical task and bounded mission event history; it does not mutate state or invoke an adapter.
+- The assessment binds terminal evidence to the same task, mission, workspace, attempt idempotency prefix, correlation ID, and assigned engine.
+- Missing timestamps/attribution, duplicate starts, orphan terminal events, conflicting canonical status, incomplete result payloads, or possibly truncated event history fail closed to `outcome_unknown`.
+- A failed attempt is only `failed_reconsiderable` when a system recovery-reconciler event carries an explicit no-side-effects assertion and evidence reference. Existing timeout/failure events do not satisfy this condition.
+- An approved task with no execution lifecycle events is `not_started`; a fresh execution is `not_stale`; a matching durable completion is classified for result reconciliation, never replay.
+
+Regression tests were added for the four classifications, fresh execution, scope mismatch, contradictory events, and read-only runtime behavior. They are **authored but not executed**. The hosted CI quota remains exhausted and no local project runtime is available.
+
+This is Phase A groundwork only. It does not yet provide an API endpoint, durable attempt ledger, authoritative adapter status lookup, or operator recovery decision workflow. No production migration, data write, deployment, merge, feature-flag change, or CI retry was performed.
