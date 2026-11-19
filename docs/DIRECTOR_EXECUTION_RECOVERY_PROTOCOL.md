@@ -112,3 +112,41 @@ A first read-only recovery assessment is now implemented on the backend feature 
 Regression tests were added for the four classifications, fresh execution, scope mismatch, contradictory events, and read-only runtime behavior. They are **authored but not executed**. The hosted CI quota remains exhausted and no local project runtime is available.
 
 This is Phase A groundwork only. It does not yet provide an API endpoint, durable attempt ledger, authoritative adapter status lookup, or operator recovery decision workflow. No production migration, data write, deployment, merge, feature-flag change, or CI retry was performed.
+
+
+## Phase B implementation update (2026-11-19)
+
+### Decision: use the existing mission journal as the attempt ledger
+
+A separate `director_execution_attempts` table is not justified by the current architecture. The production KDO database already has the primitives needed for a durable, append-only attempt ledger:
+
+- `director_mission_events` is append-only and has a unique `(mission_id, idempotency_key)` constraint.
+- `append_director_mission_event_with_task_sync(jsonb, jsonb)` appends the event and changes the canonical workspace task from `approved` to `executing` in the same database transaction.
+- The RPC locks the mission and task rows, validates workspace/mission/task identity and expected task status, and is executable only by `service_role` (production privileges were read back and verified).
+- The mission version check and unique idempotency identity serialize competing claims. A different concurrent claim loses the version/status race.
+
+A second ledger table would duplicate the event identity and task state, creating a new cross-table consistency problem without adding stronger dispatch guarantees. The existing event journal is therefore the durable attempt ledger; no new table or migration is needed for Phase B.
+
+### Attempt identity and claim changes
+
+- The `task.started` event now records explicit `attempt_id`, assigned `engine_id`, assigned `capability`, and initiating operator identity. The attempt ID is the caller's unique idempotency prefix; the start event key is `<attempt_id>:started`.
+- The state machine rejects start events whose attempt ID is malformed or whose engine/capability differs from the canonical assignment.
+- Runtime checks the append-only journal for a previously used start identity before attempting a new claim. A previously used identity cannot be recycled after a task is reconsidered.
+- The atomic event/task transition remains the actual concurrency claim boundary; the preliminary lookup is only a reuse guard.
+- A replay acknowledgement for `task.started` now raises `task_start_claim_already_committed` instead of returning a snapshot that could allow a second adapter invocation. This closes the same-idempotency concurrent duplicate dispatch path.
+- A newly governed execution must use a fresh attempt identity. A repeated request for an already-claimed attempt is rejected and sent through recovery assessment; it is never dispatched again.
+
+### Crash and concurrency behavior
+
+1. First claimant atomically writes the start event and transitions the canonical task to `executing`.
+2. A concurrent request with a different attempt identity fails the mission-version or canonical task-status check.
+3. A concurrent duplicate with the same identity receives a replay acknowledgement, which the state machine rejects before adapter invocation.
+4. A later request that attempts to reuse an old identity is rejected by the scoped journal lookup.
+5. A process interruption after claim but before or during adapter invocation leaves the attempt held as `outcome_unknown` unless authoritative evidence later proves its outcome. No automatic replay is introduced.
+
+### Verification status and release boundary
+
+- Production KDO migration history confirms the existing journal and atomic task-sync migrations are present; the production RPC definition and grants were read back. Its current grants are `postgres` and `service_role` only.
+- Regression tests were added for attempt/assignment mismatch and replayed start-claim rejection. All tests remain **authored but unexecuted** because hosted CI quota is exhausted and no local project runtime is available.
+- No new production schema, data, migration, deployment, merge, or runtime-flag change was made.
+- This completes the Phase B ledger/claim design using existing infrastructure. Phase C remains limited to authoritative adapter status/result lookup contracts for adapters that can actually prove outcomes by attempt ID.
