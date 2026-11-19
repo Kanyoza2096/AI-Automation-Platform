@@ -142,6 +142,9 @@ def assess_execution_recovery(
             and terminal[0].get("event_type") == "task.failed"
             and isinstance(terminal[0].get("payload"), Mapping)
             and terminal[0]["payload"].get("no_side_effects_confirmed") is True
+            and bool(str(terminal[0]["payload"].get("no_side_effects_evidence_ref") or "").strip())
+            and terminal[0].get("actor_type") == "system"
+            and terminal[0].get("actor_id") == "director_recovery_reconciler"
         ):
             return RecoveryAssessment(
                 "failed_reconsiderable", mission_id, workspace_id, task_id,
