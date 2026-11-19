@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import hmac
 import hashlib
 import json
@@ -1044,26 +1045,51 @@ def create_app(director: Director):
         if task is not None:
             _require_workspace_task_operator(task, request)
         task = director.tasks.get(task_id)
-        previous = (
-            task.status if task is not None else None,
-            task.approved_at if task is not None else None,
-            task.approved_by if task is not None else None,
-        )
         try:
             trusted_actor = _trusted_actor(request, body.actor)
-            # Even an in-memory task already marked APPROVED must pass through
-            # the canonical store acknowledgement on every request. A concurrent
-            # same-actor request may observe another request's provisional
-            # in-memory mutation while that request is still awaiting persistence.
-            # Re-saving the same actor/timestamp is idempotent and prevents that
-            # second request from advancing the mission journal ahead of the DB.
+            if (
+                _mission_runtime_enabled()
+                and task is not None
+                and task.mission_id
+                and task.workspace_id
+            ):
+                # Mission task approval is one database transaction: canonical
+                # task status/provenance and the append-only mission event.
+                # Reuse the durable timestamp on a retry rather than creating a
+                # second approval identity.
+                approved_at = (
+                    task.approved_at
+                    if task.status == Status.APPROVED
+                    and task.approved_by == trusted_actor
+                    and task.approved_at is not None
+                    else datetime.now(timezone.utc)
+                )
+                runtime = _get_mission_runtime()
+                await runtime.approve_task(
+                    mission_id=task.mission_id,
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    operator_id=trusted_actor,
+                    approved_at=approved_at,
+                    idempotency_key=f"director-task-approval:{task.id}:{approved_at.isoformat()}",
+                    correlation_id=task.correlation_id,
+                )
+                # Update process memory only after the atomic RPC acknowledges.
+                task.status = Status.APPROVED
+                task.approved_at = approved_at
+                task.approved_by = trusted_actor
+                return safe(asdict(task))
+
+            # Legacy non-mission tasks retain their established persistence path.
+            previous = (
+                task.status if task is not None else None,
+                task.approved_at if task is not None else None,
+                task.approved_by if task is not None else None,
+            )
             approved = director.approve(task_id, trusted_actor)
             try:
                 persisted = await director.store.save_task(approved)
             except Exception as exc:
-                # A storage exception is an ambiguous write outcome. Restore
-                # process memory so a retry cannot mistake an unacknowledged
-                # approval for a durable one and skip the canonical save.
                 approved.status, approved.approved_at, approved.approved_by = previous
                 log.error(
                     "Director task approval persistence raised; retry required: task=%s error=%s",
@@ -1074,28 +1100,20 @@ def create_app(director: Director):
             if not persisted:
                 approved.status, approved.approved_at, approved.approved_by = previous
                 raise HTTPException(503, "Task approval could not be durably persisted")
-            if _mission_runtime_enabled() and approved.mission_id and approved.workspace_id:
-                try:
-                    runtime = _get_mission_runtime()
-                    await runtime.approve_task(
-                        mission_id=approved.mission_id,
-                        workspace_id=approved.workspace_id,
-                        task_id=approved.id,
-                        operator_id=str(approved.approved_by),
-                        idempotency_key=f"director-task-approval:{approved.id}:{approved.approved_at.isoformat()}",
-                        correlation_id=approved.correlation_id,
-                    )
-                except Exception as exc:
-                    # Canonical approval is already durable. Queue this exact task
-                    # for bounded background journal repair; never approve again.
-                    director.mark_mission_approval_reconciliation_pending(approved.id)
-                    log.error("Director approval committed but mission journal sync needs reconciliation: task=%s error=%s", approved.id, type(exc).__name__)
-                    raise HTTPException(503, "Task approval is saved; mission runtime synchronization requires reconciliation") from exc
             return safe(asdict(approved))
         except KeyError:
             raise HTTPException(404, "Task not found")
         except ValueError as e:
             raise HTTPException(409, str(e))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.error(
+                "Director task approval failed before acknowledgement: task=%s error=%s",
+                task_id,
+                type(exc).__name__,
+            )
+            raise HTTPException(503, "Task approval was not acknowledged; retry after checking canonical state") from exc
 
     @app.post("/tasks/{task_id}/reject")
     async def reject_task(
