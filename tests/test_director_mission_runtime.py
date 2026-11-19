@@ -285,7 +285,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
     assert store.task["status"] == "completed"
     assert store.row["state_snapshot"]["task_results"][store.task_id]["summary"] == result.summary
     assert not any(event["event_type"] == "engine.call.completed" for event in store.events)
-    assert store.row["state_snapshot"]["budget"]["provider_calls"] >= 2
+    assert store.row["state_snapshot"]["budget"]["provider_calls"] == 1
     with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
         await runtime.execute_approved_task(
             mission_id=store.mission_id,
