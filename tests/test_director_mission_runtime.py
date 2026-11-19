@@ -1490,3 +1490,26 @@ async def test_runtime_reconciliation_without_adapter_support_stays_unknown_and_
     assert store.task == before_task
     assert store.row == before_row
     assert store.events == before_events
+
+
+@pytest.mark.asyncio
+async def test_operator_recovery_review_is_audited_and_does_not_change_task_authority():
+    store = MemoryMissionStore()
+    store.task["status"] = "executing"
+    store.task["payload"]["status"] = "executing"
+    store.row["state_snapshot"]["task_status"][store.task_id] = "executing"
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    before_task = copy.deepcopy(store.task)
+    snapshot = await runtime.review_task_recovery(
+        mission_id=store.mission_id, workspace_id=store.workspace_id, task_id=store.task_id,
+        operator_id="operator-1", decision="hold",
+        reason="The engine outcome cannot yet be proven.",
+        assessment_classification="outcome_unknown",
+        idempotency_key="recovery-review-hold-001", correlation_id="recovery-review-corr-001",
+    )
+    assert snapshot.state_snapshot["task_status"][store.task_id] == "executing"
+    assert store.task == before_task
+    event = store.events[-1]
+    assert event["event_type"] == "task.recovery.reviewed"
+    assert event["actor_type"] == "operator" and event["actor_id"] == "operator-1"
+    assert event["payload"]["decision"] == "hold"
