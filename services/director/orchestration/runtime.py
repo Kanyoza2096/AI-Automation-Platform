@@ -403,6 +403,7 @@ class MissionOrchestrationRuntime:
             mission_id=mission_id,
             workspace_id=workspace_id,
             assigned_engine_id=str(((snapshot.state_snapshot.get("task_assignments") or {}).get(task_id) or {}).get("engine_id") or "") or None,
+            assigned_capability=str(((snapshot.state_snapshot.get("task_assignments") or {}).get(task_id) or {}).get("capability") or "") or None,
             now=now or datetime.now(timezone.utc),
             stale_after=timedelta(seconds=float(stale_after_seconds)),
         )
