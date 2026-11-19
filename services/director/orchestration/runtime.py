@@ -16,6 +16,7 @@ from .recovery import RecoveryAssessment, assess_execution_recovery
 from .state_machine import (
     MissionEventCommand,
     MissionRuntimeSnapshot,
+    MissionRuntimeConflict,
     MissionStateMachine,
     MissionTransitionRejected,
 )
@@ -474,6 +475,20 @@ class MissionOrchestrationRuntime:
             or len(idempotency_prefix) > 150
         ):
             raise MissionTransitionRejected("execution_attempt_identity_invalid")
+
+        # Refuse a previously used attempt identity before task state can be reconsidered.
+        # This read is not the concurrency lock; the atomic event append + task sync below
+        # remains the claim boundary.
+        prior_start = await self.store.find_event(
+            mission_id=mission_id,
+            scope_type="workspace",
+            workspace_id=workspace_id,
+            idempotency_key=f"{idempotency_prefix}:started",
+            event_type="task.started",
+            task_id=task_id,
+        )
+        if prior_start:
+            raise MissionRuntimeConflict("execution_attempt_identity_already_used")
 
         # The existing append-only mission event is the durable attempt claim.
         # Its atomic task sync changes approved -> executing in the same DB transaction.
