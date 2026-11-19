@@ -547,7 +547,7 @@ def test_native_mission_assignment_endpoint_awaits_workspace_binding_and_calls_r
             "correlation_id": "correlation-api-test-001",
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json()["mission_version"] == 7
 
 
@@ -594,7 +594,7 @@ def test_native_mission_execution_endpoint_awaits_workspace_binding_and_returns_
             "correlation_id": "correlation-api-test-001",
         },
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json()["summary"] == "Native contribution"
 
 
