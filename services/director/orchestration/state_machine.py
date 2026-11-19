@@ -386,6 +386,22 @@ class MissionStateMachine:
             event_task_id = task_id
             next_phase = "verification"
 
+        elif event_type == "task.recovery.reviewed":
+            if command.actor_type != "operator":
+                raise MissionTransitionRejected("task_recovery_review_requires_operator")
+            task_id = command.task_id or self._require_text(payload, "task_id")
+            if task_id not in task_ids:
+                raise MissionTransitionRejected("task_not_in_mission")
+            if task_status.get(task_id) not in {"executing", "failed", "blocked"}:
+                raise MissionTransitionRejected("task_not_in_recovery_review_state")
+            decision = self._require_text(payload, "decision")
+            if decision not in {"hold", "request_reconciliation"}:
+                raise MissionTransitionRejected("task_recovery_decision_not_permitted")
+            self._require_text(payload, "reason")
+            self._require_text(payload, "assessment_classification")
+            event_task_id = task_id
+            next_phase = "recovery"
+
         elif event_type == "task.reassigned":
             self._require_active(current.status)
             if command.actor_type not in {"director", "system"}:
