@@ -191,7 +191,7 @@ def test_caller_supplied_scheduled_caption_is_never_rewritten():
         "caption": "A caller supplied caption.",
         "scheduled_caption": "A caller supplied caption.",
         "topic": "Testing", "brand": _brand(), "base_prompt": "Grounded prompt.",
-        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {}}],
+        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {"verified": True}}],
     }
     with pytest.raises(Exception, match="Independent semantic review did not approve"):
         asyncio.run(step.async_run(context))
@@ -225,7 +225,7 @@ def test_semantic_repair_cannot_reintroduce_prohibited_first_person_caption(monk
     context = {
         "caption": "A factual caption with a material unsupported claim.",
         "topic": "Testing", "brand": _brand(), "base_prompt": "Grounded prompt.",
-        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {}}],
+        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {"verified": True}}],
     }
     with pytest.raises(AIValidationError, match="KDO caption compliance gate"):
         asyncio.run(step.async_run(context))
