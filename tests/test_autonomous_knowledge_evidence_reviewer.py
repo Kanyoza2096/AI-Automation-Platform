@@ -114,7 +114,7 @@ async def test_uncertain_claim_cannot_be_auto_approved():
         "source_ids": [],
         "rationale": "The source is inconclusive.",
     }]))
-    result = await AutonomousKnowledgeEvidenceReviewer(gateway).review(
+    result = await AutonomousKnowledgeEvidenceReviewer(gateway, snapshot_secret="test-secret").review(
         entry=_entry(), case=_case()
     )
     assert result["decision"] == "quarantined"
