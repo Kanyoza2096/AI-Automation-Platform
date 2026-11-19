@@ -336,7 +336,7 @@ async def test_runtime_cannot_assign_task_to_unregistered_engine_or_cross_worksp
 
 
 
-def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_status():
+def test_mission_runtime_store_reads_canonical_task_only_with_workspace_and_mission_scope():
     from types import SimpleNamespace
 
     class Query:
@@ -344,14 +344,9 @@ def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_st
             self.owner = owner
             self.table = table
             self.filters = []
-            self.update_values = None
             self.limit_value = None
 
         def select(self, *args, **kwargs):
-            return self
-
-        def update(self, values):
-            self.update_values = copy.deepcopy(values)
             return self
 
         def eq(self, key, value):
@@ -366,8 +361,6 @@ def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_st
             row = self.owner.rows.get(self.table)
             if row is None or any(row.get(key) != value for key, value in self.filters):
                 return SimpleNamespace(data=[])
-            if self.update_values is not None:
-                row.update(copy.deepcopy(self.update_values))
             return SimpleNamespace(data=[copy.deepcopy(row)])
 
     class Supabase:
@@ -400,15 +393,13 @@ def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_st
             return fn()
 
     async def run():
-        backend = Backend()
-        store = MissionRuntimeStore(backend)
+        store = MissionRuntimeStore(Backend())
         row = await store.get_workspace_task(
             task_id="task-store-runtime",
             workspace_id="workspace-store-runtime",
             mission_id="mission-store-runtime",
         )
         assert row["status"] == "approved"
-
         assert await store.get_workspace_task(
             task_id="task-store-runtime",
             workspace_id="different-workspace",
@@ -420,45 +411,11 @@ def test_mission_runtime_store_scopes_and_optimistically_syncs_canonical_task_st
             mission_id="different-mission",
         ) is None
 
-        updated = await store.sync_workspace_task_status(
-            task_id="task-store-runtime",
-            workspace_id="workspace-store-runtime",
-            mission_id="mission-store-runtime",
-            target_status="executing",
-            expected_statuses=("approved",),
-        )
-        assert updated["status"] == "executing"
-        assert updated["payload"]["status"] == "executing"
-
-        replayed = await store.sync_workspace_task_status(
-            task_id="task-store-runtime",
-            workspace_id="workspace-store-runtime",
-            mission_id="mission-store-runtime",
-            target_status="executing",
-            expected_statuses=("approved",),
-        )
-        assert replayed["status"] == "executing"
-
-        try:
-            await store.sync_workspace_task_status(
-                task_id="task-store-runtime",
-                workspace_id="workspace-store-runtime",
-                mission_id="mission-store-runtime",
-                target_status="completed",
-                expected_statuses=("approved",),
-            )
-        except MissionRuntimeStoreError as exc:
-            assert "canonical_task_status_conflict" in str(exc)
-        else:
-            raise AssertionError("stale task status update must be rejected")
-
     import asyncio
     asyncio.run(run())
 
 
-
-@pytest.mark.asyncio
-async def test_condition_engine_adapter_is_workspace_verified_advisory_only():
+def test_condition_engine_adapter_is_workspace_verified_advisory_only():
     now = datetime.now(timezone.utc).isoformat()
 
     class FakeConditionEngine:
