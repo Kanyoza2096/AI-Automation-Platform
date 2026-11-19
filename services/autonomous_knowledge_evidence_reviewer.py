@@ -63,6 +63,31 @@ def resolve_trusted_source_class(source_url: str, registry_json: str | None = No
     return trust_class
 
 
+def verify_source_snapshot_attestation(metadata: dict[str, Any], workspace_id: str, secret: str) -> bool:
+    """Verify a previously captured source snapshot before reusing it in a sweep."""
+    if not isinstance(metadata, dict) or not workspace_id or not secret:
+        return False
+    source_text = str(metadata.get("source_snapshot_text") or "")
+    source_id = str(metadata.get("source_id") or metadata.get("sourceId") or "")
+    source_url = str(metadata.get("source_url") or metadata.get("sourceUrl") or "")
+    trust_class = str(metadata.get("trust_class") or "").strip().lower()
+    if (
+        not source_text or len(source_text) > _MAX_SOURCE_CHARS
+        or metadata.get("source_snapshot_origin") != "trusted_server_ingestion"
+        or metadata.get("source_snapshot_source_id") != source_id
+        or metadata.get("source_snapshot_url") != source_url
+        or metadata.get("source_snapshot_trust_class") != trust_class
+        or trust_class not in _ALLOWED_TRUST_CLASSES
+    ):
+        return False
+    digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+    if metadata.get("source_snapshot_sha256") != digest:
+        return False
+    message = "\\n".join((workspace_id, source_id, source_url, trust_class, digest))
+    expected = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(str(metadata.get("source_snapshot_signature") or ""), expected)
+
+
 def _quarantine(reason: str, **meta: Any) -> dict[str, Any]:
     return {
         "decision": "quarantine",

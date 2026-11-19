@@ -12,12 +12,16 @@ import asyncio
 import hashlib
 import logging
 import os
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
 from services.autonomous_knowledge_evidence_reviewer import (
     AutonomousKnowledgeEvidenceReviewer,
+    build_source_snapshot_attestation,
+    resolve_trusted_source_class,
+    verify_source_snapshot_attestation,
 )
 
 logger = logging.getLogger("kdo.autonomous_knowledge_evidence_review")
@@ -44,6 +48,88 @@ def _entry(row: dict[str, Any]) -> SimpleNamespace:
     )
 
 
+async def _capture_trusted_source_snapshot(client, row: dict[str, Any]) -> dict[str, Any]:
+    """Fetch and attest an allowlisted source for historical entries, fail-closed."""
+    entry = _entry(row)
+    metadata = dict(entry.metadata)
+    secret = os.getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
+    if verify_source_snapshot_attestation(metadata, str(entry.workspace_id or ""), secret):
+        return metadata
+
+    source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+    if not isinstance(source_url, str) or not source_url:
+        return metadata
+    parsed = urlparse(source_url)
+    if (
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or parsed.username or parsed.password or any(char.isspace() for char in source_url)
+    ):
+        return metadata
+    digest = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+    prior_case = (
+        client.table("knowledge_evidence_review_cases").select("review_status")
+        .eq("knowledge_entry_id", entry.id).eq("content_sha256", digest).limit(1).execute()
+    )
+    if prior_case.data and prior_case.data[0].get("review_status") == "approved":
+        return metadata
+    try:
+        trust_class = resolve_trusted_source_class(source_url)
+        from services.web_intelligence.base import validate_external_url
+        allowed, _reason = await asyncio.to_thread(validate_external_url, source_url)
+        if not allowed or not secret:
+            return metadata
+        from services.web_intelligence import get_web_intelligence, init_web_intelligence
+        web = get_web_intelligence() or init_web_intelligence()
+        page = await web.fetch_async(source_url)
+        source_text = str(getattr(page, "text", "") or "").strip()
+        status_code = getattr(page, "status_code", None)
+        if (
+            getattr(page, "error", None) or not status_code
+            or not 200 <= int(status_code) < 300
+            or not source_text or len(source_text) > 30000
+        ):
+            return metadata
+
+        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or "")
+        if not source_id or source_id.startswith("unverified-entry:"):
+            source_id = "web-source:" + hashlib.sha256(
+                f"{entry.workspace_id}|{source_url}".encode("utf-8")
+            ).hexdigest()
+        attestation = build_source_snapshot_attestation(
+            secret=secret,
+            workspace_id=str(entry.workspace_id),
+            source_id=source_id,
+            source_url=source_url,
+            trust_class=trust_class,
+            snapshot_text=source_text,
+        )
+        updated_metadata = {
+            **metadata,
+            **attestation,
+            "source_id": source_id,
+            "source_url": source_url,
+            "source_title": str(getattr(page, "title", "") or metadata.get("source_title") or "")[:500],
+            "source_type": metadata.get("source_type") or entry.doc_type,
+            "trust_class": trust_class,
+            "ingestion_method": "server_side_web_fetch",
+        }
+        saved = (
+            client.table("knowledge_entries").update({"metadata": updated_metadata})
+            .eq("id", entry.id).eq("workspace_id", entry.workspace_id)
+            .eq("brand_id", entry.brand_id).select("id").execute()
+        )
+        if not saved.data:
+            logger.warning("source_snapshot_persist_not_confirmed entry_id=%s", entry.id)
+            return metadata
+        return updated_metadata
+    except Exception as exc:
+        logger.info(
+            "trusted_source_capture_skipped entry_id=%s reason=%s",
+            entry.id, type(exc).__name__,
+        )
+        return metadata
+
+
 def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
     entry = _entry(row)
     metadata = entry.metadata
@@ -55,7 +141,7 @@ def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
     )
     if found.data:
         existing = found.data[0]
-        if existing.get("review_status") == "quarantined" and metadata.get("source_snapshot_text"):
+        if existing.get("review_status") in {"quarantined", "rejected", "superseded"} and metadata.get("source_snapshot_text"):
             source_id = str(
                 metadata.get("source_id") or metadata.get("sourceId")
                 or existing.get("source_id") or f"unverified-entry:{entry.id}"
@@ -76,6 +162,19 @@ def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
                 .select("*").single().execute()
             )
             return reopened.data
+        if existing.get("review_status") == "pending" and metadata.get("source_snapshot_text"):
+            source_id = str(metadata.get("source_id") or metadata.get("sourceId") or existing.get("source_id"))
+            updated = (
+                client.table("knowledge_evidence_review_cases").update({
+                    "source_id": source_id,
+                    "source_url": metadata.get("source_url") or metadata.get("sourceUrl"),
+                    "source_title": metadata.get("source_title") or metadata.get("title"),
+                    "source_type": metadata.get("source_type") or entry.doc_type,
+                    "trust_class": metadata.get("trust_class"),
+                }).eq("id", existing["id"]).eq("review_status", "pending")
+                .select("*").single().execute()
+            )
+            return updated.data or existing
         return existing
 
     source_id = str(
@@ -202,6 +301,9 @@ async def _run() -> dict[str, int]:
                 counters["skipped"] += 1
                 continue
 
+            captured_metadata = await _capture_trusted_source_snapshot(client, row)
+            if captured_metadata != metadata:
+                row = {**row, "metadata": captured_metadata}
             case = _case_for_entry(client, row)
             if not case:
                 counters["skipped"] += 1
