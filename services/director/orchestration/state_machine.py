@@ -263,7 +263,7 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("task_not_cancellable_from_current_state")
             if command.actor_type not in {"operator", "system"}:
                 raise MissionTransitionRejected("task_cancellation_requires_operator_or_system")
-            reason = self._require_text(payload, "reason")
+            self._require_text(payload, "reason")
             task_status[task_id] = "cancelled"
             event_task_id = task_id
             next_phase = "review"
