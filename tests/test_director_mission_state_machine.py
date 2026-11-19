@@ -3,6 +3,7 @@ import pytest
 from services.director.orchestration.state_machine import (
     MissionEventCommand,
     MissionRuntimeSnapshot,
+    MissionRuntimeConflict,
     MissionStateMachine,
     MissionTransitionRejected,
 )
@@ -204,4 +205,30 @@ def test_task_start_requires_attempt_identity_matching_engine_assignment():
         machine.prepare(current, _command(
             "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
             payload={"attempt_id": " ", "engine_id": "content_intelligence", "capability": "research.analyze"},
+        ))
+
+
+@pytest.mark.asyncio
+async def test_replayed_task_start_claim_is_rejected_before_adapter_dispatch():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    current = _advance(machine, current, _command(
+        "task.assigned", task_id="task-a",
+        payload={"engine_id": "content_intelligence", "capability": "research.analyze"},
+    ))
+    current = _advance(machine, current, _command(
+        "task.approved", actor_type="operator", actor_id="operator-1", task_id="task-a"
+    ))
+
+    class ReplayedStartStore:
+        async def append_event(self, event):
+            return {"replayed": True, "event_id": "existing-start-event"}
+
+        async def get_mission(self, **kwargs):
+            raise AssertionError("replayed task-start must not reload and dispatch")
+
+    with pytest.raises(MissionRuntimeConflict, match="task_start_claim_already_committed"):
+        await machine.commit(ReplayedStartStore(), current, _command(
+            "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
+            payload={"attempt_id": "attempt-state-test", "engine_id": "content_intelligence", "capability": "research.analyze"},
         ))
