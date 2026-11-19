@@ -63,8 +63,11 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
     assert '"FAILED": 4' in gateway.calls[0][0]
     assert brief["mode"] == "llm"
     assert brief["provider"] == "test-provider"
-    assert len(brief["incidents"]) == 1
+    assert len(brief["incidents"]) == 2
     assert brief["incidents"][0]["evidence_refs"] == ["health:job_service"]
+    # Every non-healthy service must remain visible even if the model omits it.
+    assert brief["incidents"][1]["service"] == "condition_engine"
+    assert brief["incidents"][1]["confidence"] == "undetermined"
     assert brief["trends"] == []  # one snapshot cannot establish a trend
     assert any(item["service"] == "condition_engine" for item in brief["incidents"])
     assert gateway.calls[0][1]["caller"] == "director"
