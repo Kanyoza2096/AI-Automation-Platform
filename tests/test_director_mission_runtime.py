@@ -904,3 +904,49 @@ async def test_runtime_refuses_to_cancel_task_after_execution_has_started():
 
     assert store.events == []
     assert store.task["status"] == "executing"
+
+
+@pytest.mark.asyncio
+async def test_atomic_approval_retry_rejects_durable_timestamp_provenance_mismatch():
+    store = MemoryMissionStore()
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-approval-timestamp-mismatch",
+        correlation_id="corr-approval-timestamp-mismatch",
+    )
+    approved_at = datetime(2026, 11, 19, 12, 30, tzinfo=timezone.utc)
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-timestamp",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
+        correlation_id="corr-approval-timestamp-mismatch",
+    )
+
+    approval_event = next(
+        event for event in store.events if event["event_type"] == "task.approved"
+    )
+    approval_event["payload"]["approved_at"] = datetime(
+        2026, 11, 19, 12, 31, tzinfo=timezone.utc
+    ).isoformat()
+
+    with pytest.raises(
+        MissionTaskNotReady,
+        match="canonical_approval_journal_provenance_conflict",
+    ):
+        await runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-timestamp",
+            approved_at=datetime(2026, 11, 19, 12, 32, tzinfo=timezone.utc),
+            idempotency_key="retry-after-timestamp-provenance-tamper",
+            correlation_id="corr-approval-timestamp-mismatch",
+        )
