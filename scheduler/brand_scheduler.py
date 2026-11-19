@@ -1509,14 +1509,15 @@ class BrandScheduler:
         return topic, publish_ok, platforms, queued_publish
 
     @staticmethod
-    def _extract_confirmed_post_id(result) -> Optional[str]:
-        """Return a provider post ID only when the publish step confirms success."""
+    def _extract_publish_receipt(result) -> Optional[dict]:
+        """Return provider receipt metadata only for a confirmed publish step."""
         for step in getattr(result, "steps", []) or []:
             if getattr(step, "step_name", None) != "publish" or not getattr(step, "ok", False):
                 continue
             output = step.output if isinstance(step.output, dict) else {}
             if output.get("queued"):
                 return None
+
             status = str(output.get("status") or "").strip().lower()
             flat_id = (
                 output.get("platform_post_id")
@@ -1527,8 +1528,14 @@ class BrandScheduler:
                 "ok", "succeeded", "success", "published",
             }
             if flat_ok and flat_id:
-                return str(flat_id)
-            for value in output.values():
+                return {
+                    "platform_post_id": str(flat_id),
+                    "page_id": output.get("page_id"),
+                    "account_id": output.get("account_id"),
+                    "platform": output.get("platform"),
+                }
+
+            for key, value in output.items():
                 if not isinstance(value, dict):
                     continue
                 nested_status = str(value.get("status") or "").strip().lower()
@@ -1541,8 +1548,19 @@ class BrandScheduler:
                     or value.get("post_id")
                 )
                 if nested_ok and nested_id:
-                    return str(nested_id)
+                    return {
+                        "platform_post_id": str(nested_id),
+                        "page_id": value.get("page_id") or output.get("page_id"),
+                        "account_id": value.get("account_id") or output.get("account_id"),
+                        "platform": value.get("platform") or key,
+                    }
         return None
+
+    @staticmethod
+    def _extract_confirmed_post_id(result) -> Optional[str]:
+        """Compatibility wrapper returning only the confirmed provider post ID."""
+        receipt = BrandScheduler._extract_publish_receipt(result)
+        return receipt.get("platform_post_id") if receipt else None
 
     def _trigger_workflow(
         self, source: str = "scheduled", today=None, hour=None,
@@ -1698,7 +1716,11 @@ class BrandScheduler:
             topic, publish_ok, platforms, queued_publish = self._extract_workflow_outcome(
                 result, context_platform=context_platform,
             )
-            confirmed_post_id = self._extract_confirmed_post_id(result)
+            publish_receipt = self._extract_publish_receipt(result)
+            confirmed_post_id = (
+                publish_receipt.get("platform_post_id")
+                if publish_receipt else None
+            )
 
             duration_ms = (time.monotonic() - publish_started) * 1000
 
@@ -1737,8 +1759,17 @@ class BrandScheduler:
                     try:
                         _job_call(
                             self._job_service, "mark_published",
-                            automation_job, post_id=confirmed_post_id,
-                            result={"topic": topic, "platforms": platforms},
+                            automation_job,
+                            post_id=confirmed_post_id,
+                            social_account_id=(
+                                publish_receipt.get("account_id")
+                                if publish_receipt else None
+                            ),
+                            result={
+                                "topic": topic,
+                                "platforms": platforms,
+                                "receipt": publish_receipt,
+                            },
                         )
                     except Exception as e:
                         logger.error(

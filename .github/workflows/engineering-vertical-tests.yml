@@ -24,6 +24,9 @@ on:
       - "core/species_auth.py"
       - "core/security/deps.py"
       - "tests/test_auth_dependency_direct_call.py"
+      - "services/job_service.py"
+      - "scheduler/brand_scheduler.py"
+      - "tests/test_publish_confirmation_contract.py"
       - "services/connectors/facebook_connector.py"
       - "services/facebook.py"
       - "services/v69_tenant_facebook_connector_factory.py"
@@ -525,6 +528,7 @@ jobs:
             tests/test_ai_provider_fabric.py \
             tests/test_cloudflare_structured_json_mode.py \
             tests/test_article_workflow.py \
+            tests/test_publish_confirmation_contract.py \
             tests/test_growthbridge_article_console.py \
             tests/test_auth_dependency_direct_call.py \
             tests/engineering_vertical/test_staging_lifecycle.py \
