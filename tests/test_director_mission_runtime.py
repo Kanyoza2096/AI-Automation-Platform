@@ -1498,6 +1498,27 @@ async def test_operator_recovery_review_is_audited_and_does_not_change_task_auth
     store.task["status"] = "executing"
     store.task["payload"]["status"] = "executing"
     store.row["state_snapshot"]["task_status"][store.task_id] = "executing"
+    store.row["state_snapshot"]["task_assignments"][store.task_id] = {
+        "engine_id": "content_intelligence", "capability": "research.analyze"
+    }
+    store.events.append({
+        "event_id": "recovery-review-start",
+        "mission_id": store.mission_id,
+        "scope_type": "workspace",
+        "workspace_id": store.workspace_id,
+        "task_id": store.task_id,
+        "event_type": "task.started",
+        "actor_type": "operator",
+        "actor_id": "operator-1",
+        "idempotency_key": "recovery-review-attempt:started",
+        "correlation_id": "recovery-review-corr-001",
+        "created_at": "2026-11-19T10:00:00+00:00",
+        "payload": {
+            "attempt_id": "recovery-review-attempt",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze",
+        },
+    })
     runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
     before_task = copy.deepcopy(store.task)
     snapshot = await runtime.review_task_recovery(
