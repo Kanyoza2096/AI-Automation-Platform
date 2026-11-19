@@ -726,6 +726,7 @@ def test_native_mission_engine_message_routes_are_workspace_scoped_and_use_assig
 
 
 def test_native_mission_task_rejection_is_journalled_through_runtime(monkeypatch):
+    from types import SimpleNamespace
     from services.director import Director, create_app
     from services.director.models import Task, Sector, Authority, Risk, Status
 
