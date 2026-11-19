@@ -526,6 +526,96 @@ async def _run_autonomous_knowledge_evidence_review(
     return reviewed
 
 
+async def _autonomously_review_new_entry(*, entry, brand_id: str, claim_scope: str, client) -> dict:
+    """Create/reuse an autonomous review case for every newly ingested KB entry."""
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+    trust_class = None
+    if source_url and _valid_evidence_url(str(source_url)):
+        try:
+            trust_class = _trusted_source_class_for_url(str(source_url))
+            from services.web_intelligence.base import validate_external_url
+            allowed, _reason = await _async_wrap(validate_external_url, str(source_url))
+            if allowed:
+                from services.web_intelligence import get_web_intelligence, init_web_intelligence
+                web = get_web_intelligence() or init_web_intelligence()
+                page = await web.fetch_async(str(source_url))
+                captured = str(getattr(page, "text", "") or "").strip()
+                status_code = getattr(page, "status_code", None)
+                if captured and len(captured) <= 30000 and status_code and 200 <= int(status_code) < 300 and not getattr(page, "error", None):
+                    from services.autonomous_knowledge_evidence_reviewer import build_source_snapshot_attestation
+                    secret = __import__("os").getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
+                    if secret:
+                        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or (
+                            "web-source:" + _sha256(f"{entry.workspace_id}|{source_url}".encode()).hexdigest()
+                        ))
+                        metadata = {
+                            **metadata,
+                            **build_source_snapshot_attestation(
+                                secret=secret, workspace_id=str(entry.workspace_id),
+                                source_id=source_id, source_url=str(source_url),
+                                trust_class=trust_class, snapshot_text=captured,
+                            ),
+                            "source_id": source_id, "source_url": str(source_url),
+                            "source_title": str(getattr(page, "title", "") or metadata.get("source_title") or "")[:500],
+                            "source_type": metadata.get("source_type") or entry.doc_type,
+                            "trust_class": trust_class,
+                            "ingestion_method": "server_side_web_fetch",
+                        }
+                        entry.metadata = metadata
+                        from repositories.knowledge_repository import KnowledgeRepository
+                        repo = await _async_wrap(entry_repo_container.resolve, KnowledgeRepository) if False else None
+        except Exception:
+            # Missing or inaccessible provenance must never become approval.
+            trust_class = None
+
+    content_hash = _sha256(entry.content.encode("utf-8")).hexdigest()
+    source_id = str(metadata.get("source_id") or metadata.get("sourceId") or f"unverified-entry:{entry.id}")
+    source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+    existing = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").select("*")
+        .eq("knowledge_entry_id", entry.id).eq("content_sha256", content_hash).limit(1).execute()
+    )
+    if existing.data:
+        case = existing.data[0]
+        if case.get("review_status") == "approved":
+            return case
+        if case.get("review_status") == "pending":
+            return await _run_autonomous_knowledge_evidence_review(case=case, entry=entry, client=client)
+        if case.get("review_status") == "quarantined" and metadata.get("source_snapshot_text"):
+            reopened = await _async_wrap(
+                lambda: client.table("knowledge_evidence_review_cases").update({
+                    "review_status": "pending", "reviewed_by": "service:kdo-autonomous-knowledge-review",
+                    "reviewed_at": _review_datetime.now(_review_timezone.utc).isoformat(),
+                    "review_notes": "Trusted source snapshot became available; autonomous re-review queued.",
+                    "source_id": source_id, "source_url": source_url,
+                    "trust_class": trust_class,
+                }).eq("id", case["id"]).eq("review_status", "quarantined").select("*").single().execute()
+            )
+            if reopened.data:
+                return await _run_autonomous_knowledge_evidence_review(case=reopened.data, entry=entry, client=client)
+            return case
+
+    inserted = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").insert({
+            "knowledge_entry_id": entry.id, "workspace_id": entry.workspace_id,
+            "brand_id": brand_id, "source_id": source_id,
+            "submitted_by": "service:kdo-autonomous-knowledge-review",
+            "source_url": source_url,
+            "source_title": metadata.get("source_title") or metadata.get("title"),
+            "source_type": metadata.get("source_type") or entry.doc_type,
+            "trust_class": trust_class or metadata.get("trust_class"),
+            "claim_scope": claim_scope, "content_sha256": content_hash,
+            "metadata_snapshot": metadata, "review_status": "pending",
+        }).select("*").single().execute()
+    )
+    if not inserted.data:
+        raise RuntimeError("Autonomous knowledge review case creation was not confirmed")
+    return await _run_autonomous_knowledge_evidence_review(
+        case=inserted.data, entry=entry, client=client
+    )
+
+
 def _evidence_review_payload(row: dict) -> dict:
     allowed = (
         "id", "knowledge_entry_id", "workspace_id", "brand_id", "source_id",
