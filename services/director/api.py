@@ -443,6 +443,7 @@ def create_app(director: Director):
         if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
             raise HTTPException(404, "Mission task not found")
         runtime = _get_mission_runtime()
+        from .orchestration.runtime import MissionTaskNotReady
         try:
             contribution = await runtime.execute_approved_task(
                 mission_id=mission_id,
@@ -461,7 +462,7 @@ def create_app(director: Director):
                     "engine_id": contribution.engine_id, "status": contribution.status,
                     "summary": contribution.summary, "confidence": contribution.confidence,
                     "evidence": list(contribution.evidence), "limitations": list(contribution.limitations)}
-        except (ValueError, LookupError, PermissionError) as exc:
+        except (MissionTaskNotReady, ValueError, LookupError, PermissionError) as exc:
             raise HTTPException(409, str(exc)[:200]) from exc
         except Exception as exc:
             log.warning("Director mission task execution failed: %s", type(exc).__name__)
