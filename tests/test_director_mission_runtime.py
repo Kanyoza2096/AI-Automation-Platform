@@ -950,3 +950,62 @@ async def test_atomic_approval_retry_rejects_durable_timestamp_provenance_mismat
             idempotency_key="retry-after-timestamp-provenance-tamper",
             correlation_id="corr-approval-timestamp-mismatch",
         )
+
+
+
+@pytest.mark.asyncio
+async def test_concurrent_approvals_for_one_task_commit_exactly_one_operator_decision():
+    store = MemoryMissionStore()
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-concurrent-approval",
+        correlation_id="corr-concurrent-approval",
+    )
+
+    approved_at_a = datetime(2026, 11, 19, 13, 0, tzinfo=timezone.utc)
+    approved_at_b = datetime(2026, 11, 19, 13, 0, 1, tzinfo=timezone.utc)
+
+    results = await asyncio.gather(
+        runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-a",
+            approved_at=approved_at_a,
+            idempotency_key=f"director-task-approval:{store.task_id}:{approved_at_a.isoformat()}",
+            correlation_id="corr-concurrent-approval-a",
+        ),
+        runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-b",
+            approved_at=approved_at_b,
+            idempotency_key=f"director-task-approval:{store.task_id}:{approved_at_b.isoformat()}",
+            correlation_id="corr-concurrent-approval-b",
+        ),
+        return_exceptions=True,
+    )
+
+    successes = [item for item in results if not isinstance(item, Exception)]
+    failures = [item for item in results if isinstance(item, Exception)]
+    approval_events = [
+        event for event in store.events if event["event_type"] == "task.approved"
+    ]
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert len(approval_events) == 1
+    assert store.task["status"] == "approved"
+    assert store.task["payload"]["approved_by"] in {"operator-a", "operator-b"}
+    assert store.task["payload"]["approved_at"] in {
+        approved_at_a.isoformat(),
+        approved_at_b.isoformat(),
+    }
+    assert approval_events[0]["actor_id"] == store.task["payload"]["approved_by"]
+    assert approval_events[0]["payload"]["approved_at"] == store.task["payload"]["approved_at"]
