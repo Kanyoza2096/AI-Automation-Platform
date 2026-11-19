@@ -414,12 +414,18 @@ def _evidence_review_client():
     return getattr(supabase_service, "service_client", None)
 
 
-def _evidence_review_actor(*, require_human: bool = True) -> tuple[str, object]:
+def _evidence_review_actor(
+    *, require_human: bool = True, permission: str = "write"
+) -> tuple[str, object]:
+    """Resolve an authenticated actor and enforce the operation's permission."""
     identity = _review_identity_var.get()
     if identity is None:
         raise HTTPException(status_code=401, detail="Authenticated identity required")
-    if not identity.has_permission("write"):
-        raise HTTPException(status_code=403, detail="Workspace write permission required")
+    if permission not in {"read", "write"}:
+        raise ValueError("Unsupported evidence review permission")
+    if not identity.has_permission(permission):
+        label = "read" if permission == "read" else "write"
+        raise HTTPException(status_code=403, detail=f"Workspace {label} permission required")
     user_id = getattr(identity, "user_id", None)
     if require_human and (getattr(identity, "is_species", False) or not user_id):
         raise HTTPException(status_code=403, detail="A human reviewer identity is required")
@@ -544,8 +550,12 @@ async def list_knowledge_evidence_reviews(
 ):
     """List evidence review cases within the authenticated brand workspace."""
     try:
-        await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        _evidence_review_actor(require_human=False)
+        workspace_id = await require_workspace_ownership(
+            "brand", brand_id, request, request.app.state.container
+        )
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+        _evidence_review_actor(require_human=False, permission="read")
         if status not in {"pending", "approved", "rejected", "superseded", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
@@ -554,7 +564,7 @@ async def list_knowledge_evidence_reviews(
         query = (
             client.table("knowledge_evidence_review_cases").select("*")
             .eq("brand_id", brand_id)
-            .eq("workspace_id", _resolve_workspace_from_request(request))
+            .eq("workspace_id", workspace_id)
             .order("created_at", desc=True).limit(min(100, max(1, limit)))
         )
         if status != "all":
