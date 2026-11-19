@@ -6,11 +6,12 @@ KCPG commands, Action Kernel execution, publishing, or other external actions.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AdapterRegistry, EngineContribution, MissionTaskContext
+from .recovery import RecoveryAssessment, assess_execution_recovery
 from .state_machine import (
     MissionEventCommand,
     MissionRuntimeSnapshot,
@@ -359,6 +360,39 @@ class MissionOrchestrationRuntime:
         except (TypeError, ValueError):
             return 0
         return max(0, number)
+
+    async def assess_task_recovery(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        stale_after_seconds: float,
+        now: datetime | None = None,
+    ) -> RecoveryAssessment:
+        """Read-only recovery assessment; this method never changes task state or dispatches work."""
+        if isinstance(stale_after_seconds, bool) or stale_after_seconds <= 0:
+            raise ValueError("recovery_stale_after_seconds_must_be_positive")
+        await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task:
+            raise MissionRuntimeNotFound("workspace_mission_task_not_found")
+        events = await self.store.list_events(
+            mission_id=mission_id,
+            scope_type="workspace",
+            workspace_id=workspace_id,
+            limit=min(500, int(getattr(self.store, "MAX_EVENT_READ_LIMIT", 500))),
+        )
+        return assess_execution_recovery(
+            task=task,
+            events=events,
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            now=now or datetime.now(timezone.utc),
+            stale_after=timedelta(seconds=float(stale_after_seconds)),
+        )
 
     async def execute_approved_task(
         self,
