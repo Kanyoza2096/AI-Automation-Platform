@@ -6,7 +6,7 @@
 CREATE OR REPLACE FUNCTION public.guard_director_collaboration_run_finalization()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-SET search_path = public, pg_temp
+SET search_path = pg_catalog, public, pg_temp
 AS $function$
 BEGIN
     IF TG_OP = 'DELETE' THEN
@@ -41,27 +41,38 @@ BEGIN
     END IF;
 
     IF NEW.status = 'completed' THEN
-        IF jsonb_typeof(NEW.consultations) IS DISTINCT FROM 'array'
-           OR jsonb_array_length(NEW.consultations) <> cardinality(NEW.requested_engines)
-           OR EXISTS (
-               SELECT 1
-                 FROM unnest(NEW.requested_engines) AS requested(engine)
-                WHERE NOT EXISTS (
-                    SELECT 1
-                      FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
-                     WHERE consultation.item->>'engine' = requested.engine
-                       AND consultation.item->>'status' = 'completed'
-                       AND NOT COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
-                )
-           )
-           OR EXISTS (
-               SELECT 1
-                 FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
-                WHERE consultation.item->>'status' IS DISTINCT FROM 'completed'
-                   OR COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
-           )
-           OR NULLIF(btrim(NEW.synthesis), '') IS NULL THEN
+        -- Keep JSON shape validation in a separate statement: SQL boolean
+        -- expression evaluation order is not guaranteed, so combining this
+        -- with jsonb_array_elements/array_length can still raise on bad shapes.
+        IF jsonb_typeof(NEW.consultations) IS DISTINCT FROM 'array' THEN
+            RAISE EXCEPTION 'director_collaboration_run_completed_consultations_invalid';
+        END IF;
+
+        IF jsonb_array_length(NEW.consultations) <> cardinality(NEW.requested_engines) THEN
             RAISE EXCEPTION 'director_collaboration_run_completed_consultations_incomplete';
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+              FROM unnest(NEW.requested_engines) AS requested(engine)
+             WHERE NOT EXISTS (
+                 SELECT 1
+                   FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
+                  WHERE consultation.item->>'engine' = requested.engine
+                    AND consultation.item->>'status' = 'completed'
+                    AND NOT COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
+             )
+        ) OR EXISTS (
+            SELECT 1
+              FROM jsonb_array_elements(NEW.consultations) AS consultation(item)
+             WHERE consultation.item->>'status' IS DISTINCT FROM 'completed'
+                OR COALESCE((consultation.item->'sources'->>'partial')::BOOLEAN, FALSE)
+        ) THEN
+            RAISE EXCEPTION 'director_collaboration_run_completed_consultations_incomplete';
+        END IF;
+
+        IF NULLIF(btrim(NEW.synthesis), '') IS NULL THEN
+            RAISE EXCEPTION 'director_collaboration_run_completed_synthesis_empty';
         END IF;
 
         IF NEW.evidence_summary #>> '{comparison,status}' IS DISTINCT FROM 'available'
