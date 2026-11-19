@@ -78,7 +78,7 @@ def assess_execution_recovery(
         if starts or any(event.get("event_type") in {"task.completed", "task.failed", "task.blocked"} for event in scoped_events):
             return RecoveryAssessment(
                 "outcome_unknown", mission_id, workspace_id, task_id, None, None,
-                "approved_task_has_durable_start_event",
+                "approved_task_has_execution_lifecycle_event",
                 tuple(str(item.get("event_id") or "") for item in starts),
             )
         return RecoveryAssessment(
