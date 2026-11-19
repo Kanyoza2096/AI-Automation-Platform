@@ -228,6 +228,7 @@ def _bind_stageable_health_capability(director, monkeypatch):
 def _stageable_health_plan():
     return {
         "plan_id": "plan-health-1",
+        "objective": {"source_collaboration_run_id": "collab-run-123"},
         "source_context_fingerprint": "context-fingerprint-1",
         "source_context_generated_at": "2026-11-16T08:00:00+00:00",
         "steps": [{
@@ -270,6 +271,8 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
     assert task.status == Status.APPROVAL
     assert task.params == {"brand_id": "brand-owned"}
     assert "operator:operator-1" in task.sources
+    assert "collaboration_run:collab-run-123" in task.sources
+    assert result["source_collaboration_run_id"] == "collab-run-123"
 
     replay = await director.stage_strategic_mission(
         plan_id="plan-health-1", workspace_id="workspace-a",
@@ -376,3 +379,5 @@ async def test_strategic_mission_admission_can_use_v2_runtime_atomically(monkeyp
     assert result["execution_permitted"] is False
     assert runtime_instances[0].admission["workspace_id"] == "workspace-a"
     assert runtime_instances[0].admission["tasks"][0]["payload"]["scope_type"] == "workspace"
+    assert "collaboration_run:collab-run-123" in runtime_instances[0].admission["tasks"][0]["payload"]["sources"]
+    assert result["source_collaboration_run_id"] == "collab-run-123"
