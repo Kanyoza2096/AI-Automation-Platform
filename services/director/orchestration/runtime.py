@@ -534,6 +534,7 @@ class MissionOrchestrationRuntime:
             inputs=self._bounded_input_mapping(inputs),
             evidence_refs=task_evidence_refs,
             correlation_id=correlation_id,
+            attempt_id=idempotency_prefix,
             timeout_seconds=effective_timeout,
         )
 
