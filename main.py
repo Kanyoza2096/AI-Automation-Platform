@@ -1335,10 +1335,25 @@ async def lifespan(app: FastAPI):
     for warning in _boot_warnings:
         logger.warning("  ⚠ %s: %s", warning["service"], warning["error"])
 
+    # Start the knowledge evidence backlog sweep only after the complete
+    # application boot. It runs on this existing single web process; no paid
+    # worker/cron resource is required.
+    try:
+        from api.routers.knowledge import start_knowledge_review_sweep_scheduler
+        await start_knowledge_review_sweep_scheduler()
+    except Exception:
+        logger.exception("knowledge review sweep scheduler failed to start")
+
     # ── YIELD: hand control to the application ──
     try:
         yield
     finally:
+        try:
+            from api.routers.knowledge import stop_knowledge_review_sweep_scheduler
+            await stop_knowledge_review_sweep_scheduler()
+        except Exception:
+            logger.exception("knowledge review sweep scheduler failed to stop")
+
         logger.info(
             "app.shutdown.start",
             extra={"event": "app.shutdown.start", "boot_id": app.state.boot_id},
