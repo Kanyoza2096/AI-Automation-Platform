@@ -112,7 +112,10 @@ BEGIN
                OR NEW.source_url IS DISTINCT FROM OLD.source_url
                OR NEW.source_title IS DISTINCT FROM OLD.source_title
                OR NEW.source_type IS DISTINCT FROM OLD.source_type
-               OR NEW.trust_class IS DISTINCT FROM OLD.trust_class THEN
+               OR NEW.trust_class IS DISTINCT FROM OLD.trust_class
+               OR NEW.review_mode IS DISTINCT FROM OLD.review_mode
+               OR NEW.review_confidence IS DISTINCT FROM OLD.review_confidence
+               OR NEW.review_evidence IS DISTINCT FROM OLD.review_evidence THEN
                 RAISE EXCEPTION 'Approved evidence review cases are immutable';
             END IF;
         ELSIF OLD.review_status = 'pending' THEN
