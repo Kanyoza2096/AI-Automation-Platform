@@ -204,19 +204,22 @@ class MissionOrchestrationRuntime:
         payload = task_row.get("payload") or {}
         approved_at_value = approved_at.astimezone(timezone.utc).isoformat()
         if task_row.get("status") == "approved":
-            # A retried request is a read-only replay: it must identify the
-            # same durable actor, timestamp, and task.approved event.
+            # The RPC may have committed while its response was lost, leaving
+            # process memory stale. The canonical task row supplies the original
+            # timestamp, and the durable event proves whether this is a replay.
+            canonical_approved_at = str(payload.get("approved_at") or "")
             if (
                 payload.get("approved_by") != operator_id
-                or payload.get("approved_at") != approved_at_value
+                or not canonical_approved_at
                 or (current.state_snapshot.get("task_status") or {}).get(task_id) != "approved"
             ):
                 raise MissionTaskNotReady("canonical_approval_provenance_conflict")
+            canonical_key = f"director-task-approval:{task_id}:{canonical_approved_at}"
             prior_event = await self.store.find_event(
                 mission_id=mission_id,
                 scope_type="workspace",
                 workspace_id=workspace_id,
-                idempotency_key=idempotency_key,
+                idempotency_key=canonical_key,
                 event_type="task.approved",
                 task_id=task_id,
             )
@@ -224,7 +227,7 @@ class MissionOrchestrationRuntime:
                 not prior_event
                 or prior_event.get("actor_type") != "operator"
                 or prior_event.get("actor_id") != operator_id
-                or (prior_event.get("payload") or {}).get("approved_at") != approved_at_value
+                or (prior_event.get("payload") or {}).get("approved_at") != canonical_approved_at
             ):
                 raise MissionTaskNotReady("canonical_approval_journal_provenance_conflict")
             return current
