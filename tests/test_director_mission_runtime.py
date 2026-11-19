@@ -1094,3 +1094,86 @@ async def test_concurrent_approvals_for_one_task_commit_exactly_one_operator_dec
     }
     assert approval_events[0]["actor_id"] == store.task["payload"]["approved_by"]
     assert approval_events[0]["payload"]["approved_at"] == store.task["payload"]["approved_at"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_native_execution_dispatches_engine_only_once():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingNativeAdapter(FakeNativeAdapter):
+        async def invoke(self, context):
+            self.calls.append(context)
+            entered.set()
+            await release.wait()
+            return EngineContribution(
+                engine_id=self.engine_id,
+                capability=context.capability,
+                task_id=context.task_id,
+                mission_id=context.mission_id,
+                workspace_id=context.workspace_id,
+                status="completed",
+                summary="Single durable execution completed.",
+                evidence=({"ref": "source:single-execution"},),
+            )
+
+    researcher = BlockingNativeAdapter("content_intelligence", "Single durable execution completed.")
+    registry.register(researcher)
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=registry,
+        task_state_callback=lambda *_args: None,
+    )
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-concurrent-exec",
+        correlation_id="corr-concurrent-exec",
+    )
+    approved_at = datetime(2026, 11, 19, 13, 0, tzinfo=timezone.utc)
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-1",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
+        correlation_id="corr-concurrent-exec",
+    )
+
+    first = asyncio.create_task(runtime.execute_approved_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        objective="Run the approved task once.",
+        inputs={},
+        idempotency_prefix="concurrent-exec-1",
+        correlation_id="corr-concurrent-exec",
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="Attempt a concurrent duplicate.",
+            inputs={},
+            idempotency_prefix="concurrent-exec-2",
+            correlation_id="corr-concurrent-exec",
+        )
+
+    release.set()
+    result = await first
+    assert result.status == "completed"
+    assert len(researcher.calls) == 1
+    assert store.task["status"] == "completed"
+    assert [event["event_type"] for event in store.events].count("task.started") == 1
+    assert [event["event_type"] for event in store.events].count("task.completed") == 1
