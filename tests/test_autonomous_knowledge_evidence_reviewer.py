@@ -85,7 +85,7 @@ async def test_autonomous_reviewer_approves_only_when_all_local_gates_pass():
 @pytest.mark.asyncio
 async def test_missing_captured_source_snapshot_is_quarantined_without_llm_call():
     gateway = FakeGateway(_assessment())
-    result = await AutonomousKnowledgeEvidenceReviewer(gateway).review(
+    result = await AutonomousKnowledgeEvidenceReviewer(gateway, snapshot_secret="test-secret").review(
         entry=_entry(metadata={}), case=_case()
     )
     assert result["decision"] == "quarantine"
