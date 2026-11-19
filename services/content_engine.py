@@ -191,7 +191,7 @@ _FIRST_PERSON_PATTERNS = (
 )
 
 # v15.9.2 — word-count bounds.
-_MIN_WORDS = 80
+_MIN_WORDS = 30
 _MAX_WORDS = 250
 
 
