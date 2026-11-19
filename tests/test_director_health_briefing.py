@@ -58,6 +58,8 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
     )
 
     assert "voice_compliance" in gateway.calls[0][0]
+    assert '"job_database_failure_records_available": true' in gateway.calls[0][0]
+    assert '"job_failure_intelligence_available": true' in gateway.calls[0][0]
     assert '"FAILED": 4' in gateway.calls[0][0]
     assert brief["mode"] == "llm"
     assert brief["provider"] == "test-provider"
