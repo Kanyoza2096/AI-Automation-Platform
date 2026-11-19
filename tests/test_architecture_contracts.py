@@ -125,4 +125,6 @@ def test_finalized_collaboration_runs_are_database_immutable():
     assert "director_collaboration_run_finalized_immutable" in sql
     assert "director_collaboration_run_delete_forbidden" in sql
     assert "director_collaboration_run_completed_synthesis_unavailable" in sql
+    assert "cardinality(NEW.requested_engines)" in sql
+    assert "NULLIF(btrim(NEW.synthesis), '') IS NULL" in sql
     assert "director_collaboration_run_identity_immutable" in sql
