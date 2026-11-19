@@ -967,6 +967,76 @@ async def test_atomic_approval_retry_rejects_durable_timestamp_provenance_mismat
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("corruption", "expected_error"),
+    [
+        ("mission_snapshot", "canonical_approval_provenance_conflict"),
+        ("missing_event", "canonical_approval_journal_provenance_conflict"),
+        ("event_actor", "canonical_approval_journal_provenance_conflict"),
+        ("task_actor", "canonical_approval_provenance_conflict"),
+    ],
+)
+async def test_approval_retry_fails_closed_on_canonical_journal_disagreement(
+    corruption, expected_error
+):
+    store = MemoryMissionStore()
+    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key=f"assign-reconcile-{corruption}",
+        correlation_id=f"corr-reconcile-{corruption}",
+    )
+    approved_at = datetime(2026, 11, 19, 13, 15, tzinfo=timezone.utc)
+    approval_key = f"director-task-approval:{store.task_id}:{approved_at.isoformat()}"
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-reconcile",
+        approved_at=approved_at,
+        idempotency_key=approval_key,
+        correlation_id=f"corr-reconcile-{corruption}",
+    )
+
+    approval_event = next(
+        event for event in store.events if event["event_type"] == "task.approved"
+    )
+    if corruption == "mission_snapshot":
+        store.row["state_snapshot"]["task_status"][store.task_id] = "approval_required"
+    elif corruption == "missing_event":
+        store.events.remove(approval_event)
+    elif corruption == "event_actor":
+        approval_event["actor_id"] = "different-operator"
+    elif corruption == "task_actor":
+        store.task["payload"]["approved_by"] = "different-operator"
+
+    before_task = copy.deepcopy(store.task)
+    before_snapshot = copy.deepcopy(store.row["state_snapshot"])
+    before_events = copy.deepcopy(store.events)
+
+    with pytest.raises(MissionTaskNotReady, match=expected_error):
+        await runtime.approve_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-reconcile",
+            approved_at=datetime(2026, 11, 19, 13, 16, tzinfo=timezone.utc),
+            idempotency_key="retry-after-canonical-journal-disagreement",
+            correlation_id=f"corr-reconcile-{corruption}",
+        )
+
+    # Recovery is deliberately read-only: disagreement is surfaced, never
+    # silently repaired or converted into a new operator approval.
+    assert store.task == before_task
+    assert store.row["state_snapshot"] == before_snapshot
+    assert store.events == before_events
+
+
 
 @pytest.mark.asyncio
 async def test_concurrent_approvals_for_one_task_commit_exactly_one_operator_decision():
