@@ -723,3 +723,48 @@ def test_native_mission_engine_message_routes_are_workspace_scoped_and_use_assig
     assert answered.status_code == 200
     assert answered.json()["engine_id"] == "meta_engine"
     assert answered.json()["summary"] == "Independent review"
+
+
+def test_native_mission_task_rejection_is_journalled_through_runtime(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import Task, Sector, Authority, Risk, Status
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    d.tasks["task-cancel"] = Task(
+        id="task-cancel", sector=Sector.CONTENT, description="mission task",
+        capability="self_diagnostic", authority=Authority.AUTO, risk=Risk.LOW,
+        status=Status.APPROVAL, workspace_id="ws-a", mission_id="mission-a",
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-operator", role="owner",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    class FakeRuntime:
+        async def cancel_task(self, **kwargs):
+            assert kwargs["mission_id"] == "mission-a"
+            assert kwargs["workspace_id"] == "ws-a"
+            assert kwargs["task_id"] == "task-cancel"
+            assert kwargs["operator_id"] == "trusted-operator"
+            assert kwargs["reason"].startswith("Rejected by trusted-operator:")
+            assert kwargs["idempotency_key"].startswith("director-task-cancel:")
+            return SimpleNamespace(version=8)
+
+    app.state.director_mission_runtime = FakeRuntime()
+    response = TestClient(app).post(
+        "/tasks/task-cancel/reject",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={"reason": "Evidence was insufficient"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+    assert response.json()["error"] == "Rejected by trusted-operator: Evidence was insufficient"
+    assert d.tasks["task-cancel"].status == Status.CANCELLED
