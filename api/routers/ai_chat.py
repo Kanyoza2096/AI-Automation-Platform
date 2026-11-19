@@ -226,6 +226,11 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
+            "evidence_manifest": evidence_manifest,
+            "evidence_manifest_sha256": hashlib.sha256(json.dumps(
+                evidence_manifest, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
+            ).encode("utf-8")).hexdigest(),
         },
         "evidence": evidence,
         "evidence_manifest": evidence_manifest,
