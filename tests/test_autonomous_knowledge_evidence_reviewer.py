@@ -192,6 +192,13 @@ def test_source_snapshot_attestation_can_be_reused_only_when_every_binding_match
     assert not verify_source_snapshot_attestation(tampered, "workspace-1", "test-secret")
 
 
+def test_backlog_sweep_reopens_only_when_trusted_snapshot_changes():
+    source = (ROOT / "scripts" / "autonomous_knowledge_evidence_review.py").read_text()
+    assert "current_snapshot_digest != prior_snapshot_digest" in source
+    assert '"source_snapshot_sha256": (' in source
+    assert "entry.metadata.get(\"source_snapshot_sha256\")" in source
+
+
 def test_backlog_sweep_captures_allowlisted_sources_before_case_review():
     source = (ROOT / "scripts" / "autonomous_knowledge_evidence_review.py").read_text()
     assert "async def _capture_trusted_source_snapshot" in source
