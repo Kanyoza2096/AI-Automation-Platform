@@ -234,10 +234,60 @@ def _collaboration_run_status(consultations):
 
 
 async def _persist_collaboration_progress(db, workspace_id, run_id, consultations, phase, metadata=None):
-    """Persist an incremental, workspace-scoped snapshot for live read-only observers."""
-    evidence_summary = {"phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()}
+    """Persist a workspace-scoped progress snapshot and bounded event history.
+
+    The event history records phase transitions and per-engine state changes so
+    Mission Control can reconstruct how a collaboration progressed after the
+    synchronous request has returned. It contains metadata only, not duplicated
+    consultation text or authority-bearing commands.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    existing_result = await _db_call(lambda: db.table("director_collaboration_runs")
+        .select("evidence_summary")
+        .eq("id", run_id)
+        .eq("workspace_id", workspace_id)
+        .limit(1)
+        .execute())
+    existing_rows = list(getattr(existing_result, "data", None) or [])
+    if not existing_rows:
+        raise HTTPException(status_code=404, detail="Director collaboration run not found")
+    previous = existing_rows[0].get("evidence_summary") or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    progress_events = list(previous.get("progress_events") or [])
+    sequence = int(progress_events[-1].get("sequence") or 0) + 1 if progress_events and isinstance(progress_events[-1], dict) else len(progress_events) + 1
+    engine_states = []
+    for item in consultations[:4]:
+        if not isinstance(item, dict):
+            continue
+        engine_states.append({
+            "engine": str(item.get("engine") or "")[:40],
+            "status": str(item.get("status") or "unknown")[:32],
+            "phase": str(item.get("phase") or "unknown")[:48],
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+            "follow_up_questions": len(item.get("follow_up_questions") or []),
+            "follow_up_responses": len(item.get("follow_up_responses") or []),
+        })
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "sequence": sequence,
+        "phase": str(phase)[:64],
+        "occurred_at": now,
+        "engines": engine_states,
+    }
+    progress_events.append(event)
+    # Keep a bounded history; sequence numbers preserve ordering after pruning.
+    progress_events = progress_events[-250:]
+    evidence_summary = {
+        **previous,
+        "phase": str(phase)[:64],
+        "updated_at": now,
+        "progress_events": progress_events,
+    }
     if isinstance(metadata, dict):
         evidence_summary.update(metadata)
+        evidence_summary["progress_events"] = progress_events
     await _db_call(lambda: db.table("director_collaboration_runs").update({
         "consultations": consultations,
         "evidence_summary": evidence_summary,
@@ -888,8 +938,18 @@ async def ai_chat(
             except Exception:
                 logger.exception("Unable to persist failed Director collaboration run %s", collaboration_run_id)
             raise
+        progress_result = await _db_call(lambda: db.table("director_collaboration_runs")
+            .select("evidence_summary")
+            .eq("id", collaboration_run_id)
+            .eq("workspace_id", workspace_id)
+            .limit(1)
+            .execute())
+        progress_rows = list(getattr(progress_result, "data", None) or [])
+        previous_summary = (progress_rows[0].get("evidence_summary") or {}) if progress_rows else {}
+        progress_events = previous_summary.get("progress_events", []) if isinstance(previous_summary, dict) else []
         evidence_summary = {
             "phase": "completed",
+            "progress_events": progress_events[-250:],
             "comparison": evidence_comparison,
             "recommendation": recommendation,
             "engines": {
