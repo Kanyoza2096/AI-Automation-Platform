@@ -186,11 +186,11 @@ def test_brand_knowledge_list_passes_authenticated_workspace_to_repository():
         and node.args[1].attr == "find_by_brand"
     ]
     assert len(calls) == 1
-    assert len(calls[0].args) == 4
+    assert len(calls[0].args) == 3
+    assert isinstance(calls[0].args[1], ast.Name)
+    assert calls[0].args[1].id == "brand_id"
     assert isinstance(calls[0].args[2], ast.Name)
-    assert calls[0].args[2].id == "brand_id"
-    assert isinstance(calls[0].args[3], ast.Name)
-    assert calls[0].args[3].id == "workspace_id"
+    assert calls[0].args[2].id == "workspace_id"
     assert "workspace_id = await require_workspace_ownership" in ast.get_source_segment(
         API_PATH.read_text(), handler
     )
