@@ -500,15 +500,6 @@ def create_app(director: Director):
     ):
         await _require_auth(request, credentials, write=True)
         workspace_id = await _require_workspace_mission(request)
-        _require_workspace_task_operator(
-            director.tasks.get(
-                str(
-                    ((getattr(request.state, "director_message_task_map", {}) or {}).get(message_id))
-                    or ""
-                )
-            ),
-            request,
-        ) if getattr(request.state, "director_message_task_map", None) else None
         runtime = _get_mission_runtime()
         try:
             snapshot = await runtime.load_snapshot(
