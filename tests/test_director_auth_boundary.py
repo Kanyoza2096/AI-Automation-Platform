@@ -455,3 +455,54 @@ def test_native_mission_timeline_rejects_missing_trusted_workspace(monkeypatch):
         headers={"Authorization": "Bearer master-test-token"},
     )
     assert response.status_code == 403
+
+
+def test_native_mission_runtime_accepts_only_signed_kcpg_human_actor_context(monkeypatch):
+    import hashlib
+    import hmac
+    import time
+
+    secret = "test-kcpg-context-secret-that-is-long-enough"
+    monkeypatch.setenv("KCPG_CONTEXT_SIGNING_SECRET", secret)
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    app = _build_director_app(monkeypatch)
+
+    @app.middleware("http")
+    async def species_service_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="kcpg-service", role="species",
+            species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    class FakeRuntime:
+        async def timeline(self, *, mission_id, workspace_id, limit):
+            assert workspace_id == "ws-a"
+            return [{"event_type": "mission.admitted"}]
+
+    app.state.director_mission_runtime = FakeRuntime()
+    timestamp = str(int(time.time() * 1000))
+    request_id = "request-kcpg-runtime-001"
+    workspace_id = "ws-a"
+    actor_id = "human-operator-7"
+    actor_role = "operator"
+    canonical = "|".join((timestamp, request_id, workspace_id, actor_id, actor_role))
+    signature = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+
+    response = TestClient(app).get(
+        "/missions/mission-a/orchestration/timeline",
+        headers={
+            "Authorization": "Bearer valid-user-session",
+            "X-Workspace-ID": workspace_id,
+            "X-Correlation-ID": request_id,
+            "X-KCPG-Context-Timestamp": timestamp,
+            "X-KCPG-Context-Request-ID": request_id,
+            "X-KCPG-Context-Workspace-ID": workspace_id,
+            "X-KCPG-Context-Actor-ID": actor_id,
+            "X-KCPG-Context-Actor-Role": actor_role,
+            "X-KCPG-Context-Signature": signature,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["workspace_id"] == workspace_id
