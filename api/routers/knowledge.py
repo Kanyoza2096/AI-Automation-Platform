@@ -532,6 +532,66 @@ async def submit_knowledge_evidence_review(
         return _safe_err(exc, f"POST evidence review for {knowledge_id}")
 
 
+@router.get("/brands/{brand_id}/knowledge-evidence-backlog")
+async def list_knowledge_evidence_backlog(
+    brand_id: str, request: Request, limit: int = 50, offset: int = 0,
+    _auth: bool = Depends(require_auth),
+):
+    """Read-only queue of unverified entries and their latest review state."""
+    try:
+        await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
+        _evidence_review_actor(require_human=False)
+        workspace_id = _resolve_workspace_from_request(request)
+        if not workspace_id:
+            raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+        from repositories.knowledge_repository import KnowledgeRepository
+        repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
+        entries = await _async_wrap(repo.find_by_brand, brand_id, workspace_id)
+        client = _evidence_review_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="Evidence review storage unavailable")
+        result = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases")
+            .select("id,knowledge_entry_id,content_sha256,review_status,created_at")
+            .eq("brand_id", brand_id).eq("workspace_id", workspace_id)
+            .order("created_at", desc=True).limit(2000).execute()
+        )
+        latest = {}
+        for case in (result.data or []):
+            latest.setdefault(case["knowledge_entry_id"], case)
+        rows = []
+        for entry in entries or []:
+            meta = entry.metadata if isinstance(entry.metadata, dict) else {}
+            if meta.get("verified") is True:
+                continue
+            digest = _sha256(entry.content.encode("utf-8")).hexdigest()
+            case = latest.get(entry.id)
+            state = case.get("review_status", "unsubmitted") if case and case.get("content_sha256") == digest else ("superseded" if case else "unsubmitted")
+            rows.append({
+                "knowledge_entry_id": entry.id,
+                "title": entry.title or meta.get("title") or "",
+                "doc_type": entry.doc_type,
+                "content_preview": (entry.content or "")[:300],
+                "content_sha256": digest,
+                "verification": "unverified" if meta.get("verified") is False else "unspecified",
+                "review_status": state,
+                "review_case_id": case.get("id") if case and case.get("content_sha256") == digest else None,
+            })
+        rows.sort(key=lambda row: (row["review_status"] != "unsubmitted", row["title"].lower(), row["knowledge_entry_id"]))
+        limit, offset = min(100, max(1, limit)), max(0, offset)
+        counts = {}
+        for row in rows:
+            counts[row["review_status"]] = counts.get(row["review_status"], 0) + 1
+        return _ok({"brand_id": brand_id, "workspace_id": workspace_id, "total": len(rows),
+                    "status_counts": counts, "candidates": rows[offset:offset + limit],
+                    "limit": limit, "offset": offset, "read_only": True,
+                    "promotion_performed": False})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, f"GET knowledge evidence backlog for {brand_id}")
+
+
 @router.get("/brands/{brand_id}/knowledge-evidence-reviews")
 async def list_knowledge_evidence_reviews(
     brand_id: str,
