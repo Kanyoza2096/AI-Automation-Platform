@@ -6,8 +6,11 @@ all model citations locally, and quarantines ambiguous or incomplete cases.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
+import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -21,6 +24,25 @@ _MIN_CONFIDENCE = 0.97
 _MIN_CLAIM_COVERAGE = 0.98
 _MAX_ENTRY_CHARS = 30000
 _MAX_SOURCE_CHARS = 30000
+
+
+def build_source_snapshot_attestation(
+    *, secret: str, workspace_id: str, source_id: str, source_url: str, snapshot_text: str
+) -> dict[str, str]:
+    """Create a server-side HMAC attestation at the trusted source-ingestion boundary."""
+    if not secret or not workspace_id or not source_id or not source_url or not snapshot_text:
+        raise ValueError("All source snapshot attestation fields are required")
+    digest = hashlib.sha256(snapshot_text.encode("utf-8")).hexdigest()
+    message = "\\n".join((workspace_id, source_id, source_url, digest))
+    signature = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "source_snapshot_text": snapshot_text,
+        "source_snapshot_sha256": digest,
+        "source_snapshot_signature": signature,
+        "source_snapshot_source_id": source_id,
+        "source_snapshot_url": source_url,
+        "source_snapshot_origin": "trusted_server_ingestion",
+    }
 
 
 def _quarantine(reason: str, **meta: Any) -> dict[str, Any]:
@@ -37,9 +59,10 @@ def _quarantine(reason: str, **meta: Any) -> dict[str, Any]:
 class AutonomousKnowledgeEvidenceReviewer:
     """Independent KDO evidence adjudicator; deterministic gates own approval."""
 
-    def __init__(self, gateway=None, *, min_confidence: float = _MIN_CONFIDENCE):
+    def __init__(self, gateway=None, *, min_confidence: float = _MIN_CONFIDENCE, snapshot_secret: str | None = None):
         self._gateway = gateway
         self._min_confidence = min_confidence
+        self._snapshot_secret = snapshot_secret if snapshot_secret is not None else os.getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
 
     def _get_gateway(self):
         if self._gateway is not None:
@@ -57,11 +80,7 @@ class AutonomousKnowledgeEvidenceReviewer:
         trust_class = str(case.get("trust_class") or metadata.get("trust_class") or "").strip().lower()
         # This field must be populated by ingestion from the fetched source body.
         # A title, URL, citation string, or model-generated summary is not a snapshot.
-        source_snapshot = str(
-            metadata.get("source_snapshot_text")
-            or metadata.get("source_excerpt")
-            or ""
-        ).strip()
+        source_snapshot = str(metadata.get("source_snapshot_text") or "").strip()
 
         if not workspace_id or workspace_id.lower() in {"default", "unbound", "platform"}:
             return _quarantine("A concrete tenant workspace is required")
@@ -76,6 +95,25 @@ class AutonomousKnowledgeEvidenceReviewer:
             return _quarantine("Source trust class is missing or not in the approved allowlist")
         if not source_snapshot or len(source_snapshot) > _MAX_SOURCE_CHARS:
             return _quarantine("A trusted, captured source-text snapshot is required")
+        if not self._snapshot_secret:
+            return _quarantine("Source snapshot signing secret is not configured")
+        snapshot_digest = hashlib.sha256(source_snapshot.encode("utf-8")).hexdigest()
+        if (
+            metadata.get("source_snapshot_origin") != "trusted_server_ingestion"
+            or metadata.get("source_snapshot_source_id") != source_id
+            or metadata.get("source_snapshot_url") != source_url
+            or metadata.get("source_snapshot_sha256") != snapshot_digest
+        ):
+            return _quarantine("Source snapshot provenance does not match the reviewed source")
+        signature = str(metadata.get("source_snapshot_signature") or "")
+        signed_message = "\\n".join((workspace_id, source_id, source_url, snapshot_digest))
+        expected_signature = hmac.new(
+            self._snapshot_secret.encode("utf-8"),
+            signed_message.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not signature or not hmac.compare_digest(signature, expected_signature):
+            return _quarantine("Source snapshot signature is invalid")
 
         payload = {
             "entry": {"id": str(getattr(entry, "id", "")), "content": content},
@@ -190,9 +228,7 @@ class AutonomousKnowledgeEvidenceReviewer:
                 "source_id": source_id,
                 "source_url": source_url,
                 "trust_class": trust_class,
-                "source_snapshot_sha256": __import__("hashlib").sha256(
-                    source_snapshot.encode("utf-8")
-                ).hexdigest(),
+                "source_snapshot_sha256": snapshot_digest,
                 "claim_coverage": scores["claim_coverage"],
                 "source_match": source_match,
                 "request_id": getattr(result, "request_id", None),
@@ -202,4 +238,4 @@ class AutonomousKnowledgeEvidenceReviewer:
         }
 
 
-__all__ = ["AutonomousKnowledgeEvidenceReviewer"]
+__all__ = ["AutonomousKnowledgeEvidenceReviewer", "build_source_snapshot_attestation"]
