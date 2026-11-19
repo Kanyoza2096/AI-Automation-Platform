@@ -145,7 +145,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
                     "record_id": str(record_id) if record_id is not None else None,
                     "identity_quality": "stable_record_id" if record_id is not None else "content_fingerprint_only",
                     "observed_at": str(observed_at) if observed_at is not None else None,
-                    "content_sha256": hashlib.sha256(canonical_record).hexdigest(),
+                    "sanitized_snapshot_sha256": hashlib.sha256(canonical_record).hexdigest(),
                 })
             source_status[table] = {
                 "status": "available" if rows else "empty",
@@ -226,6 +226,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
+            "evidence_manifest_scope": "workspace_database_rows_only; platform_runtime_aggregates_not_record_fingerprinted",
             "evidence_manifest": evidence_manifest,
             "evidence_manifest_sha256": hashlib.sha256(json.dumps(
                 evidence_manifest, sort_keys=True, separators=(",", ":"),
