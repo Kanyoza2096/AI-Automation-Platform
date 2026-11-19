@@ -157,7 +157,8 @@ def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
     assert '@router.post("/brands/{brand_id}/knowledge/ingest-source")' in source
     assert "web.fetch_async(source_url)" in source
     assert "build_source_snapshot_attestation(" in source
-    assert "KDO_KB_TRUSTED_SOURCE_DOMAINS" in source
+    service = (ROOT / "services" / "autonomous_knowledge_evidence_reviewer.py").read_text()
+    assert "KDO_KB_TRUSTED_SOURCE_DOMAINS" in service
     route = source.split('@router.post("/brands/{brand_id}/knowledge/ingest-source")', 1)[1].split('@router.post("/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review")', 1)[0]
     assert "body.trust_class" not in route
     assert "KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET" in source
