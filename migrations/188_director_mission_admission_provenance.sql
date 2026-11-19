@@ -40,11 +40,16 @@ BEGIN
     SELECT count(DISTINCT substring(source_value FROM length('collaboration_run:') + 1)),
            min(substring(source_value FROM length('collaboration_run:') + 1))
       INTO source_collaboration_run_count, source_collaboration_run_id
-      FROM jsonb_array_elements(p_tasks) AS supplied(task_row)
+      FROM jsonb_array_elements_text(admission_result->'task_ids') AS admitted(task_id)
+      JOIN public.director_tasks AS admitted_task
+        ON admitted_task.id = admitted.task_id
+       AND admitted_task.workspace_id = p_workspace_id
+       AND admitted_task.scope_type = 'workspace'
       CROSS JOIN LATERAL jsonb_array_elements_text(
-          COALESCE(supplied.task_row->'payload'->'sources', '[]'::jsonb)
+          COALESCE(admitted_task.payload->'sources', '[]'::jsonb)
       ) AS sources(source_value)
-     WHERE source_value LIKE 'collaboration_run:%';
+     WHERE admitted_task.payload->>'mission_id' = p_mission_id
+       AND source_value LIKE 'collaboration_run:%';
 
     IF source_collaboration_run_count > 1 THEN
         RAISE EXCEPTION 'director_mission_collaboration_provenance_conflict';
@@ -53,11 +58,16 @@ BEGIN
     SELECT count(DISTINCT substring(source_value FROM length('collaboration_provenance_sha256:') + 1)),
            min(substring(source_value FROM length('collaboration_provenance_sha256:') + 1))
       INTO source_collaboration_provenance_count, source_collaboration_provenance_sha256
-      FROM jsonb_array_elements(p_tasks) AS supplied(task_row)
+      FROM jsonb_array_elements_text(admission_result->'task_ids') AS admitted(task_id)
+      JOIN public.director_tasks AS admitted_task
+        ON admitted_task.id = admitted.task_id
+       AND admitted_task.workspace_id = p_workspace_id
+       AND admitted_task.scope_type = 'workspace'
       CROSS JOIN LATERAL jsonb_array_elements_text(
-          COALESCE(supplied.task_row->'payload'->'sources', '[]'::jsonb)
+          COALESCE(admitted_task.payload->'sources', '[]'::jsonb)
       ) AS sources(source_value)
-     WHERE source_value LIKE 'collaboration_provenance_sha256:%';
+     WHERE admitted_task.payload->>'mission_id' = p_mission_id
+       AND source_value LIKE 'collaboration_provenance_sha256:%';
 
     IF source_collaboration_provenance_count > 1 THEN
         RAISE EXCEPTION 'director_mission_collaboration_digest_conflict';
