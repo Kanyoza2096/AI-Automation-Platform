@@ -419,10 +419,15 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         engine_id="content_intelligence",
         objective="Research the approved task.",
         inputs={"topic": "workspace growth"},
+        operator_id="operator-1",
         idempotency_prefix="execute-1",
         correlation_id="corr-runtime-1",
     )
     assert result.status == "completed"
+    started_event = next(event for event in store.events if event["event_type"] == "task.started")
+    assert started_event["actor_type"] == "operator"
+    assert started_event["actor_id"] == "operator-1"
+    assert started_event["payload"]["requested_by"] == "operator-1"
     assert len(researcher.calls) == 1
     assert store.task["status"] == "completed"
     assert store.row["state_snapshot"]["task_results"][store.task_id]["summary"] == result.summary
@@ -1153,6 +1158,7 @@ async def test_concurrent_native_execution_dispatches_engine_only_once():
         engine_id="content_intelligence",
         objective="Run the approved task once.",
         inputs={},
+        operator_id="operator-1",
         idempotency_prefix="concurrent-exec-1",
         correlation_id="corr-concurrent-exec",
     ))
