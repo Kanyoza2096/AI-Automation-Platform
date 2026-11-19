@@ -79,7 +79,7 @@ def test_candidate_submission_can_be_automated_but_decisions_require_a_human():
     list_start = source.index("async def list_knowledge_evidence_reviews")
     decision_start = source.index("async def decide_knowledge_evidence_review")
     assert "_evidence_review_actor(request, require_human=False)" in source[submit_start:list_start]
-    assert "_evidence_review_actor(request, require_human=False)" in source[list_start:decision_start]
+    assert '_evidence_review_actor(request, require_human=False, permission="read")' in source[list_start:decision_start]
     assert "_evidence_review_actor(request, require_human=True)" in source[decision_start:]
 
 
