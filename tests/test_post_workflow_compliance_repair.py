@@ -89,7 +89,7 @@ def test_semantic_rejection_triggers_exactly_one_repair_and_rechecks(monkeypatch
         "brand": _brand(),
         "base_prompt": "Grounded prompt with verified source material.",
         "content_result": {},
-        "knowledge_evidence": [{"source_id": "kb-1", "text": "Kruskal's algorithm joins components.", "metadata": {}}],
+        "knowledge_evidence": [{"source_id": "kb-1", "text": "Kruskal's algorithm joins components.", "metadata": {"verified": True}}],
     }
 
     result = asyncio.run(step.async_run(context))
@@ -126,12 +126,50 @@ def test_second_semantic_rejection_still_blocks_after_one_repair(monkeypatch):
     context = {
         "caption": "A factual caption with a material unsupported claim.",
         "topic": "Testing", "brand": _brand(), "base_prompt": "Grounded prompt.",
-        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {}}],
+        "content_result": {}, "knowledge_evidence": [{"source_id": "kb-1", "text": "Reference.", "metadata": {"verified": True}}],
     }
     with pytest.raises(Exception, match="Independent semantic review did not approve"):
         asyncio.run(step.async_run(context))
     assert engine.calls == 1
     assert context["_semantic_repair_attempted"] is True
+
+
+def test_semantic_repair_is_skipped_when_no_verified_evidence_exists():
+    from workflows.post_workflow import ValidateContentStep
+
+    class Reviewer:
+        async def review(self, **kwargs):
+            return {
+                "approved": False,
+                "status": "needs_review",
+                "reason": "semantic review found no usable traceable evidence",
+            }
+
+    class Engine:
+        calls = 0
+        async def generate_post(self, **kwargs):
+            self.calls += 1
+            return {"caption": "This regeneration cannot repair missing provenance."}
+
+    engine = Engine()
+    step = ValidateContentStep(
+        validator=type("Validator", (), {"validate": _async_approved_policy_validator})(),
+        semantic_reviewer=Reviewer(), content_engine=engine,
+    )
+    context = {
+        "caption": "A factual caption with a material unsupported claim.",
+        "topic": "Testing", "brand": _brand(), "base_prompt": "Grounded prompt.",
+        "content_result": {},
+        "knowledge_evidence": [{
+            "source_id": "kb-unverified", "text": "Reference.",
+            "metadata": {},
+        }],
+    }
+
+    with pytest.raises(Exception, match="Independent semantic review did not approve"):
+        asyncio.run(step.async_run(context))
+    assert engine.calls == 0
+    assert "_semantic_repair_attempted" not in context
 
 
 def test_caller_supplied_scheduled_caption_is_never_rewritten():
