@@ -552,14 +552,32 @@ async def test_native_engine_invocation_timeout_fails_task_without_hanging():
             engine_id="content_intelligence",
             objective="Exercise the bounded invocation timeout.",
             inputs={},
+            operator_id="operator-timeout",
             idempotency_prefix="execute-timeout",
             correlation_id="corr-timeout",
             timeout_seconds=0.01,
         )
 
+    started_event = next(event for event in store.events if event["event_type"] == "task.started")
+    assert started_event["actor_type"] == "operator"
+    assert started_event["actor_id"] == "operator-timeout"
     assert len(slow.calls) == 1
     assert store.task["status"] == "failed"
     assert any(event["event_type"] == "task.failed" for event in store.events)
+    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="A timed-out task must not be blindly re-dispatched.",
+            inputs={},
+            operator_id="operator-timeout",
+            idempotency_prefix="execute-timeout-retry",
+            correlation_id="corr-timeout",
+            timeout_seconds=0.01,
+        )
+    assert len(slow.calls) == 1
 
 
 @pytest.mark.asyncio
