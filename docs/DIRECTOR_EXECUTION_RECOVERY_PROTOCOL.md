@@ -150,3 +150,19 @@ A second ledger table would duplicate the event identity and task state, creatin
 - Regression tests were added for attempt/assignment mismatch and replayed start-claim rejection. All tests remain **authored but unexecuted** because hosted CI quota is exhausted and no local project runtime is available.
 - No new production schema, data, migration, deployment, merge, or runtime-flag change was made.
 - This completes the Phase B ledger/claim design using existing infrastructure. Phase C remains limited to authoritative adapter status/result lookup contracts for adapters that can actually prove outcomes by attempt ID.
+
+
+## Phase C implementation update (2026-11-19)
+
+### Reconciliation contract added; existing adapters remain unsupported
+
+- Added `ExecutionAttemptReference` carrying the exact attempt, engine, capability, task, mission, workspace, and correlation identity.
+- Added `EngineAttemptReconciliation` with only five explicit statuses: `not_started`, `running`, `completed`, `failed_no_side_effects`, and `unknown`.
+- Non-unknown outcomes require an authoritative flag and evidence reference; completed outcomes also require a result summary.
+- `AdapterRegistry.reconcile_attempt(...)` calls only an adapter's optional `reconcile_attempt` method, applies the adapter timeout, validates exact attempt/engine identity, and converts missing support, exceptions, malformed responses, or mismatched identities to `unknown`.
+- `MissionOrchestrationRuntime.reconcile_task_attempt(...)` reads the canonical task, assignment, and exact start event, then performs this lookup without invoking the engine or mutating the database.
+- The original attempt ID is also propagated in `MissionTaskContext` so a future engine can persist it as its own idempotency/status key.
+
+**Important finding:** none of the three currently registered adapters (`content_intelligence`, `meta_engine`, `condition_engine`) exposes authoritative attempt-status lookup. Their current methods perform research, read an in-process health snapshot, or calculate health from existing observations; none can prove whether a particular prior mission attempt started, completed, or had no side effects. They therefore correctly remain `unknown` after an interrupted attempt. Generic engine health and fresh re-invocation are not accepted as reconciliation evidence.
+
+Regression tests were authored for unsupported adapters, exact-identity authoritative responses, mismatched responses, and read-only runtime behavior. They are unexecuted. No production migration, data write, deployment, merge, or runtime activation was performed.
