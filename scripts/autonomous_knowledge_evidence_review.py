@@ -55,9 +55,7 @@ def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
     )
     if found.data:
         existing = found.data[0]
-        if existing.get("review_status") == "quarantined" and (
-            metadata.get("source_snapshot_text") or metadata.get("source_excerpt")
-        ):
+        if existing.get("review_status") == "quarantined" and metadata.get("source_snapshot_text"):
             source_id = str(
                 metadata.get("source_id") or metadata.get("sourceId")
                 or existing.get("source_id") or f"unverified-entry:{entry.id}"
@@ -167,23 +165,35 @@ async def _run() -> dict[str, int]:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     client = _client()
     maximum = max(1, min(1000, int(os.getenv("KDO_KB_REVIEW_BATCH_SIZE", "100"))))
+    scan_limit = max(maximum, min(5000, maximum * 5))
     counters = {"scanned": 0, "discovered": 0, "approved": 0, "rejected": 0, "quarantined": 0, "raced": 0, "skipped": 0}
 
-    offset = 0
-    scan_limit = maximum * 5
+    state = (
+        client.table("knowledge_evidence_review_sweep_state").select("last_entry_id")
+        .eq("state_key", "global").limit(1).execute()
+    )
+    cursor = (state.data or [{}])[0].get("last_entry_id")
+    last_scanned = cursor
+    reached_end = False
+
     while counters["scanned"] < scan_limit and counters["discovered"] < maximum:
         take = min(PAGE_SIZE, scan_limit - counters["scanned"])
-        result = (
+        query = (
             client.table("knowledge_entries").select(
                 "id,content,workspace_id,brand_id,doc_type,metadata"
-            ).not_.is_("workspace_id", "null").range(offset, offset + take - 1).execute()
+            ).not_.is_("workspace_id", "null")
         )
+        if last_scanned:
+            query = query.gt("id", last_scanned)
+        result = query.order("id").range(0, take - 1).execute()
         rows = result.data or []
         if not rows:
+            reached_end = True
             break
-        offset += len(rows)
-        counters["scanned"] += len(rows)
+
         for row in rows:
+            last_scanned = str(row["id"])
+            counters["scanned"] += 1
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             if metadata.get("verified") is True:
                 counters["skipped"] += 1
@@ -191,30 +201,42 @@ async def _run() -> dict[str, int]:
             if not row.get("workspace_id") or not row.get("brand_id"):
                 counters["skipped"] += 1
                 continue
-            counters["discovered"] += 1
+
             case = _case_for_entry(client, row)
             if not case:
                 counters["skipped"] += 1
                 continue
-            if case.get("review_status") == "pending":
+            status = case.get("review_status")
+            if status == "pending":
+                counters["discovered"] += 1
                 outcome = await _review_case(client, case, row)
                 if outcome in counters:
                     counters[outcome] += 1
-            elif case.get("review_status") == "approved":
-                # Promotion retry is safe because the database RPC is idempotent.
+            elif status == "approved":
                 client.rpc(
                     "promote_approved_knowledge_evidence",
                     {"p_case_id": case["id"], "p_actor_id": ACTOR},
                 ).execute()
-                counters["approved"] += 1
+                counters["skipped"] += 1
             else:
                 counters["skipped"] += 1
+
+            if counters["discovered"] >= maximum or counters["scanned"] >= scan_limit:
+                break
+
         if len(rows) < take:
+            reached_end = True
             break
+
+    next_cursor = None if reached_end else last_scanned
+    client.table("knowledge_evidence_review_sweep_state").upsert({
+        "state_key": "global",
+        "last_entry_id": next_cursor,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }, on_conflict="state_key").execute()
 
     logger.info("Autonomous knowledge evidence sweep complete: %s", counters)
     return counters
-
 
 if __name__ == "__main__":
     asyncio.run(_run())
