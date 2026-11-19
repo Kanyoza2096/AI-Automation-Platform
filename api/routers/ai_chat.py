@@ -124,11 +124,8 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             for raw_row, safe_row in zip(raw_rows, rows):
                 if not isinstance(safe_row, dict):
                     continue
-                record_id = (
-                    safe_row.get("id")
-                    or safe_row.get("event_id")
-                    or safe_row.get("date")
-                )
+                # Date fields are observations, not unique record identifiers.
+                record_id = safe_row.get("id") or safe_row.get("event_id")
                 observed_at = (
                     safe_row.get(time_column)
                     or safe_row.get("created_at")
