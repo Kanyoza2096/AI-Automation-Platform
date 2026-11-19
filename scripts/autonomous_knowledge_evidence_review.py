@@ -141,7 +141,15 @@ def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
     )
     if found.data:
         existing = found.data[0]
-        if existing.get("review_status") in {"quarantined", "rejected", "superseded"} and metadata.get("source_snapshot_text"):
+        prior_evidence = existing.get("review_evidence") if isinstance(existing.get("review_evidence"), dict) else {}
+        prior_snapshot_digest = prior_evidence.get("source_snapshot_sha256")
+        current_snapshot_digest = metadata.get("source_snapshot_sha256")
+        if (
+            existing.get("review_status") in {"quarantined", "rejected", "superseded"}
+            and metadata.get("source_snapshot_text")
+            and current_snapshot_digest
+            and current_snapshot_digest != prior_snapshot_digest
+        ):
             source_id = str(
                 metadata.get("source_id") or metadata.get("sourceId")
                 or existing.get("source_id") or f"unverified-entry:{entry.id}"
@@ -244,7 +252,14 @@ async def _review_case(client, case: dict[str, Any], row: dict[str, Any]) -> str
             "review_notes": reason[:4000],
             "review_mode": "autonomous",
             "review_confidence": confidence,
-            "review_evidence": {"claims": claims, **evidence},
+            "review_evidence": {
+                "claims": claims,
+                **evidence,
+                "source_snapshot_sha256": (
+                    entry.metadata.get("source_snapshot_sha256")
+                    if isinstance(entry.metadata, dict) else None
+                ),
+            },
         }).eq("id", case["id"]).eq("review_status", "pending").select("*").execute()
     )
     if not changed.data:

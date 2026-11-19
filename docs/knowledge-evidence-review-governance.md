@@ -110,3 +110,15 @@ Subdomains do not inherit trust. A source is fetched through the existing web-in
 
 
 Migration 187 limits the service-role grants on review cases and sweep state to the read/insert/update operations used by the backend; it does not need delete or truncate authority.
+
+
+## Scheduled backlog processing
+
+The existing backend service exposes an internal scheduler hook at
+`POST /api/v1/internal/knowledge-evidence-review/sweep`. It requires the
+server-only `X-KDO-Review-Sweep-Token` header and starts one bounded sweep in a
+background thread; repeated triggers while a sweep is active are idempotently
+acknowledged. A small scheduled trigger can call this endpoint without receiving
+Supabase or LLM credentials. Configure the trigger token on the backend as
+`KDO_KB_REVIEW_SWEEP_TRIGGER_TOKEN`, and give the scheduler only the backend URL
+and matching trigger token.
