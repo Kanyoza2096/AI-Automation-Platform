@@ -246,3 +246,33 @@ The first additive implementation is in draft PR #349.
 
 ### Remaining implementation gates
 This is a foundation, not the completed multi-agent runtime. The v2 admission flag is not enabled. Director's existing approval endpoint is not yet synchronized with the mission event state machine; approved-task dispatch through native adapters, multi-engine scheduling and question delivery, restart recovery orchestration, Mission Control live timeline, and the governed recommendation-to-plan-to-mission transition still need end-to-end integration. No production migration or deployment has been performed.
+
+
+## 11. Implementation update — 19 November 2026
+
+### Runtime and persistence hardening
+- Canonical task status changes now travel with mission-event appends through append_director_mission_event_with_task_sync, defined in migration 181. The event and task-row update share one database transaction; task-update failure rolls back the event.
+- Migration 175 was corrected to match the observed production director_tasks schema, which has no updated_at column.
+- The non-atomic task-status update helper was removed from the runtime store so normal lifecycle transitions cannot bypass the atomic RPC.
+- Runtime callbacks that refresh Director's in-memory task registry are treated as post-commit cache synchronization. A callback failure is logged for reconciliation and does not misreport the already committed database transition as rolled back.
+- Native invocations are time-bounded. Task inputs/objectives are bounded, and evidence is restricted to the task and its declared dependencies rather than indiscriminately passing all mission evidence.
+
+### Native adapters
+The explicit registry now has three real native adapters:
+- Content Intelligence: calls the existing async research runtime and returns source-backed contributions.
+- Condition Engine: calls the existing brand-health calculation with workspace ownership verification and event emission disabled.
+- Meta Engine: reads its existing platform-health snapshot only; it does not initiate probes, diagnosis, or recovery. Snapshots older than five minutes are marked partial.
+
+All contributions remain advisory-only with authority none. These adapters do not grant Action Kernel or KCPG execution authority.
+
+### Test status at this update
+- Engineering Vertical Focused Tests passed on commit c5c2e74e32395abc85b10c9280704bed67687287; this run predates the latest small Meta Engine test assertion correction.
+- Cross-Subsystem Event Lifecycle Tests have exposed and helped correct the missing recipient-capability test inputs, async test declaration, and Meta Engine adapter side-effect classification/assertion. The latest rerun is pending.
+- GitHub connector contract CI has passed on the latest commits.
+- A clean pass of both Director-related suites on the same latest commit is still required; do not treat the PR as release-ready yet.
+
+### Database and release boundary
+- Migration 181 is authored but has not been applied.
+- Production Supabase is the only permitted target for any future actual database migration, per the operator's explicit instruction. Production schema and migration ordering must be reconciled before applying any migration.
+- No further migrations have been applied to staging/testing since that instruction.
+- PR #349 remains draft and unmerged. No backend merge to staging, production migration, or production deployment has occurred.
