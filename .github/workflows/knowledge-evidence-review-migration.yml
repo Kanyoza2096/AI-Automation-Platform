@@ -1,4 +1,4 @@
-name: Knowledge Evidence Review Governance
+name: Knowledge Evidence Review Governance # autonomous sweep scheduler included
 
 on:
   pull_request:
