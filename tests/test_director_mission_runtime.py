@@ -1504,7 +1504,6 @@ async def test_operator_recovery_review_is_audited_and_does_not_change_task_auth
         mission_id=store.mission_id, workspace_id=store.workspace_id, task_id=store.task_id,
         operator_id="operator-1", decision="hold",
         reason="The engine outcome cannot yet be proven.",
-        assessment_classification="outcome_unknown",
         idempotency_key="recovery-review-hold-001", correlation_id="recovery-review-corr-001",
     )
     assert snapshot.state_snapshot["task_status"][store.task_id] == "executing"
