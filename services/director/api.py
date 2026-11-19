@@ -352,7 +352,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        workspace_id = _require_workspace_mission(request)
+        workspace_id = await _require_workspace_mission(request)
         task = director.tasks.get(task_id)
         if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
             raise HTTPException(404, "Mission task not found")
@@ -385,7 +385,7 @@ def create_app(director: Director):
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
         await _require_auth(request, credentials, write=True)
-        workspace_id = _require_workspace_mission(request)
+        workspace_id = await _require_workspace_mission(request)
         task = director.tasks.get(task_id)
         if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
             raise HTTPException(404, "Mission task not found")
