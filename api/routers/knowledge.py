@@ -76,7 +76,25 @@ async def create_knowledge_entry(
             doc_type=body.doc_type,
             metadata=body.metadata,
         )
-        return _ok({"knowledge_entry": entry.model_dump(mode="json")}, 201)
+        review_case = None
+        try:
+            review_client = _evidence_review_client()
+            if review_client is not None:
+                review_case = await _autonomously_review_new_entry(
+                    entry=entry, brand_id=brand_id,
+                    claim_scope="general_knowledge_support",
+                    client=review_client, knowledge_repo=kb_repo,
+                )
+        except Exception as review_exc:
+            logger.error("knowledge_autonomous_review_unavailable", extra={
+                "brand_id": brand_id, "knowledge_entry_id": entry.id,
+                "error_class": type(review_exc).__name__,
+            })
+        return _ok({
+            "knowledge_entry": entry.model_dump(mode="json"),
+            "review_case": _evidence_review_payload(review_case) if review_case else None,
+            "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+        }, 201)
     except HTTPException:
         raise
     except Exception as exc:
@@ -267,7 +285,24 @@ async def bulk_create_knowledge(
                     doc_type=item.get("doc_type", "text"),
                     metadata=item.get("metadata", {}),
                 )
-                results.append({"id": entry.id, "status": "created"})
+                review_case = None
+                try:
+                    review_client = _evidence_review_client()
+                    if review_client is not None:
+                        review_case = await _autonomously_review_new_entry(
+                            entry=entry, brand_id=body.brand_id,
+                            claim_scope="general_knowledge_support",
+                            client=review_client, knowledge_repo=kb_repo,
+                        )
+                except Exception as review_exc:
+                    logger.error("bulk_knowledge_autonomous_review_unavailable", extra={
+                        "brand_id": body.brand_id, "knowledge_entry_id": entry.id,
+                        "error_class": type(review_exc).__name__,
+                    })
+                results.append({
+                    "id": entry.id, "status": "created",
+                    "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+                })
             except Exception as e:
                 logger.warning(
                     "bulk_item_failed",
@@ -383,9 +418,9 @@ async def create_knowledge(
 
 # ── Governed evidence review API ────────────────────────────────────────────
 # These endpoints govern reusable knowledge-source trust, NOT individual posts.
-# Review approval never mutates knowledge_entries.metadata.verified; promotion
-# is a separate, explicitly audited operation and is intentionally not exposed
-# by this API.
+# Routine decisions are made autonomously by KDO; ambiguous cases are quarantined.
+# Promotion remains a separate transactional operation and is only attempted
+# after the autonomous reviewer has passed every deterministic approval gate.
 
 from hashlib import sha256 as _sha256
 from datetime import datetime as _review_datetime, timezone as _review_timezone
@@ -396,6 +431,19 @@ from api.support import auth_identity_var as _review_identity_var
 
 class EvidenceReviewSubmission(_ReviewBaseModel):
     claim_scope: str = _ReviewField(default="empirical_claim_support", min_length=3, max_length=500)
+
+
+class TrustedSourceIngestion(_ReviewBaseModel):
+    source_url: str = _ReviewField(..., min_length=10, max_length=2048)
+    claim_scope: str = _ReviewField(default="empirical_claim_support", min_length=3, max_length=500)
+
+
+def _trusted_source_class_for_url(source_url: str) -> str:
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
+    try:
+        return resolve_trusted_source_class(source_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class EvidenceReviewDecision(_ReviewBaseModel):
@@ -464,14 +512,279 @@ def _valid_evidence_url(value: Optional[str]) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc) and not any(ch.isspace() for ch in value)
 
 
+async def _run_autonomous_knowledge_evidence_review(
+    *, case: dict, entry: object, client
+) -> dict:
+    """Adjudicate one exact case version and promote only deterministic approvals."""
+    from services.autonomous_knowledge_evidence_reviewer import AutonomousKnowledgeEvidenceReviewer
+
+    actor = "service:kdo-autonomous-knowledge-review"
+    assessment = await AutonomousKnowledgeEvidenceReviewer().review(entry=entry, case=case)
+    decision = assessment.get("decision")
+    if decision not in {"approved", "rejected", "quarantined"}:
+        decision = "quarantined"
+    changed = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").update({
+            "review_status": decision,
+            "reviewed_by": actor,
+            "reviewed_at": _review_datetime.now(_review_timezone.utc).isoformat(),
+            "review_notes": str(assessment.get("reason") or "Autonomous review completed")[:4000],
+            "review_mode": "autonomous",
+            "review_confidence": assessment.get("confidence", 0.0),
+            "review_evidence": {
+                "claims": assessment.get("claims", []),
+                **(assessment.get("evidence") or {}),
+            },
+        }).eq("id", case["id"]).eq("review_status", "pending").select("*").execute()
+    )
+    if not changed.data:
+        latest = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases").select("*")
+            .eq("id", case["id"]).limit(1).execute()
+        )
+        return latest.data[0] if latest.data else case
+
+    reviewed = changed.data[0]
+    if decision == "approved":
+        promoted = await _async_wrap(
+            lambda: client.rpc(
+                "promote_approved_knowledge_evidence",
+                {"p_case_id": case["id"], "p_actor_id": actor},
+            ).execute()
+        )
+        if promoted.data is None:
+            # Approval is durable, but the publishing trust gate remains closed
+            # until the transactional promotion is positively confirmed.
+            reviewed["promotion_pending"] = True
+        else:
+            reviewed["promotion"] = promoted.data
+    return reviewed
+
+
+async def _autonomously_review_new_entry(*, entry, brand_id: str, claim_scope: str, client, knowledge_repo) -> dict:
+    """Create/reuse an autonomous review case for every newly ingested KB entry."""
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+    trust_class = None
+    if source_url and _valid_evidence_url(str(source_url)):
+        try:
+            trust_class = _trusted_source_class_for_url(str(source_url))
+            from services.web_intelligence.base import validate_external_url
+            allowed, _reason = await _async_wrap(validate_external_url, str(source_url))
+            if allowed:
+                from services.web_intelligence import get_web_intelligence, init_web_intelligence
+                web = get_web_intelligence() or init_web_intelligence()
+                page = await web.fetch_async(str(source_url))
+                captured = str(getattr(page, "text", "") or "").strip()
+                status_code = getattr(page, "status_code", None)
+                if captured and len(captured) <= 30000 and status_code and 200 <= int(status_code) < 300 and not getattr(page, "error", None):
+                    from services.autonomous_knowledge_evidence_reviewer import build_source_snapshot_attestation
+                    secret = __import__("os").getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
+                    if secret:
+                        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or (
+                            "web-source:" + _sha256(f"{entry.workspace_id}|{source_url}".encode()).hexdigest()
+                        ))
+                        metadata = {
+                            **metadata,
+                            **build_source_snapshot_attestation(
+                                secret=secret, workspace_id=str(entry.workspace_id),
+                                source_id=source_id, source_url=str(source_url),
+                                trust_class=trust_class, snapshot_text=captured,
+                            ),
+                            "source_id": source_id, "source_url": str(source_url),
+                            "source_title": str(getattr(page, "title", "") or metadata.get("source_title") or "")[:500],
+                            "source_type": metadata.get("source_type") or entry.doc_type,
+                            "trust_class": trust_class,
+                            "ingestion_method": "server_side_web_fetch",
+                        }
+                        entry.metadata = metadata
+                        try:
+                            await _async_wrap(knowledge_repo.save, entry)
+                        except Exception:
+                            entry.metadata = dict(entry.metadata or {})
+                            for key in (
+                                "source_snapshot_text", "source_snapshot_sha256",
+                                "source_snapshot_signature", "source_snapshot_source_id",
+                                "source_snapshot_trust_class", "source_snapshot_url",
+                                "source_snapshot_origin",
+                            ):
+                                entry.metadata.pop(key, None)
+                            trust_class = None
+        except Exception:
+            # Missing or inaccessible provenance must never become approval.
+            trust_class = None
+
+    content_hash = _sha256(entry.content.encode("utf-8")).hexdigest()
+    source_id = str(metadata.get("source_id") or metadata.get("sourceId") or f"unverified-entry:{entry.id}")
+    source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+    existing = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").select("*")
+        .eq("knowledge_entry_id", entry.id).eq("content_sha256", content_hash).limit(1).execute()
+    )
+    if existing.data:
+        case = existing.data[0]
+        if case.get("review_status") == "approved":
+            return case
+        if case.get("review_status") == "pending":
+            return await _run_autonomous_knowledge_evidence_review(case=case, entry=entry, client=client)
+        if case.get("review_status") == "quarantined" and metadata.get("source_snapshot_text"):
+            reopened = await _async_wrap(
+                lambda: client.table("knowledge_evidence_review_cases").update({
+                    "review_status": "pending", "reviewed_by": "service:kdo-autonomous-knowledge-review",
+                    "reviewed_at": _review_datetime.now(_review_timezone.utc).isoformat(),
+                    "review_notes": "Trusted source snapshot became available; autonomous re-review queued.",
+                    "source_id": source_id, "source_url": source_url,
+                    "trust_class": trust_class,
+                }).eq("id", case["id"]).eq("review_status", "quarantined").select("*").single().execute()
+            )
+            if reopened.data:
+                return await _run_autonomous_knowledge_evidence_review(case=reopened.data, entry=entry, client=client)
+            return case
+
+    inserted = await _async_wrap(
+        lambda: client.table("knowledge_evidence_review_cases").insert({
+            "knowledge_entry_id": entry.id, "workspace_id": entry.workspace_id,
+            "brand_id": brand_id, "source_id": source_id,
+            "submitted_by": "service:kdo-autonomous-knowledge-review",
+            "source_url": source_url,
+            "source_title": metadata.get("source_title") or metadata.get("title"),
+            "source_type": metadata.get("source_type") or entry.doc_type,
+            "trust_class": trust_class or metadata.get("trust_class"),
+            "claim_scope": claim_scope, "content_sha256": content_hash,
+            "metadata_snapshot": metadata, "review_status": "pending",
+        }).select("*").single().execute()
+    )
+    if not inserted.data:
+        raise RuntimeError("Autonomous knowledge review case creation was not confirmed")
+    return await _run_autonomous_knowledge_evidence_review(
+        case=inserted.data, entry=entry, client=client
+    )
+
+
 def _evidence_review_payload(row: dict) -> dict:
     allowed = (
         "id", "knowledge_entry_id", "workspace_id", "brand_id", "source_id",
         "source_url", "source_title", "source_type", "trust_class",
         "claim_scope", "content_sha256", "review_status", "review_notes",
-        "reviewed_by", "reviewed_at", "created_at", "updated_at",
+        "reviewed_by", "reviewed_at", "review_mode", "review_confidence",
+        "review_evidence", "created_at", "updated_at",
     )
     return {key: row.get(key) for key in allowed}
+
+
+@router.post("/brands/{brand_id}/knowledge/ingest-source")
+async def ingest_trusted_knowledge_source(
+    brand_id: str,
+    body: TrustedSourceIngestion,
+    request: Request,
+    _auth: bool = Depends(require_auth),
+):
+    """Fetch an allowlisted public source server-side, attest its exact text, then review it."""
+    try:
+        workspace_id = await require_workspace_ownership(
+            "brand", brand_id, request, request.app.state.container
+        )
+        if not workspace_id or str(workspace_id).lower() in {"default", "unbound", "platform"}:
+            raise HTTPException(status_code=403, detail="A concrete tenant workspace is required")
+        source_url = body.source_url.strip()
+        if not _valid_evidence_url(source_url):
+            raise HTTPException(status_code=422, detail="A valid HTTP(S) source URL is required")
+        trust_class = _trusted_source_class_for_url(source_url)
+
+        from services.web_intelligence.base import validate_external_url
+        allowed, reason = await _async_wrap(validate_external_url, source_url)
+        if not allowed:
+            raise HTTPException(status_code=422, detail=f"Source URL blocked: {reason}")
+        from services.web_intelligence import get_web_intelligence, init_web_intelligence
+        web = get_web_intelligence() or init_web_intelligence()
+        page = await web.fetch_async(source_url)
+        source_text = str(getattr(page, "text", "") or "").strip()
+        status_code = getattr(page, "status_code", None)
+        if getattr(page, "error", None) or not status_code or not 200 <= int(status_code) < 300:
+            raise HTTPException(status_code=422, detail="Source could not be fetched successfully")
+        if not source_text or len(source_text) > 30000:
+            raise HTTPException(status_code=422, detail="Fetched source is empty or exceeds the 30,000 character limit")
+
+        from services.autonomous_knowledge_evidence_reviewer import build_source_snapshot_attestation
+        from repositories.brand_repository import BrandRepository
+        from repositories.knowledge_repository import KnowledgeRepository
+        from services.knowledge_base import KnowledgeBase
+        brand_repo = await _async_wrap(request.app.state.container.resolve, BrandRepository)
+        brand = await _async_wrap(brand_repo.find_by_id, brand_id)
+        if not brand or str(brand.workspace_id) != str(workspace_id):
+            raise HTTPException(status_code=404, detail="Brand not found in this workspace")
+
+        secret = __import__("os").getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET", "")
+        if not secret:
+            raise HTTPException(status_code=503, detail="Trusted source attestation is not configured")
+        source_id = "web-source:" + _sha256(f"{workspace_id}|{source_url}".encode("utf-8")).hexdigest()
+        source_title = str(getattr(page, "title", "") or "").strip()[:500]
+        attestation = build_source_snapshot_attestation(
+            secret=secret,
+            workspace_id=str(workspace_id),
+            source_id=source_id,
+            source_url=source_url,
+            trust_class=trust_class,
+            snapshot_text=source_text,
+        )
+        metadata = {
+            **attestation,
+            "source_id": source_id,
+            "source_url": source_url,
+            "source_title": source_title,
+            "source_type": "url",
+            "trust_class": trust_class,
+            "ingestion_method": "server_side_web_fetch",
+            "source_http_status": int(status_code),
+        }
+
+        from repositories.knowledge_repository import KnowledgeRepository
+        repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
+        kb = KnowledgeBase(brand_id=brand_id, workspace_id=str(workspace_id), repository=repo)
+        await kb.initialize()
+        entry = await kb.add_document(content=source_text, doc_type="url", metadata=metadata)
+
+        client = _evidence_review_client()
+        if client is None:
+            raise HTTPException(status_code=503, detail="Evidence review storage unavailable")
+        content_hash = _sha256(entry.content.encode("utf-8")).hexdigest()
+        inserted = await _async_wrap(
+            lambda: client.table("knowledge_evidence_review_cases").insert({
+                "knowledge_entry_id": entry.id,
+                "workspace_id": str(workspace_id),
+                "brand_id": brand_id,
+                "source_id": source_id,
+                "submitted_by": "service:kdo-trusted-source-ingestion",
+                "source_url": source_url,
+                "source_title": source_title,
+                "source_type": "url",
+                "trust_class": trust_class,
+                "claim_scope": body.claim_scope,
+                "content_sha256": content_hash,
+                "metadata_snapshot": metadata,
+                "review_status": "pending",
+            }).select("*").single().execute()
+        )
+        if not inserted.data:
+            raise HTTPException(status_code=503, detail="Review case creation was not confirmed")
+        reviewed = await _run_autonomous_knowledge_evidence_review(
+            case=inserted.data, entry=entry, client=client
+        )
+        return _ok({
+            "knowledge_entry": entry.model_dump(mode="json"),
+            "review_case": _evidence_review_payload(reviewed),
+            "source_capture": {
+                "url": source_url,
+                "title": source_title,
+                "trust_class": trust_class,
+                "captured_characters": len(source_text),
+                "sha256": attestation["source_snapshot_sha256"],
+            },
+        }, 201)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return _safe_err(exc, f"POST trusted knowledge source ingestion for {brand_id}")
 
 
 @router.post("/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review")
@@ -510,7 +823,16 @@ async def submit_knowledge_evidence_review(
         )
         if existing.data:
             case = existing.data[0]
-            if case.get("review_status") in {"pending", "approved"}:
+            if case.get("review_status") == "pending":
+                from repositories.knowledge_repository import KnowledgeRepository
+                repo = await _async_wrap(request.app.state.container.resolve, KnowledgeRepository)
+                current_entry = await _async_wrap(repo.find_by_id, entry.id)
+                if current_entry and current_entry.workspace_id == entry.workspace_id:
+                    case = await _run_autonomous_knowledge_evidence_review(
+                        case=case, entry=current_entry, client=client
+                    )
+                return _ok({"review_case": _evidence_review_payload(case), "reused": True})
+            if case.get("review_status") == "approved":
                 return _ok({"review_case": _evidence_review_payload(case), "reused": True})
             reopened = await _async_wrap(
                 lambda: client.table("knowledge_evidence_review_cases")
@@ -524,7 +846,10 @@ async def submit_knowledge_evidence_review(
             )
             if not reopened.data:
                 raise HTTPException(status_code=503, detail="Review case could not be reopened")
-            return _ok({"review_case": _evidence_review_payload(reopened.data), "reused": True})
+            reopened_case = await _run_autonomous_knowledge_evidence_review(
+                case=reopened.data, entry=entry, client=client
+            )
+            return _ok({"review_case": _evidence_review_payload(reopened_case), "reused": True})
 
         try:
             inserted = await _async_wrap(
@@ -557,7 +882,10 @@ async def submit_knowledge_evidence_review(
             raise
         if not inserted.data:
             raise HTTPException(status_code=503, detail="Review case creation was not confirmed")
-        return _ok({"review_case": _evidence_review_payload(inserted.data), "reused": False}, 201)
+        reviewed_case = await _run_autonomous_knowledge_evidence_review(
+            case=inserted.data, entry=entry, client=client
+        )
+        return _ok({"review_case": _evidence_review_payload(reviewed_case), "reused": False}, 201)
     except HTTPException:
         raise
     except Exception as exc:
@@ -580,7 +908,7 @@ async def list_knowledge_evidence_reviews(
         if not workspace_id:
             raise HTTPException(status_code=403, detail="Authenticated workspace is required")
         _evidence_review_actor(request, require_human=False, permission="read")
-        if status not in {"pending", "approved", "rejected", "superseded", "all"}:
+        if status not in {"pending", "approved", "rejected", "superseded", "quarantined", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
         if client is None:
@@ -609,7 +937,7 @@ async def decide_knowledge_evidence_review(
     request: Request,
     _auth: bool = Depends(require_auth),
 ):
-    """Approve/reject a source for one immutable content version; no auto-promotion."""
+    """Human exception override for one immutable content version."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
         actor, _identity = _evidence_review_actor(request, require_human=True)
