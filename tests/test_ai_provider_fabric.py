@@ -835,7 +835,7 @@ def test_director_mission_state_machine_bounds_engine_followup_rounds():
             thread_id="thread-round-test",
             round_number=round_number,
             correlation_id="corr-round-test",
-            payload={"question": "Please challenge the evidence."},
+            payload={"question": "Please challenge the evidence.", "recipient_capability": "challenge_evidence"},
         )
 
     def answer(sender, recipient, round_number, message_id, in_reply_to):
