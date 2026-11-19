@@ -46,6 +46,23 @@ def build_source_snapshot_attestation(
     }
 
 
+def resolve_trusted_source_class(source_url: str, registry_json: str | None = None) -> str:
+    """Resolve trust from an operator-curated exact-host JSON registry."""
+    raw = os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS", "{}") if registry_json is None else registry_json
+    try:
+        registry = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Trusted source registry is invalid") from exc
+    if not isinstance(registry, dict):
+        raise ValueError("Trusted source registry is invalid")
+    host = (urlparse(source_url).hostname or "").lower().rstrip(".")
+    trust_class = str(registry.get(host) or "").strip().lower()
+    allowed = {"government", "regulatory", "peer_reviewed", "academic", "official_documentation", "publisher_primary"}
+    if trust_class not in allowed:
+        raise ValueError("Source host is not in the trusted-source registry")
+    return trust_class
+
+
 def _quarantine(reason: str, **meta: Any) -> dict[str, Any]:
     return {
         "decision": "quarantine",
