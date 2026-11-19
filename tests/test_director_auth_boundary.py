@@ -596,3 +596,33 @@ def test_native_mission_execution_endpoint_awaits_workspace_binding_and_returns_
     )
     assert response.status_code == 200
     assert response.json()["summary"] == "Native contribution"
+
+
+def test_unsigned_species_service_cannot_approve_workspace_mission_task(monkeypatch):
+    from services.director import Director, create_app
+    from services.director.models import Task, Sector, Authority, Risk, Status
+
+    d = Director(supabase_client=None)
+    d.tasks["workspace-task"] = Task(
+        id="workspace-task", sector=Sector.CONTENT, description="mission task",
+        capability="self_diagnostic", authority=Authority.AUTO, risk=Risk.LOW,
+        status=Status.APPROVAL, workspace_id="ws-a", mission_id="mission-a",
+    )
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def species_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="kcpg-service", role="species",
+            species_privileges=True,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    response = TestClient(app).post(
+        "/tasks/workspace-task/approve",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={},
+    )
+    assert response.status_code == 403
+    assert d.tasks["workspace-task"].approved_by is None
