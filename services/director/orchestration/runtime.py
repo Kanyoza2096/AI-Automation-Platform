@@ -619,22 +619,11 @@ class MissionOrchestrationRuntime:
                 self.adapters.invoke(engine_id, context),
                 timeout=context.timeout_seconds,
             )
-        except Exception as exc:
-            latest = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
-            if (latest.state_snapshot.get("task_status") or {}).get(task_id) == "executing":
-                await self._commit(
-                    latest,
-                    event_type="task.failed",
-                    idempotency_key=f"{idempotency_prefix}:failed",
-                    actor_type="system",
-                    actor_id="director_orchestrator",
-                    correlation_id=correlation_id,
-                    task_id=task_id,
-                    payload={
-                        "reason": "native_engine_invocation_failed",
-                        "error_type": type(exc).__name__[:120],
-                    },
-                )
+        except Exception:
+            # An adapter exception/timeout does not prove that no external
+            # side effect occurred. Preserve the durable executing claim so
+            # recovery assessment classifies the attempt as outcome_unknown.
+            # Never turn transport/process failure into a retryable task.failed.
             raise
 
         if contribution.status != "completed":
