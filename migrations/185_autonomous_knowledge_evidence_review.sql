@@ -79,3 +79,81 @@ $$;
 
 REVOKE ALL ON FUNCTION public.record_knowledge_evidence_review_event()
     FROM PUBLIC, anon, authenticated;
+
+-- A quarantined case may be retried when trusted source provenance becomes
+-- available or the adjudicator implementation is improved. The immutable
+-- content/tenant snapshot remains unchanged; the new decision is audited.
+CREATE OR REPLACE FUNCTION public.guard_knowledge_evidence_review_case()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+DECLARE
+    current_content TEXT;
+    current_brand_id TEXT;
+    current_workspace_id TEXT;
+    current_hash TEXT;
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        IF NEW.knowledge_entry_id IS DISTINCT FROM OLD.knowledge_entry_id
+           OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+           OR NEW.brand_id IS DISTINCT FROM OLD.brand_id
+           OR NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256
+           OR NEW.metadata_snapshot IS DISTINCT FROM OLD.metadata_snapshot
+           OR NEW.claim_scope IS DISTINCT FROM OLD.claim_scope
+           OR NEW.submitted_by IS DISTINCT FROM OLD.submitted_by
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Evidence review case identity and snapshot are immutable';
+        END IF;
+        IF OLD.review_status = 'approved' THEN
+            IF NEW.review_status <> 'superseded'
+               OR NEW.source_id IS DISTINCT FROM OLD.source_id
+               OR NEW.source_url IS DISTINCT FROM OLD.source_url
+               OR NEW.source_title IS DISTINCT FROM OLD.source_title
+               OR NEW.source_type IS DISTINCT FROM OLD.source_type
+               OR NEW.trust_class IS DISTINCT FROM OLD.trust_class THEN
+                RAISE EXCEPTION 'Approved evidence review cases are immutable';
+            END IF;
+        ELSIF OLD.review_status = 'pending' THEN
+            IF NEW.review_status = 'pending' THEN
+                RAISE EXCEPTION 'Pending evidence cases may only change through a decision or supersession';
+            END IF;
+        ELSIF OLD.review_status IN ('rejected', 'superseded', 'quarantined') THEN
+            IF NEW.review_status <> 'pending' THEN
+                RAISE EXCEPTION 'Only rejected, superseded, or quarantined cases may be reopened';
+            END IF;
+        END IF;
+        IF NEW.review_status IN ('approved', 'rejected', 'superseded', 'quarantined')
+           AND (NEW.reviewed_by IS NULL OR length(btrim(NEW.reviewed_by)) = 0 OR NEW.reviewed_at IS NULL) THEN
+            RAISE EXCEPTION 'Evidence review decisions require reviewer identity and timestamp';
+        END IF;
+    END IF;
+
+    IF NEW.review_status = 'approved' OR TG_OP = 'INSERT' THEN
+        SELECT content, brand_id, workspace_id
+          INTO current_content, current_brand_id, current_workspace_id
+          FROM public.knowledge_entries
+         WHERE id = NEW.knowledge_entry_id
+         FOR UPDATE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'Knowledge entry does not exist';
+        END IF;
+        IF current_brand_id IS DISTINCT FROM NEW.brand_id
+           OR current_workspace_id IS DISTINCT FROM NEW.workspace_id THEN
+            RAISE EXCEPTION 'Evidence review tenant binding does not match knowledge entry';
+        END IF;
+        current_hash := encode(
+            extensions.digest(convert_to(current_content, 'UTF8'), 'sha256'),
+            'hex'
+        );
+        IF current_hash IS DISTINCT FROM NEW.content_sha256 THEN
+            RAISE EXCEPTION 'Knowledge content changed; evidence review case is stale';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.guard_knowledge_evidence_review_case()
+    FROM PUBLIC, anon, authenticated;
