@@ -404,24 +404,11 @@ class TrustedSourceIngestion(_ReviewBaseModel):
 
 
 def _trusted_source_class_for_url(source_url: str) -> str:
-    """Resolve trust only from an operator-configured exact-host registry."""
-    import json as _json
-    import os as _os
-    host = (_urlparse(source_url).hostname or "").lower().rstrip(".")
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
     try:
-        registry = _json.loads(_os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS", "{}"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=503, detail="Trusted source registry is invalid")
-    if not isinstance(registry, dict):
-        raise HTTPException(status_code=503, detail="Trusted source registry is invalid")
-    trust_class = str(registry.get(host) or "").strip().lower()
-    allowed = {
-        "government", "regulatory", "peer_reviewed", "academic",
-        "official_documentation", "publisher_primary",
-    }
-    if trust_class not in allowed:
-        raise HTTPException(status_code=422, detail="Source host is not in the trusted-source registry")
-    return trust_class
+        return resolve_trusted_source_class(source_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class EvidenceReviewDecision(_ReviewBaseModel):
