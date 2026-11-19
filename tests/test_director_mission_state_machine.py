@@ -101,7 +101,7 @@ def test_engine_question_requires_correlated_answer_and_bounded_rounds():
         actor_type="engine", actor_id="content_intelligence",
         recipient_type="engine", recipient_id="meta_engine",
         message_id="question-1", round_number=1,
-        payload={"question": "Challenge the source quality."},
+        payload={"question": "Challenge the source quality.", "recipient_capability": "review.analyze"},
     )
     current = _advance(machine, current, question)
     assert "question-1" in current.state_snapshot["pending_questions"]
@@ -131,7 +131,7 @@ def test_engine_question_requires_correlated_answer_and_bounded_rounds():
         actor_type="engine", actor_id="meta_engine",
         recipient_type="engine", recipient_id="content_intelligence",
         message_id="question-2", round_number=2,
-        payload={"question": "One final bounded check."},
+        payload={"question": "One final bounded check.", "recipient_capability": "research.analyze"},
     ))
     with pytest.raises(MissionTransitionRejected, match="reasoning_round_limit_exceeded"):
         machine.prepare(current, _command(
