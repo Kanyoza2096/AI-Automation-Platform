@@ -5,6 +5,8 @@ import pytest
 
 from services.director.orchestration.contracts import (
     AdapterRegistry,
+    EngineAttemptReconciliation,
+    ExecutionAttemptReference,
     EngineContribution,
     MissionTaskContext,
 )
@@ -20,6 +22,7 @@ def _context(**overrides):
         "objective": "Research the market",
         "inputs": {"topic": "Malawi SME market", "max_results": 6, "fetch_top": 3},
         "correlation_id": "corr-1",
+        "attempt_id": "attempt-1",
     }
     values.update(overrides)
     return MissionTaskContext(**values)
@@ -125,3 +128,74 @@ def test_engine_contribution_cannot_grant_authority():
             summary="Advisory only.",
             authority="execute",
         )
+
+
+
+def test_adapter_without_authoritative_reconciliation_stays_unknown():
+    registry = AdapterRegistry()
+    registry.register(ContentIntelligenceMissionAdapter(engine=object()))
+    reference = ExecutionAttemptReference(
+        attempt_id="attempt-1", engine_id="content_intelligence",
+        capability="research.analyze", task_id="task-1", mission_id="mission-1",
+        workspace_id="workspace-1", correlation_id="corr-1",
+    )
+
+    result = asyncio.run(registry.reconcile_attempt(reference))
+
+    assert result.status == "unknown"
+    assert result.authoritative is False
+    assert result.evidence_ref is None
+
+
+def test_adapter_reconciliation_requires_exact_attempt_identity_and_evidence():
+    class ReconciliableContentAdapter(ContentIntelligenceMissionAdapter):
+        async def reconcile_attempt(self, reference):
+            return EngineAttemptReconciliation(
+                attempt_id=reference.attempt_id,
+                engine_id=reference.engine_id,
+                status="completed",
+                authoritative=True,
+                evidence_ref="engine-receipt:attempt-1",
+                result={"summary": "The original attempt completed."},
+            )
+
+    registry = AdapterRegistry()
+    registry.register(ReconciliableContentAdapter(engine=object()))
+    reference = ExecutionAttemptReference(
+        attempt_id="attempt-1", engine_id="content_intelligence",
+        capability="research.analyze", task_id="task-1", mission_id="mission-1",
+        workspace_id="workspace-1", correlation_id="corr-1",
+    )
+
+    result = asyncio.run(registry.reconcile_attempt(reference))
+
+    assert result.status == "completed"
+    assert result.authoritative is True
+    assert result.evidence_ref == "engine-receipt:attempt-1"
+
+
+
+def test_adapter_reconciliation_identity_mismatch_fails_closed():
+    class MismatchedContentAdapter(ContentIntelligenceMissionAdapter):
+        async def reconcile_attempt(self, reference):
+            return EngineAttemptReconciliation(
+                attempt_id="different-attempt",
+                engine_id=reference.engine_id,
+                status="completed",
+                authoritative=True,
+                evidence_ref="engine-receipt:wrong-attempt",
+                result={"summary": "Wrong attempt."},
+            )
+
+    registry = AdapterRegistry()
+    registry.register(MismatchedContentAdapter(engine=object()))
+    reference = ExecutionAttemptReference(
+        attempt_id="attempt-1", engine_id="content_intelligence",
+        capability="research.analyze", task_id="task-1", mission_id="mission-1",
+        workspace_id="workspace-1", correlation_id="corr-1",
+    )
+
+    result = asyncio.run(registry.reconcile_attempt(reference))
+
+    assert result.status == "unknown"
+    assert result.authoritative is False
