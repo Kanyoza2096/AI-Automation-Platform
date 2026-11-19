@@ -5,6 +5,7 @@ import pytest
 
 from services.autonomous_knowledge_evidence_reviewer import (
     AutonomousKnowledgeEvidenceReviewer,
+    build_source_snapshot_attestation,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,15 +25,20 @@ class FakeGateway:
 
 
 def _entry(metadata=None):
+    content = "The device measures temperature within the stated operating range."
+    source_text = "The device measures temperature within the stated operating range."
+    attestation = build_source_snapshot_attestation(
+        secret="test-secret",
+        workspace_id="workspace-1",
+        source_id="manufacturer-doc-1",
+        source_url="https://example.com/manual",
+        snapshot_text=source_text,
+    )
     return SimpleNamespace(
         id="entry-1",
         workspace_id="workspace-1",
-        content="The device measures temperature within the stated operating range.",
-        metadata=metadata if metadata is not None else {
-            "source_snapshot_text": (
-                "The device measures temperature within the stated operating range."
-            )
-        },
+        content=content,
+        metadata=attestation if metadata is None else metadata,
     )
 
 
@@ -66,7 +72,7 @@ def _assessment(**overrides):
 @pytest.mark.asyncio
 async def test_autonomous_reviewer_approves_only_when_all_local_gates_pass():
     gateway = FakeGateway(_assessment())
-    result = await AutonomousKnowledgeEvidenceReviewer(gateway).review(
+    result = await AutonomousKnowledgeEvidenceReviewer(gateway, snapshot_secret="test-secret").review(
         entry=_entry(), case=_case()
     )
     assert result["decision"] == "approved"
@@ -83,6 +89,19 @@ async def test_missing_captured_source_snapshot_is_quarantined_without_llm_call(
     )
     assert result["decision"] == "quarantine"
     assert "captured source-text snapshot" in result["reason"]
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_forged_source_snapshot_metadata_is_quarantined():
+    gateway = FakeGateway(_assessment())
+    metadata = _entry().metadata
+    metadata["source_snapshot_text"] = "Attacker supplied content."
+    result = await AutonomousKnowledgeEvidenceReviewer(
+        gateway, snapshot_secret="test-secret"
+    ).review(entry=_entry(metadata=metadata), case=_case())
+    assert result["decision"] == "quarantine"
+    assert "signature" in result["reason"] or "provenance" in result["reason"]
     assert gateway.calls == 0
 
 
