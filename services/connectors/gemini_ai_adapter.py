@@ -9,6 +9,16 @@ Interface parity with CloudflareAIAdapter:
   - analyze(*, user_prompt, system_prompt, model, correlation_id, structured) -> AIReceipt
 
 Same AIReceipt return shape. Same error semantics. Same status vocabulary.
+
+v2.4 — ACCEPTS temperature/max_tokens FROM GATEWAY:
+  - analyze() now accepts `temperature` and `max_output_tokens` kwargs
+    forwarded by LLMGateway. Previously these were silently dropped,
+    causing every Gemini call to run at the adapter's default temperature
+    (0.0 for generateContent, which produces flat, deterministic prose).
+  - temperature is injected into the `generationConfig` block as Gemini's
+    REST API requires. Passing it as a top-level param would be ignored.
+  - If temperature is not supplied, Gemini's default is preserved (no
+    explicit value is sent in generationConfig).
 """
 from __future__ import annotations
 
@@ -180,6 +190,7 @@ class GeminiAIAdapter:
         model: Optional[str] = None,
         correlation_id: str,
         structured: bool = False,
+        temperature: Optional[float] = None,
         max_output_tokens: Optional[int] = None,
         response_schema: Optional[dict[str, Any]] = None,
     ) -> AIReceipt:
@@ -203,8 +214,16 @@ class GeminiAIAdapter:
             "contents": contents,
         }
         generation_config: dict[str, Any] = {}
+
+        # v2.4 — temperature MUST go inside generationConfig, not as a
+        # top-level body key. Gemini's API will silently ignore a
+        # top-level temperature.
+        if isinstance(temperature, (int, float)) and temperature >= 0:
+            generation_config["temperature"] = float(temperature)
+
         if isinstance(max_output_tokens, int) and max_output_tokens > 0:
             generation_config["maxOutputTokens"] = max_output_tokens
+
         # Model-specific reasoning budgets keep the accuracy/throughput tiers
         # intentional. These hints do not replace downstream JSON validation.
         normalized_model = selected_model.lower()
@@ -223,6 +242,7 @@ class GeminiAIAdapter:
             generation_config["thinkingConfig"] = {"thinkingLevel": "low"}
         elif normalized_model.startswith("gemma-4-"):
             generation_config["thinkingConfig"] = {"thinkingLevel": "minimal"}
+
         if generation_config:
             body["generationConfig"] = generation_config
         if system_prompt.strip():
