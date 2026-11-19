@@ -1372,3 +1372,36 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
     assert store.task == before_task
     assert store.row == before_row
     assert store.events == before_events
+
+
+def test_recovery_assessment_rejects_terminal_event_conflicting_with_executing_task():
+    result = assess_execution_recovery(
+        task=_recovery_task("executing"),
+        events=[
+            _recovery_event("task.started", "attempt-1:started"),
+            _recovery_event(
+                "task.completed", "attempt-1:completed",
+                payload={"summary": "Done", "completed_at": "2026-11-19T10:01:00+00:00"},
+            ),
+        ],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        assigned_engine_id="content_intelligence",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+    assert result.reason == "terminal_event_conflicts_with_executing_canonical_task"
+
+
+def test_recovery_assessment_rejects_approved_task_with_orphan_terminal_event():
+    result = assess_execution_recovery(
+        task=_recovery_task("approved"),
+        events=[_recovery_event("task.failed", "orphan:failed")],
+        mission_id="mission-recovery",
+        workspace_id="workspace-recovery",
+        now=datetime(2026, 11, 19, 12, tzinfo=timezone.utc),
+        stale_after=timedelta(minutes=5),
+    )
+    assert result.classification == "outcome_unknown"
+    assert result.reason == "approved_task_has_durable_start_event"
