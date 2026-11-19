@@ -109,16 +109,26 @@ class EngineAttemptReconciliation:
     result: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not str(self.attempt_id or "").strip() or not str(self.engine_id or "").strip():
+            raise ValueError("engine_attempt_reconciliation_identity_required")
         if self.status not in {"not_started", "running", "completed", "failed_no_side_effects", "unknown"}:
             raise ValueError("invalid_engine_attempt_reconciliation_status")
         if not isinstance(self.authoritative, bool):
             raise ValueError("engine_attempt_authoritative_flag_required")
-        if self.status != "unknown" and (not self.authoritative or not str(self.evidence_ref or "").strip()):
+        if self.status != "unknown" and (
+            not self.authoritative
+            or not str(self.evidence_ref or "").strip()
+            or len(str(self.evidence_ref)) > 2048
+        ):
             raise ValueError("authoritative_reconciliation_evidence_required")
         if not isinstance(self.result, Mapping):
             raise TypeError("engine_attempt_result_must_be_mapping")
-        if self.status == "completed" and not str(self.result.get("summary") or "").strip():
-            raise ValueError("completed_attempt_result_summary_required")
+        if self.status == "completed" and (
+            not str(self.result.get("summary") or "").strip()
+            or len(str(self.result.get("summary") or "")) > 5000
+            or not str(self.result.get("completed_at") or "").strip()
+        ):
+            raise ValueError("completed_attempt_result_summary_and_timestamp_required")
 
 
 class ReconciliableNativeEngineAdapter(Protocol):
