@@ -255,6 +255,21 @@ class MissionStateMachine:
             event_task_id = task_id
             next_phase = "delegation"
 
+        elif event_type == "task.cancelled":
+            if current.status not in {"admitted", "queued", "running", "awaiting_review"}:
+                raise MissionTransitionRejected("mission_not_accepting_task_cancellation")
+            task_id = command.task_id or self._require_text(payload, "task_id")
+            if task_id not in task_ids or task_status.get(task_id) not in {"approval_required", "approved"}:
+                raise MissionTransitionRejected("task_not_cancellable_from_current_state")
+            if command.actor_type not in {"operator", "system"}:
+                raise MissionTransitionRejected("task_cancellation_requires_operator_or_system")
+            reason = self._require_text(payload, "reason")
+            task_status[task_id] = "cancelled"
+            event_task_id = task_id
+            next_phase = "review"
+            if current.status in {"admitted", "running"}:
+                next_status = "awaiting_review"
+
         elif event_type == "task.started":
             self._require_active(current.status)
 
