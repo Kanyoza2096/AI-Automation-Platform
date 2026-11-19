@@ -63,6 +63,7 @@ on:
   push:
     branches:
       - staging
+      - feat/director-orchestration-architecture
     paths:
       - "core/shared_event_bus.py"
       - "tests/security/test_shared_event_bus_safety.py"
@@ -86,6 +87,11 @@ on:
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
+      - "services/director/orchestration/**"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - "tests/test_director_mission_graph.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   workflow_dispatch:
 
@@ -104,7 +110,7 @@ jobs:
       - name: Check out source under test
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || 'staging' }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
