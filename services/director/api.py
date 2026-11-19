@@ -70,6 +70,7 @@ class StrategicMissionAdmissionBody(BaseModel):
     step_parameters: dict[str, dict] = Field(..., min_length=1, max_length=12)
 class StrategicObjectiveBody(BaseModel):
     objective_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    source_collaboration_run_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=4000)
     success_criteria: list[str] = Field(..., min_length=1, max_length=20)
