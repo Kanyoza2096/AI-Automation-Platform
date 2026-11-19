@@ -439,7 +439,11 @@ class MissionStateMachine:
                     raise MissionTransitionRejected("previous_reasoning_round_has_unanswered_questions")
                 state["active_reasoning_round"] = round_number
                 budget["rounds_used"] = max(int(budget["rounds_used"]), round_number)
-            recipient_capability = str(payload.get("recipient_capability") or "").strip()
+            recipient_capability = str(
+                payload.get("recipient_capability")
+                or (assignments.get(question_task_id) or {}).get("capability")
+                or ""
+            ).strip()
             if not recipient_capability:
                 raise MissionTransitionRejected("question_recipient_capability_required")
             state["pending_questions"][command.message_id] = {
