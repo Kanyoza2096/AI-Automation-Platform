@@ -163,7 +163,7 @@ async def _review_case(client, case: dict[str, Any], row: dict[str, Any]) -> str
     return decision
 
 
-def run() -> dict[str, int]:
+async def _run() -> dict[str, int]:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     client = _client()
     maximum = max(1, min(1000, int(os.getenv("KDO_KB_REVIEW_BATCH_SIZE", "100"))))
@@ -197,7 +197,7 @@ def run() -> dict[str, int]:
                 counters["skipped"] += 1
                 continue
             if case.get("review_status") == "pending":
-                outcome = asyncio.run(_review_case(client, case, row))
+                outcome = await _review_case(client, case, row)
                 if outcome in counters:
                     counters[outcome] += 1
             elif case.get("review_status") == "approved":
@@ -217,4 +217,4 @@ def run() -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(_run())
