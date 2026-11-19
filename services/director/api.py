@@ -1051,32 +1051,29 @@ def create_app(director: Director):
         )
         try:
             trusted_actor = _trusted_actor(request, body.actor)
-            already_approved = bool(
-                _mission_runtime_enabled()
-                and task is not None
-                and task.status == Status.APPROVED
-                and task.approved_by == trusted_actor
-            )
-            if already_approved:
-                approved = task
-            else:
-                approved = director.approve(task_id, trusted_actor)
-                try:
-                    persisted = await director.store.save_task(approved)
-                except Exception as exc:
-                    # A storage exception is an ambiguous write outcome. Restore
-                    # process memory so a retry cannot mistake an unacknowledged
-                    # approval for a durable one and skip the canonical save.
-                    approved.status, approved.approved_at, approved.approved_by = previous
-                    log.error(
-                        "Director task approval persistence raised; retry required: task=%s error=%s",
-                        task_id,
-                        type(exc).__name__,
-                    )
-                    raise HTTPException(503, "Task approval persistence outcome is uncertain; retry required") from exc
-                if not persisted:
-                    approved.status, approved.approved_at, approved.approved_by = previous
-                    raise HTTPException(503, "Task approval could not be durably persisted")
+            # Even an in-memory task already marked APPROVED must pass through
+            # the canonical store acknowledgement on every request. A concurrent
+            # same-actor request may observe another request's provisional
+            # in-memory mutation while that request is still awaiting persistence.
+            # Re-saving the same actor/timestamp is idempotent and prevents that
+            # second request from advancing the mission journal ahead of the DB.
+            approved = director.approve(task_id, trusted_actor)
+            try:
+                persisted = await director.store.save_task(approved)
+            except Exception as exc:
+                # A storage exception is an ambiguous write outcome. Restore
+                # process memory so a retry cannot mistake an unacknowledged
+                # approval for a durable one and skip the canonical save.
+                approved.status, approved.approved_at, approved.approved_by = previous
+                log.error(
+                    "Director task approval persistence raised; retry required: task=%s error=%s",
+                    task_id,
+                    type(exc).__name__,
+                )
+                raise HTTPException(503, "Task approval persistence outcome is uncertain; retry required") from exc
+            if not persisted:
+                approved.status, approved.approved_at, approved.approved_by = previous
+                raise HTTPException(503, "Task approval could not be durably persisted")
             if _mission_runtime_enabled() and approved.mission_id and approved.workspace_id:
                 try:
                     runtime = _get_mission_runtime()
