@@ -506,3 +506,93 @@ def test_native_mission_runtime_accepts_only_signed_kcpg_human_actor_context(mon
     )
     assert response.status_code == 200
     assert response.json()["workspace_id"] == workspace_id
+
+
+def test_native_mission_assignment_endpoint_awaits_workspace_binding_and_calls_runtime(monkeypatch):
+    from types import SimpleNamespace
+    from services.director import Director, create_app
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-operator", role="owner",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.tasks["task-a"] = SimpleNamespace(
+        id="task-a", workspace_id="ws-a", mission_id="mission-a",
+    )
+
+    class FakeRuntime:
+        async def assign_task(self, **kwargs):
+            assert kwargs["workspace_id"] == "ws-a"
+            assert kwargs["task_id"] == "task-a"
+            assert kwargs["director_id"] == "trusted-operator"
+            return SimpleNamespace(version=7)
+
+    app.state.director_mission_runtime = FakeRuntime()
+    response = TestClient(app).post(
+        "/missions/mission-a/orchestration/tasks/task-a/assign",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze",
+            "idempotency_key": "assign-api-test-001",
+            "correlation_id": "correlation-api-test-001",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["mission_version"] == 7
+
+
+def test_native_mission_execution_endpoint_awaits_workspace_binding_and_returns_contribution(monkeypatch):
+    from types import SimpleNamespace
+    from services.director import Director, create_app
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    d = Director(supabase_client=None)
+    app = create_app(d)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-operator", role="owner",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    d.tasks["task-a"] = SimpleNamespace(
+        id="task-a", workspace_id="ws-a", mission_id="mission-a",
+    )
+
+    class FakeRuntime:
+        async def execute_approved_task(self, **kwargs):
+            assert kwargs["workspace_id"] == "ws-a"
+            assert kwargs["task_id"] == "task-a"
+            return SimpleNamespace(
+                engine_id="content_intelligence", status="completed",
+                summary="Native contribution", confidence=0.9,
+                evidence=({"ref": "evidence:one"},), limitations=(),
+            )
+
+    app.state.director_mission_runtime = FakeRuntime()
+    response = TestClient(app).post(
+        "/missions/mission-a/orchestration/tasks/task-a/execute",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={
+            "engine_id": "content_intelligence",
+            "objective": "Run the approved task",
+            "inputs": {},
+            "idempotency_prefix": "execute-api-test-001",
+            "correlation_id": "correlation-api-test-001",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["summary"] == "Native contribution"
