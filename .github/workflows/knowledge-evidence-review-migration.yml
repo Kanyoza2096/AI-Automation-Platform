@@ -32,7 +32,7 @@ jobs:
       - name: Install test and SQL parser
         run: python -m pip install "pytest>=8,<9" "pytest-asyncio>=0.23,<1" pglast
       - name: Compile autonomous review modules
-        run: python -m py_compile api/routers/knowledge.py services/autonomous_knowledge_evidence_reviewer.py scripts/autonomous_knowledge_evidence_review.py
+        run: python -m py_compile main.py api/routers/knowledge.py services/autonomous_knowledge_evidence_reviewer.py scripts/autonomous_knowledge_evidence_review.py
       - name: Parse evidence review and promotion migrations
         run: |
           python - <<'PY'
