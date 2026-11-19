@@ -92,7 +92,8 @@ GRANT SELECT ON TABLE public.director_mission_events TO service_role;
 CREATE OR REPLACE FUNCTION public.reject_director_mission_event_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
-AS $$
+SET search_path = pg_catalog
+AS $
 BEGIN
     RAISE EXCEPTION 'director_mission_events_append_only';
 END;
@@ -107,6 +108,7 @@ CREATE TRIGGER director_mission_events_append_only_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = pg_catalog
 AS $body$
 BEGIN
     IF NEW.version <> 0 THEN
@@ -124,6 +126,7 @@ CREATE TRIGGER director_missions_initial_version_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_state_update()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = pg_catalog
 AS $body$
 BEGIN
     IF NEW.mission_id <> OLD.mission_id
@@ -156,6 +159,7 @@ CREATE TRIGGER director_missions_state_event_guard
 CREATE OR REPLACE FUNCTION public.guard_director_mission_event_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = pg_catalog
 AS $body$
 DECLARE
     mission_row public.director_missions%ROWTYPE;
