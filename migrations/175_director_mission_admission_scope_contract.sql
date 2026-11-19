@@ -44,7 +44,7 @@ BEGIN
             CHECK (jsonb_typeof(task_ids) = 'array');
     END IF;
 END;
-$;
+$$;
 
 ALTER TABLE public.director_mission_admissions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE public.director_mission_admissions FROM PUBLIC, anon, authenticated;
