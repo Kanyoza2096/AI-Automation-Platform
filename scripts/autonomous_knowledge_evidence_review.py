@@ -1,6 +1,6 @@
 """Bounded unattended sweep for the KDO knowledge evidence review queue.
 
-Run from a Render Cron Job with the backend's normal environment variables:
+Run inside the backend process or manually with the backend's normal environment variables:
     python -m scripts.autonomous_knowledge_evidence_review
 
 The job is idempotent and tenant-scoped. It never rewrites existing verified
@@ -352,6 +352,7 @@ async def _run() -> dict[str, int]:
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }, on_conflict="state_key").execute()
 
+    counters["reached_end"] = int(reached_end)
     logger.info("Autonomous knowledge evidence sweep complete: %s", counters)
     return counters
 
