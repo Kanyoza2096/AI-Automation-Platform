@@ -47,9 +47,18 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
 
     brief = await generate_health_briefing(
         {"job_service": "unknown", "director": "ok"},
+        diagnostics={"job_stats_service": {
+            "provider_reported_status": "degraded",
+            "status_counts": {"FAILED": 4, "STALE": 2},
+            "failure_intelligence": {"status": "available", "categories": {
+                "voice_compliance": {"count": 2, "recommended_action": "bounded_voice_rewrite"}
+            }},
+        }},
         gateway=gateway,
     )
 
+    assert "voice_compliance" in gateway.calls[0][0]
+    assert '"FAILED": 4' in gateway.calls[0][0]
     assert brief["mode"] == "llm"
     assert brief["provider"] == "test-provider"
     assert len(brief["incidents"]) == 1
@@ -60,9 +69,10 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
 
 @pytest.mark.asyncio
 async def test_health_briefing_fallback_is_explicit_and_does_not_claim_root_cause():
+    gateway = FakeGateway(SimpleNamespace(ok=False, reason="provider_unavailable"))
     brief = await generate_health_briefing(
         {"job_service": "down", "director": "ok"},
-        gateway=None,
+        gateway=gateway,
     )
 
     assert brief["mode"] == "deterministic_fallback"
