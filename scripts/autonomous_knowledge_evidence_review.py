@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import logging
 import os
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -58,6 +59,19 @@ async def _capture_trusted_source_snapshot(client, row: dict[str, Any]) -> dict[
     source_url = metadata.get("source_url") or metadata.get("sourceUrl")
     if not isinstance(source_url, str) or not source_url:
         return metadata
+    parsed = urlparse(source_url)
+    if (
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or parsed.username or parsed.password or any(char.isspace() for char in source_url)
+    ):
+        return metadata
+    digest = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+    prior_case = (
+        client.table("knowledge_evidence_review_cases").select("review_status")
+        .eq("knowledge_entry_id", entry.id).eq("content_sha256", digest).limit(1).execute()
+    )
+    if prior_case.data and prior_case.data[0].get("review_status") == "approved":
+        return metadata
     try:
         trust_class = resolve_trusted_source_class(source_url)
         from services.web_intelligence.base import validate_external_url
@@ -76,11 +90,11 @@ async def _capture_trusted_source_snapshot(client, row: dict[str, Any]) -> dict[
         ):
             return metadata
 
-        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or (
-            "web-source:" + hashlib.sha256(
+        source_id = str(metadata.get("source_id") or metadata.get("sourceId") or "")
+        if not source_id or source_id.startswith("unverified-entry:"):
+            source_id = "web-source:" + hashlib.sha256(
                 f"{entry.workspace_id}|{source_url}".encode("utf-8")
             ).hexdigest()
-        ))
         attestation = build_source_snapshot_attestation(
             secret=secret,
             workspace_id=str(entry.workspace_id),
