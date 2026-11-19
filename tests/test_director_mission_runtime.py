@@ -1447,3 +1447,46 @@ def test_recovery_assessment_rejects_attempt_key_payload_mismatch():
     )
     assert result.classification == "outcome_unknown"
     assert result.reason == "execution_attempt_identity_engine_or_capability_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciliation_without_adapter_support_stays_unknown_and_read_only():
+    store = MemoryMissionStore()
+    store.task["status"] = "executing"
+    store.task["payload"]["status"] = "executing"
+    store.row["state_snapshot"]["task_status"][store.task_id] = "executing"
+    store.row["state_snapshot"]["task_assignments"][store.task_id] = {
+        "engine_id": "content_intelligence", "capability": "research.analyze"
+    }
+    store.events.append({
+        "event_id": "event-start", "mission_id": store.mission_id,
+        "scope_type": "workspace", "workspace_id": store.workspace_id,
+        "task_id": store.task_id, "event_type": "task.started",
+        "actor_type": "operator", "actor_id": "operator-1",
+        "idempotency_key": "attempt-phase-c:started",
+        "correlation_id": "corr-phase-c", "created_at": "2026-11-19T10:00:00+00:00",
+        "payload": {
+            "attempt_id": "attempt-phase-c", "engine_id": "content_intelligence",
+            "capability": "research.analyze", "requested_by": "operator-1",
+        },
+    })
+    adapter = FakeNativeAdapter("content_intelligence", "Should never be invoked during reconciliation.")
+    registry = AdapterRegistry()
+    registry.register(adapter)
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+    before_task = copy.deepcopy(store.task)
+    before_row = copy.deepcopy(store.row)
+    before_events = copy.deepcopy(store.events)
+
+    result = await runtime.reconcile_task_attempt(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+    )
+
+    assert result.status == "unknown"
+    assert result.authoritative is False
+    assert adapter.calls == []
+    assert store.task == before_task
+    assert store.row == before_row
+    assert store.events == before_events
