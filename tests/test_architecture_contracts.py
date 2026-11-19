@@ -94,3 +94,14 @@ def test_director_mission_admission_journals_collaboration_origin():
     # Mission admission remains a journal event, not an execution/approval grant.
     assert "execution_permitted" not in sql
     assert "task.approved" not in sql
+
+
+def test_strategic_plan_requires_server_verified_collaboration_provenance():
+    api = (ROOT / "services" / "director" / "api.py").read_text(encoding="utf-8")
+    planning = (ROOT / "services" / "director" / "planning.py").read_text(encoding="utf-8")
+    assert '.eq("workspace_id", workspace_id)' in api
+    assert 'source_run.get("status") != "completed"' in api
+    assert 'recommendation.get("status") != "available"' in api
+    assert 'hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()' in api
+    assert 'source_collaboration_provenance_required' in planning
+    assert '"source_collaboration_provenance": dict(source_provenance)' in planning
