@@ -1432,6 +1432,15 @@ class Director:
         if verification.get("verdict") != "verified_for_governance_review":
             raise ValueError("strategic_plan_requires_reverification:" + str(verification.get("verdict")))
 
+        source_collaboration_run_id = plan.get("objective", {}).get("source_collaboration_run_id") if isinstance(plan.get("objective"), dict) else None
+        if source_collaboration_run_id is not None and (
+            not isinstance(source_collaboration_run_id, str)
+            or not source_collaboration_run_id.strip()
+            or len(source_collaboration_run_id.strip()) > 128
+        ):
+            raise ValueError("strategic_plan_source_collaboration_run_id_invalid")
+        source_collaboration_run_id = source_collaboration_run_id.strip() if source_collaboration_run_id else None
+
         steps = plan.get("steps")
         if not isinstance(steps, list) or not 1 <= len(steps) <= 12:
             raise ValueError("strategic_plan_step_count_invalid")
@@ -1509,7 +1518,9 @@ class Director:
                 confidence=0.8,
                 reason=("Operator-staged from strategic plan " + str(plan_id) +
                         "; " + str(step.get("rationale") or "Review plan evidence before approval"))[:1000],
-                sources=["strategic_plan:" + str(plan_id), "operator:" + str(actor or "operator")[:100]],
+                sources=(["strategic_plan:" + str(plan_id)]
+                         + (["collaboration_run:" + source_collaboration_run_id] if source_collaboration_run_id else [])
+                         + ["operator:" + str(actor or "operator")[:100]]),
                 workspace_id=workspace_id,
                 depends_on=dependencies,
                 mission_id=mission_id,
@@ -1530,6 +1541,7 @@ class Director:
         request_fingerprint = hashlib.sha256(json.dumps({
             "workspace_id": workspace_id,
             "plan_id": plan_id,
+            "source_collaboration_run_id": source_collaboration_run_id,
             "plan_fingerprint": plan.get("source_context_fingerprint"),
             "step_parameters": step_parameters,
             "task_ids": [task.id for task in tasks],
@@ -1589,6 +1601,7 @@ class Director:
         return {
             "status": "staged_for_approval",
             "plan_id": str(plan_id),
+            "source_collaboration_run_id": source_collaboration_run_id,
             "mission_id": mission_id,
             "workspace_id": workspace_id,
             "task_ids": [task.id for task in tasks],
