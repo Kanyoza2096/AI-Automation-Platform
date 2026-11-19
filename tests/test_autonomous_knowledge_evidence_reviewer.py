@@ -28,7 +28,7 @@ def _entry(metadata=None):
         id="entry-1",
         workspace_id="workspace-1",
         content="The device measures temperature within the stated operating range.",
-        metadata=metadata or {
+        metadata=metadata if metadata is not None else {
             "source_snapshot_text": (
                 "The device measures temperature within the stated operating range."
             )
