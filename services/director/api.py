@@ -691,7 +691,7 @@ def create_app(director: Director):
                 if db is None:
                     raise RuntimeError("persistent collaboration storage unavailable")
                 query = (db.table("director_collaboration_runs")
-                    .select("id,workspace_id,status,consultations,synthesis,evidence_summary,completed_at")
+                    .select("id,workspace_id,objective,requested_engines,status,consultations,synthesis,evidence_summary,completed_at")
                     .eq("id", source_run_id)
                     .eq("workspace_id", workspace_id)
                     .limit(1))
@@ -720,6 +720,8 @@ def create_app(director: Director):
                 "workspace_id": str(source_run["workspace_id"]),
                 "status": source_run["status"],
                 "completed_at": source_run["completed_at"],
+                "objective": source_run.get("objective") or "",
+                "requested_engines": source_run.get("requested_engines") or [],
                 "consultations": source_run.get("consultations") or [],
                 "synthesis": source_run.get("synthesis") or "",
                 "comparison": comparison,
