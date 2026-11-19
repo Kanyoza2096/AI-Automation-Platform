@@ -185,13 +185,16 @@ class AdapterRegistry:
         self, reference: ExecutionAttemptReference
     ) -> EngineAttemptReconciliation:
         """Ask an adapter for authoritative status; unsupported/ambiguous stays unknown."""
-        adapter = self.get(reference.engine_id)
         unknown = EngineAttemptReconciliation(
             attempt_id=reference.attempt_id,
             engine_id=reference.engine_id,
             status="unknown",
             authoritative=False,
         )
+        try:
+            adapter = self.get(reference.engine_id)
+        except KeyError:
+            return unknown
         if reference.capability not in adapter.capabilities:
             return unknown
         reconcile = getattr(adapter, "reconcile_attempt", None)
