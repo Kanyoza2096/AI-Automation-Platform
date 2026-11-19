@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
+import math
 from typing import Any, Callable, Mapping, Sequence
 
 from .contracts import AdapterRegistry, EngineContribution, MissionTaskContext
@@ -371,20 +372,31 @@ class MissionOrchestrationRuntime:
         now: datetime | None = None,
     ) -> RecoveryAssessment:
         """Read-only recovery assessment; this method never changes task state or dispatches work."""
-        if isinstance(stale_after_seconds, bool) or stale_after_seconds <= 0:
-            raise ValueError("recovery_stale_after_seconds_must_be_positive")
+        if (
+            isinstance(stale_after_seconds, bool)
+            or not isinstance(stale_after_seconds, (int, float))
+            or not math.isfinite(float(stale_after_seconds))
+            or stale_after_seconds <= 0
+        ):
+            raise ValueError("recovery_stale_after_seconds_must_be_positive_finite_number")
         snapshot = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         task = await self.store.get_workspace_task(
             task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
         )
         if not task:
             raise MissionRuntimeNotFound("workspace_mission_task_not_found")
+        event_limit = min(500, int(getattr(self.store, "MAX_EVENT_READ_LIMIT", 500)))
         events = await self.store.list_events(
             mission_id=mission_id,
             scope_type="workspace",
             workspace_id=workspace_id,
-            limit=min(500, int(getattr(self.store, "MAX_EVENT_READ_LIMIT", 500))),
+            limit=event_limit,
         )
+        if len(events) >= event_limit:
+            return RecoveryAssessment(
+                "outcome_unknown", mission_id, workspace_id, task_id, None, None,
+                "mission_event_history_read_limit_reached; full_attempt_history_required",
+            )
         return assess_execution_recovery(
             task=task,
             events=events,
