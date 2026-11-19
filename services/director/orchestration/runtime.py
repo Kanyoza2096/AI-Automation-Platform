@@ -431,14 +431,10 @@ class MissionOrchestrationRuntime:
                 actor_id="director_orchestrator" if event_type == "task.failed" else engine_id,
                 correlation_id=correlation_id,
                 task_id=task_id,
-                payload={"reason": contribution.summary[:1000] or contribution.status},
-            )
-            await self._record_engine_usage(
-                mission_id=mission_id,
-                workspace_id=workspace_id,
-                contribution=contribution,
-                idempotency_key=f"{idempotency_prefix}:usage",
-                correlation_id=correlation_id,
+                payload={
+                    "reason": contribution.summary[:1000] or contribution.status,
+                    **self._usage_metadata(contribution),
+                },
             )
             return contribution
 
@@ -473,16 +469,21 @@ class MissionOrchestrationRuntime:
                 "limitations": self._bounded_texts(contribution.limitations),
                 "confidence": contribution.confidence,
                 "completed_at": contribution.finished_at.isoformat(),
+                **self._usage_metadata(contribution),
             },
         )
-        await self._record_engine_usage(
-            mission_id=mission_id,
-            workspace_id=workspace_id,
-            contribution=contribution,
-            idempotency_key=f"{idempotency_prefix}:usage",
-            correlation_id=correlation_id,
-        )
         return contribution
+
+    @staticmethod
+    def _usage_metadata(contribution: EngineContribution) -> dict[str, int]:
+        providers = contribution.source_metadata.get("providers")
+        provider_calls = len(providers) if isinstance(providers, list) else 1
+        return {
+            "usage_tokens": MissionOrchestrationRuntime._usage_int(
+                contribution.source_metadata.get("usage_tokens")
+            ),
+            "provider_calls": max(1, min(provider_calls, 12)),
+        }
 
     async def _record_engine_usage(
         self,
@@ -689,14 +690,8 @@ class MissionOrchestrationRuntime:
                 "findings": self._bounded_texts(contribution.findings),
                 "recommendations": self._bounded_texts(contribution.recommendations),
                 "evidence_refs": [item["ref"] for item in refs],
+                **self._usage_metadata(contribution),
             },
-        )
-        await self._record_engine_usage(
-            mission_id=mission_id,
-            workspace_id=workspace_id,
-            contribution=contribution,
-            idempotency_key=f"{idempotency_prefix}:usage",
-            correlation_id=correlation_id,
         )
         return contribution
 
