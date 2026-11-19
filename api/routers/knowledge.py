@@ -76,7 +76,25 @@ async def create_knowledge_entry(
             doc_type=body.doc_type,
             metadata=body.metadata,
         )
-        return _ok({"knowledge_entry": entry.model_dump(mode="json")}, 201)
+        review_case = None
+        try:
+            review_client = _evidence_review_client()
+            if review_client is not None:
+                review_case = await _autonomously_review_new_entry(
+                    entry=entry, brand_id=brand_id,
+                    claim_scope="general_knowledge_support",
+                    client=review_client, knowledge_repo=kb_repo,
+                )
+        except Exception as review_exc:
+            logger.error("knowledge_autonomous_review_unavailable", extra={
+                "brand_id": brand_id, "knowledge_entry_id": entry.id,
+                "error_class": type(review_exc).__name__,
+            })
+        return _ok({
+            "knowledge_entry": entry.model_dump(mode="json"),
+            "review_case": _evidence_review_payload(review_case) if review_case else None,
+            "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+        }, 201)
     except HTTPException:
         raise
     except Exception as exc:
@@ -267,7 +285,24 @@ async def bulk_create_knowledge(
                     doc_type=item.get("doc_type", "text"),
                     metadata=item.get("metadata", {}),
                 )
-                results.append({"id": entry.id, "status": "created"})
+                review_case = None
+                try:
+                    review_client = _evidence_review_client()
+                    if review_client is not None:
+                        review_case = await _autonomously_review_new_entry(
+                            entry=entry, brand_id=body.brand_id,
+                            claim_scope="general_knowledge_support",
+                            client=review_client, knowledge_repo=kb_repo,
+                        )
+                except Exception as review_exc:
+                    logger.error("bulk_knowledge_autonomous_review_unavailable", extra={
+                        "brand_id": body.brand_id, "knowledge_entry_id": entry.id,
+                        "error_class": type(review_exc).__name__,
+                    })
+                results.append({
+                    "id": entry.id, "status": "created",
+                    "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+                })
             except Exception as e:
                 logger.warning(
                     "bulk_item_failed",
