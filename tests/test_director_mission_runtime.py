@@ -1219,7 +1219,7 @@ def _recovery_task(status="executing"):
     }
 
 
-def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", payload=None, event_id=None, actor_type="engine", actor_id="content_intelligence"):
+def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", payload=None, event_id=None, actor_type=None, actor_id=None):
     return {
         "event_id": event_id or key,
         "mission_id": "mission-recovery",
@@ -1227,8 +1227,8 @@ def _recovery_event(event_type, key, *, created_at="2026-11-19T10:00:00+00:00", 
         "workspace_id": "workspace-recovery",
         "task_id": "task-recovery",
         "event_type": event_type,
-        "actor_type": actor_type,
-        "actor_id": actor_id,
+        "actor_type": actor_type or ("operator" if event_type == "task.started" else "engine"),
+        "actor_id": actor_id or ("operator-1" if event_type == "task.started" else "content_intelligence"),
         "idempotency_key": key,
         "created_at": created_at,
         "correlation_id": "corr-attempt-1",
