@@ -39,14 +39,14 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
                 "evidence_refs": [],
                 "next_step": "Investigate",
             }],
-            "trends": [],
+            "trends": ["Recurring degradation over several days."],
             "limitations": ["No historical comparison supplied."],
         },
         provider="test-provider",
     ))
 
     brief = await generate_health_briefing(
-        {"job_service": "unknown", "director": "ok"},
+        {"job_service": "unknown", "condition_engine": "down", "director": "ok"},
         diagnostics={"job_stats_service": {
             "provider_reported_status": "degraded",
             "status_counts": {"FAILED": 4, "STALE": 2},
@@ -63,6 +63,8 @@ async def test_health_briefing_uses_director_gateway_and_filters_unknown_evidenc
     assert brief["provider"] == "test-provider"
     assert len(brief["incidents"]) == 1
     assert brief["incidents"][0]["evidence_refs"] == ["health:job_service"]
+    assert brief["trends"] == []  # one snapshot cannot establish a trend
+    assert any(item["service"] == "condition_engine" for item in brief["incidents"])
     assert gateway.calls[0][1]["caller"] == "director"
     assert gateway.calls[0][1]["workspace_id"] == "platform"
 
