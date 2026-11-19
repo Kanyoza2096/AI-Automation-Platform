@@ -54,7 +54,31 @@ def _case_for_entry(client, row: dict[str, Any]) -> dict[str, Any] | None:
         .limit(1).execute()
     )
     if found.data:
-        return found.data[0]
+        existing = found.data[0]
+        if existing.get("review_status") == "quarantined" and (
+            metadata.get("source_snapshot_text") or metadata.get("source_excerpt")
+        ):
+            source_id = str(
+                metadata.get("source_id") or metadata.get("sourceId")
+                or existing.get("source_id") or f"unverified-entry:{entry.id}"
+            ).strip()
+            source_url = metadata.get("source_url") or metadata.get("sourceUrl")
+            reopened = (
+                client.table("knowledge_evidence_review_cases").update({
+                    "review_status": "pending",
+                    "reviewed_by": ACTOR,
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "review_notes": "Trusted source snapshot became available; autonomous re-review queued.",
+                    "source_id": source_id,
+                    "source_url": source_url,
+                    "source_title": metadata.get("source_title") or metadata.get("title"),
+                    "source_type": metadata.get("source_type") or entry.doc_type,
+                    "trust_class": metadata.get("trust_class"),
+                }).eq("id", existing["id"]).eq("review_status", "quarantined")
+                .select("*").single().execute()
+            )
+            return reopened.data
+        return existing
 
     source_id = str(
         metadata.get("source_id") or metadata.get("sourceId")
