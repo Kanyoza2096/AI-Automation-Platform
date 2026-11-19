@@ -6,6 +6,7 @@ on:
       - "api/chat_action_proposals.py"
       - "api/routers/ai_chat.py"
       - "tests/test_ai_chat_action_proposals.py"
+      - "tests/test_ai_engine_collaboration.py"
       - "services/director/core.py"
       - "services/director/health_briefing.py"
       - "services/health_monitor_service.py"
@@ -129,6 +130,7 @@ jobs:
             tests/test_director_strategic_planning.py \
             tests/test_ai_provider_fabric.py \
             tests/test_ai_chat_action_proposals.py \
+            tests/test_ai_engine_collaboration.py \
             tests/test_director_strategic_plan_persistence.py \
             tests/test_director_auth_boundary.py \
             tests/test_director_executive_report_truth.py \
