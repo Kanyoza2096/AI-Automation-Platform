@@ -36,6 +36,7 @@ def assess_execution_recovery(
     events: Sequence[Mapping[str, Any]],
     mission_id: str,
     workspace_id: str,
+    assigned_engine_id: str | None = None,
     now: datetime,
     stale_after: timedelta,
 ) -> RecoveryAssessment:
@@ -115,6 +116,7 @@ def assess_execution_recovery(
         if event.get("idempotency_key") in {
             f"{attempt_key}:completed", f"{attempt_key}:failed", f"{attempt_key}:blocked"
         }
+        and event.get("correlation_id") == start.get("correlation_id")
     ]
     if len(terminal) > 1:
         return RecoveryAssessment(
@@ -124,7 +126,16 @@ def assess_execution_recovery(
         )
 
     if status == "completed":
-        if len(terminal) == 1 and terminal[0].get("event_type") == "task.completed":
+        if (
+            len(terminal) == 1
+            and terminal[0].get("event_type") == "task.completed"
+            and assigned_engine_id
+            and terminal[0].get("actor_type") == "engine"
+            and terminal[0].get("actor_id") == assigned_engine_id
+            and isinstance(terminal[0].get("payload"), Mapping)
+            and bool(str(terminal[0]["payload"].get("summary") or "").strip())
+            and bool(str(terminal[0]["payload"].get("completed_at") or "").strip())
+        ):
             return RecoveryAssessment(
                 "completed_response_lost", mission_id, workspace_id, task_id,
                 attempt_key, started_at.isoformat(),
