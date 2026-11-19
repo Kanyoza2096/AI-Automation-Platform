@@ -235,7 +235,7 @@ def render_health_briefing(brief: Mapping[str, Any], service_states: Mapping[str
     incidents = brief.get("incidents") or []
     if incidents:
         lines.extend(["", "<b>Priority incidents</b>"])
-        for item in incidents[:12]:
+        for item in incidents[:5]:
             refs = ", ".join(item.get("evidence_refs") or []) or "No validated evidence reference"
             lines.extend([
                 f"• <b>{esc(item.get('service'))}</b> — {esc(item.get('assessment'))}",
@@ -246,7 +246,16 @@ def render_health_briefing(brief: Mapping[str, Any], service_states: Mapping[str
             ])
     if brief.get("trends"):
         lines.extend(["", "<b>Observed trends</b>"])
-        lines.extend(f"• {esc(value)}" for value in brief["trends"][:8])
+        lines.extend(f"• {esc(value)}" for value in brief["trends"][:4])
     lines.extend(["", "<b>Evidence limitations</b>"])
-    lines.extend(f"• {esc(value)}" for value in (brief.get("limitations") or [])[:10])
-    return "\n".join(lines)
+    lines.extend(f"• {esc(value)}" for value in (brief.get("limitations") or [])[:6])
+    if len(incidents) > 5:
+        lines.append(f"• {len(incidents) - 5} additional incidents omitted; inspect the dashboard for full detail.")
+    bounded = []
+    for line in lines:
+        candidate = "\n".join([*bounded, line])
+        if len(candidate) > 3750:
+            bounded.append("… additional details omitted; inspect the dashboard.")
+            break
+        bounded.append(line)
+    return "\n".join(bounded)
