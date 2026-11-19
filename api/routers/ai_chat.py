@@ -221,9 +221,11 @@ def _normalize_collaboration_engines(value):
         raise HTTPException(status_code=422, detail="At least one consulting engine is required")
     return engines
 
-def _collaboration_run_status(consultations):
-    """A run is partial if any peer or evidence source was unavailable."""
-    if not consultations:
+def _collaboration_run_status(consultations, evidence_comparison=None, recommendation=None):
+    """A run is complete only when peer work and Director synthesis are usable."""
+    if not consultations or not isinstance(evidence_comparison, dict) or not isinstance(recommendation, dict):
+        return "partial"
+    if evidence_comparison.get("status") != "available" or recommendation.get("status") != "available":
         return "partial"
     return "partial" if any(
         item.get("status") != "completed"
@@ -960,7 +962,7 @@ async def ai_chat(
                 } for item in collaboration_details
             },
         }
-        run_status = _collaboration_run_status(collaboration_details)
+        run_status = _collaboration_run_status(collaboration_details, evidence_comparison, recommendation)
         await _db_call(lambda: db.table("director_collaboration_runs").update({
             "status": run_status,
             "consultations": collaboration_details,
