@@ -755,10 +755,20 @@ def create_app(director: Director):
             task.approved_by if task is not None else None,
         )
         try:
-            approved = director.approve(task_id, _trusted_actor(request, body.actor))
-            if not await director.store.save_task(approved):
-                approved.status, approved.approved_at, approved.approved_by = previous
-                raise HTTPException(503, "Task approval could not be durably persisted")
+            trusted_actor = _trusted_actor(request, body.actor)
+            already_approved = bool(
+                _mission_runtime_enabled()
+                and task is not None
+                and task.status == Status.APPROVED
+                and task.approved_by == trusted_actor
+            )
+            if already_approved:
+                approved = task
+            else:
+                approved = director.approve(task_id, trusted_actor)
+                if not await director.store.save_task(approved):
+                    approved.status, approved.approved_at, approved.approved_by = previous
+                    raise HTTPException(503, "Task approval could not be durably persisted")
             if _mission_runtime_enabled() and approved.mission_id and approved.workspace_id:
                 try:
                     runtime = _get_mission_runtime()
