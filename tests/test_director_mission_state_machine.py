@@ -61,7 +61,8 @@ def test_mission_requires_operator_approval_and_verification_before_completion()
         "task.approved", actor_type="operator", actor_id="operator-1", task_id="task-a"
     ))
     current = _advance(machine, current, _command(
-        "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a"
+        "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
+        payload={"attempt_id": "attempt-state-test", "engine_id": "content_intelligence", "capability": "research.analyze"},
     ))
     with pytest.raises(MissionTransitionRejected, match="task_result_engine_assignment_mismatch"):
         machine.prepare(current, _command(
@@ -180,3 +181,27 @@ def test_engine_cannot_resolve_disagreement_or_escalate_execution_authority():
             payload={"disagreement_id": "d-1", "resolution": "I choose my own view"},
         ))
     assert current.state_snapshot["unresolved_disagreements"] == ["d-1"]
+
+
+def test_task_start_requires_attempt_identity_matching_engine_assignment():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    current = _advance(machine, current, _command(
+        "task.assigned", task_id="task-a",
+        payload={"engine_id": "content_intelligence", "capability": "research.analyze"},
+    ))
+    current = _advance(machine, current, _command(
+        "task.approved", actor_type="operator", actor_id="operator-1", task_id="task-a"
+    ))
+
+    with pytest.raises(MissionTransitionRejected, match="task_start_attempt_identity_mismatch"):
+        machine.prepare(current, _command(
+            "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
+            payload={"attempt_id": "attempt-x", "engine_id": "different_engine", "capability": "research.analyze"},
+        ))
+
+    with pytest.raises(MissionTransitionRejected, match="task_start_attempt_identity_mismatch"):
+        machine.prepare(current, _command(
+            "task.started", actor_type="operator", actor_id="operator-1", task_id="task-a",
+            payload={"attempt_id": " ", "engine_id": "content_intelligence", "capability": "research.analyze"},
+        ))
