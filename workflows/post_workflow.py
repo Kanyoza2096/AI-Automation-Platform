@@ -880,7 +880,22 @@ class GenerateContentStep(Step):
 
 # ── 3. Validate Content ───────────────────────────────────────────────
 class ValidateContentStep(Step):
-    """Validate content, with one evidence-preserving repair after semantic rejection."""
+    """Validate content; repair semantic rejection only when trusted evidence exists."""
+
+    @staticmethod
+    def _has_verified_knowledge_evidence(evidence: Any) -> bool:
+        """Mirror the semantic reviewer's accepted verified-flag representations."""
+        if not isinstance(evidence, list):
+            return False
+        accepted = (True, 1, "true", "yes", "1", "True")
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("verified") in accepted
+            and bool(str(item.get("source_id") or "").strip())
+            and bool(str(item.get("text") or "").strip())
+            for item in evidence
+        )
     name = "validate_content"
 
     def __init__(
@@ -955,6 +970,9 @@ class ValidateContentStep(Step):
             and self._content_engine is not None
             and isinstance(context.get("base_prompt"), str)
             and context["base_prompt"].strip()
+            and self._has_verified_knowledge_evidence(
+                context.get("knowledge_evidence")
+            )
         ):
             context["_semantic_repair_attempted"] = True
             feedback = {
@@ -1009,6 +1027,19 @@ class ValidateContentStep(Step):
                 context["validation_result"] = validation_result
                 semantic_review = await self._semantic_review(context, caption)
                 context["semantic_review"] = semantic_review
+
+        if (
+            isinstance(semantic_review, dict)
+            and semantic_review.get("approved") is not True
+            and not self._has_verified_knowledge_evidence(
+                context.get("knowledge_evidence")
+            )
+        ):
+            logger.info(
+                "PostWorkflow: semantic repair skipped because no verified "
+                "traceable knowledge evidence is available (topic=%s)",
+                str(topic)[:80],
+            )
 
         if (
             not isinstance(semantic_review, dict)
