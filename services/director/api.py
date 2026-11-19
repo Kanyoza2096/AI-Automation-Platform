@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hmac
+import hashlib
 import logging
 import os
 from typing import Dict, Optional
@@ -971,7 +972,40 @@ def create_app(director: Director):
             task.error if task is not None else None,
         )
         try:
-            rejected = director.reject(task_id, _trusted_actor(request, body.actor), body.reason)
+            trusted_actor = _trusted_actor(request, body.actor)
+            if _mission_runtime_enabled() and task is not None and task.mission_id and task.workspace_id:
+                from .orchestration.runtime import MissionTaskNotReady
+                from .orchestration.state_machine import MissionTransitionRejected
+
+                reason = f"Rejected by {trusted_actor}: {body.reason or 'Task rejected by operator'}"[:1000]
+                runtime = _get_mission_runtime()
+                try:
+                    await runtime.cancel_task(
+                        mission_id=task.mission_id,
+                        workspace_id=task.workspace_id,
+                        task_id=task.id,
+                        operator_id=trusted_actor,
+                        reason=reason,
+                        idempotency_key="director-task-cancel:" + hashlib.sha256(
+                            f"{task.id}:{trusted_actor}".encode("utf-8")
+                        ).hexdigest(),
+                        correlation_id=str(task.correlation_id or task.id)[:128],
+                    )
+                except (MissionTaskNotReady, MissionTransitionRejected, ValueError, LookupError) as exc:
+                    raise HTTPException(409, str(exc)[:200]) from exc
+                except Exception as exc:
+                    log.warning("Director mission task cancellation failed: %s", type(exc).__name__)
+                    raise HTTPException(503, "Mission task cancellation could not be confirmed") from exc
+                rejected = director.tasks.get(task_id)
+                if rejected is None:
+                    raise HTTPException(404, "Task not found")
+                # The durable runtime commit is authoritative. Rebuild this
+                # in-memory projection even if its post-commit callback failed.
+                rejected.status = Status.CANCELLED
+                rejected.error = reason
+                return safe(asdict(rejected))
+
+            rejected = director.reject(task_id, trusted_actor, body.reason)
             if not await director.store.save_task(rejected):
                 rejected.status, rejected.error = previous
                 raise HTTPException(503, "Task rejection could not be durably persisted")
