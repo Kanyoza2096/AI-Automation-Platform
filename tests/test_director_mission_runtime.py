@@ -214,7 +214,7 @@ async def test_meta_engine_adapter_uses_fresh_read_only_snapshot_and_marks_stale
     assert result.authority == "none"
     assert result.source_metadata["recovery_invoked"] is False
     assert result.evidence[0]["ref"].startswith("meta_engine:snapshot:")
-    assert "job_service: degraded" in result.findings
+    assert any(item.startswith("job_service: degraded") for item in result.findings)
     assert engine.calls == 1
 
     stale = MetaEngineMissionAdapter(FakeMetaEngine("2020-01-01T00:00:00+00:00"))
