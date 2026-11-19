@@ -143,11 +143,12 @@ def run() -> dict[str, int]:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     client = _client()
     maximum = max(1, min(1000, int(os.getenv("KDO_KB_REVIEW_BATCH_SIZE", "100"))))
-    counters = {"discovered": 0, "approved": 0, "rejected": 0, "quarantined": 0, "raced": 0, "skipped": 0}
+    counters = {"scanned": 0, "discovered": 0, "approved": 0, "rejected": 0, "quarantined": 0, "raced": 0, "skipped": 0}
 
     offset = 0
-    while counters["discovered"] < maximum:
-        take = min(PAGE_SIZE, maximum - counters["discovered"])
+    scan_limit = maximum * 5
+    while counters["scanned"] < scan_limit and counters["discovered"] < maximum:
+        take = min(PAGE_SIZE, scan_limit - counters["scanned"])
         result = (
             client.table("knowledge_entries").select(
                 "id,content,workspace_id,brand_id,doc_type,metadata"
@@ -157,6 +158,7 @@ def run() -> dict[str, int]:
         if not rows:
             break
         offset += len(rows)
+        counters["scanned"] += len(rows)
         for row in rows:
             metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
             if metadata.get("verified") is True:
