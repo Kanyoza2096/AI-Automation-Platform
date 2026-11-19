@@ -87,6 +87,7 @@ def test_manual_publish_requires_distributed_lock():
 
     scheduler = BrandScheduler.__new__(BrandScheduler)
     scheduler._distributed_lock = Lock()
+    scheduler._job_service = None
 
     result = scheduler.trigger_manual()
 
