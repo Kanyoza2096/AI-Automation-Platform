@@ -568,7 +568,7 @@ async def list_knowledge_evidence_reviews(
     """List evidence review cases within the authenticated brand workspace."""
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
-        _evidence_review_actor(require_human=False)
+        _evidence_review_actor(request, require_human=False)
         if status not in {"pending", "approved", "rejected", "superseded", "all"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
         client = _evidence_review_client()
