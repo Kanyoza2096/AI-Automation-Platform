@@ -717,3 +717,63 @@ async def test_native_execution_rejects_dependencies_until_canonical_task_is_com
             correlation_id="corr-dependency",
         )
     assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_cancels_pending_task_and_atomically_updates_canonical_status():
+    store = MemoryMissionStore()
+    callback_calls = []
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=AdapterRegistry(),
+        task_state_callback=lambda *args: callback_calls.append(args),
+    )
+
+    snapshot = await runtime.cancel_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-cancel",
+        reason="Rejected by operator-cancel: evidence was insufficient",
+        idempotency_key="cancel-pending-task",
+        correlation_id="corr-cancel",
+    )
+
+    assert store.task["status"] == "cancelled"
+    assert store.task["payload"]["status"] == "cancelled"
+    assert store.task["payload"]["error"] == "Rejected by operator-cancel: evidence was insufficient"
+    assert snapshot.state_snapshot["task_status"][store.task_id] == "cancelled"
+    assert snapshot.status == "awaiting_review"
+    assert store.events[-1]["event_type"] == "task.cancelled"
+    assert callback_calls == [(
+        store.task_id,
+        "cancelled",
+        None,
+        "Rejected by operator-cancel: evidence was insufficient",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_runtime_refuses_to_cancel_task_after_execution_has_started():
+    store = MemoryMissionStore()
+    store.task["status"] = "executing"
+    store.task["payload"]["status"] = "executing"
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=AdapterRegistry(),
+        task_state_callback=lambda *args: None,
+    )
+
+    with pytest.raises(MissionTaskNotReady, match="task_not_cancellable_from_canonical_status"):
+        await runtime.cancel_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            operator_id="operator-cancel",
+            reason="Too late to cancel",
+            idempotency_key="cancel-executing-task",
+            correlation_id="corr-cancel",
+        )
+
+    assert store.events == []
+    assert store.task["status"] == "executing"
