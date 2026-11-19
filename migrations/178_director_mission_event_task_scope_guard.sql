@@ -4,6 +4,7 @@
 CREATE OR REPLACE FUNCTION public.guard_director_mission_event_insert()
 RETURNS TRIGGER
 LANGUAGE plpgsql
+SET search_path = pg_catalog
 AS $body$
 DECLARE
     mission_row public.director_missions%ROWTYPE;
