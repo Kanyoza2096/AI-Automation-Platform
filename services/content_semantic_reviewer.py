@@ -6,6 +6,7 @@ have been checked locally. Any unavailable or ambiguous result fails closed.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -15,14 +16,33 @@ logger = logging.getLogger("kanyoza.services.content_semantic_reviewer")
 
 _ALLOWED_DECISIONS = {"approve", "reject", "needs_review"}
 _ALLOWED_CLAIM_STATUSES = {"supported", "unsupported", "uncertain"}
-_SYNTHETIC_WORKSPACES = {"", "default", "unbound", "platform"}
+# Lowercase workspace IDs that are not real tenants. "" is handled by the
+# explicit empty-string check earlier, so it is not repeated here.
+_SYNTHETIC_WORKSPACES = {"default", "unbound", "platform"}
+_VERIFIED_TRUTHY = (True, 1, "true", "yes", "1", "True")
+_REVIEW_TIMEOUT_S = 60.0
+_MAX_IMPROVEMENTS = 8
+_MAX_IMPROVEMENT_CHARS = 300
+
+
+def _is_verified(metadata: Any) -> bool:
+    """Lenient verified-flag check (mirrors the evidence-gate module)."""
+    if not isinstance(metadata, dict):
+        return False
+    return metadata.get("verified") in _VERIFIED_TRUTHY
 
 
 class ContentSemanticReviewer:
     """Review factual support, brand fit, originality, and audience value."""
 
-    def __init__(self, gateway=None) -> None:
+    def __init__(self, gateway=None, *, require_verified_evidence: bool = True) -> None:
         self._gateway = gateway
+        # When True (default), unverified evidence is excluded from the LLM
+        # payload entirely so the reviewer cannot cite it. Set False only if
+        # the pipeline explicitly wants the LLM to reason over unverified
+        # sources (they will still be flagged, but citations will pass the
+        # integrity check because their IDs are in allowed_source_ids).
+        self._require_verified_evidence = require_verified_evidence
 
     def _get_gateway(self):
         if self._gateway is not None:
@@ -72,6 +92,31 @@ class ContentSemanticReviewer:
             if value is not None and str(value).strip()
         }
 
+    def _prepare_evidence(self, evidence: list[dict[str, Any]]) -> tuple[list[dict], set[str]]:
+        clean: list[dict] = []
+        allowed: set[str] = set()
+        for item in evidence[:3]:
+            if not isinstance(item, dict):
+                continue
+            source_id = str(item.get("source_id") or "").strip()
+            source_text = str(item.get("text") or "").strip()
+            if not source_id or not source_text or source_id in allowed:
+                continue
+            verified = _is_verified(item.get("metadata"))
+            if self._require_verified_evidence and not verified:
+                logger.info(
+                    "semantic review skipped unverified evidence source_id=%s",
+                    source_id,
+                )
+                continue
+            allowed.add(source_id)
+            clean.append({
+                "source_id": source_id,
+                "text": source_text[:1200],
+                "verified": verified,
+            })
+        return clean, allowed
+
     async def review(
         self,
         *,
@@ -92,26 +137,7 @@ class ContentSemanticReviewer:
         if not isinstance(evidence, list) or not evidence:
             return self._blocked("semantic review requires traceable knowledge evidence")
 
-        clean_evidence = []
-        allowed_source_ids = set()
-        for item in evidence[:3]:
-            if not isinstance(item, dict):
-                continue
-            source_id = str(item.get("source_id") or "").strip()
-            source_text = str(item.get("text") or "").strip()
-            if not source_id or not source_text:
-                continue
-            if source_id in allowed_source_ids:
-                continue
-            allowed_source_ids.add(source_id)
-            metadata = item.get("metadata")
-            clean_evidence.append({
-                "source_id": source_id,
-                "text": source_text[:1200],
-                "verified": bool(
-                    isinstance(metadata, dict) and metadata.get("verified") is True
-                ),
-            })
+        clean_evidence, allowed_source_ids = self._prepare_evidence(evidence)
         if not clean_evidence:
             return self._blocked("semantic review found no usable traceable evidence")
 
@@ -166,19 +192,27 @@ class ContentSemanticReviewer:
         )
         try:
             gateway = self._get_gateway()
-            result = await gateway.complete_async_structured(
-                prompt,
-                schema_hint=schema_hint,
-                workspace_id=workspace_id,
-                temperature=0.1,
-                max_tokens=1400,
-                required_keys=[
-                    "decision", "claims", "claim_coverage", "brand_relevance",
-                    "originality", "audience_value", "genericity", "rationale",
-                    "improvements",
-                ],
-                caller="content",
+            result = await asyncio.wait_for(
+                gateway.complete_async_structured(
+                    prompt,
+                    schema_hint=schema_hint,
+                    workspace_id=workspace_id,
+                    temperature=0.1,
+                    max_tokens=1400,
+                    required_keys=[
+                        "decision", "claims", "claim_coverage", "brand_relevance",
+                        "originality", "audience_value", "genericity", "rationale",
+                        "improvements",
+                    ],
+                    caller="content_review",
+                ),
+                timeout=_REVIEW_TIMEOUT_S,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Semantic reviewer timed out after %.1fs", _REVIEW_TIMEOUT_S
+            )
+            return self._blocked("semantic reviewer timed out")
         except Exception as exc:
             logger.error("Semantic reviewer invocation failed closed: %s", exc)
             return self._blocked(
@@ -268,15 +302,33 @@ class ContentSemanticReviewer:
             )
 
         improvements_clean = [
-            str(item).strip()[:300]
+            str(item).strip()[:_MAX_IMPROVEMENT_CHARS]
             for item in improvements
             if isinstance(item, str) and item.strip()
-        ][:8]
+        ]
+        if len(improvements_clean) > len(improvements):
+            logger.debug(
+                "semantic review dropped non-string improvements: %d -> %d",
+                len(improvements), len(improvements_clean),
+            )
+        improvements_clean = improvements_clean[:_MAX_IMPROVEMENTS]
+
+        # An empty claims array paired with a high claim_coverage is
+        # internally contradictory: the reviewer cannot have assessed >=90% of
+        # material claims while enumerating none. Treat as needs_review rather
+        # than silently approving.
+        empty_claims_with_high_coverage = (
+            not reviewed_claims and scores["claim_coverage"] >= 0.90
+        )
 
         if unsupported_claim:
             final_status, reason = "rejected", "one or more material claims lack evidence support"
         elif uncertain_claim:
             final_status, reason = "needs_review", "one or more claims remain uncertain"
+        elif empty_claims_with_high_coverage:
+            final_status, reason = "needs_review", (
+                "reviewer reported high claim coverage but assessed no material claims"
+            )
         elif scores["claim_coverage"] < 0.90:
             final_status, reason = "needs_review", "the reviewer did not assess enough of the caption's material claims"
         elif scores["brand_relevance"] < 0.60:
