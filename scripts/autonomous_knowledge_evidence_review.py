@@ -275,12 +275,69 @@ async def _review_case(client, case: dict[str, Any], row: dict[str, Any]) -> str
     return decision
 
 
+async def _drain_pending_review_cases(
+    client, maximum: int, counters: dict[str, int]
+) -> None:
+    """Review existing pending cases before advancing the historical-entry cursor.
+
+    New submissions can have IDs that sort before an already-advanced cursor.
+    Draining the durable pending queue first prevents those cases from being
+    stranded in human-pending state indefinitely.
+    """
+    pending = (
+        client.table("knowledge_evidence_review_cases").select("*")
+        .eq("review_status", "pending").order("created_at").limit(maximum).execute()
+    )
+    for case in pending.data or []:
+        if counters["discovered"] >= maximum:
+            break
+        entry_result = (
+            client.table("knowledge_entries").select(
+                "id,content,workspace_id,brand_id,doc_type,metadata"
+            )
+            .eq("id", case["knowledge_entry_id"])
+            .eq("workspace_id", case["workspace_id"])
+            .eq("brand_id", case["brand_id"])
+            .limit(1).execute()
+        )
+        if not entry_result.data:
+            changed = (
+                client.table("knowledge_evidence_review_cases").update({
+                    "review_status": "quarantined",
+                    "reviewed_by": ACTOR,
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "review_notes": "Knowledge entry could not be resolved within the case tenant and brand scope.",
+                    "review_mode": "autonomous",
+                    "review_confidence": 0,
+                    "review_evidence": {"reason_code": "tenant_scoped_entry_not_found"},
+                }).eq("id", case["id"]).eq("review_status", "pending").select("id").execute()
+            )
+            if changed.data:
+                counters["discovered"] += 1
+                counters["quarantined"] += 1
+            continue
+
+        row = entry_result.data[0]
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        captured_metadata = await _capture_trusted_source_snapshot(client, row)
+        if captured_metadata != metadata:
+            row = {**row, "metadata": captured_metadata}
+        counters["discovered"] += 1
+        outcome = await _review_case(client, case, row)
+        if outcome in counters:
+            counters[outcome] += 1
+
+
 async def _run() -> dict[str, int]:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     client = _client()
     maximum = max(1, min(1000, int(os.getenv("KDO_KB_REVIEW_BATCH_SIZE", "100"))))
     scan_limit = max(maximum, min(5000, maximum * 5))
     counters = {"scanned": 0, "discovered": 0, "approved": 0, "rejected": 0, "quarantined": 0, "raced": 0, "skipped": 0}
+
+    # Drain all already-pending cases first, including records whose IDs fall
+    # behind the durable cursor due to later submissions or earlier sweeps.
+    await _drain_pending_review_cases(client, maximum, counters)
 
     state = (
         client.table("knowledge_evidence_review_sweep_state").select("last_entry_id")
