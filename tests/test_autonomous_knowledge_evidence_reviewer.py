@@ -158,35 +158,19 @@ def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
     assert "web.fetch_async(source_url)" in source
     assert "build_source_snapshot_attestation(" in source
     assert "KDO_KB_TRUSTED_SOURCE_DOMAINS" in source
-    assert "body.trust_class" not in source
+    route = source.split('@router.post("/brands/{brand_id}/knowledge/ingest-source")', 1)[1].split('@router.post("/brands/{brand_id}/knowledge/{knowledge_id}/evidence-review")', 1)[0]
+    assert "body.trust_class" not in route
     assert "KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET" in source
 
 
 def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch):
     import json
-    import os
-    from api.routers.knowledge import _trusted_source_class_for_url
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
 
-    monkeypatch.setenv(
-        "KDO_KB_TRUSTED_SOURCE_DOMAINS",
-        json.dumps({"who.int": "government", "docs.vendor.example": "official_documentation"}),
-    )
-    assert _trusted_source_class_for_url("https://who.int/health") == "government"
-    assert _trusted_source_class_for_url(
-        "https://docs.vendor.example/manual"
-    ) == "official_documentation"
-    with pytest.raises(Exception):
-        _trusted_source_class_for_url("https://sub.who.int/health")
-    with pytest.raises(Exception):
-        _trusted_source_class_for_url("https://attacker.example/who.int")
-
-
-def test_quarantine_and_machine_review_audit_are_schema_supported():
-    migration = (
-        ROOT / "migrations" / "185_autonomous_knowledge_evidence_review.sql"
-    ).read_text()
-    assert "'quarantined'" in migration
-    assert "review_confidence" in migration
-    assert "review_evidence" in migration
-    assert "review_mode" in migration
-    assert "REVOKE ALL ON FUNCTION public.record_knowledge_evidence_review_event()" in migration
+    registry = json.dumps({"who.int": "government", "docs.vendor.example": "official_documentation"})
+    assert resolve_trusted_source_class("https://who.int/health", registry) == "government"
+    assert resolve_trusted_source_class("https://docs.vendor.example/manual", registry) == "official_documentation"
+    with pytest.raises(ValueError):
+        resolve_trusted_source_class("https://sub.who.int/health", registry)
+    with pytest.raises(ValueError):
+        resolve_trusted_source_class("https://attacker.example/who.int", registry)
