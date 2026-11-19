@@ -27,19 +27,20 @@ _MAX_SOURCE_CHARS = 30000
 
 
 def build_source_snapshot_attestation(
-    *, secret: str, workspace_id: str, source_id: str, source_url: str, snapshot_text: str
+    *, secret: str, workspace_id: str, source_id: str, source_url: str, trust_class: str, snapshot_text: str
 ) -> dict[str, str]:
     """Create a server-side HMAC attestation at the trusted source-ingestion boundary."""
-    if not secret or not workspace_id or not source_id or not source_url or not snapshot_text:
+    if not secret or not workspace_id or not source_id or not source_url or not trust_class or not snapshot_text:
         raise ValueError("All source snapshot attestation fields are required")
     digest = hashlib.sha256(snapshot_text.encode("utf-8")).hexdigest()
-    message = "\\n".join((workspace_id, source_id, source_url, digest))
+    message = "\\n".join((workspace_id, source_id, source_url, trust_class, digest))
     signature = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
         "source_snapshot_text": snapshot_text,
         "source_snapshot_sha256": digest,
         "source_snapshot_signature": signature,
         "source_snapshot_source_id": source_id,
+        "source_snapshot_trust_class": trust_class,
         "source_snapshot_url": source_url,
         "source_snapshot_origin": "trusted_server_ingestion",
     }
@@ -102,11 +103,12 @@ class AutonomousKnowledgeEvidenceReviewer:
             metadata.get("source_snapshot_origin") != "trusted_server_ingestion"
             or metadata.get("source_snapshot_source_id") != source_id
             or metadata.get("source_snapshot_url") != source_url
+            or metadata.get("source_snapshot_trust_class") != trust_class
             or metadata.get("source_snapshot_sha256") != snapshot_digest
         ):
             return _quarantine("Source snapshot provenance does not match the reviewed source")
         signature = str(metadata.get("source_snapshot_signature") or "")
-        signed_message = "\\n".join((workspace_id, source_id, source_url, snapshot_digest))
+        signed_message = "\\n".join((workspace_id, source_id, source_url, trust_class, snapshot_digest))
         expected_signature = hmac.new(
             self._snapshot_secret.encode("utf-8"),
             signed_message.encode("utf-8"),
