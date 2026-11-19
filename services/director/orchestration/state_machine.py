@@ -278,6 +278,17 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("task_approval_required_before_start")
             if command.actor_type not in {"operator", "director", "system"}:
                 raise MissionTransitionRejected("task_start_requires_governed_actor")
+            assignment = assignments[task_id]
+            attempt_id = payload.get("attempt_id")
+            if (
+                not isinstance(attempt_id, str)
+                or not attempt_id.strip()
+                or attempt_id != attempt_id.strip()
+                or len(attempt_id) > 150
+                or payload.get("engine_id") != assignment.get("engine_id")
+                or payload.get("capability") != assignment.get("capability")
+            ):
+                raise MissionTransitionRejected("task_start_attempt_identity_mismatch")
             task_status[task_id] = "executing"
             event_task_id = task_id
             next_status, next_phase = "running", "execution"
