@@ -114,7 +114,7 @@ Migration 187 limits the service-role grants on review cases and sweep state to 
 
 ## Scheduled backlog processing
 
-The backend starts the bounded historical sweep automatically on startup when
+The FastAPI application lifespan starts the bounded historical sweep automatically after the full boot sequence when
 both `KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET` and
 `KDO_KB_TRUSTED_SOURCE_DOMAINS` are configured. It runs on the existing
 single web instance in a background thread, advances the durable database cursor
