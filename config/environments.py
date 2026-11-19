@@ -11,13 +11,17 @@ class Environment(str, Enum):
 
     DEVELOPMENT = "development"
     TESTING = "testing"
+    STAGING = "staging"
     PRODUCTION = "production"
 
     @classmethod
     def from_string(cls, value: str) -> "Environment":
         """
         Parse a string into an Environment, accepting common aliases.
-        Defaults to PRODUCTION for unrecognised values (fail-safe).
+
+        Unknown values are rejected rather than silently treated as production.
+        This prevents misspelled or unsupported deployment labels from
+        accidentally enabling production-only behavior.
         """
         normalized = value.strip().lower()
         aliases = {
@@ -26,10 +30,15 @@ class Environment(str, Enum):
             "local": cls.DEVELOPMENT,
             "test": cls.TESTING,
             "testing": cls.TESTING,
+            "stage": cls.STAGING,
+            "staging": cls.STAGING,
             "prod": cls.PRODUCTION,
             "production": cls.PRODUCTION,
         }
-        return aliases.get(normalized, cls.PRODUCTION)
+        try:
+            return aliases[normalized]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported environment: {value!r}") from exc
 
     @property
     def is_development(self) -> bool:
@@ -38,6 +47,10 @@ class Environment(str, Enum):
     @property
     def is_testing(self) -> bool:
         return self == Environment.TESTING
+
+    @property
+    def is_staging(self) -> bool:
+        return self == Environment.STAGING
 
     @property
     def is_production(self) -> bool:
