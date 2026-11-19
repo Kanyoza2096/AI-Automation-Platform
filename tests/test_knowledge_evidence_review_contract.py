@@ -181,9 +181,9 @@ def test_brand_knowledge_list_passes_authenticated_workspace_to_repository():
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_async_wrap"
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Attribute)
-        and node.args[1].attr == "find_by_brand"
+        and len(node.args) >= 3
+        and isinstance(node.args[0], ast.Attribute)
+        and node.args[0].attr == "find_by_brand"
     ]
     assert len(calls) == 1
     assert len(calls[0].args) == 3
