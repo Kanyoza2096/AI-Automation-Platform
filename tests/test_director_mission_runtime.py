@@ -1279,7 +1279,7 @@ def test_recovery_assessment_reconciles_matching_durable_completion():
         task=_recovery_task("completed"),
         events=[
             _recovery_event("task.started", "attempt-1:started"),
-            _recovery_event("task.completed", "attempt-1:completed", created_at="2026-11-19T10:01:00+00:00"),
+            _recovery_event("task.completed", "attempt-1:completed", created_at="2026-11-19T10:01:00+00:00", payload={"summary": "Done", "completed_at": "2026-11-19T10:01:00+00:00"}),
         ],
         mission_id="mission-recovery",
         workspace_id="workspace-recovery",
