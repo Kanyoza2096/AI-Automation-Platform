@@ -38,8 +38,11 @@ async def _periodic_knowledge_review_sweep() -> None:
     """Use the existing web instance to drain the bounded backlog without a paid worker."""
     interval = max(600, min(86400, int(os.getenv("KDO_KB_REVIEW_SWEEP_INTERVAL_SECONDS", "3600"))))
     await asyncio.sleep(30)
+    global _review_sweep_task
     while True:
-        result = await _run_review_sweep_background()
+        if _review_sweep_task is None or _review_sweep_task.done():
+            _review_sweep_task = asyncio.create_task(_run_review_sweep_background())
+        result = await _review_sweep_task
         if result and result.get("discovered") == 0 and result.get("reached_end"):
             _review_sweep_logger.info("knowledge_review_backlog_drained")
             return
