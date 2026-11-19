@@ -76,24 +76,16 @@ def test_job_service_refuses_published_without_provider_post_id():
     with pytest.raises(ValueError, match="confirmed provider post ID"):
         asyncio.run(service.mark_published(job, post_id=None))
 
-def test_manual_publish_requires_distributed_lock():
-    class Lock:
-        mode = "unavailable"
-        called_with = None
-
-        def acquire(self, *, require_distributed=False):
-            self.called_with = require_distributed
-            return False
-
+def test_manual_publish_fails_closed_without_durable_job_service():
     scheduler = BrandScheduler.__new__(BrandScheduler)
-    scheduler._distributed_lock = Lock()
     scheduler._job_service = None
 
     result = scheduler.trigger_manual()
 
-    assert scheduler._distributed_lock.called_with is True
-    assert result["error"] == "Publish lock unavailable"
-
+    assert result["ok"] is False
+    assert result["error"] == (
+        "Manual publishing requires durable JobService persistence"
+    )
 
 
 
