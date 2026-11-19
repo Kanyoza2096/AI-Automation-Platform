@@ -416,11 +416,14 @@ class MissionOrchestrationRuntime:
         capability = str((assignment or {}).get("capability") or "")
         if (
             not attempt_id
+            or len(attempt_id) > 150
             or payload.get("attempt_id") != attempt_id
             or payload.get("engine_id") != engine_id
             or payload.get("capability") != capability
             or not engine_id
             or not capability
+            or start.get("actor_type") not in {"operator", "director"}
+            or not str(start.get("actor_id") or "").strip()
             or not str(start.get("correlation_id") or "").strip()
         ):
             raise MissionRuntimeConflict("execution_attempt_identity_or_assignment_mismatch")
