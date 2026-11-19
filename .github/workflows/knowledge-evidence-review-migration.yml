@@ -12,6 +12,7 @@ on:
       - "migrations/173_knowledge_evidence_promotion.sql"
       - "migrations/174_knowledge_evidence_audit_append_only_privileges.sql"
       - "migrations/185_autonomous_knowledge_evidence_review.sql"
+      - "migrations/186_knowledge_evidence_review_sweep_cursor.sql"
       - "docs/knowledge-evidence-review-governance.md"
       - ".github/workflows/knowledge-evidence-review-migration.yml"
   workflow_dispatch:
@@ -42,6 +43,7 @@ jobs:
               "migrations/173_knowledge_evidence_promotion.sql",
               "migrations/174_knowledge_evidence_audit_append_only_privileges.sql",
               "migrations/185_autonomous_knowledge_evidence_review.sql",
+              "migrations/186_knowledge_evidence_review_sweep_cursor.sql",
           ):
               statements = parse_sql(Path(name).read_text())
               assert statements, f"{name} contains no SQL statements"
