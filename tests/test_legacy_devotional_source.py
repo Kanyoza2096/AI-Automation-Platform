@@ -90,3 +90,25 @@ def test_record_metadata_uses_existing_hmac_contract_and_requires_explicit_trust
             secret="test-secret",
             trust_class="unreviewed",
         )
+
+def test_pinned_fetch_rejects_invalid_content_length(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+        headers = {"Content-Length": "not-a-number"}
+
+        def close(self):
+            self.closed = True
+
+        def iter_content(self, chunk_size):
+            return iter(())
+
+    response = FakeResponse()
+    import requests
+    from services.web_intelligence import base as web_base
+
+    monkeypatch.setattr(web_base, "validate_external_url", lambda _url: (True, "ok"))
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: response)
+    with pytest.raises(source.PinnedDatasetError, match="content_length_invalid"):
+        source.fetch_pinned_dataset()
+    assert response.closed
+\n
