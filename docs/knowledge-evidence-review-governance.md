@@ -322,3 +322,10 @@ overlapping runs in the same process, and never writes metadata, creates review
 cases, approves entries, or promotes evidence. It requires no Render Shell,
 cron service, or additional paid worker. The existing script remains available
 for controlled backend execution.
+
+
+## Authenticated apply of lightweight check reports
+
+A separate human-workspace-admin endpoint, `POST /api/v1/admin/knowledge/lightweight-review/apply`, persists the deterministic report under each selected entry's `metadata.kdo_lightweight_review`. It derives workspace scope only from the authenticated administrator context, uses bounded batches, and reports attempted, confirmed, and failed writes. Existing metadata keys are preserved.
+
+This is an operational record of deterministic integrity/provenance checks only. It does **not** set `metadata.verified`, approve an entry, create a review case, promote evidence, or authorize publishing. A successful write count must not be represented as a verified-entry count. The read-only `/lightweight-review` endpoint remains available separately.
