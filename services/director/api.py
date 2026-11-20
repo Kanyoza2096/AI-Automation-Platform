@@ -397,6 +397,7 @@ def create_app(director: Director):
                 "mission_status": snapshot.status,
                 "task_assignments": state.get("task_assignments", {}),
                 "engine_progress": state.get("engine_progress", {}),
+                "task_reconciliations": state.get("task_reconciliations", {}),
                 "pending_questions": state.get("pending_questions", {}),
                 "evidence_refs": state.get("evidence_refs", []),
                 "unresolved_disagreements": state.get("unresolved_disagreements", []),
