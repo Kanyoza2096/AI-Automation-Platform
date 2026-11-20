@@ -119,6 +119,49 @@ def extract_record_snapshot(rows: list[dict[str, Any]], record_id: str) -> dict[
     }
 
 
+
+def build_attested_record_metadata(
+    *,
+    rows: list[dict[str, Any]],
+    record_id: str,
+    workspace_id: str,
+    secret: str,
+    trust_class: str,
+) -> dict[str, str]:
+    """Bind a recovered record to KDO's existing HMAC attestation contract.
+
+    Trust classification is deliberately supplied by a separate, reviewed
+    policy decision. This helper never infers or assigns it.
+    """
+    if not workspace_id or not secret:
+        raise PinnedDatasetError("workspace_and_signing_secret_required")
+    if trust_class not in {
+        "government", "regulatory", "peer_reviewed", "academic",
+        "official_documentation", "publisher_primary",
+    }:
+        raise PinnedDatasetError("explicit_allowed_trust_class_required")
+    snapshot = extract_record_snapshot(rows, record_id)
+    from services.autonomous_knowledge_evidence_reviewer import (
+        build_source_snapshot_attestation,
+    )
+
+    attestation = build_source_snapshot_attestation(
+        secret=secret,
+        workspace_id=workspace_id,
+        source_id=snapshot["source_id"],
+        source_url=snapshot["source_url"],
+        trust_class=trust_class,
+        snapshot_text=snapshot["snapshot_text"],
+    )
+    return {
+        **snapshot,
+        **attestation,
+        "source_id": snapshot["source_id"],
+        "source_url": snapshot["source_url"],
+        "trust_class": trust_class,
+        "ingestion_method": "pinned_git_blob_record",
+    }
+
 def fetch_pinned_dataset() -> list[dict[str, Any]]:
     """Fetch only the exact GitHub blob endpoint; no redirects or arbitrary URLs."""
     import requests
