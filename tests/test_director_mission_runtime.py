@@ -1493,6 +1493,58 @@ async def test_runtime_reconciliation_without_adapter_support_stays_unknown_and_
 
 
 @pytest.mark.asyncio
+async def test_blocked_attempt_reconciliation_is_journaled_without_reopening_task():
+    store = MemoryMissionStore()
+    store.task["status"] = "blocked"
+    store.task["payload"]["status"] = "blocked"
+    store.row["state_snapshot"]["task_status"][store.task_id] = "blocked"
+    store.row["state_snapshot"]["task_assignments"][store.task_id] = {
+        "engine_id": "content_intelligence", "capability": "research.analyze"
+    }
+    store.events.append({
+        "event_id": "blocked-attempt-start",
+        "mission_id": store.mission_id,
+        "scope_type": "workspace",
+        "workspace_id": store.workspace_id,
+        "task_id": store.task_id,
+        "event_type": "task.started",
+        "actor_type": "operator",
+        "actor_id": "operator-1",
+        "idempotency_key": "blocked-attempt-001:started",
+        "correlation_id": "blocked-attempt-correlation",
+        "created_at": "2026-11-19T10:00:00+00:00",
+        "payload": {
+            "attempt_id": "blocked-attempt-001",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze",
+        },
+    })
+    adapter = FakeNativeAdapter("content_intelligence", "Must not be invoked by reconciliation.")
+    registry = AdapterRegistry()
+    registry.register(adapter)
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    result = await runtime.reconcile_and_record_task_attempt(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        correlation_id="blocked-reconcile-correlation",
+    )
+
+    assert result.status == "unknown"
+    assert result.authoritative is False
+    assert adapter.calls == []
+    assert store.task["status"] == "blocked"
+    assert store.row["state_snapshot"]["task_status"][store.task_id] == "blocked"
+    event = store.events[-1]
+    assert event["event_type"] == "task.reconciliation.observed"
+    assert event["actor_type"] == "system"
+    assert event["actor_id"] == "director_recovery_reconciler"
+    assert event["payload"]["attempt_id"] == "blocked-attempt-001"
+    assert event["payload"]["status"] == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_operator_recovery_review_is_audited_and_does_not_change_task_authority():
     store = MemoryMissionStore()
     store.task["status"] = "executing"
