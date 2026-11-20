@@ -93,26 +93,19 @@ def test_public_post_and_workflow_enter_governed_publish_boundary():
     assert "run_publish(" not in workflow
 
 
-def test_empty_generation_fails_before_editorial_and_evidence_validation():
+def test_empty_generation_fails_without_content_review_checkers():
     from pathlib import Path
-
     source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
-    empty_guard = source.index("if not caption_to_check.strip():")
-    evidence_gate = source.index("validate_caption_evidence(", empty_guard)
-    assert empty_guard < evidence_gate
+    assert "if not caption_to_check.strip():" in source
+    assert "content review checkers are disabled by operator decision" in source
     assert 'result.get("error_code") or "EMPTY_GENERATION"' in source
-    assert '"generation_error_code": generation_code' in source
 
-
-def test_non_publishable_generation_fails_before_factual_evidence_gate():
+def test_media_generation_failure_remains_a_technical_block():
     from pathlib import Path
-
     source = Path("workflows/post_workflow.py").read_text(encoding="utf-8")
-    non_publishable_guard = source.index('if result.get("publishable") is False:', source.index("caption_to_check ="))
-    evidence_gate = source.index("validate_caption_evidence(", non_publishable_guard)
-    assert non_publishable_guard < evidence_gate
+    assert 'if result.get("publishable") is False:' in source
     assert '"CONTENT_NOT_PUBLISHABLE"' in source
-
+    assert "validate_caption_evidence(" not in source
 
 def test_empty_generated_caption_is_retryable_not_a_validation_rejection():
     from pathlib import Path
