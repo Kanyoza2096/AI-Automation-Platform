@@ -212,8 +212,8 @@ async def assess_swarm_roster(
         "an empty assignments array. Do not exceed the supplied limits. "
         "Estimated tokens must be 100-3000 per specialist. This is advisory "
         "analysis only: no approvals, canonical task transitions, publishing, "
-        "external actions, or authority grants. Return exactly the schema.\\n\\n"
-        "INPUT JSON:\\n"
+        "external actions, or authority grants. Return exactly the schema.\n\n"
+        "INPUT JSON:\n"
         + json.dumps(prompt_data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     )
     try:
