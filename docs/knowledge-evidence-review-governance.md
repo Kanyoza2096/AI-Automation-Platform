@@ -72,20 +72,28 @@ The tenth GrowthBridge case is a user-approved brand-direction record from conve
 
 Disposition: the production site origin and eight service slugs are now recovered, but exact page URLs and current page contents remain unverified. Refresh the website context through the governed connector and capture page-level source URLs/content hashes before promotion. Do not use the smoke-test events as source evidence. No secrets, credentials, production data, or review decisions were changed.
 
-## Production row-level source reconciliation (read-only, 2026-11-20)
+## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
 
-A read-only comparison was performed against all 732 production rows tagged `source=spurgeon_morneve` and all 732 selected source entries in the OpenChristianData release. Comparison uses Unicode normalization, case folding, whitespace removal, and hyphen/dash folding to tolerate OCR line-wrap and formatting differences. This is a content-identity audit, not a rights determination or approval action.
+All 732 production rows tagged `source=spurgeon_morneve` were compared with all 732 selected entries in the OpenChristianData source JSON. Matching by production date and morning/evening period maps every row to one source entry (732/732). This establishes source identity, not rights clearance or approval.
 
-- **716/732** production rows have a full normalized-content match to a selected source entry.
-- **675/732** have both a full normalized-content match and matching date, morning/evening period, and scripture metadata.
-- **41/716** full-content matches have metadata discrepancies: 40 scripture labels use `Solomon` instead of `Song of Solomon`; one row is missing the scripture metadata field. These require metadata correction/review, not text replacement.
-- **11** additional rows begin with the complete selected source entry but contain extra trailing text after it, consistent with a chunk-boundary/adjacent-entry contamination issue. They must be split or reviewed before promotion.
-- **5** rows do not begin with an exact normalized match to the expected date/period source entry. These need manual source comparison.
-- Therefore, **727/732** begin with the exact selected source entry after normalization, but only the 716 full-content matches are full-entry matches; no bulk approval is justified.
+The content comparison has two deliberately distinct normalization levels:
+- **Stricter normalized comparison:** 671/732 full-content matches.
+- **Known typographic variants:** 43 additional rows differ by a single hyphenation character; two further rows reconcile only under whitespace/format normalization. These are not approved edits.
+- **Broad whitespace/hyphen-insensitive comparison:** 716/732 full-content matches. This looser comparison is useful for locating likely copies but must not be used by itself as an approval criterion.
+- **11 rows** contain an appended next-month calendar list after otherwise matching devotional text.
+- **7 rows** remain in the manual content/reference review queue. The list below preserves the earlier row-level exception inventory; several involve additional/repeated scripture references or verse-heading/poem/line-break differences.
+- A separate prefix check found 727/732 rows begin with the expected date/period source text under broad normalization. This includes the 11 appended-tail cases; it does not mean those chunks are clean.
 
-The source release's rights notice explicitly limits its public-domain assessment to the **United States**. It does not establish worldwide clearance. KDO's deployment and user geography may include jurisdictions outside the United States, so this evidence alone is insufficient to approve public redistribution in Malawi or other countries. Obtain a jurisdiction-specific rights review or a separately documented applicable permission before publication. Continue to exclude CCEL's electronic files, formatting, and modern material; retain the required “sourced via CCEL.org” credit.
+Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`. A stricter combined test found 675/732 rows with both a broad full-content match and matching date, period, and scripture metadata; the difference reflects content exceptions and metadata exceptions being separate dimensions, not contradictory cohort sizes.
 
-No production database records, review decisions, trust classes, source URLs, signed snapshots, or promotion events were changed by this comparison.
+Manual-review inventory:
+- Appended calendar text (11): `kb-0d0673d5d0ad`, `kb-269ebb5ce789`, `kb-31132fdd1e56`, `kb-46c246c34e1e`, `kb-571e158131ab`, `kb-59d921bdf421`, `kb-84de63479eac`, `kb-90c7c1f9f28f`, `kb-af8e80dd161f`, `kb-dace93cf124a`, `kb-fa1b79587228`.
+- Other content/reference review (7): `kb-36e7f6fb7cf8`, `kb-78c20f498711`, `kb-911c707a0001`, `kb-9a7e0c28bae8`, `kb-9e8a2a6710ed`, `kb-b95564907ae8`, `kb-bb22c9c5a1af`.
+- The 43 single-hyphen differences and two whitespace/format-only variants are typographic candidates, not approved edits. Retain source comparison evidence and do not rewrite production text without a governed correction.
+
+The source release's rights notice explicitly limits its public-domain assessment to the **United States**. It does not establish worldwide clearance. KDO's deployment and user geography may include jurisdictions outside the United States, so this evidence alone is insufficient to approve public redistribution in Malawi or other countries. Obtain jurisdiction-specific rights review or separately documented applicable permission before publication. Continue to exclude CCEL's electronic files, formatting, and modern material; retain the required “sourced via CCEL.org” credit.
+
+No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. No bulk approval was performed.
 
 ## External provenance research (read-only, 2026-11-20)
 ## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
