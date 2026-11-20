@@ -162,6 +162,85 @@ class MissionOrchestrationRuntime:
                 )
         return snapshot
 
+    async def spawn_agent(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        agent_id: str,
+        engine_id: str,
+        capability: str,
+        role: str,
+        idempotency_key: str,
+        correlation_id: str,
+        estimated_tokens: int = 1500,
+        director_id: str = "director",
+    ) -> MissionRuntimeSnapshot:
+        """Durably add one advisory specialist to an existing mission task.
+
+        This records an agent assignment only. It does not execute the engine,
+        approve canonical tasks, create tasks, or grant external-action authority.
+        """
+        adapter = self.adapters.get(engine_id)
+        if capability not in adapter.capabilities:
+            raise MissionTransitionRejected("engine_capability_not_registered")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        if task_id not in set(current.task_ids):
+            raise MissionTransitionRejected("agent_task_not_in_mission")
+        return await self._commit(
+            current,
+            event_type="agent.spawned",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id=director_id,
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload={
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "engine_id": engine_id,
+                "capability": capability,
+                "role": role,
+                "estimated_tokens": estimated_tokens,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    async def update_agent_status(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        agent_id: str,
+        status: str,
+        idempotency_key: str,
+        correlation_id: str,
+        reason: str | None = None,
+        director_id: str = "director",
+    ) -> MissionRuntimeSnapshot:
+        """Advance a persisted agent lifecycle under Director control."""
+        if status not in {"running", "completed", "failed", "terminated"}:
+            raise MissionTransitionRejected("agent_status_invalid")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "status": status,
+            "finished_at": datetime.now(timezone.utc).isoformat()
+            if status in {"completed", "failed", "terminated"} else "",
+        }
+        if reason is not None:
+            payload["reason"] = str(reason)[:1000]
+        return await self._commit(
+            current,
+            event_type="agent.status.changed",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id=director_id,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+
     async def assign_task(
         self,
         *,
