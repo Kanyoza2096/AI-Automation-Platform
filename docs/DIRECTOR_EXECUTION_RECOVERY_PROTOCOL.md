@@ -199,3 +199,11 @@ Regression tests were authored for unsupported adapters, exact-identity authorit
 - The test now explicitly asserts that no `task.failed` or `task.completed` event is written for a transport timeout. The attempt remains held for exact-attempt reconciliation and operator review; a second execution request is rejected because the canonical task is no longer approved.
 - This resolves a stale test expectation that still described the pre-hardening behavior as `failed`, which would have contradicted the new recovery protocol.
 - The test was edited but not executed. Hosted CI remains exhausted and no local project runtime is available. No production change, deployment, merge, or runtime activation occurred.
+
+
+## Phase D verification hardening — non-timeout adapter exception regression (2026-11-20)
+
+- Added a focused regression test for an adapter raising RuntimeError after the durable task.started claim, representing a transport/process failure whose external side-effect outcome is unknown.
+- The test asserts that the canonical task and mission snapshot remain executing, no task.failed or task.completed event is emitted, and a second execution request cannot blindly redispatch the attempt.
+- This complements the timeout regression: both timeout and ordinary adapter exceptions preserve uncertainty rather than manufacturing a retryable failure.
+- Test authored but not executed; hosted CI remains unavailable due to exhausted quota. No deployment, merge, production database mutation, or runtime activation.
