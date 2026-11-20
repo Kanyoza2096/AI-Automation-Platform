@@ -26,7 +26,7 @@ class PinnedDatasetError(ValueError):
 
 
 def _git_blob_sha(data: bytes) -> str:
-    header = f"blob {len(data)}\\0".encode("ascii")
+    header = b"blob " + str(len(data)).encode("ascii") + bytes([0]);
     return hashlib.sha1(header + data).hexdigest()
 
 
