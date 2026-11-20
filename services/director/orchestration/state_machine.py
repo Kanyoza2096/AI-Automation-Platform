@@ -898,7 +898,8 @@ class MissionStateMachine:
         usage_keys = {"usage_tokens", "provider_calls"}
         if usage_keys.intersection(payload) and event_type != "engine.call.completed":
             if event_type not in {
-                "task.completed", "task.failed", "task.blocked", "engine.answer.received"
+                "task.completed", "task.failed", "task.blocked", "engine.answer.received",
+                "agent.contribution.recorded"
             }:
                 raise MissionTransitionRejected("provider_usage_event_type_invalid")
             if not usage_keys.issubset(payload):
