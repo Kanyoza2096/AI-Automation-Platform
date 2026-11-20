@@ -238,6 +238,40 @@ def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch
     with pytest.raises(ValueError):
         resolve_trusted_source_class("https://attacker.example/who.int", registry)
 
+def test_additional_trusted_source_registry_is_additive_and_exact_host(monkeypatch):
+    import json
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
+
+    monkeypatch.setenv(
+        "KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL",
+        json.dumps({
+            "hld.handbook.academy": "publisher_primary",
+            "ai-eng.handbook.academy": "publisher_primary",
+            "dsa.handbook.academy": "publisher_primary",
+        }),
+    )
+    existing = json.dumps({"who.int": "government"})
+    assert resolve_trusted_source_class("https://who.int/health", existing) == "government"
+    assert resolve_trusted_source_class(
+        "https://hld.handbook.academy/chapter", existing
+    ) == "publisher_primary"
+    with pytest.raises(ValueError):
+        resolve_trusted_source_class("https://sub.hld.handbook.academy/chapter", existing)
+
+
+def test_additional_trusted_source_registry_rejects_conflicting_classification(monkeypatch):
+    import json
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
+
+    monkeypatch.setenv(
+        "KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL",
+        json.dumps({"who.int": "publisher_primary"}),
+    )
+    with pytest.raises(ValueError, match="conflicting"):
+        resolve_trusted_source_class(
+            "https://who.int/health", json.dumps({"who.int": "government"})
+        )
+
 
 @pytest.mark.asyncio
 async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch):
