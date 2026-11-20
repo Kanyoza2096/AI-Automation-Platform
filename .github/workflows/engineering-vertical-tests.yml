@@ -132,6 +132,7 @@ on:
       - "ai/gateway.py"
       - "services/ai_policy.py"
       - "tests/test_ai_provider_fabric.py"
+      - "tests/test_gateway_policy.py"
       - "services/connectors/cloudflare_ai_adapter.py"
       - "tests/test_cloudflare_structured_json_mode.py"
       - "workflows/article_workflow.py"
@@ -523,6 +524,7 @@ jobs:
             tests/engineering_vertical/test_phase16_13_pipeline_composition.py \
             tests/engineering_vertical/test_phase16_8_console.py \
             tests/test_ai_provider_fabric.py \
+            tests/test_gateway_policy.py \
             tests/test_cloudflare_structured_json_mode.py \
             tests/test_article_workflow.py \
             tests/test_growthbridge_article_console.py \
