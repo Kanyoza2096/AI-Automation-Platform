@@ -258,6 +258,16 @@ async def assess_swarm_roster(
         raise SwarmAssessmentError("director_swarm_no_spawn_must_have_empty_roster")
 
     task_ids = {str(task.get("task_id") or "") for task in tasks}
+    existing_assignments = {
+        (
+            str(item.get("task_id") or ""),
+            str(item.get("engine_id") or ""),
+            str(item.get("capability") or ""),
+        )
+        for item in (existing_agents or {}).values()
+        if isinstance(item, Mapping)
+        and item.get("status") in {"spawned", "running", "completed"}
+    }
     seen: set[tuple[str, str, str]] = set()
     candidates: list[SwarmCandidate] = []
     for index, item in enumerate(assignments):
@@ -289,6 +299,8 @@ async def assess_swarm_roster(
         key = (task_id, engine_id, capability)
         if key in seen:
             raise SwarmAssessmentError("director_swarm_duplicate_specialist_assignment")
+        if key in existing_assignments:
+            raise SwarmAssessmentError("director_swarm_assignment_already_covered")
         seen.add(key)
         candidates.append(SwarmCandidate(
             agent_id=_agent_id(idempotency_prefix, index, item),
