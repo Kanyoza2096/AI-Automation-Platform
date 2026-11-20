@@ -610,6 +610,56 @@ def test_native_mission_execution_endpoint_awaits_workspace_binding_and_returns_
     assert response.json()["summary"] == "Native contribution"
 
 
+def test_native_mission_reconciliation_endpoint_uses_trusted_workspace_operator(monkeypatch):
+    from types import SimpleNamespace
+    from services.director import Director, create_app
+
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "true")
+    director = Director(supabase_client=None)
+    app = create_app(director)
+
+    @app.middleware("http")
+    async def tenant_context(request, call_next):
+        request.state.request_context = SimpleNamespace(
+            workspace_id="ws-a", principal_id="trusted-recovery-operator", role="operator",
+            species_privileges=False,
+        )
+        request.state.auth_identity = SimpleNamespace(valid=True)
+        return await call_next(request)
+
+    director.tasks["task-recovery"] = SimpleNamespace(
+        id="task-recovery", workspace_id="ws-a", mission_id="mission-a",
+    )
+
+    class FakeRuntime:
+        async def reconcile_and_record_task_attempt(self, **kwargs):
+            assert kwargs == {
+                "mission_id": "mission-a",
+                "workspace_id": "ws-a",
+                "task_id": "task-recovery",
+                "correlation_id": "reconcile-correlation-001",
+            }
+            return SimpleNamespace(
+                attempt_id="attempt-recovery-001",
+                engine_id="content_intelligence",
+                status="unknown",
+                authoritative=False,
+                evidence_ref=None,
+                result={},
+            )
+
+    app.state.director_mission_runtime = FakeRuntime()
+    response = TestClient(app).post(
+        "/missions/mission-a/orchestration/tasks/task-recovery/reconcile",
+        headers={"Authorization": "Bearer valid-user-session"},
+        json={"correlation_id": "reconcile-correlation-001"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "unknown"
+    assert response.json()["authoritative"] is False
+    assert response.json()["execution_authority_changed"] is False
+
+
 def test_unsigned_species_service_cannot_approve_workspace_mission_task(monkeypatch):
     from services.director import Director, create_app
     from services.director.models import Task, Sector, Authority, Risk, Status
