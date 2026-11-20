@@ -182,6 +182,9 @@ class MissionOrchestrationRuntime:
         agent history, active concurrency, and per-task occupancy reduce the
         available capacity before the next wave is planned.
         """
+        prefix = str(idempotency_prefix or "").strip()
+        if not prefix or len(prefix) > 31:
+            raise ValueError("swarm_idempotency_prefix_must_be_1_to_31_characters")
         current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
         mission_task_ids = set(current.task_ids)
         requested_task_ids = {str(value).strip() for value in task_ids if str(value).strip()}
@@ -255,7 +258,7 @@ class MissionOrchestrationRuntime:
                 capability=candidate.capability,
                 role=candidate.role,
                 estimated_tokens=candidate.estimated_tokens,
-                idempotency_key=f"{idempotency_prefix}:{candidate.agent_id}",
+                idempotency_key=f"{prefix}:{candidate.agent_id}",
                 correlation_id=correlation_id,
                 director_id=director_id,
             )
