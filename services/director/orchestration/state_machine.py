@@ -433,7 +433,7 @@ class MissionStateMachine:
             if not isinstance(authoritative, bool):
                 raise MissionTransitionRejected("task_reconciliation_authority_invalid")
             if reconciliation_status == "unknown":
-                if authoritative or evidence_ref:
+                if authoritative:
                     raise MissionTransitionRejected("unknown_reconciliation_cannot_claim_authority")
             elif not authoritative or not evidence_ref:
                 raise MissionTransitionRejected("authoritative_reconciliation_evidence_required")
