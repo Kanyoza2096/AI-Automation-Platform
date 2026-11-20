@@ -191,3 +191,11 @@ Regression tests were authored for unsupported adapters, exact-identity authorit
 - Runtime task-reassignment synchronization now matches the state machine: only `approval_required` and `approved` tasks are eligible. Failed/blocked tasks remain held.
 - Regression coverage was added for the API operator boundary, blocked-attempt lookup/journaling, reconciler identity, evidence requirements, and unchanged task status. These tests are authored but unexecuted because hosted CI quota is exhausted and no local project runtime is available.
 - No production schema/data change, migration, deployment, merge, runtime-flag activation, or CI retry was performed.
+
+
+## Phase D verification hardening — uncertain timeout regression (2026-11-20)
+
+- Corrected the native invocation timeout regression test to match the fail-closed runtime contract: after the durable `task.started` claim, a timeout leaves both the canonical workspace task and mission snapshot in `executing`.
+- The test now explicitly asserts that no `task.failed` or `task.completed` event is written for a transport timeout. The attempt remains held for exact-attempt reconciliation and operator review; a second execution request is rejected because the canonical task is no longer approved.
+- This resolves a stale test expectation that still described the pre-hardening behavior as `failed`, which would have contradicted the new recovery protocol.
+- The test was edited but not executed. Hosted CI remains exhausted and no local project runtime is available. No production change, deployment, merge, or runtime activation occurred.
