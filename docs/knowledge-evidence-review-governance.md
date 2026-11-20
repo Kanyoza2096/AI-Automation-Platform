@@ -52,6 +52,26 @@ Disposition: keep all 112 quarantined pending row-level source review. For the 3
 
 No production rows, review cases, trust classes, source snapshots, or promotion states were changed. This was a read-only metadata and sample-content inspection.
 
+## GrowthBridge website source recovery (read-only, 2026-11-20)
+
+A production configuration record now supplies the canonical site origin for the GrowthBridge integration: `https://growthbridgevirtual.onrender.com` (`website_integrations.integration_id=growthbridge-production`, environment `production`, status `configured`). The integration record exposes the base URL and event/capability declarations, but does not establish the public route pattern for individual service pages. Do not construct service URLs from slugs until the website's actual route contract is verified.
+
+The eight published-service context records have stable service source IDs and slugs, with a shared source-updated timestamp of 2026-09-10:
+- `data-analytics-reporting`
+- `brand-identity-positioning`
+- `business-consulting-growth-advisory`
+- `digital-marketing-strategy`
+- `paid-advertising-performance-marketing`
+- `seo-content-marketing`
+- `social-media-management`
+- `web-design-development`
+
+The authenticated website context snapshot was fetched 2026-11-14 but reports source-updated time 2026-09-02; it is explicitly stale-review-required and untrusted business context. Its captured content includes organization/SEO fields and the eight service records, but not canonical page URLs. The four integration events in the table are KDO smoke-test events (one explicitly marks `synthetic=true)); they are not evidence that the service pages were published or that their content matches the quarantined knowledge chunks.
+
+The tenth GrowthBridge case is a user-approved brand-direction record from conversation dated 2026-11-17. It may inform approved brand configuration, but it is explicitly not verified as a website fact and must not be converted into public-source evidence. The ninth case is the stale authenticated website-context snapshot.
+
+Disposition: the production site origin and eight service slugs are now recovered, but exact page URLs and current page contents remain unverified. Refresh the website context through the governed connector and capture page-level source URLs/content hashes before promotion. Do not use the smoke-test events as source evidence. No secrets, credentials, production data, or review decisions were changed.
+
 ## External provenance research (read-only, 2026-11-20)
 ## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
 
