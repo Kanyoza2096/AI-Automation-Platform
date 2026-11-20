@@ -348,7 +348,7 @@ def test_director_can_spawn_bounded_agents_only_for_existing_mission_tasks():
             "engine_id": "content_intelligence",
             "capability": "research.analyze",
             "role": "Independent researcher",
-            "estimated_tokens": 1200,
+            "estimated_tokens": 500,
         },
     ))
     agent = spawned.state_snapshot["agents"]["agent-research-1"]
@@ -390,6 +390,7 @@ def test_agent_lifecycle_is_director_controlled_and_terminal():
             "agent_id": "agent-1", "task_id": "task-a",
             "engine_id": "content_intelligence",
             "capability": "research.analyze", "role": "Researcher",
+            "estimated_tokens": 100,
         },
     ))
     with pytest.raises(MissionTransitionRejected, match="agent_status_change_requires_director_or_system"):
@@ -419,6 +420,7 @@ def test_agent_spawning_enforces_active_and_per_task_limits():
                 "agent_id": f"agent-{index}", "task_id": "task-a",
                 "engine_id": "content_intelligence",
                 "capability": "research.analyze", "role": "Researcher",
+                "estimated_tokens": 100,
             },
         ))
     with pytest.raises(MissionTransitionRejected, match="mission_task_agent_capacity_exceeded"):
@@ -440,6 +442,7 @@ def test_mission_cannot_complete_with_live_agents_and_cancellation_closes_them()
             "agent_id": "agent-live", "task_id": "task-a",
             "engine_id": "content_intelligence",
             "capability": "research.analyze", "role": "Researcher",
+            "estimated_tokens": 100,
         },
     ))
     with pytest.raises(MissionTransitionRejected, match="mission_has_active_agents"):
