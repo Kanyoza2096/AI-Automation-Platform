@@ -209,8 +209,13 @@ class MissionOrchestrationRuntime:
             )
         candidates_by_task: dict[str, list[SwarmCandidate]] = {}
         for candidate in candidates:
-            if candidate.agent_id not in existing and candidate.task_id in requested_task_ids:
-                candidates_by_task.setdefault(candidate.task_id, []).append(candidate)
+            if not isinstance(candidate, SwarmCandidate):
+                raise TypeError("swarm_candidates_must_be_typed_assignments")
+            if candidate.task_id not in requested_task_ids:
+                raise MissionTransitionRejected("swarm_candidate_task_outside_requested_scope")
+            if candidate.agent_id in existing:
+                raise MissionTransitionRejected("agent_id_already_exists")
+            candidates_by_task.setdefault(candidate.task_id, []).append(candidate)
         available_candidates: list[SwarmCandidate] = []
         for candidate_task_id, task_candidates in candidates_by_task.items():
             task_slots = max(0, 3 - occupied_by_task.get(candidate_task_id, 0))
