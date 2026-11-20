@@ -21,6 +21,19 @@ The Director orchestration runtime now has a bounded, durable agent roster model
 - The API is operator-authorized and records the trusted human actor as the Director actor.
 - Swarm registration does not invoke an engine, approve a canonical task, or grant execution/external-action authority. The API explicitly reports `execution_started: false`.
 
+## Advisory specialist execution
+
+Registered specialists can now be invoked through the existing native adapter registry.
+
+- Runtime entry point: `MissionOrchestrationRuntime.execute_agent`.
+- Authenticated workspace-scoped API: `POST /missions/{mission_id}/orchestration/agents/{agent_id}/execute`.
+- The Director moves the agent through running, contribution-recorded, and completed/failed lifecycle events.
+- Contributions are bounded and persisted in the agent's MissionState record, including findings, recommendations, evidence references, confidence, token usage, and provider-call usage.
+- Native adapter identity, capability, mission, task, and workspace are checked by the existing registry/context boundary.
+- Actual usage cannot exceed the agent's reserved token estimate or the mission budget.
+- This path does not require or change canonical task approval because it is advisory analysis only; it never marks a task completed, verified, or approved.
+- The endpoint reports `external_action_authority_granted: false` and `canonical_task_state_changed: false`.
+
 ## Deliberate boundary
 
 This increment provides durable planning, registration, and lifecycle state, not autonomous agent cognition or worker execution. The next increment must connect registered agent records to approved, advisory-only native adapter invocations, persist bounded contributions and usage, and expose live agent progress in Mission Control. The Director's model-driven complexity assessment and autonomous follow-up spawning should be enabled only after that execution path and its tests are complete.
