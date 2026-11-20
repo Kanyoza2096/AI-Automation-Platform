@@ -204,18 +204,37 @@ class MissionOrchestrationRuntime:
             occupied_by_task[str(item.get("task_id") or "")] = (
                 occupied_by_task.get(str(item.get("task_id") or ""), 0) + 1
             )
-        available_candidates = [
-            candidate for candidate in candidates
-            if candidate.agent_id not in existing
-            and candidate.task_id in requested_task_ids
-            and occupied_by_task.get(candidate.task_id, 0) < 3
-        ]
+        candidates_by_task: dict[str, list[SwarmCandidate]] = {}
+        for candidate in candidates:
+            if candidate.agent_id not in existing and candidate.task_id in requested_task_ids:
+                candidates_by_task.setdefault(candidate.task_id, []).append(candidate)
+        available_candidates: list[SwarmCandidate] = []
+        for candidate_task_id, task_candidates in candidates_by_task.items():
+            task_slots = max(0, 3 - occupied_by_task.get(candidate_task_id, 0))
+            task_candidates.sort(key=lambda item: (-item.priority, item.engine_id, item.agent_id))
+            available_candidates.extend(task_candidates[:task_slots])
+
+        existing_estimated_tokens = sum(
+            int(item.get("estimated_tokens", 0) or 0) for item in existing.values()
+        )
+        budget = dict(current.state_snapshot.get("budget") or {})
+        mission_token_limit = budget.get("max_tokens")
+        mission_tokens_remaining = (
+            int(mission_token_limit) - int(budget.get("tokens_used", 0)) - existing_estimated_tokens
+            if mission_token_limit is not None else base.max_total_estimated_tokens - existing_estimated_tokens
+        )
+        estimated_tokens_remaining = min(
+            base.max_total_estimated_tokens - existing_estimated_tokens,
+            mission_tokens_remaining,
+        )
         effective_max = min(base.max_agents, remaining_total, remaining_parallel)
+        if estimated_tokens_remaining < 1:
+            raise MissionTransitionRejected("swarm_estimated_token_budget_exhausted")
         effective_limits = SwarmLimits(
             max_agents=effective_max,
             max_parallel_agents=min(base.max_parallel_agents, effective_max),
             max_agents_per_task=min(base.max_agents_per_task, effective_max),
-            max_total_estimated_tokens=base.max_total_estimated_tokens,
+            max_total_estimated_tokens=estimated_tokens_remaining,
         )
         plan = plan_swarm(
             complexity_score=complexity_score,
