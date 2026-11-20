@@ -49,6 +49,10 @@ Content comparison after Unicode normalization, case folding, whitespace normali
 - 7/732 require manual content review. These include a substantial November 3 morning text discrepancy, extra or displaced scripture references in other rows, and two additional hyphenation-boundary differences.
 - Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`.
 
+The manual-review queue is explicitly enumerated:
+- Appended calendar text (11): `kb-0d0673d5d0ad`, `kb-269ebb5ce789`, `kb-31132fdd1e56`, `kb-46c246c34e1e`, `kb-571e158131ab`, `kb-59d921bdf421`, `kb-84de63479eac`, `kb-90c7c1f9f28f`, `kb-af8e80dd161f`, `kb-dace93cf124a`, `kb-fa1b79587228`.
+- Other content/reference review (7): `kb-36e7f6fb7cf8`, `kb-78c20f498711`, `kb-911c707a0001`, `kb-9a7e0c28bae8`, `kb-9e8a2a6710ed`, `kb-b95564907ae8`, `kb-bb22c9c5a1af`.
+- The 43 single-hyphen differences are typographic/hyphenation variants, not approved edits; retain source comparison evidence and do not rewrite production text without a governed correction.
 The source record identity is therefore established across the cohort, but the content anomalies must be reviewed and corrected or explicitly dispositioned before promotion. The 11 calendar appendices and 7 manual-review cases must not be silently normalized away. The six missing references and 36 Song-of-Solomon aliases can be reconciled deterministically against the source record, subject to normal review controls.
 
 No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. No bulk approval was performed. The comparison used the public source collection and a read-only production export.
