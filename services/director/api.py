@@ -546,6 +546,8 @@ def create_app(director: Director):
         """Let Director assess complexity and select a bounded advisory specialist roster."""
         await _require_auth(request, credentials, write=True)
         workspace_id = await _require_workspace_mission(request)
+        if len(set(body.task_ids)) != len(body.task_ids):
+            raise HTTPException(422, "Duplicate mission task IDs are not allowed")
         selected_tasks = []
         for task_id in body.task_ids:
             task = director.tasks.get(task_id)
