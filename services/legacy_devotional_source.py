@@ -39,8 +39,11 @@ def decode_pinned_blob_response(response: dict[str, Any]) -> bytes:
     encoded = response.get("content")
     if not isinstance(encoded, str) or len(encoded) > ((MAX_BLOB_BYTES + 2) // 3) * 4 + 16_000:
         raise PinnedDatasetError("blob_response_too_large")
+    # GitHub may wrap base64 in whitespace; remove only whitespace, then
+    # require a strict alphabet/padding check instead of silently discarding
+    # arbitrary invalid characters.
     try:
-        raw = base64.b64decode(encoded, validate=False)
+        raw = base64.b64decode("".join(encoded.split()), validate=True)
     except (ValueError, TypeError) as exc:
         raise PinnedDatasetError("invalid_blob_base64") from exc
     if not raw or len(raw) > MAX_BLOB_BYTES:
@@ -187,8 +190,15 @@ def fetch_pinned_dataset() -> list[dict[str, Any]]:
         if response.status_code != 200:
             raise PinnedDatasetError(f"github_blob_http_{response.status_code}")
         length = response.headers.get("Content-Length")
-        if length and int(length) > 3_400_000:
-            raise PinnedDatasetError("blob_response_too_large")
+        if length:
+            try:
+                declared_length = int(length)
+            except (TypeError, ValueError) as exc:
+                raise PinnedDatasetError("blob_content_length_invalid") from exc
+            if declared_length < 0:
+                raise PinnedDatasetError("blob_content_length_invalid")
+            if declared_length > 3_400_000:
+                raise PinnedDatasetError("blob_response_too_large")
         chunks = bytearray()
         for chunk in response.iter_content(chunk_size=65_536):
             if chunk:
