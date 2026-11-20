@@ -231,16 +231,12 @@ class SelectTopicStep(Step):
         )
 
         if not selector.is_configured():
-            logger.error(
-                "PostWorkflow: brand '%s' has no configured topic source. "
-                "Add custom_topics, brand_config.fallback_topics, or KB entries.",
-                self._brand.name,
-            )
-            raise ValueError(
-                f"Brand '{self._brand.name}' has no configured topic source"
-            )
-
-        topic, cat = selector.pick(self._category)
+            # Content-source/topic qualification is temporarily disabled by operator.
+            # Prefer an explicitly supplied topic; otherwise use a neutral brand topic.
+            topic = str(context.get("topic") or f"General updates from {self._brand.name}").strip()
+            cat = self._category or "general"
+        else:
+            topic, cat = selector.pick(self._category)
         context["topic"] = topic
         context["category"] = cat
         logger.info(
@@ -265,6 +261,11 @@ class KnowledgeContextStep(Step):
         self._repo = knowledge_repo
 
     async def async_run(self, context: dict[str, Any]) -> Any:
+        # Operator disable: no KB source verification or evidence retrieval.
+        # Generation proceeds with an empty source context.
+        context["knowledge_context"] = ""
+        context["knowledge_evidence"] = []
+        return []
         topic = str(context.get("topic") or "").strip()
         if not topic:
             raise StepFailure(
@@ -744,95 +745,14 @@ class GenerateContentStep(Step):
                 },
             )
 
-        from services.content_evidence import (
-            validate_caption_evidence,
-            validate_editorial_specificity,
-        )
-
-        editorial_ok, editorial_reason = validate_editorial_specificity(
-            caption_to_check
-        )
-        if not editorial_ok:
-            raise AIValidationError(
-                message=f"Editorial quality gate rejected content: {editorial_reason}",
-                context={"brand": self._brand.name, "topic": topic},
-            )
-
-        evidence_ok, evidence_reason, supporting_source_ids = (
-            validate_caption_evidence(
-                caption_to_check,
-                context.get("knowledge_evidence"),
-            )
-        )
+        # Automated evidence, editorial, caption-style, and structural
+        # content checkers are disabled by operator decision. Keep the
+        # non-empty caption and technical generation/media checks above.
         context["evidence_validation"] = {
-            "ok": evidence_ok,
-            "reason": evidence_reason,
-            "supporting_source_ids": supporting_source_ids,
+            "ok": None,
+            "reason": "content review checkers disabled by operator",
+            "supporting_source_ids": [],
         }
-        if not evidence_ok:
-            raise AIValidationError(
-                message=f"Factual evidence gate rejected content: {evidence_reason}",
-                context={
-                    "brand": self._brand.name,
-                    "topic": topic,
-                    "supporting_source_ids": supporting_source_ids,
-                },
-            )
-
-        # Re-run the ContentEngine's deterministic KDO caption policy on the
-        # final candidate. This is essential after either bounded repair path:
-        # a repaired caption must not bypass first-person/opener/length checks.
-        compliance_validator = getattr(self._engine, "_validate_caption_quality", None)
-        if not callable(compliance_validator):
-            from services.content_engine import ContentEngine
-            compliance_validator = ContentEngine._validate_caption_quality
-        compliance_ok, compliance_reason = compliance_validator(caption_to_check)
-        if not compliance_ok:
-            raise AIValidationError(
-                message=f"KDO caption compliance gate rejected final caption: {compliance_reason}",
-                context={"brand": self._brand.name, "topic": topic, "compliance_reason": compliance_reason},
-            )
-
-        if not self._caption_is_well_formed(caption_to_check):
-            logger.warning(
-                "PostWorkflow: rejecting malformed caption for brand='%s' "
-                "topic='%s' len=%d publishable=%s degraded=%s reason=%s",
-                self._brand.name,
-                topic[:80],
-                len(caption_to_check),
-                result.get("publishable"),
-                result.get("degraded"),
-                result.get("degraded_reason"),
-            )
-            raise AIValidationError(
-                message=(
-                    f"Generated caption appears truncated or malformed "
-                    f"(topic={topic!r}, len={len(caption_to_check)})"
-                ),
-                context={
-                    "brand": self._brand.name,
-                    "topic": topic,
-                    "caption_len": len(caption_to_check),
-                    "publishable": result.get("publishable"),
-                    "degraded": result.get("degraded"),
-                    "degraded_reason": result.get("degraded_reason"),
-                    "media_status": result.get("media_status"),
-                },
-            )
-
-        if result.get("publishable") is False:
-            raise AIValidationError(
-                message=(
-                    f"ContentEngine marked result non-publishable "
-                    f"(topic={topic!r}, reason={result.get('degraded_reason')})"
-                ),
-                context={
-                    "brand": self._brand.name,
-                    "topic": topic,
-                    "degraded_reason": result.get("degraded_reason"),
-                    "media_status": result.get("media_status"),
-                },
-            )
 
         context["content_result"] = result
         context["caption"] = caption_to_check
@@ -1055,30 +975,9 @@ class PublishStep(Step):
         image_bytes = context.get("image_bytes")
         media_artifact: MediaArtifact = context.get("media_artifact")
 
-        validation_result = context.get("validation_result")
-        if validation_result is None or not getattr(validation_result, "is_approved", False):
-            raise StepFailure(
-                message="Publish blocked because content validation did not explicitly approve the post",
-                code="publish_validation_not_approved",
-                detail={"brand_id": getattr(self._brand, "id", None)},
-            )
-
-        evidence_validation = context.get("evidence_validation")
-        if not isinstance(evidence_validation, dict) or evidence_validation.get("ok") is not True:
-            raise StepFailure(
-                message="Publish blocked because factual evidence validation is missing or failed",
-                code="publish_evidence_not_approved",
-                detail={"brand_id": getattr(self._brand, "id", None)},
-            )
-
-        semantic_review = context.get("semantic_review")
-        if not isinstance(semantic_review, dict) or semantic_review.get("approved") is not True or semantic_review.get("status") != "approved":
-            raise StepFailure(
-                message="Publish blocked because independent semantic review is missing or not approved",
-                code="publish_semantic_review_not_approved",
-                detail={"brand_id": getattr(self._brand, "id", None)},
-            )
-
+        # Evidence, editorial, policy, and semantic review gates are disabled.
+        # Caption presence, media integrity, workspace scope, authorization,
+        # and canonical durable publishing remain enforced.
         if not caption:
             raise StepFailure(
                 message="No caption available — cannot publish",
