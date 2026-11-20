@@ -19,6 +19,7 @@ def _brand(workspace_id="workspace-test"):
 def _data(**overrides):
     data = {
         "decision": "approve",
+        "has_material_factual_claims": True,
         "claim_coverage": 1.0,
         "claims": [{
             "claim": "Kruskal's algorithm uses disjoint sets to detect cycles.",
@@ -64,11 +65,11 @@ def _evidence():
     }]
 
 
-def _review(gateway, *, workspace_id="workspace-test", evidence=None):
+def _review(gateway, *, workspace_id="workspace-test", evidence=None, caption="Kruskal's algorithm uses disjoint sets to detect cycles.", topic="Kruskal's algorithm"):
     reviewer = ContentSemanticReviewer(gateway=gateway)
     return asyncio.run(reviewer.review(
-        caption="Kruskal's algorithm uses disjoint sets to detect cycles.",
-        topic="Kruskal's algorithm",
+        caption=caption,
+        topic=topic,
         evidence=_evidence() if evidence is None else evidence,
         brand=_brand(workspace_id),
         platform="facebook",
@@ -190,12 +191,54 @@ def test_semantic_reviewer_refuses_synthetic_workspace_without_calling_gateway()
     assert gateway.calls == []
 
 
-def test_semantic_reviewer_requires_traceable_evidence():
-    gateway = FakeGateway()
-    result = _review(gateway, evidence=[{"text": "untraceable source", "metadata": {}}])
+def test_semantic_reviewer_allows_reflective_content_without_factual_claims():
+    gateway = FakeGateway(data=_data(
+        has_material_factual_claims=False,
+        claims=[],
+        claim_coverage=1.0,
+    ))
+    result = _review(
+        gateway,
+        evidence=[],
+        caption="Take a moment to encourage someone today. A little kindness can brighten an ordinary day.",
+        topic="Encouragement",
+    )
+
+    assert result["approved"] is True
+    assert result["supporting_source_ids"] == []
+    assert len(gateway.calls) == 1
+
+
+def test_semantic_reviewer_does_not_approve_factual_claims_without_evidence():
+    gateway = FakeGateway(data=_data(
+        claims=[{
+            "claim": "This intervention reduces costs by 40%.",
+            "support_status": "unsupported",
+            "source_ids": [],
+            "rationale": "No verified evidence was supplied.",
+        }],
+    ))
+    result = _review(gateway, evidence=[])
 
     assert result["approved"] is False
-    assert gateway.calls == []
+    assert result["status"] == "rejected"
+    assert "lack evidence support" in result["reason"]
+
+
+def test_semantic_reviewer_rejects_claim_inventory_that_hides_claims():
+    gateway = FakeGateway(data=_data(
+        has_material_factual_claims=False,
+        claims=[{
+            "claim": "This intervention reduces costs by 40%.",
+            "support_status": "unsupported",
+            "source_ids": [],
+            "rationale": "No verified evidence was supplied.",
+        }],
+    ))
+    result = _review(gateway, evidence=[])
+
+    assert result["approved"] is False
+    assert result["status"] == "rejected"
 
 
 
