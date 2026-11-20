@@ -96,6 +96,24 @@ class MissionTaskExecuteBody(BaseModel):
     timeout_seconds: float = Field(default=75.0, gt=0, le=180)
 
 
+class MissionSwarmCandidateBody(BaseModel):
+    agent_id: str = Field(..., min_length=1, max_length=128)
+    task_id: str = Field(..., min_length=1, max_length=128)
+    engine_id: str = Field(..., min_length=1, max_length=100)
+    capability: str = Field(..., min_length=1, max_length=120)
+    role: str = Field(..., min_length=1, max_length=120)
+    priority: int = Field(default=0, ge=-100, le=100)
+    estimated_tokens: int = Field(default=1500, ge=0, le=12000)
+
+
+class MissionSwarmSpawnBody(BaseModel):
+    complexity_score: float = Field(..., ge=0.0, le=1.0)
+    task_ids: list[str] = Field(..., min_length=1, max_length=12)
+    candidates: list[MissionSwarmCandidateBody] = Field(..., min_length=1, max_length=64)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=31)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
 class MissionTaskRecoveryReviewBody(BaseModel):
     decision: str = Field(..., pattern="^(hold|request_reconciliation)$")
     reason: str = Field(..., min_length=1, max_length=1000)
@@ -399,6 +417,7 @@ def create_app(director: Director):
                 "engine_progress": state.get("engine_progress", {}),
                 "task_reconciliations": state.get("task_reconciliations", {}),
                 "pending_questions": state.get("pending_questions", {}),
+                "agents": state.get("agents", {}),
                 "evidence_refs": state.get("evidence_refs", []),
                 "unresolved_disagreements": state.get("unresolved_disagreements", []),
                 "budget": state.get("budget", {}),
@@ -440,6 +459,63 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director mission task assignment failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission task assignment could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/swarm/spawn")
+    async def spawn_mission_swarm(
+        mission_id: str,
+        body: MissionSwarmSpawnBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Operator-authorized request for the Director to plan/register an advisory swarm wave."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        for task_id in body.task_ids:
+            task = director.tasks.get(task_id)
+            if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+                raise HTTPException(404, "Mission task not found")
+        from .orchestration.swarm_planning import SwarmCandidate
+        runtime = _get_mission_runtime()
+        try:
+            plan, snapshot = await runtime.spawn_swarm(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_ids=body.task_ids,
+                candidates=[
+                    SwarmCandidate(
+                        agent_id=item.agent_id,
+                        task_id=item.task_id,
+                        engine_id=item.engine_id,
+                        capability=item.capability,
+                        role=item.role,
+                        priority=item.priority,
+                        estimated_tokens=item.estimated_tokens,
+                    )
+                    for item in body.candidates
+                ],
+                complexity_score=body.complexity_score,
+                idempotency_prefix=body.idempotency_prefix,
+                correlation_id=body.correlation_id,
+                director_id=_trusted_actor(request),
+            )
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "mission_version": snapshot.version,
+                "complexity_score": plan.complexity_score,
+                "target_agent_count": plan.target_agent_count,
+                "spawned_agents": [item.agent_id for item in plan.selected],
+                "deferred_agents": [item.agent_id for item in plan.deferred],
+                "estimated_tokens": plan.estimated_tokens,
+                "agents": snapshot.state_snapshot.get("agents", {}),
+                "execution_started": False,
+                "external_action_authority_granted": False,
+            }
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director swarm registration failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission swarm registration could not be confirmed") from exc
 
     @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/recovery-review")
     async def review_mission_task_recovery(
