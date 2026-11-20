@@ -8,7 +8,7 @@ from services import legacy_devotional_source as source
 
 def test_git_blob_digest_matches_git_object_format():
     payload = b"fixture"
-    expected = hashlib.sha1(b"blob 7\\0" + payload).hexdigest()
+    expected = hashlib.sha1(b"blob 7" + bytes([0]) + payload).hexdigest()
     assert source._git_blob_sha(payload) == expected
 
 
