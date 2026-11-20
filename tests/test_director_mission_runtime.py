@@ -3,6 +3,8 @@ import copy
 from datetime import datetime, timedelta, timezone
 import pytest
 
+from services.director.orchestration.state_machine import MissionTransitionRejected
+
 from services.director.orchestration import (
     AdapterRegistry,
     EngineContribution,
@@ -1659,3 +1661,61 @@ async def test_native_engine_invocation_exception_preserves_uncertain_attempt_wi
             timeout_seconds=1.0,
         )
     assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_director_spawned_agent_and_rejects_unregistered_capability():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Read-only research result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    with pytest.raises(MissionTransitionRejected, match="engine_capability_not_registered"):
+        await runtime.spawn_agent(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            agent_id="agent-invalid",
+            engine_id="content_intelligence",
+            capability="external.publish",
+            role="Publisher",
+            idempotency_key="spawn-invalid",
+            correlation_id="corr-swarm-runtime",
+        )
+
+    snapshot = await runtime.spawn_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        agent_id="agent-research-1",
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        role="Independent researcher",
+        idempotency_key="spawn-research-1",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "spawned"
+    assert store.events[-1]["event_type"] == "agent.spawned"
+
+    snapshot = await runtime.update_agent_status(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="agent-research-1",
+        status="running",
+        idempotency_key="agent-research-1-running",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "running"
+
+    snapshot = await runtime.update_agent_status(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="agent-research-1",
+        status="completed",
+        idempotency_key="agent-research-1-completed",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "completed"
+    assert [event["event_type"] for event in store.events] == [
+        "agent.spawned", "agent.status.changed", "agent.status.changed"
+    ]
