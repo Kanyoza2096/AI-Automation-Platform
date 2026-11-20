@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import logging
 import math
 from typing import Any, Callable, Mapping, Sequence
@@ -101,7 +103,7 @@ class MissionOrchestrationRuntime:
             "task.blocked": ("blocked", {"approval_required", "approved", "executing"}),
             "task.verified": ("verified", {"completed"}),
             "task.cancelled": ("cancelled", {"approval_required", "approved"}),
-            "task.reassigned": ("approval_required", {"approval_required", "approved", "failed", "blocked", "flagged"}),
+            "task.reassigned": ("approval_required", {"approval_required", "approved"}),
             "task.handoff.accepted": ("approval_required", {"executing"}),
         }
         rule = sync_rules.get(event_type)
@@ -383,7 +385,7 @@ class MissionOrchestrationRuntime:
         )
         if not task:
             raise MissionRuntimeNotFound("workspace_mission_task_not_found")
-        if task.get("status") not in {"executing", "failed"}:
+        if task.get("status") not in {"executing", "failed", "blocked"}:
             raise MissionTaskNotReady("task_has_no_unresolved_execution_attempt")
 
         event_limit = min(500, int(getattr(self.store, "MAX_EVENT_READ_LIMIT", 500)))
@@ -438,6 +440,59 @@ class MissionOrchestrationRuntime:
             correlation_id=str(start["correlation_id"]),
         )
         return await self.adapters.reconcile_attempt(reference)
+
+    async def reconcile_and_record_task_attempt(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        correlation_id: str,
+    ) -> EngineAttemptReconciliation:
+        """Query one attempt and append the observed result without changing task authority."""
+        reconciliation = await self.reconcile_task_attempt(
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        task = await self.store.get_workspace_task(
+            task_id=task_id, workspace_id=workspace_id, mission_id=mission_id
+        )
+        if not task:
+            raise MissionRuntimeNotFound("workspace_mission_task_not_found")
+        if task.get("status") not in {"executing", "failed", "blocked"}:
+            raise MissionTaskNotReady("canonical_task_not_in_recovery_review_state")
+        assignments = current.state_snapshot.get("task_assignments") or {}
+        assignment = assignments.get(task_id) if isinstance(assignments, Mapping) else None
+        capability = str((assignment or {}).get("capability") or "")
+        if not capability:
+            raise MissionRuntimeConflict("execution_attempt_capability_missing")
+        result = reconciliation.result if isinstance(reconciliation.result, Mapping) else {}
+        payload = {
+            "attempt_id": reconciliation.attempt_id,
+            "engine_id": reconciliation.engine_id,
+            "capability": capability,
+            "status": reconciliation.status,
+            "authoritative": reconciliation.authoritative,
+            "evidence_ref": reconciliation.evidence_ref,
+            "summary": str(result.get("summary") or "")[:5000],
+            "completed_at": str(result.get("completed_at") or "")[:64],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:20]
+        await self._commit(
+            current,
+            event_type="task.reconciliation.observed",
+            idempotency_key=f"{reconciliation.attempt_id}:reconciliation:{fingerprint}",
+            actor_type="system",
+            actor_id="director_recovery_reconciler",
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload=payload,
+        )
+        return reconciliation
 
     async def review_task_recovery(
         self,
