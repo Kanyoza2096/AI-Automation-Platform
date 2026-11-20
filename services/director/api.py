@@ -114,6 +114,12 @@ class MissionSwarmSpawnBody(BaseModel):
     correlation_id: str = Field(..., min_length=8, max_length=128)
 
 
+class MissionSwarmAssessBody(BaseModel):
+    task_ids: list[str] = Field(..., min_length=1, max_length=12)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=31)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
 class MissionAgentExecuteBody(BaseModel):
     objective: str = Field(..., min_length=1, max_length=4000)
     inputs: dict = Field(default_factory=dict)
@@ -524,6 +530,97 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director swarm registration failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission swarm registration could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/swarm/assess")
+    async def assess_and_spawn_mission_swarm(
+        mission_id: str,
+        body: MissionSwarmAssessBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Let Director assess complexity and select a bounded advisory specialist roster."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        selected_tasks = []
+        for task_id in body.task_ids:
+            task = director.tasks.get(task_id)
+            if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+                raise HTTPException(404, "Mission task not found")
+            selected_tasks.append({
+                "task_id": task.id,
+                "description": task.description,
+                "capability": task.capability,
+                "sector": getattr(task.sector, "value", str(task.sector)),
+                "status": getattr(task.status, "value", str(task.status)),
+                "depends_on": list(task.depends_on or []),
+                "success_criteria": list(task.success_criteria or []),
+                "impact_score": task.impact_score,
+                "mission_priority": task.mission_priority,
+            })
+        runtime = _get_mission_runtime()
+        try:
+            from ai.gateway import get_llm_gateway
+            from .orchestration.director_swarm import (
+                SwarmAssessmentError,
+                SwarmAssessmentUnavailable,
+                assess_swarm_roster,
+            )
+            current = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            assessment = await assess_swarm_roster(
+                gateway=get_llm_gateway(),
+                workspace_id=workspace_id,
+                mission_id=mission_id,
+                idempotency_prefix=body.idempotency_prefix,
+                tasks=selected_tasks,
+                adapter_catalogue=runtime.adapters.describe(),
+                existing_agents=current.state_snapshot.get("agents", {}),
+            )
+            if assessment.candidates:
+                plan, snapshot = await runtime.spawn_swarm(
+                    mission_id=mission_id,
+                    workspace_id=workspace_id,
+                    task_ids=body.task_ids,
+                    candidates=assessment.candidates,
+                    complexity_score=assessment.complexity_score,
+                    idempotency_prefix=body.idempotency_prefix,
+                    correlation_id=body.correlation_id,
+                    director_id=_trusted_actor(request),
+                )
+            else:
+                plan = None
+                snapshot = current
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "mission_version": snapshot.version,
+                "complexity_score": assessment.complexity_score,
+                "rationale": assessment.rationale,
+                "spawn_recommended": assessment.spawn_recommended,
+                "candidate_count": len(assessment.candidates),
+                "target_agent_count": plan.target_agent_count if plan else 0,
+                "spawned_agents": [item.agent_id for item in plan.selected] if plan else [],
+                "deferred_agents": [item.agent_id for item in plan.deferred] if plan else [],
+                "estimated_tokens": plan.estimated_tokens if plan else 0,
+                "agents": snapshot.state_snapshot.get("agents", {}),
+                "llm_provider": assessment.provider,
+                "llm_model": assessment.model,
+                "llm_request_id": assessment.request_id,
+                "execution_started": False,
+                "external_action_authority_granted": False,
+                "canonical_task_state_changed": False,
+            }
+        except SwarmAssessmentUnavailable as exc:
+            log.warning("Director swarm assessment unavailable: %s", str(exc)[:120])
+            raise HTTPException(503, "Director swarm assessment is temporarily unavailable") from exc
+        except SwarmAssessmentError as exc:
+            raise HTTPException(422, str(exc)[:200]) from exc
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director swarm assessment/registration failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Director swarm assessment could not be confirmed") from exc
 
     @app.post("/missions/{mission_id}/orchestration/agents/{agent_id}/execute")
     async def execute_mission_agent(
