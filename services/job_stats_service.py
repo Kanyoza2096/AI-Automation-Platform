@@ -121,13 +121,11 @@ class JobStatsService:
     CACHE_TTL_SECONDS = 30
     MAX_BROKEN_PIPE_RETRIES = 2
 
-    # v4.4 — Health status thresholds.
-    # Tuned so a working queue stays healthy and a genuinely stuck one
-    # surfaces. A healthy queue can have a handful of in-flight failures;
-    # a stuck queue has dozens.
+    # Queue-liveness thresholds use stale active work and active age only.
+    # Terminal failures have separate content-quality thresholds below.
     HEALTH_DEGRADED_STALE = 5
-    HEALTH_DEGRADED_FAILED = 10
     HEALTH_UNHEALTHY_STALE = 20
+    HEALTH_DEGRADED_FAILED = 10
     HEALTH_UNHEALTHY_FAILED = 50
     HEALTH_UNHEALTHY_OLDEST_MINUTES = 24 * 60  # 24 hours
 
@@ -364,13 +362,11 @@ class JobStatsService:
           with 52 dead jobs (19 STALE, 33 FAILED, oldest active 11.5 days)
           reported healthy for over a week because status was a constant.
 
-        Thresholds (class constants above):
-          - unhealthy: >=20 STALE, >=50 FAILED, or oldest_active > 24h
-          - degraded:  >=5 STALE or >=10 FAILED
-          - healthy:   below both
-
-        The 'reason' field names the specific threshold that tripped,
-        so /health/detailed is self-diagnosing.
+        Queue health is based on stale active work and oldest active age.
+        Terminal FAILED jobs are reported separately as content_quality with
+        failure_intelligence; they do not imply a crashed or stuck worker.
+        This prevents content validation failures from being misreported as
+        infrastructure degradation or used as a restart signal.
         """
         if self._shared_client is None:
             # v4.2 FIX: unknown instead of not_configured
@@ -427,37 +423,56 @@ class JobStatsService:
                     "error": f"{type(exc).__name__}: {str(exc)[:200]}",
                 }
 
+        # Queue/service health is based on live work that is stuck, not on
+        # terminal FAILED jobs. Failed jobs are immutable historical outcomes;
+        # content-policy failures must not make a functioning worker appear
+        # crashed or trigger infrastructure recovery.
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
+        if stale >= self.HEALTH_UNHEALTHY_STALE or stuck_too_long:
+            queue_status = "unhealthy"
+            queue_reason = (
+                f"active job backlog: stale={stale} active={active_jobs} "
+                f"oldest_active_minutes={oldest_minutes:.0f}"
+            )
+        elif stale >= self.HEALTH_DEGRADED_STALE:
+            queue_status = "degraded"
+            queue_reason = (
+                f"active job backlog growing: stale={stale} active={active_jobs} "
+                f"oldest_active_minutes={oldest_minutes:.0f}"
+            )
+        else:
+            queue_status = "healthy"
+            queue_reason = None
 
-        if (
-            stale >= self.HEALTH_UNHEALTHY_STALE
-            or failed >= self.HEALTH_UNHEALTHY_FAILED
-            or stuck_too_long
-        ):
-            return {
-                "status": "unhealthy",
-                "stats": stats,
-                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
+        # Terminal failures are reported as a separate quality signal. They
+        # remain visible and diagnosable, but do not change process/queue
+        # liveness status or authorize a service restart.
+        if failed >= self.HEALTH_UNHEALTHY_FAILED:
+            quality_status = "unhealthy"
+        elif failed >= self.HEALTH_DEGRADED_FAILED:
+            quality_status = "degraded"
+        else:
+            quality_status = "healthy"
+
+        result = {
+            "status": queue_status,
+            "stats": stats,
+            "queue_health": {
+                "status": queue_status,
+                "stale_jobs": stale,
+                "active_jobs": active_jobs,
+                "oldest_active_minutes": oldest_minutes,
+                **({"reason": queue_reason} if queue_reason else {}),
+            },
+            "content_quality": {
+                "status": quality_status,
+                "failed_jobs": failed,
                 "reason": (
-                    f"job backlog: stale={stale} failed={failed} "
-                    f"active={active_jobs} "
-                    f"oldest_active_minutes={oldest_minutes:.0f}"
+                    f"{failed} terminal jobs failed validation or execution"
+                    if failed else None
                 ),
-            }
-
-        if stale >= self.HEALTH_DEGRADED_STALE or failed >= self.HEALTH_DEGRADED_FAILED:
-            return {
-                "status": "degraded",
-                "stats": stats,
-                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
-                "reason": (
-                    f"job backlog growing: stale={stale} failed={failed} "
-                    f"active={active_jobs} "
-                    f"oldest_active_minutes={oldest_minutes:.0f}"
-                ),
-            }
-
-        result = {"status": "healthy", "stats": stats}
+            },
+        }
         if failure_intelligence is not None:
             result["failure_intelligence"] = failure_intelligence
         return result
@@ -486,6 +501,18 @@ class JobStatsService:
                 "proposal": "verified_source_or_claim_removal",
                 "execution_mode": "human_review",
                 "requires": ["verified_source_id_or_claim_removal", "semantic_validation"],
+            },
+            "knowledge_evidence_unavailable": {
+                "proposal": "repair_knowledge_source_provenance",
+                "execution_mode": "human_review",
+                "requires": [
+                    "source_identity_and_url",
+                    "approved_trust_class",
+                    "trusted_server_source_snapshot",
+                    "snapshot_signature_verification",
+                    "human_or_governed_evidence_approval",
+                    "explicit_evidence_promotion",
+                ],
             },
             "semantic_validation": {
                 "proposal": "evidence_backed_claim_repair",
@@ -521,7 +548,17 @@ class JobStatsService:
             for value in (step.get("error"), step.get("error_code"), step.get("step"))
         ).lower()
         code = str(job.get("last_error_code") or "").upper()
-        if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
+        if (
+            "no usable traceable evidence" in evidence
+            or "no traceable knowledge evidence" in evidence
+            or "source trust class is missing" in evidence
+            or "trusted source snapshot" in evidence
+        ):
+            category, action = (
+                "knowledge_evidence_unavailable",
+                "Repair source provenance and trust review; verify a trusted captured source snapshot and complete governed evidence approval/promotion before generation resumes.",
+            )
+        elif "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
             category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
         elif (
             "first-person" in evidence
