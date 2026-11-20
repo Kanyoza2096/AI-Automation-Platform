@@ -42,8 +42,11 @@ def test_job_stats_health_recovers_after_a_successful_query():
     }
     recovered = service.health_check()
 
-    assert recovered["status"] == "degraded"
+    assert recovered["status"] == "healthy"
     assert recovered["stats"]["status_counts"]["FAILED"] == 12
+    assert recovered["queue_health"]["status"] == "healthy"
+    assert recovered["content_quality"]["status"] == "degraded"
+    assert recovered["content_quality"]["failed_jobs"] == 12
 
 
 def test_job_stats_health_is_unknown_for_malformed_metrics_not_healthy():
@@ -176,3 +179,19 @@ def test_failure_intelligence_classifies_provider_timeout_from_failed_step():
     assert diagnosis["category"] == "provider_availability"
     assert diagnosis["recovery_policy"]["execution_mode"] == "retry_candidate"
     assert diagnosis["recovery_policy"]["automatic_execution"] is False
+
+
+
+def test_job_stats_health_degrades_for_stale_active_work_not_terminal_failures():
+    service = JobStatsService(supabase_client=object())
+    service.get_stats = lambda brand_id=None: {
+        "status_counts": {"FAILED": 0, "STALE": 5},
+        "active_jobs": 5,
+        "oldest_active_minutes": 45,
+    }
+
+    result = service.health_check()
+
+    assert result["status"] == "degraded"
+    assert result["queue_health"]["status"] == "degraded"
+    assert result["content_quality"]["status"] == "healthy"
