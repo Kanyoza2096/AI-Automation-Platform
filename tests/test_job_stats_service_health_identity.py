@@ -195,3 +195,24 @@ def test_job_stats_health_degrades_for_stale_active_work_not_terminal_failures()
     assert result["status"] == "degraded"
     assert result["queue_health"]["status"] == "degraded"
     assert result["content_quality"]["status"] == "healthy"
+
+
+
+def test_failure_intelligence_identifies_missing_usable_knowledge_evidence():
+    diagnosis = JobStatsService._classify_failed_job({
+        "job_id": "job-no-verified-evidence",
+        "last_error_code": "WORKFLOW_FAILED",
+        "result": {
+            "failed_steps": [{
+                "step": "validate_content",
+                "error_code": "AI_VALIDATION_ERROR",
+                "error": "semantic review found no usable traceable evidence",
+            }]
+        },
+    })
+
+    assert diagnosis["category"] == "knowledge_evidence_unavailable"
+    assert diagnosis["recovery_policy"]["execution_mode"] == "human_review"
+    assert diagnosis["recovery_policy"]["automatic_execution"] is False
+    assert "approved_trust_class" in diagnosis["recovery_policy"]["requires"]
+    assert "explicit_evidence_promotion" in diagnosis["recovery_policy"]["requires"]
