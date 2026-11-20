@@ -2,7 +2,15 @@
 
 ## Current implementation
 
-The Director orchestration runtime now has a bounded, durable agent roster model.
+The Director orchestration runtime now has a bounded, durable agent roster model and a model-driven assessment path.
+
+- The authenticated workspace-scoped endpoint `POST /missions/{mission_id}/orchestration/swarm/assess` asks the existing KDO structured LLM gateway to assess complexity and propose specialist assignments.
+- The model receives only selected mission task summaries, bounded prior agent findings, and the allowlisted native adapter/capability catalogue. Task parameters, credentials, executable handles, and external-action tools are not supplied.
+- The model cannot invent engine IDs, capabilities, or task IDs. The assessment contract validates every assignment against the registry and mission task scope before the existing deterministic planner sees it.
+- The planner still enforces complexity-based target sizing, per-task diversity, active concurrency, total agent count, and estimated token ceilings. Deterministic agent IDs are derived from the caller's idempotency prefix and proposed assignment.
+- Prior completed specialist summaries/findings are included in later assessments so Director can recommend a follow-up wave for unresolved gaps, or explicitly decide that no additional specialists are needed.
+- If the LLM gateway is unavailable or returns invalid/unsafe output, assessment fails closed and no agents are spawned.
+- The response includes a concise rationale and provider request metadata for traceability; it explicitly reports that execution and external-action authority were not started or granted.
 
 - `plan_swarm` derives a target roster size from a normalized complexity score and validates proposed agents against the trusted native adapter registry.
 - `MissionOrchestrationRuntime.spawn_swarm` plans and appends one `agent.spawned` event per selected agent. It can be called again during an active mission to add a later specialist wave.
@@ -36,8 +44,8 @@ Registered specialists can now be invoked through the existing native adapter re
 
 ## Deliberate boundary
 
-This increment provides durable planning, registration, and lifecycle state, not autonomous agent cognition or worker execution. The next increment must connect registered agent records to approved, advisory-only native adapter invocations, persist bounded contributions and usage, and expose live agent progress in Mission Control. The Director's model-driven complexity assessment and autonomous follow-up spawning should be enabled only after that execution path and its tests are complete.
+This increment provides model-driven complexity assessment, bounded roster selection, durable registration, and the ability to reassess completed agent findings for a later specialist wave. Specialist execution remains a separate authenticated advisory endpoint; this assessment endpoint does not automatically execute newly spawned agents. A future increment should add a governed bounded worker loop that executes selected advisory agents and triggers reassessment without exceeding the existing mission caps, plus the dedicated live swarm visualization in Mission Control.
 
 ## Validation
 
-Unit tests cover complexity-based sizing, candidate capability/task validation, duplicate detection, resource ceilings, lifecycle authorization, active-agent completion invariants, cancellation, and adding later specialist waves. The tests still require execution in the repository's CI environment before merge.
+Unit tests cover model output validation, workspace-scoped gateway use, no-spawn decisions after completed findings, rejection of invented engine/capability/task assignments, provider-unavailable fail-closed behavior, complexity-based sizing, resource ceilings, lifecycle authorization, cancellation, and later specialist waves. CI must pass on the current PR head before merge.
