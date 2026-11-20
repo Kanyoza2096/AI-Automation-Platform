@@ -11,6 +11,7 @@ the human should approve before the command runs.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from core.unified_bus import UnifiedEventBus
@@ -21,7 +22,6 @@ logger = logging.getLogger("kanyoza.workforce.consumers.heal_command")
 # Map engine names to the governed command they should trigger.
 # Keys are the "engine" field from the heal_command payload.
 HEAL_COMMANDS: Dict[str, str] = {
-    "job_stats_service":    "service.restart",
     "scheduler":            "scheduler.restart",
     "dream_system":         "dream_system.restart",
     "autonomous_loop":      "autonomous_loop.restart",
@@ -40,6 +40,9 @@ class HealCommandConsumer:
         self._subscribed = False
         self._events_handled = 0
         self._events_failed = 0
+        self._events_ignored = 0
+        self._last_dispatch_at: Dict[str, float] = {}
+        self.HEAL_COMMAND_COOLDOWN_SECONDS = 300
 
     async def start(self) -> None:
         if self._subscribed:
@@ -69,8 +72,30 @@ class HealCommandConsumer:
                 logger.warning("heal_command missing engine — skipping")
                 return
 
-            # Look up the correct governed command for this engine.
-            command_id = HEAL_COMMANDS.get(engine, "service.restart")
+            # Only explicitly supported recovery actions may enter Action Kernel.
+            # Unknown engines (including job queue health signals) are advisory;
+            # they must never fall through to a generic service restart.
+            command_id = HEAL_COMMANDS.get(engine)
+            if command_id is None:
+                self._events_ignored += 1
+                logger.warning(
+                    "heal_command ignored: no approved recovery mapping for engine=%s",
+                    engine,
+                )
+                return
+
+            # Collapse repeated health alerts while an operator reviews the
+            # existing governed transaction. This is a per-engine cooldown.
+            now = time.monotonic()
+            last_dispatch = self._last_dispatch_at.get(engine, 0.0)
+            if now - last_dispatch < self.HEAL_COMMAND_COOLDOWN_SECONDS:
+                self._events_ignored += 1
+                logger.info(
+                    "heal_command suppressed by cooldown: engine=%s remaining_seconds=%.0f",
+                    engine, self.HEAL_COMMAND_COOLDOWN_SECONDS - (now - last_dispatch),
+                )
+                return
+            self._last_dispatch_at[engine] = now
 
             # Route the command through Action Kernel. The kernel enforces
             # approval tier and creates a pending transaction.
@@ -82,11 +107,20 @@ class HealCommandConsumer:
                 "requested_by": "autonomous_loop",
             })
 
-            self._events_handled += 1
-            logger.info(
-                "heal_command dispatched: engine=%s command=%s transaction=%s",
-                engine, command_id, result.get("transaction_id", "?"),
-            )
+            transaction_id = result.get("transaction_id") or result.get("transactionId")
+            accepted = result.get("ok") is True or result.get("accepted") is True or bool(transaction_id)
+            if accepted:
+                self._events_handled += 1
+                logger.info(
+                    "heal_command accepted: engine=%s command=%s transaction=%s",
+                    engine, command_id, transaction_id or "not_returned",
+                )
+            else:
+                self._events_failed += 1
+                logger.error(
+                    "heal_command dispatch rejected: engine=%s command=%s error=%s",
+                    engine, command_id, result.get("error") or result.get("detail") or "missing acceptance evidence",
+                )
         except Exception as exc:
             self._events_failed += 1
             logger.exception("heal_command handling failed: %s", exc)
@@ -107,7 +141,11 @@ class HealCommandConsumer:
                         json=body,
                         headers={"X-API-Key": getattr(settings, "master_api_token", "")},
                     )
-                    return resp.json()
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    if not isinstance(payload, dict):
+                        return {"ok": False, "error": "unexpected_response_payload", "http_status": resp.status_code}
+                    return {**payload, "http_status": resp.status_code}
             except Exception as exc:
                 logger.warning("HTTP fallback failed: %s", exc)
                 return {"ok": False, "error": str(exc)}
@@ -126,5 +164,6 @@ class HealCommandConsumer:
             "subscribed": self._subscribed,
             "events_handled": self._events_handled,
             "events_failed": self._events_failed,
+            "events_ignored": self._events_ignored,
             "supported_engines": list(HEAL_COMMANDS.keys()),
         }
