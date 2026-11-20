@@ -437,7 +437,20 @@ def test_agent_spawning_enforces_active_and_per_task_limits():
 
 def test_mission_cannot_complete_with_live_agents_and_cancellation_closes_them():
     machine = MissionStateMachine()
-    current = _advance(machine, _snapshot(), _command(
+    initial = _snapshot()
+    initial_state = dict(initial.state_snapshot)
+    initial_state["task_status"] = {"task-a": "verified"}
+    current = MissionRuntimeSnapshot(
+        mission_id=initial.mission_id,
+        scope_type=initial.scope_type,
+        workspace_id=initial.workspace_id,
+        version=initial.version,
+        status=initial.status,
+        phase=initial.phase,
+        task_ids=initial.task_ids,
+        state_snapshot=initial_state,
+    )
+    current = _advance(machine, current, _command(
         "agent.spawned", task_id="task-a",
         payload={
             "agent_id": "agent-live", "task_id": "task-a",
