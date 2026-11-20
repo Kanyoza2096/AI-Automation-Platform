@@ -653,8 +653,7 @@ class MissionStateMachine:
                 "authority": "none",
                 "side_effect_class": "advisory_only",
             }
-            budget["tokens_used"] = int(budget.get("tokens_used", 0)) + usage_tokens
-            budget["provider_calls"] = int(budget.get("provider_calls", 0)) + provider_calls
+            # The shared provider-usage accounting block below charges this event once.
             event_task_id = str(agent["task_id"])
             next_status, next_phase = "running", "collaboration"
 
