@@ -72,6 +72,21 @@ The tenth GrowthBridge case is a user-approved brand-direction record from conve
 
 Disposition: the production site origin and eight service slugs are now recovered, but exact page URLs and current page contents remain unverified. Refresh the website context through the governed connector and capture page-level source URLs/content hashes before promotion. Do not use the smoke-test events as source evidence. No secrets, credentials, production data, or review decisions were changed.
 
+## Production row-level source reconciliation (read-only, 2026-11-20)
+
+A read-only comparison was performed against all 732 production rows tagged `source=spurgeon_morneve` and all 732 selected source entries in the OpenChristianData release. Comparison uses Unicode normalization, case folding, whitespace removal, and hyphen/dash folding to tolerate OCR line-wrap and formatting differences. This is a content-identity audit, not a rights determination or approval action.
+
+- **716/732** production rows have a full normalized-content match to a selected source entry.
+- **675/732** have both a full normalized-content match and matching date, morning/evening period, and scripture metadata.
+- **41/716** full-content matches have metadata discrepancies: 40 scripture labels use `Solomon` instead of `Song of Solomon`; one row is missing the scripture metadata field. These require metadata correction/review, not text replacement.
+- **11** additional rows begin with the complete selected source entry but contain extra trailing text after it, consistent with a chunk-boundary/adjacent-entry contamination issue. They must be split or reviewed before promotion.
+- **5** rows do not begin with an exact normalized match to the expected date/period source entry. These need manual source comparison.
+- Therefore, **727/732** begin with the exact selected source entry after normalization, but only the 716 full-content matches are full-entry matches; no bulk approval is justified.
+
+The source release's rights notice explicitly limits its public-domain assessment to the **United States**. It does not establish worldwide clearance. KDO's deployment and user geography may include jurisdictions outside the United States, so this evidence alone is insufficient to approve public redistribution in Malawi or other countries. Obtain a jurisdiction-specific rights review or a separately documented applicable permission before publication. Continue to exclude CCEL's electronic files, formatting, and modern material; retain the required “sourced via CCEL.org” credit.
+
+No production database records, review decisions, trust classes, source URLs, signed snapshots, or promotion events were changed by this comparison.
+
 ## External provenance research (read-only, 2026-11-20)
 ## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
 
