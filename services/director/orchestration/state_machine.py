@@ -776,6 +776,11 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("mission_tasks_not_all_verified")
             if unresolved or pending_handoffs or state["pending_questions"]:
                 raise MissionTransitionRejected("mission_has_unresolved_collaboration")
+            if any(
+                item.get("status") in {"spawned", "running"}
+                for item in state["agents"].values()
+            ):
+                raise MissionTransitionRejected("mission_has_active_agents")
             next_status, next_phase = "completed", "completed"
 
         elif event_type == "mission.partial":
@@ -787,13 +792,21 @@ class MissionStateMachine:
         elif event_type == "mission.failed":
             if command.actor_type not in {"director", "system"}:
                 raise MissionTransitionRejected("mission_failure_actor_invalid")
-            self._require_text(payload, "reason")
+            reason = self._require_text(payload, "reason")
+            for agent in state["agents"].values():
+                if agent.get("status") in {"spawned", "running"}:
+                    agent["status"] = "terminated"
+                    agent["reason"] = "Mission failed: " + reason[:900]
             next_status, next_phase = "failed", "recovery"
 
         elif event_type == "mission.cancelled":
             if command.actor_type not in {"operator", "system"}:
                 raise MissionTransitionRejected("mission_cancellation_requires_operator_or_system")
-            self._require_text(payload, "reason")
+            reason = self._require_text(payload, "reason")
+            for agent in state["agents"].values():
+                if agent.get("status") in {"spawned", "running"}:
+                    agent["status"] = "terminated"
+                    agent["reason"] = "Mission cancelled: " + reason[:900]
             next_status, next_phase = "cancelled", "recovery"
 
         elif event_type == "mission.needs_reconciliation":
