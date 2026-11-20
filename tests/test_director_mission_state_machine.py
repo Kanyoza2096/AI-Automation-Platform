@@ -285,7 +285,7 @@ def test_reconciliation_observation_is_system_only_evidence_bound_and_non_author
         "capability": "research.analyze",
         "status": "unknown",
         "authoritative": False,
-        "evidence_ref": None,
+        "evidence_ref": "engine-diagnostic:pending",
     }
     with pytest.raises(MissionTransitionRejected, match="task_reconciliation_requires_trusted_reconciler"):
         machine.prepare(current, _command(
@@ -305,6 +305,7 @@ def test_reconciliation_observation_is_system_only_evidence_bound_and_non_author
     assert transition.next_snapshot.state_snapshot["task_status"]["task-a"] == "blocked"
     assert transition.next_snapshot.state_snapshot["task_reconciliations"]["task-a"]["status"] == "unknown"
     assert transition.next_snapshot.state_snapshot["task_reconciliations"]["task-a"]["authoritative"] is False
+    assert transition.next_snapshot.state_snapshot["task_reconciliations"]["task-a"]["evidence_ref"] == "engine-diagnostic:pending"
 
 
 def test_recovery_review_is_operator_only_and_cannot_authorize_reconsideration():
