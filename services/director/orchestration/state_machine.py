@@ -542,9 +542,17 @@ class MissionStateMachine:
                 or estimated_tokens > 12000
             ):
                 raise MissionTransitionRejected("agent_token_estimate_invalid")
+            existing_estimated_tokens = sum(
+                int(item.get("estimated_tokens", 0) or 0)
+                for item in state["agents"].values()
+            )
+            if existing_estimated_tokens + estimated_tokens > 12000:
+                raise MissionTransitionRejected("mission_agent_estimated_token_ceiling_exceeded")
             budget_limit = budget.get("max_tokens")
             if budget_limit is not None and (
-                int(budget.get("tokens_used", 0)) + estimated_tokens > int(budget_limit)
+                int(budget.get("tokens_used", 0))
+                + existing_estimated_tokens
+                + estimated_tokens > int(budget_limit)
             ):
                 raise MissionTransitionRejected("mission_token_budget_would_be_exceeded")
             state["agents"][agent_id] = {
