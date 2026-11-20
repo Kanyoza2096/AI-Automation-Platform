@@ -224,3 +224,25 @@ The endpoint is read-only. It does not create review cases, change knowledge
 metadata, approve sources, or invoke promotion. A reviewer opens the full
 knowledge entry, submits that exact version to the existing review API, records
 a human decision, and invokes promotion separately only after approval.
+
+
+## New Nature in Christ source recovery: pinned dataset identified (read-only, 2026-11-20)
+
+The 732-entry devotional collection is now identified at the publisher-data level. The public repository is `OpenChristianData/open-christian-data`; the inspected repository tree resolves to commit `a09bef70799ca6bea6199e48fa4bd14c1d723a06`. Its dataset file is:
+
+- `data/devotionals/spurgeons-morning-evening/morning-evening.json`
+- Git blob SHA: `bdab95a7791ebe7bdfca5e752ede707b63337d7c`
+- File size: 1,744,607 bytes
+- Parsed record count: 732
+- Record key: `entry_id`, formatted as `MM-DD-morning` or `MM-DD-evening`
+- Row text: `content_blocks[]`; citation metadata: `primary_reference`
+
+A read-only extraction of the Git blob confirmed 732 structured records. Joining the 732 KDO records by their existing `metadata.date` and `metadata.time_of_day` to the dataset's month/day/period keys yields 732 unique record matches. This establishes a deterministic record locator; it does not establish that the production text is identical or that every claim is eligible for approval.
+
+The dataset's own metadata points to the CCEL ThML source at `https://www.ccel.org/ccel/spurgeon/morneve.xml`. The source repository also publishes a retained-source manifest recording 2,136,777 bytes and SHA-256 `3512797ae879d4fdbdcde90e5ebc04299e501658fd8fb6c09977c2e2648ad0a4`. The dataset metadata separately records source hash `fca4507c9843b540331e1d22308f78f8b6a47e9c4f4986680799b94fc04c804a`; these are distinct hash claims and must not be treated as equivalent without reconciliation.
+
+**Rights qualification:** the dataset config says “public domain” and its older notes claim worldwide status, but the current selected-text public notice explicitly limits its disposition to the United States, distinguishes the underlying historical text from CCEL's electronic files/formatting, and does not assert worldwide clearance. Use the current qualified notice and preserve this discrepancy for rights review; do not use the older broad config wording as a rights decision.
+
+**Implementation boundary:** the generic KDO web-intelligence fetch path returns at most 8,000 characters of extracted page text, which cannot capture this 1.7 MB structured dataset or a complete record. Do not add GitHub, raw.githubusercontent.com, or CCEL to the general trusted-host registry as a shortcut. A safe recovery implementation needs a dedicated, pinned-repository/blob adapter that verifies the exact repository, commit/blob identity, response size, JSON schema, and record ID before producing a per-record source snapshot. The resulting row-level snapshot must still pass the existing signed-attestation, claim-support, reviewer, and promotion gates.
+
+Disposition: source dataset and all 732 record keys identified; row-level source adapter, source-hash reconciliation, the 15 text-difference cases, 11 appended-calendar anomalies, and 42 scripture-reference discrepancies remain unresolved. No production entry, review case, source snapshot, trust class, or promotion state was changed by this inspection.
