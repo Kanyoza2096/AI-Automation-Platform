@@ -430,6 +430,7 @@ def test_agent_spawning_enforces_active_and_per_task_limits():
                 "agent_id": "agent-four", "task_id": "task-a",
                 "engine_id": "content_intelligence",
                 "capability": "research.analyze", "role": "Researcher",
+                "estimated_tokens": 100,
             },
         ))
 
