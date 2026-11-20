@@ -46,7 +46,7 @@ Content comparison after Unicode normalization, case folding, whitespace normali
 - 671/732 exact content matches.
 - 43/732 differ only by one hyphenation character.
 - 11/732 contain an appended next-month calendar list after otherwise matching devotional text.
-- 7/732 require manual content review. These include a substantial November 3 morning text discrepancy, extra or displaced scripture references in other rows, and two additional hyphenation-boundary differences.
+- 7/732 require manual content/reference review. These are primarily citation/formatting discrepancies: two production rows contain additional scripture references absent from the source, one row adds/repeats a verse heading, and several rows need poem/line-break or hyphenation alignment. The November 3 morning row needs manual alignment of the opening quotation and closing poem, but should not be labelled a substantive text mismatch without further review.
 - Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`.
 
 The manual-review queue is explicitly enumerated:
