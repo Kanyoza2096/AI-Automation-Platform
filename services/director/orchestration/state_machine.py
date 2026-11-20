@@ -107,6 +107,7 @@ class MissionStateMachine:
             "unresolved_disagreements": [],
             "pending_handoffs": {},
             "pending_questions": {},
+            "agents": {},
             "active_reasoning_round": 0,
             "budget": {
                 "max_rounds": int(max_reasoning_rounds),
@@ -194,6 +195,7 @@ class MissionStateMachine:
         state.setdefault("unresolved_disagreements", [])
         state.setdefault("pending_handoffs", {})
         state.setdefault("pending_questions", {})
+        state.setdefault("agents", {})
         state.setdefault("active_reasoning_round", 0)
         budget = state.setdefault("budget", {})
         budget.setdefault("max_rounds", self.max_reasoning_rounds)
@@ -507,6 +509,80 @@ class MissionStateMachine:
             task_status[task_id] = "approval_required"
             event_task_id = task_id
             next_phase = "delegation"
+
+        elif event_type == "agent.spawned":
+            self._require_active(current.status)
+            if command.actor_type != "director":
+                raise MissionTransitionRejected("agent_spawn_requires_director")
+            agent_id = self._require_text(payload, "agent_id")
+            task_id = command.task_id or self._require_text(payload, "task_id")
+            engine_id = self._require_text(payload, "engine_id")
+            capability = self._require_text(payload, "capability")
+            role = self._require_text(payload, "role")
+            if len(agent_id) > 128 or len(role) > 120:
+                raise MissionTransitionRejected("agent_identity_or_role_too_long")
+            if task_id not in task_ids:
+                raise MissionTransitionRejected("agent_task_not_in_mission")
+            if agent_id in state["agents"]:
+                raise MissionTransitionRejected("agent_id_already_exists")
+            active_agents = [
+                item for item in state["agents"].values()
+                if item.get("status") in {"spawned", "running"}
+            ]
+            if len(state["agents"]) >= 8 or len(active_agents) >= 4:
+                raise MissionTransitionRejected("mission_agent_capacity_exceeded")
+            task_agents = [item for item in active_agents if item.get("task_id") == task_id]
+            if len(task_agents) >= 3:
+                raise MissionTransitionRejected("mission_task_agent_capacity_exceeded")
+            estimated_tokens = payload.get("estimated_tokens", 1500)
+            if (
+                isinstance(estimated_tokens, bool)
+                or not isinstance(estimated_tokens, int)
+                or estimated_tokens < 0
+                or estimated_tokens > 12000
+            ):
+                raise MissionTransitionRejected("agent_token_estimate_invalid")
+            budget_limit = budget.get("max_tokens")
+            if budget_limit is not None and (
+                int(budget.get("tokens_used", 0)) + estimated_tokens > int(budget_limit)
+            ):
+                raise MissionTransitionRejected("mission_token_budget_would_be_exceeded")
+            state["agents"][agent_id] = {
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "engine_id": engine_id,
+                "capability": capability,
+                "role": role,
+                "status": "spawned",
+                "estimated_tokens": estimated_tokens,
+                "created_by": command.actor_id,
+                "created_at": str(payload.get("created_at") or "")[:64],
+            }
+            event_task_id = task_id
+            next_status, next_phase = "running", "delegation"
+
+        elif event_type == "agent.status.changed":
+            self._require_active(current.status)
+            if command.actor_type not in {"director", "system"}:
+                raise MissionTransitionRejected("agent_status_change_requires_director_or_system")
+            agent_id = self._require_text(payload, "agent_id")
+            agent = state["agents"].get(agent_id)
+            if not agent:
+                raise MissionTransitionRejected("agent_not_found")
+            target = self._require_text(payload, "status")
+            allowed = {
+                "spawned": {"running", "failed", "terminated"},
+                "running": {"completed", "failed", "terminated"},
+            }
+            if target not in allowed.get(agent.get("status"), set()):
+                raise MissionTransitionRejected("agent_status_transition_invalid")
+            if target in {"failed", "terminated"}:
+                agent["reason"] = self._require_text(payload, "reason")[:1000]
+            agent["status"] = target
+            if target in {"completed", "failed", "terminated"}:
+                agent["finished_at"] = str(payload.get("finished_at") or "")[:64]
+            event_task_id = str(agent["task_id"])
+            next_status, next_phase = "running", "collaboration"
 
         elif event_type == "engine.question.asked":
             self._require_active(current.status)
