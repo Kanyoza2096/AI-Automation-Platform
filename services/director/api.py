@@ -64,6 +64,11 @@ from .analysis import (
 )
 from .core import Director, auto_discover_engines
 from .planning import StrategicPlannerUnavailable
+from .orchestration.director_swarm import (
+    SwarmAssessmentError,
+    SwarmAssessmentUnavailable,
+    assess_swarm_roster,
+)
 from .observation_bridge import read_meta_health_evidence, reconcile_supervisor_evidence
 log = logging.getLogger("kanyoza.director")
 
@@ -560,11 +565,6 @@ def create_app(director: Director):
         runtime = _get_mission_runtime()
         try:
             from ai.gateway import get_llm_gateway
-            from .orchestration.director_swarm import (
-                SwarmAssessmentError,
-                SwarmAssessmentUnavailable,
-                assess_swarm_roster,
-            )
             current = await runtime.load_snapshot(
                 mission_id=mission_id, workspace_id=workspace_id
             )
@@ -659,11 +659,6 @@ def create_app(director: Director):
             if task is not None and task.mission_id == mission_id and _task_in_workspace(task, request):
                 try:
                     from ai.gateway import get_llm_gateway
-                    from .orchestration.director_swarm import (
-                        SwarmAssessmentError,
-                        SwarmAssessmentUnavailable,
-                        assess_swarm_roster,
-                    )
                     followup_prefix = "follow-" + hashlib.sha256(
                         f"{mission_id}:{agent_id}:{body.idempotency_prefix}".encode("utf-8")
                     ).hexdigest()[:20]
