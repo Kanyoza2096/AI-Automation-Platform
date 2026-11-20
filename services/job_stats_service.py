@@ -121,13 +121,11 @@ class JobStatsService:
     CACHE_TTL_SECONDS = 30
     MAX_BROKEN_PIPE_RETRIES = 2
 
-    # v4.4 — Health status thresholds.
-    # Tuned so a working queue stays healthy and a genuinely stuck one
-    # surfaces. A healthy queue can have a handful of in-flight failures;
-    # a stuck queue has dozens.
+    # Queue-liveness thresholds use stale active work and active age only.
+    # Terminal failures have separate content-quality thresholds below.
     HEALTH_DEGRADED_STALE = 5
-    HEALTH_DEGRADED_FAILED = 10
     HEALTH_UNHEALTHY_STALE = 20
+    HEALTH_DEGRADED_FAILED = 10
     HEALTH_UNHEALTHY_FAILED = 50
     HEALTH_UNHEALTHY_OLDEST_MINUTES = 24 * 60  # 24 hours
 
