@@ -1587,3 +1587,75 @@ async def test_operator_recovery_review_is_audited_and_does_not_change_task_auth
     assert event["event_type"] == "task.recovery.reviewed"
     assert event["actor_type"] == "operator" and event["actor_id"] == "operator-1"
     assert event["payload"]["decision"] == "hold"
+
+
+@pytest.mark.asyncio
+async def test_native_engine_invocation_exception_preserves_uncertain_attempt_without_failure_event():
+    class RaisingAdapter(FakeNativeAdapter):
+        async def invoke(self, context):
+            self.calls.append(context)
+            raise RuntimeError("simulated_transport_disconnect_after_dispatch")
+
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    adapter = RaisingAdapter("content_intelligence", "This adapter must not return.")
+    registry.register(adapter)
+    runtime = MissionOrchestrationRuntime(
+        store=store,
+        adapters=registry,
+        task_state_callback=lambda *args: None,
+        default_timeout_seconds=1.0,
+    )
+    await runtime.assign_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        idempotency_key="assign-exception",
+        correlation_id="corr-exception",
+    )
+    approved_at = datetime(2026, 11, 19, 12, 20, tzinfo=timezone.utc)
+    await runtime.approve_task(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        operator_id="operator-exception",
+        approved_at=approved_at,
+        idempotency_key=f"director-task-approval:{store.task_id}:{approved_at.isoformat()}",
+        correlation_id="corr-exception",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated_transport_disconnect_after_dispatch"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="Exercise a non-timeout adapter failure.",
+            inputs={},
+            operator_id="operator-exception",
+            idempotency_prefix="execute-exception",
+            correlation_id="corr-exception",
+            timeout_seconds=1.0,
+        )
+
+    assert len(adapter.calls) == 1
+    assert store.task["status"] == "executing"
+    assert store.row["state_snapshot"]["task_status"][store.task_id] == "executing"
+    assert not any(event["event_type"] == "task.failed" for event in store.events)
+    assert not any(event["event_type"] == "task.completed" for event in store.events)
+    with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
+        await runtime.execute_approved_task(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            engine_id="content_intelligence",
+            objective="A disconnected attempt must not be blindly re-dispatched.",
+            inputs={},
+            operator_id="operator-exception",
+            idempotency_prefix="execute-exception-retry",
+            correlation_id="corr-exception",
+            timeout_seconds=1.0,
+        )
+    assert len(adapter.calls) == 1
