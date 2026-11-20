@@ -8,11 +8,44 @@ from api.dependencies import *
 from api.v1_models import *
 from api.v1_helpers import *
 from api.v1_stores import *
+from core.security.deps import require_human_workspace_admin
 
 router = APIRouter()
 _review_sweep_task: asyncio.Task | None = None
 _review_sweep_scheduler_task: asyncio.Task | None = None
 _review_sweep_logger = logging.getLogger("kdo.knowledge_review_sweep")
+_lightweight_review_logger = logging.getLogger("kdo.lightweight_knowledge_review_api")
+_lightweight_review_lock = asyncio.Lock()
+
+
+@router.post("/admin/knowledge/lightweight-review")
+async def run_admin_lightweight_knowledge_review(
+    admin=Depends(require_human_workspace_admin),
+):
+    """Run a read-only lightweight knowledge inventory for the authenticated workspace."""
+    workspace_id = str(getattr(admin, "workspace_id", "") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+    if _lightweight_review_lock.locked():
+        raise HTTPException(status_code=409, detail="A lightweight knowledge review is already running")
+    async with _lightweight_review_lock:
+        try:
+            from scripts.lightweight_knowledge_review import run
+            result = await asyncio.to_thread(
+                run, apply=False, batch_size=100, workspace_id=workspace_id
+            )
+            _lightweight_review_logger.info(
+                "admin_lightweight_knowledge_review_finished",
+                extra={"workspace_id": workspace_id, "result": result},
+            )
+            return _ok(result)
+        except Exception as exc:
+            _lightweight_review_logger.exception(
+                "admin_lightweight_knowledge_review_failed",
+                extra={"workspace_id": workspace_id, "error_class": type(exc).__name__},
+            )
+            raise HTTPException(status_code=503, detail="Knowledge review could not be completed") from exc
+
 
 
 async def _run_review_sweep_background() -> dict | None:
