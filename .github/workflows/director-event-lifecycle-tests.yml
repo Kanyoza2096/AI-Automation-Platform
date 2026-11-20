@@ -33,6 +33,7 @@ on:
       - "tests/test_director_mission_state_machine.py"
       - "tests/test_director_mission_runtime.py"
       - "tests/test_director_mission_graph.py"
+      - "tests/test_director_v2_http_admission.py"
       - "tests/test_ai_provider_fabric.py"
       - "migrations/175_director_mission_admission_scope_contract.sql"
       - "migrations/176_director_mission_runtime_and_event_journal.sql"
