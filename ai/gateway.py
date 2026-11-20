@@ -162,7 +162,7 @@ class IntelligenceResult:
 _DEFAULT_ALLOWED_CALLERS = frozenset({
     "content", "director", "content_engine", "content_intelligence",
     "code_intelligence", "ai_chat", "tool_agent",
-    "business_onboarding", "ai_business_understanding",
+    "business_onboarding", "ai_business_understanding", "content_review",
     # v2.4 — "eval" is a diagnostic caller. Without it here, evaluate()
     # returned "caller_not_allowed" in default config.
     "eval",
