@@ -215,7 +215,9 @@ class ContentSemanticReviewer:
                         "originality", "audience_value", "genericity", "rationale",
                         "improvements",
                     ],
-                    caller="content_review",
+                    # Semantic review belongs to the established content-domain
+                    # gateway policy used by ContentEngine and ArticleSemanticReviewer.
+                    caller="content",
                 ),
                 timeout=_REVIEW_TIMEOUT_S,
             )

@@ -81,6 +81,33 @@ def test_failure_intelligence_classifies_evidence_gate_without_retrying():
     assert "verified knowledge-base source" in diagnosis["recommended_action"]
 
 
+def test_failure_intelligence_classifies_gateway_caller_policy_before_semantic_validation():
+    diagnosis = JobStatsService._classify_failed_job({
+        "job_id": "job-gateway-policy",
+        "last_error_code": "WORKFLOW_FAILED",
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "result": {
+            "failed_steps": [{
+                "step": "validate_content",
+                "error_code": "AI_VALIDATION_ERROR",
+                "error": (
+                    "Independent semantic review did not approve publication: "
+                    "semantic reviewer returned no valid structured result: "
+                    "caller_not_allowed:content_review"
+                ),
+            }]
+        },
+    })
+
+    assert diagnosis["category"] == "gateway_caller_policy"
+    assert "LLM_ALLOWED_CALLERS" in diagnosis["recommended_action"]
+    assert diagnosis["recovery_policy"]["proposal"] == "gateway_caller_policy_alignment"
+    assert diagnosis["recovery_policy"]["execution_mode"] == "human_review"
+    assert diagnosis["recovery_policy"]["automatic_execution"] is False
+    assert diagnosis["recovery_policy"]["publication_replay_allowed"] is False
+
+
 def test_failure_intelligence_classifies_voice_and_caption_failures():
     voice = JobStatsService._classify_failed_job({
         "result": {"failed_steps": [{"step": "validate_content", "error": "caption_quality: first_person_violation: forbidden first-person pronoun pattern"}]}

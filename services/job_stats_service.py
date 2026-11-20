@@ -492,6 +492,15 @@ class JobStatsService:
                 "execution_mode": "human_review",
                 "requires": ["claim_to_source_mapping", "semantic_validation", "voice_and_policy_validation"],
             },
+            "gateway_caller_policy": {
+                "proposal": "gateway_caller_policy_alignment",
+                "execution_mode": "human_review",
+                "requires": [
+                    "caller_matches_approved_llm_policy",
+                    "policy_configuration_verified",
+                    "semantic_review_gate_preserved",
+                ],
+            },
             "provider_availability": {
                 "proposal": "transient_provider_retry_review",
                 "execution_mode": "retry_candidate" if maximum > 0 and attempts < maximum else "human_review",
@@ -521,7 +530,12 @@ class JobStatsService:
             for value in (step.get("error"), step.get("error_code"), step.get("step"))
         ).lower()
         code = str(job.get("last_error_code") or "").upper()
-        if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
+        if "caller_not_allowed" in evidence or "caller is not allowed" in evidence:
+            category, action = (
+                "gateway_caller_policy",
+                "Verify the internal caller against the deployed LLM_ALLOWED_CALLERS policy; align the caller or narrowly update the allowlist, then rerun validation without bypassing semantic review.",
+            )
+        elif "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
             category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
         elif (
             "first-person" in evidence
