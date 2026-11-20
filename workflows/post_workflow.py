@@ -312,7 +312,7 @@ class KnowledgeContextStep(Step):
                 if not verified or not source_id:
                     continue
                 facts.append(
-                    f"[source_id={source_id};verified=true]\\n{text}"
+                    f"[source_id={source_id};verified=true]\n{text}"
                 )
                 evidence.append({
                     "source_id": source_id,
@@ -321,17 +321,23 @@ class KnowledgeContextStep(Step):
                     "score": score if isinstance(score, (int, float)) else None,
                 })
 
-            # No verified evidence is not, by itself, proof that the queue or
-            # workflow is broken. Continue with an empty evidence set; the
-            # deterministic metric gate and independent claim-aware semantic
-            # reviewer must reject unsupported factual claims before publish.
-            context["knowledge_context"] = "\\n".join(facts)
+            # No verified evidence is not, by itself, proof that the workflow
+            # is broken. Continue with an empty evidence set; deterministic
+            # empirical-claim checks and independent semantic review still
+            # gate publication.
+            context["knowledge_context"] = "\n".join(facts)
             context["knowledge_evidence"] = evidence
             if evidence:
-            logger.info(
-                "PostWorkflow: KB retrieved %d traceable entries for topic='%s' brand='%s'",
-                len(evidence), topic[:60], self._brand.name,
-            )
+                logger.info(
+                    "PostWorkflow: KB retrieved %d verified entries for topic='%s' brand='%s'",
+                    len(evidence), topic[:60], self._brand.name,
+                )
+            else:
+                logger.warning(
+                    "PostWorkflow: no verified KB evidence for topic='%s' brand='%s'; "
+                    "claim-aware semantic review remains mandatory",
+                    topic[:60], self._brand.name,
+                )
             return evidence
         except StepFailure:
             raise
