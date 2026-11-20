@@ -33,6 +33,9 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspa
     scanned = 0
     counts: Counter[str] = Counter()
     warnings: Counter[str] = Counter()
+    write_attempted = 0
+    write_confirmed = 0
+    write_failed = 0
     while True:
         take = min(batch_size, maximum - scanned) if maximum else batch_size
         if take <= 0:
@@ -55,6 +58,7 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspa
             counts[report["status"]] += 1
             warnings.update(report["warnings"])
             if apply:
+                write_attempted += 1
                 updated = {
                     **metadata,
                     "kdo_lightweight_review": report,
@@ -68,8 +72,10 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspa
                 if row.get("brand_id") is not None:
                     query = query.eq("brand_id", row["brand_id"])
                 saved = query.select("id").execute()
-                if not saved.data:
-                    counts["write_not_confirmed"] += 1
+                if saved.data:
+                    write_confirmed += 1
+                else:
+                    write_failed += 1
             scanned += 1
         offset += len(rows)
         if len(rows) < take or (maximum and scanned >= maximum):
@@ -80,6 +86,9 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspa
         "scanned": scanned,
         "counts": dict(counts),
         "warning_counts": dict(warnings),
+        "write_attempted": write_attempted,
+        "write_confirmed": write_confirmed,
+        "write_failed": write_failed,
         "verified_entries_created": 0,
         "promotions_performed": 0,
     }
