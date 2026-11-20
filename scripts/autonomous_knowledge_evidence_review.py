@@ -322,8 +322,17 @@ async def _drain_pending_review_cases(
         captured_metadata = await _capture_trusted_source_snapshot(client, row)
         if captured_metadata != metadata:
             row = {**row, "metadata": captured_metadata}
+
+        # Source capture can enrich a legacy entry after its pending case was
+        # created. Refresh/reopen the exact content-version case before review
+        # so the adjudicator receives the newly attested source URL and ID.
+        refreshed_case = _case_for_entry(client, row)
+        if not refreshed_case:
+            counters["skipped"] += 1
+            continue
+
         counters["discovered"] += 1
-        outcome = await _review_case(client, case, row)
+        outcome = await _review_case(client, refreshed_case, row)
         if outcome in counters:
             counters[outcome] += 1
 
