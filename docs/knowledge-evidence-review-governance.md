@@ -171,6 +171,20 @@ The server-side ingestion route requires two backend-only environment variables:
 
 Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. Both registries must be curated; do not add a domain merely because it appears in a submitted URL.
 
+### Recovered Ships & Shrugs source cohort
+
+The current 112-entry Ships & Shrugs backlog contains source URLs on exactly three hosts: `hld.handbook.academy`, `ai-eng.handbook.academy`, and `dsa.handbook.academy`. The publisher's public `handbook-academy/engineering-handbook` repository identifies these handbook families and declares CC BY-SA 4.0. After confirming the deployed source URLs still match this inventory, the additive registry can be configured as:
+
+```json
+{
+  "hld.handbook.academy": "publisher_primary",
+  "ai-eng.handbook.academy": "publisher_primary",
+  "dsa.handbook.academy": "publisher_primary"
+}
+```
+
+This enables server-side capture from the publisher's own handbook sites; it does not itself approve any entry. The autonomous reviewer must still establish claim-to-chapter support. The 52 broad/root URLs still need exact chapter mapping, and attribution/ShareAlike and third-party-material checks remain separate conditions. Do not add `github.com`, `raw.githubusercontent.com`, or `ccel.org` to the registry as a shortcut for the other collections.
+
 
 Migration 187 limits the service-role grants on review cases and sweep state to the read/insert/update operations used by the backend; it does not need delete or truncate authority.
 
