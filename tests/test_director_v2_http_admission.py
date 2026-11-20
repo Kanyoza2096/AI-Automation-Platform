@@ -171,5 +171,8 @@ def test_director_v2_http_admission_rejects_missing_trusted_identity(monkeypatch
         },
     )
 
-    assert response.status_code == 401
+    # With no configured auth credential, Director deliberately fails closed
+    # as unavailable (503) rather than pretending authentication is active.
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Director authentication service is not configured"
     assert _FakeMissionRuntimeStore.instances == []
