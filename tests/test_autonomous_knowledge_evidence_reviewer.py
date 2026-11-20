@@ -274,13 +274,27 @@ async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch
         def table(self, name): return FakeQuery(name)
 
     reviewed = []
+    refreshed_case = {
+        **pending_case,
+        "source_id": "source-recovered-1",
+        "source_url": "https://trusted.example/source",
+        "trust_class": "official_documentation",
+    }
     async def capture(_client, row):
-        return row["metadata"]
+        return {
+            **row["metadata"],
+            "source_snapshot_text": "Trusted captured source text",
+            "source_snapshot_sha256": "snapshot-digest",
+        }
+    def refresh_case(_client, row):
+        assert row["metadata"]["source_snapshot_text"] == "Trusted captured source text"
+        return refreshed_case
     async def review(_client, case, row):
-        reviewed.append((case["id"], row["id"]))
+        reviewed.append((case["id"], case.get("source_url"), row["id"]))
         return "quarantined"
 
     monkeypatch.setattr(sweep, "_capture_trusted_source_snapshot", capture)
+    monkeypatch.setattr(sweep, "_case_for_entry", refresh_case)
     monkeypatch.setattr(sweep, "_review_case", review)
     counters = {
         "scanned": 0, "discovered": 0, "approved": 0,
@@ -289,6 +303,6 @@ async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch
 
     await sweep._drain_pending_review_cases(FakeClient(), 10, counters)
 
-    assert reviewed == [("case-pending", "entry-old")]
+    assert reviewed == [("case-pending", "https://trusted.example/source", "entry-old")]
     assert counters["discovered"] == 1
     assert counters["quarantined"] == 1
