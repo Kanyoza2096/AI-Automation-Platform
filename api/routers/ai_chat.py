@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
 import asyncio
+import hashlib
 import logging
 import json
 import re
@@ -108,6 +109,7 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
     """
     evidence = {}
     source_status = {}
+    evidence_manifest = []
 
     async def read_table(key: str, table: str, columns: str, time_column: str, limit: int):
         try:
@@ -116,8 +118,32 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
                 .order(time_column, desc=True)
                 .limit(limit))
             result = await _db_call(lambda: query.execute())
-            rows = _safe_context_value(_rows(result))
+            raw_rows = _rows(result)
+            rows = _safe_context_value(raw_rows)
             evidence[key] = rows
+            for raw_row, safe_row in zip(raw_rows, rows):
+                if not isinstance(safe_row, dict):
+                    continue
+                # Date fields are observations, not unique record identifiers.
+                record_id = safe_row.get("id") or safe_row.get("event_id")
+                observed_at = (
+                    safe_row.get(time_column)
+                    or safe_row.get("created_at")
+                    or safe_row.get("updated_at")
+                    or safe_row.get("occurred_at")
+                    or safe_row.get("timestamp")
+                )
+                canonical_record = json.dumps(
+                    safe_row, sort_keys=True, separators=(",", ":"),
+                    ensure_ascii=False, default=str,
+                ).encode("utf-8")
+                evidence_manifest.append({
+                    "source_table": table,
+                    "record_id": str(record_id) if record_id is not None else None,
+                    "identity_quality": "stable_record_id" if record_id is not None else "content_fingerprint_only",
+                    "observed_at": str(observed_at) if observed_at is not None else None,
+                    "sanitized_snapshot_sha256": hashlib.sha256(canonical_record).hexdigest(),
+                })
             source_status[table] = {
                 "status": "available" if rows else "empty",
                 "records": len(rows),
@@ -197,8 +223,19 @@ async def _load_engine_context(db, workspace_id: str, engine: str, *, include_en
             "status": source_status,
             "partial": bool(unavailable),
             "unavailable_tables": unavailable,
+            "evidence_manifest_scope": "workspace_database_rows_only; platform_runtime_aggregates_not_record_fingerprinted",
+            "evidence_manifest": evidence_manifest,
+            "evidence_manifest_sha256": hashlib.sha256(json.dumps(
+                evidence_manifest, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
+            ).encode("utf-8")).hexdigest(),
         },
         "evidence": evidence,
+        "evidence_manifest": evidence_manifest,
+        "evidence_manifest_sha256": hashlib.sha256(json.dumps(
+            evidence_manifest, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, default=str,
+        ).encode("utf-8")).hexdigest(),
         "execution_authority": "none",
     }
 
@@ -221,9 +258,11 @@ def _normalize_collaboration_engines(value):
         raise HTTPException(status_code=422, detail="At least one consulting engine is required")
     return engines
 
-def _collaboration_run_status(consultations):
-    """A run is partial if any peer or evidence source was unavailable."""
-    if not consultations:
+def _collaboration_run_status(consultations, evidence_comparison=None, recommendation=None):
+    """A run is complete only when peer work and Director synthesis are usable."""
+    if not consultations or not isinstance(evidence_comparison, dict) or not isinstance(recommendation, dict):
+        return "partial"
+    if evidence_comparison.get("status") != "available" or recommendation.get("status") != "available":
         return "partial"
     return "partial" if any(
         item.get("status") != "completed"
@@ -234,10 +273,62 @@ def _collaboration_run_status(consultations):
 
 
 async def _persist_collaboration_progress(db, workspace_id, run_id, consultations, phase, metadata=None):
-    """Persist an incremental, workspace-scoped snapshot for live read-only observers."""
-    evidence_summary = {"phase": phase, "updated_at": datetime.now(timezone.utc).isoformat()}
+    """Persist a workspace-scoped progress snapshot and bounded event history.
+
+    The event history records phase transitions and per-engine state changes so
+    Mission Control can reconstruct how a collaboration progressed after the
+    synchronous request has returned. It contains metadata only, not duplicated
+    consultation text or authority-bearing commands.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    existing_result = await _db_call(lambda: db.table("director_collaboration_runs")
+        .select("evidence_summary")
+        .eq("id", run_id)
+        .eq("workspace_id", workspace_id)
+        .limit(1)
+        .execute())
+    existing_rows = list(getattr(existing_result, "data", None) or [])
+    if not existing_rows:
+        raise HTTPException(status_code=404, detail="Director collaboration run not found")
+    previous = existing_rows[0].get("evidence_summary") or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    progress_events = list(previous.get("progress_events") or [])
+    sequence = int(progress_events[-1].get("sequence") or 0) + 1 if progress_events and isinstance(progress_events[-1], dict) else len(progress_events) + 1
+    engine_states = []
+    for item in consultations[:4]:
+        if not isinstance(item, dict):
+            continue
+        engine_states.append({
+            "engine": str(item.get("engine") or "")[:40],
+            "status": str(item.get("status") or "unknown")[:32],
+            "phase": str(item.get("phase") or "unknown")[:48],
+            "started_at": item.get("started_at"),
+            "completed_at": item.get("completed_at"),
+            "follow_up_questions": len(item.get("follow_up_questions") or []),
+            "follow_up_responses": len(item.get("follow_up_responses") or []),
+            "evidence_record_count": len((item.get("sources") or {}).get("evidence_manifest") or []),
+            "evidence_manifest_sha256": (item.get("sources") or {}).get("evidence_manifest_sha256"),
+        })
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "sequence": sequence,
+        "phase": str(phase)[:64],
+        "occurred_at": now,
+        "engines": engine_states,
+    }
+    progress_events.append(event)
+    # Keep a bounded history; sequence numbers preserve ordering after pruning.
+    progress_events = progress_events[-250:]
+    evidence_summary = {
+        **previous,
+        "phase": str(phase)[:64],
+        "updated_at": now,
+        "progress_events": progress_events,
+    }
     if isinstance(metadata, dict):
         evidence_summary.update(metadata)
+        evidence_summary["progress_events"] = progress_events
     await _db_call(lambda: db.table("director_collaboration_runs").update({
         "consultations": consultations,
         "evidence_summary": evidence_summary,
@@ -546,6 +637,8 @@ async def _run_engine_collaboration(gateway, db, workspace_id, objective, engine
         "follow_up_questions": item.get("follow_up_questions", []),
         "follow_up_responses": item.get("follow_up_responses", []),
         "sources": item["sources"],
+        "evidence_manifest": item["sources"].get("evidence_manifest", []),
+        "evidence_manifest_sha256": item["sources"].get("evidence_manifest_sha256"),
         "observed_at": item["observed_at"],
     } for item in consultations]
     synthesis_prompt = (
@@ -888,8 +981,18 @@ async def ai_chat(
             except Exception:
                 logger.exception("Unable to persist failed Director collaboration run %s", collaboration_run_id)
             raise
+        progress_result = await _db_call(lambda: db.table("director_collaboration_runs")
+            .select("evidence_summary")
+            .eq("id", collaboration_run_id)
+            .eq("workspace_id", workspace_id)
+            .limit(1)
+            .execute())
+        progress_rows = list(getattr(progress_result, "data", None) or [])
+        previous_summary = (progress_rows[0].get("evidence_summary") or {}) if progress_rows else {}
+        progress_events = previous_summary.get("progress_events", []) if isinstance(previous_summary, dict) else []
         evidence_summary = {
             "phase": "completed",
+            "progress_events": progress_events[-250:],
             "comparison": evidence_comparison,
             "recommendation": recommendation,
             "engines": {
@@ -900,7 +1003,7 @@ async def ai_chat(
                 } for item in collaboration_details
             },
         }
-        run_status = _collaboration_run_status(collaboration_details)
+        run_status = _collaboration_run_status(collaboration_details, evidence_comparison, recommendation)
         await _db_call(lambda: db.table("director_collaboration_runs").update({
             "status": run_status,
             "consultations": collaboration_details,

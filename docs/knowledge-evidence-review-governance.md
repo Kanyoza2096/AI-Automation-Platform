@@ -131,3 +131,19 @@ backend URL and token, not Supabase or LLM credentials.
 
 
 The scheduler emits structured completion/failure logs and stops itself after a full clean pass.
+
+## Read-only candidate backlog
+
+The brand-scoped endpoint
+`GET /api/v1/brands/{brand_id}/knowledge-evidence-backlog`
+provides a paginated view of entries whose `metadata.verified` value is not
+explicitly true. It computes the current content hash, shows a bounded content
+preview, distinguishes explicitly unverified from verification-unspecified
+records, and reports the latest matching review state. If the content hash no
+longer matches the latest case, the candidate is surfaced as superseded rather
+than inheriting an earlier decision.
+
+The endpoint is read-only. It does not create review cases, change knowledge
+metadata, approve sources, or invoke promotion. A reviewer opens the full
+knowledge entry, submits that exact version to the existing review API, records
+a human decision, and invokes promotion separately only after approval.

@@ -129,9 +129,9 @@ Evidence:
 """
         llm = self.llm or get_llm_gateway()
         try:
-            response = await llm.complete(prompt, workspace_id=workspace_id or "platform",
-                                          capability="chat", temperature=0.2, max_tokens=1800,
-                                          caller="content_intelligence")
+            response = await llm.complete_async(prompt, workspace_id=workspace_id or "platform",
+                                                capability="chat", temperature=0.2, max_tokens=1800,
+                                                caller="content_intelligence")
             if response.ok and response.text:
                 data = parse_structured_json(response.text) or {}
                 mode = getattr(response.mode, "value", str(response.mode))

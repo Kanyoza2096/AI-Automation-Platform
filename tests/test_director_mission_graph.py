@@ -30,9 +30,31 @@ async def test_mission_dependency_is_persisted_and_graph_exposes_edge():
 @pytest.mark.asyncio
 async def test_workspace_ownership_survives_task_persistence_and_restore():
     director = Director(supabase_client=None)
-    task = _task("workspace-task")
-    task.workspace_id = "workspace-alpha"
-    task.mission_id = "mission-alpha"
+    from dataclasses import asdict
+
+    class MemoryTaskStore:
+        def __init__(self):
+            self.rows = []
+
+        async def save_task(self, task):
+            self.rows = [row for row in self.rows if row["id"] != task.id]
+            self.rows.append({
+                "id": task.id,
+                "scope_type": task.scope_type,
+                "workspace_id": task.workspace_id,
+                "payload": asdict(task),
+            })
+            return True
+
+        async def list_tasks(self, limit=200, **kwargs):
+            return list(self.rows)
+
+    director.store = MemoryTaskStore()
+    task = Task(
+        id="workspace-task", sector=Sector.SELF, description="workspace-task",
+        capability="self_diagnostic", authority=Authority.SUGGEST, risk=Risk.LOW,
+        workspace_id="workspace-alpha", mission_id="mission-alpha",
+    )
     await director.store.save_task(task)
 
     restarted = Director(supabase_client=None)
@@ -173,14 +195,45 @@ class _MissionAdmissionStore:
         return brand_id == "brand-owned" and workspace_id == "workspace-a"
 
 
+
+def _bind_stageable_health_capability(director, monkeypatch):
+    from types import SimpleNamespace
+
+    capability = SimpleNamespace(
+        name="test_brand_health",
+        sector=Sector.BRANDS,
+        authority=Authority.SUGGEST,
+        risk=Risk.LOW,
+        parameter_schema={
+            "type": "object",
+            "properties": {"brand_id": {"type": "string"}},
+            "required": ["brand_id"],
+            "additionalProperties": False,
+        },
+        target_param="brand_id",
+        proposal_capable=False,
+        mission_staging_mode="read_only_review",
+    )
+    director.capabilities = {"test_brand_health": capability}
+    director.capability_binding_report["test_brand_health"] = "bound"
+    monkeypatch.setattr(director, "capability_catalog", lambda: {
+        "test_brand_health": {
+            "mission_staging_ready": True,
+            "runtime_binding_confirmed": True,
+            "binding_status": "bound",
+        }
+    })
+
+
 def _stageable_health_plan():
     return {
         "plan_id": "plan-health-1",
+        "objective": {"source_collaboration_run_id": "collab-run-123"},
         "source_context_fingerprint": "context-fingerprint-1",
         "source_context_generated_at": "2026-11-16T08:00:00+00:00",
         "steps": [{
             "step_id": "health",
-            "capability": "calculate_brand_health",
+            "capability": "test_brand_health",
             "sector": "brands",
             "objective": "Assess the selected workspace brand",
             "target": "Workspace-owned brand health",
@@ -194,12 +247,11 @@ def _stageable_health_plan():
 @pytest.mark.asyncio
 async def test_strategic_mission_admission_stages_workspace_tasks_without_execution(monkeypatch):
     director = Director(supabase_client=None)
-    def bound_brand_health(params):
-        return {"ok": True}
-    director.bind_capability("calculate_brand_health", bound_brand_health)
-    director.capability_binding_report["calculate_brand_health"] = "bound"
+    _bind_stageable_health_capability(director, monkeypatch)
     director.store = _MissionAdmissionStore()
-    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: _stageable_health_plan())
+    async def load_plan(plan_id):
+        return _stageable_health_plan()
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
     async def verified(plan, max_age_seconds=300):
         return {"verdict": "verified_for_governance_review"}
     monkeypatch.setattr(director, "verify_strategic_plan", verified)
@@ -219,10 +271,12 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
     assert task.status == Status.APPROVAL
     assert task.params == {"brand_id": "brand-owned"}
     assert "operator:operator-1" in task.sources
+    assert "collaboration_run:collab-run-123" in task.sources
+    assert result["source_collaboration_run_id"] == "collab-run-123"
 
     replay = await director.stage_strategic_mission(
         plan_id="plan-health-1", workspace_id="workspace-a",
-        idempotency_key="operator-request-001", step_parameters={"health": {}}, actor="operator-1",
+        idempotency_key="operator-request-001", step_parameters={"health": {"brand_id": "brand-owned"}}, actor="operator-1",
     )
     assert replay["replayed"] is True
     assert replay["task_ids"] == result["task_ids"]
@@ -231,12 +285,12 @@ async def test_strategic_mission_admission_stages_workspace_tasks_without_execut
 @pytest.mark.asyncio
 async def test_strategic_mission_admission_rejects_unlisted_params_and_unowned_brand(monkeypatch):
     director = Director(supabase_client=None)
-    director.bind_capability("calculate_brand_health", lambda params: {"ok": True})
-    director.capability_binding_report["calculate_brand_health"] = "bound"
+    _bind_stageable_health_capability(director, monkeypatch)
     director.store = _MissionAdmissionStore()
     plan = _stageable_health_plan()
-    plan["steps"][0].update(capability="calculate_brand_health", sector="brands")
-    monkeypatch.setattr(director, "load_strategic_plan", lambda plan_id: plan)
+    async def load_plan(plan_id):
+        return plan
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
     async def verified(plan, max_age_seconds=300):
         return {"verdict": "verified_for_governance_review"}
     monkeypatch.setattr(director, "verify_strategic_plan", verified)
@@ -264,3 +318,66 @@ def test_global_diagnostic_capabilities_cannot_be_staged_as_workspace_missions()
         assert catalog[name]["runtime_binding_confirmed"] is True
         assert catalog[name]["workspace_target_bound"] is False
         assert catalog[name]["mission_staging_ready"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_strategic_mission_admission_can_use_v2_runtime_atomically(monkeypatch):
+    from services.director.orchestration import store as runtime_store_module
+
+    director = Director(supabase_client=None)
+    _bind_stageable_health_capability(director, monkeypatch)
+
+    class LegacyStoreMustNotBeUsed(_MissionAdmissionStore):
+        async def stage_mission_admission(self, **kwargs):
+            raise AssertionError("v2 admission must not call the legacy RPC")
+
+    class FakeMissionRuntimeStore:
+        def __init__(self, director_store):
+            self.director_store = director_store
+            self.admission = None
+
+        async def admit_workspace_mission(self, **kwargs):
+            self.admission = kwargs
+            return {
+                "mission_id": kwargs["mission_id"],
+                "task_ids": [row["id"] for row in kwargs["tasks"]],
+                "replayed": False,
+                "mission_version": 1,
+                "mission_status": "admitted",
+            }
+
+    runtime_instances = []
+
+    def runtime_factory(director_store):
+        instance = FakeMissionRuntimeStore(director_store)
+        runtime_instances.append(instance)
+        return instance
+
+    monkeypatch.setattr(runtime_store_module, "MissionRuntimeStore", runtime_factory)
+    monkeypatch.setenv("KDO_DIRECTOR_MISSION_RUNTIME_V2", "true")
+    director.store = LegacyStoreMustNotBeUsed()
+    async def load_plan(plan_id):
+        return _stageable_health_plan()
+    monkeypatch.setattr(director, "load_strategic_plan", load_plan)
+
+    async def verified(plan, max_age_seconds=300):
+        return {"verdict": "verified_for_governance_review"}
+
+    monkeypatch.setattr(director, "verify_strategic_plan", verified)
+
+    result = await director.stage_strategic_mission(
+        plan_id="plan-health-1",
+        workspace_id="workspace-a",
+        idempotency_key="operator-request-v2",
+        step_parameters={"health": {"brand_id": "brand-owned"}},
+        actor="operator-1",
+    )
+
+    assert result["durable_runtime"] == "v2"
+    assert result["approval_required"] is True
+    assert result["execution_permitted"] is False
+    assert runtime_instances[0].admission["workspace_id"] == "workspace-a"
+    assert runtime_instances[0].admission["tasks"][0]["payload"]["scope_type"] == "workspace"
+    assert "collaboration_run:collab-run-123" in runtime_instances[0].admission["tasks"][0]["payload"]["sources"]
+    assert result["source_collaboration_run_id"] == "collab-run-123"

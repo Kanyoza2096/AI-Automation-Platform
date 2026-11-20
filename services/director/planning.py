@@ -73,10 +73,31 @@ def build_strategic_plan(*, objective: Mapping[str, Any], context: Mapping[str, 
         not isinstance(item, str) or not item.strip() for item in constraints
     ):
         raise StrategicPlanningError("objective_constraints_invalid")
+    source_run_id = objective.get("source_collaboration_run_id")
+    if source_run_id is not None and (
+        not isinstance(source_run_id, str) or not source_run_id.strip()
+        or len(source_run_id.strip()) > 128
+    ):
+        raise StrategicPlanningError("source_collaboration_run_id_invalid")
+    source_provenance = objective.get("source_collaboration_provenance")
+    if source_provenance is not None:
+        if (not isinstance(source_provenance, Mapping)
+                or source_provenance.get("schema_version") != "kdo.director.collaboration-provenance.v1"
+                or source_provenance.get("run_id") != source_run_id
+                or not isinstance(source_provenance.get("workspace_id"), str)
+                or not source_provenance.get("workspace_id")
+                or not isinstance(source_provenance.get("sha256"), str)
+                or len(source_provenance.get("sha256")) != 64
+                or any(ch not in "0123456789abcdef" for ch in source_provenance.get("sha256", ""))):
+            raise StrategicPlanningError("source_collaboration_provenance_invalid")
+    if source_run_id and source_provenance is None:
+        raise StrategicPlanningError("source_collaboration_provenance_required")
     normalized_objective = {
         "objective_id": objective_id.strip(), "title": title.strip(),
         "description": description.strip(), "success_criteria": criteria,
         "constraints": [item.strip() for item in constraints],
+        **({"source_collaboration_run_id": source_run_id.strip()} if source_run_id else {}),
+        **({"source_collaboration_provenance": dict(source_provenance)} if source_provenance else {}),
     }
 
     if context.get("schema_version") != "kdo.director.strategic-context.v1":
