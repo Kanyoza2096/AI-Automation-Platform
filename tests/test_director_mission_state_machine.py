@@ -335,3 +335,137 @@ def test_recovery_review_is_operator_only_and_cannot_authorize_reconsideration()
     ))
     assert transition.next_snapshot.state_snapshot["task_status"]["task-a"] == "executing"
     assert transition.event.payload["decision"] == "hold"
+
+def test_director_can_spawn_bounded_agents_only_for_existing_mission_tasks():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    spawned = _advance(machine, current, _command(
+        "agent.spawned", actor_type="director", actor_id="director-1",
+        task_id="task-a",
+        payload={
+            "agent_id": "agent-research-1",
+            "task_id": "task-a",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze",
+            "role": "Independent researcher",
+            "estimated_tokens": 500,
+        },
+    ))
+    agent = spawned.state_snapshot["agents"]["agent-research-1"]
+    assert agent["status"] == "spawned"
+    assert agent["task_id"] == "task-a"
+    assert spawned.phase == "delegation"
+
+    with pytest.raises(MissionTransitionRejected, match="agent_spawn_requires_director"):
+        machine.prepare(current, _command(
+            "agent.spawned", actor_type="engine", actor_id="content_intelligence",
+            task_id="task-a",
+            payload={
+                "agent_id": "agent-self-spawn",
+                "task_id": "task-a",
+                "engine_id": "content_intelligence",
+                "capability": "research.analyze",
+                "role": "self spawned",
+            },
+        ))
+
+    with pytest.raises(MissionTransitionRejected, match="agent_task_not_in_mission"):
+        machine.prepare(current, _command(
+            "agent.spawned", task_id="not-a-mission-task",
+            payload={
+                "agent_id": "agent-out-of-scope",
+                "task_id": "not-a-mission-task",
+                "engine_id": "content_intelligence",
+                "capability": "research.analyze",
+                "role": "out of scope",
+            },
+        ))
+
+
+def test_agent_lifecycle_is_director_controlled_and_terminal():
+    machine = MissionStateMachine()
+    current = _advance(machine, _snapshot(), _command(
+        "agent.spawned", task_id="task-a",
+        payload={
+            "agent_id": "agent-1", "task_id": "task-a",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze", "role": "Researcher",
+            "estimated_tokens": 100,
+        },
+    ))
+    with pytest.raises(MissionTransitionRejected, match="agent_status_change_requires_director_or_system"):
+        machine.prepare(current, _command(
+            "agent.status.changed", actor_type="engine", actor_id="content_intelligence",
+            payload={"agent_id": "agent-1", "status": "running"},
+        ))
+    current = _advance(machine, current, _command(
+        "agent.status.changed", payload={"agent_id": "agent-1", "status": "running"},
+    ))
+    current = _advance(machine, current, _command(
+        "agent.status.changed", payload={"agent_id": "agent-1", "status": "completed"},
+    ))
+    with pytest.raises(MissionTransitionRejected, match="agent_status_transition_invalid"):
+        machine.prepare(current, _command(
+            "agent.status.changed", payload={"agent_id": "agent-1", "status": "running"},
+        ))
+
+
+def test_agent_spawning_enforces_active_and_per_task_limits():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    for index in range(3):
+        current = _advance(machine, current, _command(
+            "agent.spawned", key=f"agent-{index}", task_id="task-a",
+            payload={
+                "agent_id": f"agent-{index}", "task_id": "task-a",
+                "engine_id": "content_intelligence",
+                "capability": "research.analyze", "role": "Researcher",
+                "estimated_tokens": 100,
+            },
+        ))
+    with pytest.raises(MissionTransitionRejected, match="mission_task_agent_capacity_exceeded"):
+        machine.prepare(current, _command(
+            "agent.spawned", key="agent-four", task_id="task-a",
+            payload={
+                "agent_id": "agent-four", "task_id": "task-a",
+                "engine_id": "content_intelligence",
+                "capability": "research.analyze", "role": "Researcher",
+                "estimated_tokens": 100,
+            },
+        ))
+
+
+def test_mission_cannot_complete_with_live_agents_and_cancellation_closes_them():
+    machine = MissionStateMachine()
+    initial = _snapshot()
+    initial_state = dict(initial.state_snapshot)
+    initial_state["task_status"] = {"task-a": "verified"}
+    current = MissionRuntimeSnapshot(
+        mission_id=initial.mission_id,
+        scope_type=initial.scope_type,
+        workspace_id=initial.workspace_id,
+        version=initial.version,
+        status=initial.status,
+        phase=initial.phase,
+        task_ids=initial.task_ids,
+        state_snapshot=initial_state,
+    )
+    current = _advance(machine, current, _command(
+        "agent.spawned", task_id="task-a",
+        payload={
+            "agent_id": "agent-live", "task_id": "task-a",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze", "role": "Researcher",
+            "estimated_tokens": 100,
+        },
+    ))
+    with pytest.raises(MissionTransitionRejected, match="mission_has_active_agents"):
+        machine.prepare(current, _command("mission.completed"))
+
+    cancelled = _advance(machine, current, _command(
+        "mission.cancelled", actor_type="operator", actor_id="operator-1",
+        payload={"reason": "Operator cancelled the mission."},
+    ))
+    assert cancelled.status == "cancelled"
+    assert cancelled.state_snapshot["agents"]["agent-live"]["status"] == "terminated"
+    assert "Mission cancelled" in cancelled.state_snapshot["agents"]["agent-live"]["reason"]

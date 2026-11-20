@@ -1,0 +1,56 @@
+name: Director Swarm Focused Tests
+
+on:
+  pull_request:
+    paths:
+      - "services/director/orchestration/**"
+      - "services/director/api.py"
+      - "tests/test_director_swarm_assessment.py"
+      - "tests/test_director_swarm_planning.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - ".github/workflows/director-swarm-focused-tests.yml"
+  push:
+    branches:
+      - staging
+      - feature/director-dynamic-swarm-foundation
+    paths:
+      - "services/director/orchestration/**"
+      - "services/director/api.py"
+      - "tests/test_director_swarm_assessment.py"
+      - "tests/test_director_swarm_planning.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - ".github/workflows/director-swarm-focused-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: director-swarm-focused-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swarm-focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcairo2-dev pkg-config python3-dev
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+      - name: Run swarm planning and lifecycle tests
+        run: |
+          python -m pytest -q tests/test_director_swarm_planning.py tests/test_director_swarm_assessment.py
+          python -m pytest -q tests/test_director_mission_state_machine.py -k "agent or swarm"
+          python -m pytest -q tests/test_director_mission_runtime.py -k "agent or swarm"

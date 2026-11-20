@@ -3,6 +3,9 @@ import copy
 from datetime import datetime, timedelta, timezone
 import pytest
 
+from services.director.orchestration.state_machine import MissionTransitionRejected
+from services.director.orchestration.swarm_planning import SwarmCandidate, SwarmLimits
+
 from services.director.orchestration import (
     AdapterRegistry,
     EngineContribution,
@@ -1659,3 +1662,168 @@ async def test_native_engine_invocation_exception_preserves_uncertain_attempt_wi
             timeout_seconds=1.0,
         )
     assert len(adapter.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_director_spawned_agent_and_rejects_unregistered_capability():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Read-only research result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    with pytest.raises(MissionTransitionRejected, match="engine_capability_not_registered"):
+        await runtime.spawn_agent(
+            mission_id=store.mission_id,
+            workspace_id=store.workspace_id,
+            task_id=store.task_id,
+            agent_id="agent-invalid",
+            engine_id="content_intelligence",
+            capability="external.publish",
+            role="Publisher",
+            idempotency_key="spawn-invalid",
+            correlation_id="corr-swarm-runtime",
+        )
+
+    snapshot = await runtime.spawn_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        agent_id="agent-research-1",
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        role="Independent researcher",
+        idempotency_key="spawn-research-1",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "spawned"
+    assert store.events[-1]["event_type"] == "agent.spawned"
+
+    snapshot = await runtime.update_agent_status(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="agent-research-1",
+        status="running",
+        idempotency_key="agent-research-1-running",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "running"
+
+    snapshot = await runtime.update_agent_status(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="agent-research-1",
+        status="completed",
+        idempotency_key="agent-research-1-completed",
+        correlation_id="corr-swarm-runtime",
+    )
+    assert snapshot.state_snapshot["agents"]["agent-research-1"]["status"] == "completed"
+    assert [event["event_type"] for event in store.events] == [
+        "agent.spawned", "agent.status.changed", "agent.status.changed"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_plans_and_adds_dynamic_swarm_waves_with_remaining_capacity():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Research contribution."))
+    registry.register(FakeNativeAdapter("meta_engine", "Independent review.", capability="review.analyze"))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    first_plan, first_snapshot = await runtime.spawn_swarm(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_ids=[store.task_id],
+        complexity_score=0.2,
+        candidates=[
+            SwarmCandidate(
+                agent_id="agent-research",
+                task_id=store.task_id,
+                engine_id="content_intelligence",
+                capability="research.analyze",
+                role="Research specialist",
+            ),
+        ],
+        idempotency_prefix="swarm-wave-1",
+        correlation_id="corr-dynamic-swarm",
+        limits=SwarmLimits(max_agents=4, max_parallel_agents=4),
+    )
+    assert [item.agent_id for item in first_plan.selected] == ["agent-research"]
+    assert first_snapshot.state_snapshot["agents"]["agent-research"]["status"] == "spawned"
+
+    second_plan, second_snapshot = await runtime.spawn_swarm(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_ids=[store.task_id],
+        complexity_score=0.5,
+        candidates=[
+            SwarmCandidate(
+                agent_id="agent-review",
+                task_id=store.task_id,
+                engine_id="meta_engine",
+                capability="review.analyze",
+                role="Independent reviewer",
+            ),
+        ],
+        idempotency_prefix="swarm-wave-2",
+        correlation_id="corr-dynamic-swarm",
+        limits=SwarmLimits(max_agents=4, max_parallel_agents=4),
+    )
+    assert [item.agent_id for item in second_plan.selected] == ["agent-review"]
+    assert set(second_snapshot.state_snapshot["agents"]) == {"agent-research", "agent-review"}
+    assert [event["event_type"] for event in store.events] == ["agent.spawned", "agent.spawned"]
+
+@pytest.mark.asyncio
+async def test_registered_swarm_agent_invokes_native_adapter_and_persists_advisory_contribution():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    researcher = FakeNativeAdapter(
+        "content_intelligence",
+        "Three evidence-backed findings were collected.",
+    )
+    registry.register(researcher)
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    await runtime.spawn_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        agent_id="swarm-researcher-1",
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        role="Evidence researcher",
+        estimated_tokens=500,
+        idempotency_key="swarm-agent-spawn-1",
+        correlation_id="corr-swarm-agent-1",
+    )
+
+    contribution = await runtime.execute_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="swarm-researcher-1",
+        objective="Research the admitted mission topic.",
+        inputs={"topic": "Malawi SME digital adoption"},
+        idempotency_prefix="swarm-agent-run-1",
+        correlation_id="corr-swarm-agent-1",
+    )
+
+    agent = store.row["state_snapshot"]["agents"]["swarm-researcher-1"]
+    assert len(researcher.calls) == 1
+    assert researcher.calls[0].workspace_id == store.workspace_id
+    assert researcher.calls[0].task_id == store.task_id
+    assert contribution.authority == "none"
+    assert agent["status"] == "completed"
+    assert agent["contribution"]["status"] == "completed"
+    assert agent["contribution"]["summary"] == contribution.summary
+    assert agent["contribution"]["evidence"][0]["ref"] == "source:content_intelligence"
+    assert agent["contribution"]["usage_tokens"] == 125
+    assert agent["contribution"]["authority"] == "none"
+    assert agent["contribution"]["side_effect_class"] == "advisory_only"
+    assert store.row["state_snapshot"]["budget"]["tokens_used"] == 125
+    assert store.task["status"] == "approval_required"
+    assert [event["event_type"] for event in store.events] == [
+        "agent.spawned",
+        "agent.status.changed",
+        "agent.contribution.recorded",
+        "agent.status.changed",
+    ]

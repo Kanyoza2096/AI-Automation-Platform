@@ -28,6 +28,7 @@ from .state_machine import (
     MissionTransition,
     MissionTransitionRejected,
 )
+from .swarm_planning import SwarmCandidate, SwarmLimits, SwarmPlan, plan_swarm
 
 __all__ = [
     "AdapterInvocationTimeout",
@@ -56,4 +57,8 @@ __all__ = [
     "MissionStateMachine",
     "MissionTransition",
     "MissionTransitionRejected",
+    "SwarmCandidate",
+    "SwarmLimits",
+    "SwarmPlan",
+    "plan_swarm",
 ]

@@ -29,6 +29,7 @@ from .state_machine import (
     MissionTransitionRejected,
 )
 from .store import MissionRuntimeStore
+from .swarm_planning import SwarmCandidate, SwarmLimits, SwarmPlan, plan_swarm
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,337 @@ class MissionOrchestrationRuntime:
                     extra={"task_id": task_id, "target_status": task_sync["target_status"]},
                 )
         return snapshot
+
+    async def spawn_swarm(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_ids: Sequence[str],
+        candidates: Sequence[SwarmCandidate],
+        complexity_score: float,
+        idempotency_prefix: str,
+        correlation_id: str,
+        limits: SwarmLimits | None = None,
+        director_id: str = "director",
+    ) -> tuple[SwarmPlan, MissionRuntimeSnapshot]:
+        """Plan and durably register a bounded specialist wave under Director control.
+
+        Repeated calls may add specialists during an active mission. Existing
+        agent history, active concurrency, and per-task occupancy reduce the
+        available capacity before the next wave is planned.
+        """
+        prefix = str(idempotency_prefix or "").strip()
+        if not prefix or len(prefix) > 31:
+            raise ValueError("swarm_idempotency_prefix_must_be_1_to_31_characters")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        mission_task_ids = set(current.task_ids)
+        requested_task_ids = {str(value).strip() for value in task_ids if str(value).strip()}
+        if not requested_task_ids or not requested_task_ids.issubset(mission_task_ids):
+            raise MissionTransitionRejected("swarm_tasks_outside_mission_scope")
+
+        existing = dict(current.state_snapshot.get("agents") or {})
+        active = [
+            item for item in existing.values()
+            if item.get("status") in {"spawned", "running"}
+        ]
+        base = limits or SwarmLimits()
+        remaining_total = 8 - len(existing)
+        remaining_parallel = 4 - len(active)
+        if remaining_total < 1 or remaining_parallel < 1:
+            raise MissionTransitionRejected("mission_agent_capacity_exhausted")
+
+        occupied_by_task: dict[str, int] = {}
+        for item in active:
+            occupied_by_task[str(item.get("task_id") or "")] = (
+                occupied_by_task.get(str(item.get("task_id") or ""), 0) + 1
+            )
+        candidates_by_task: dict[str, list[SwarmCandidate]] = {}
+        for candidate in candidates:
+            if not isinstance(candidate, SwarmCandidate):
+                raise TypeError("swarm_candidates_must_be_typed_assignments")
+            if candidate.task_id not in requested_task_ids:
+                raise MissionTransitionRejected("swarm_candidate_task_outside_requested_scope")
+            if candidate.agent_id in existing:
+                raise MissionTransitionRejected("agent_id_already_exists")
+            candidates_by_task.setdefault(candidate.task_id, []).append(candidate)
+        available_candidates: list[SwarmCandidate] = []
+        for candidate_task_id, task_candidates in candidates_by_task.items():
+            task_slots = max(0, 3 - occupied_by_task.get(candidate_task_id, 0))
+            task_candidates.sort(key=lambda item: (-item.priority, item.engine_id, item.agent_id))
+            available_candidates.extend(task_candidates[:task_slots])
+
+        existing_estimated_tokens = sum(
+            int(item.get("estimated_tokens", 0) or 0) for item in existing.values()
+        )
+        budget = dict(current.state_snapshot.get("budget") or {})
+        mission_token_limit = budget.get("max_tokens")
+        mission_tokens_remaining = (
+            int(mission_token_limit) - int(budget.get("tokens_used", 0)) - existing_estimated_tokens
+            if mission_token_limit is not None else base.max_total_estimated_tokens - existing_estimated_tokens
+        )
+        estimated_tokens_remaining = min(
+            base.max_total_estimated_tokens - existing_estimated_tokens,
+            mission_tokens_remaining,
+        )
+        effective_max = min(base.max_agents, remaining_total, remaining_parallel)
+        if estimated_tokens_remaining < 1:
+            raise MissionTransitionRejected("swarm_estimated_token_budget_exhausted")
+        effective_limits = SwarmLimits(
+            max_agents=effective_max,
+            max_parallel_agents=min(base.max_parallel_agents, effective_max),
+            max_agents_per_task=min(base.max_agents_per_task, effective_max),
+            max_total_estimated_tokens=estimated_tokens_remaining,
+        )
+        plan = plan_swarm(
+            complexity_score=complexity_score,
+            task_ids=sorted(requested_task_ids),
+            candidates=available_candidates,
+            registry=self.adapters,
+            limits=effective_limits,
+        )
+
+        latest = current
+        for candidate in plan.selected:
+            latest = await self.spawn_agent(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=candidate.task_id,
+                agent_id=candidate.agent_id,
+                engine_id=candidate.engine_id,
+                capability=candidate.capability,
+                role=candidate.role,
+                estimated_tokens=candidate.estimated_tokens,
+                idempotency_key=f"{prefix}:{candidate.agent_id}",
+                correlation_id=correlation_id,
+                director_id=director_id,
+            )
+        return plan, latest
+
+    async def spawn_agent(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_id: str,
+        agent_id: str,
+        engine_id: str,
+        capability: str,
+        role: str,
+        idempotency_key: str,
+        correlation_id: str,
+        estimated_tokens: int = 1500,
+        director_id: str = "director",
+    ) -> MissionRuntimeSnapshot:
+        """Durably add one advisory specialist to an existing mission task.
+
+        This records an agent assignment only. It does not execute the engine,
+        approve canonical tasks, create tasks, or grant external-action authority.
+        """
+        adapter = self.adapters.get(engine_id)
+        if capability not in adapter.capabilities:
+            raise MissionTransitionRejected("engine_capability_not_registered")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        if task_id not in set(current.task_ids):
+            raise MissionTransitionRejected("agent_task_not_in_mission")
+        return await self._commit(
+            current,
+            event_type="agent.spawned",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id=director_id,
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload={
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "engine_id": engine_id,
+                "capability": capability,
+                "role": role,
+                "estimated_tokens": estimated_tokens,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    async def update_agent_status(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        agent_id: str,
+        status: str,
+        idempotency_key: str,
+        correlation_id: str,
+        reason: str | None = None,
+        director_id: str = "director",
+    ) -> MissionRuntimeSnapshot:
+        """Advance a persisted agent lifecycle under Director control."""
+        if status not in {"running", "completed", "failed", "terminated"}:
+            raise MissionTransitionRejected("agent_status_invalid")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        payload: dict[str, Any] = {
+            "agent_id": agent_id,
+            "status": status,
+            "finished_at": datetime.now(timezone.utc).isoformat()
+            if status in {"completed", "failed", "terminated"} else "",
+        }
+        if reason is not None:
+            payload["reason"] = str(reason)[:1000]
+        return await self._commit(
+            current,
+            event_type="agent.status.changed",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id=director_id,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+
+    async def execute_agent(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        agent_id: str,
+        objective: str,
+        inputs: Mapping[str, Any],
+        idempotency_prefix: str,
+        correlation_id: str,
+        timeout_seconds: float | None = None,
+        director_id: str = "director",
+    ) -> EngineContribution:
+        """Run one registered specialist as read-only advisory work and persist its bounded result.
+
+        This path deliberately bypasses canonical task approval/execution state:
+        agents only consult explicitly registered advisory adapters. It cannot
+        invoke the governed external-action pipeline or change task approval.
+        """
+        if (
+            not isinstance(idempotency_prefix, str)
+            or not idempotency_prefix.strip()
+            or idempotency_prefix != idempotency_prefix.strip()
+            or len(idempotency_prefix) > 120
+        ):
+            raise MissionTransitionRejected("agent_execution_identity_invalid")
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        agent = dict((current.state_snapshot.get("agents") or {}).get(agent_id) or {})
+        if not agent:
+            raise MissionTaskNotReady("mission_agent_not_found")
+        if agent.get("status") != "spawned":
+            raise MissionTaskNotReady("mission_agent_not_ready")
+        task_id = str(agent.get("task_id") or "")
+        engine_id = str(agent.get("engine_id") or "")
+        capability = str(agent.get("capability") or "")
+        adapter = self.adapters.get(engine_id)
+        if capability not in adapter.capabilities:
+            raise MissionTransitionRejected("agent_engine_capability_unavailable")
+        if task_id not in set(current.task_ids):
+            raise MissionTransitionRejected("agent_task_outside_mission")
+        self.state_machine.ensure_budget_available(
+            current, estimated_tokens=0, estimated_provider_calls=1
+        )
+
+        current = await self.update_agent_status(
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            status="running",
+            idempotency_key=f"{idempotency_prefix}:running",
+            correlation_id=correlation_id,
+            director_id=director_id,
+        )
+        context = MissionTaskContext(
+            task_id=task_id,
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            capability=capability,
+            objective=str(objective or "").strip()[:4000],
+            inputs=self._bounded_input_mapping(inputs),
+            correlation_id=correlation_id,
+            attempt_id=idempotency_prefix,
+            timeout_seconds=min(
+                float(adapter.timeout_seconds),
+                float(timeout_seconds) if timeout_seconds is not None else float(adapter.timeout_seconds),
+            ),
+        )
+        try:
+            contribution = await self.adapters.invoke(engine_id, context)
+        except Exception as exc:
+            latest = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+            current_agent = (latest.state_snapshot.get("agents") or {}).get(agent_id) or {}
+            if current_agent.get("status") == "running":
+                await self.update_agent_status(
+                    mission_id=mission_id,
+                    workspace_id=workspace_id,
+                    agent_id=agent_id,
+                    status="failed",
+                    idempotency_key=f"{idempotency_prefix}:failed",
+                    correlation_id=correlation_id,
+                    reason=f"Advisory adapter failed: {type(exc).__name__}",
+                    director_id=director_id,
+                )
+            raise
+
+        usage = self._usage_metadata(contribution)
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        current_agent = (current.state_snapshot.get("agents") or {}).get(agent_id) or {}
+        if current_agent.get("status") != "running":
+            raise MissionRuntimeConflict("agent_lifecycle_changed_during_execution")
+        if usage["usage_tokens"] > int(current_agent.get("estimated_tokens", 0)):
+            await self.update_agent_status(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                status="failed",
+                idempotency_key=f"{idempotency_prefix}:budget-failed",
+                correlation_id=correlation_id,
+                reason="Actual token usage exceeded the reserved agent estimate.",
+                director_id=director_id,
+            )
+            raise MissionTransitionRejected("agent_actual_usage_exceeds_reserved_tokens")
+
+        evidence = [
+            {
+                "ref": str(item.get("ref") or "")[:500],
+                "title": str(item.get("title") or "")[:200],
+                "url": str(item.get("url") or "")[:1000],
+            }
+            for item in contribution.evidence[:8]
+            if isinstance(item, Mapping) and item.get("ref")
+        ]
+        latest = await self._commit(
+            current,
+            event_type="agent.contribution.recorded",
+            idempotency_key=f"{idempotency_prefix}:contribution",
+            actor_type="engine",
+            actor_id=engine_id,
+            correlation_id=correlation_id,
+            task_id=task_id,
+            payload={
+                "agent_id": agent_id,
+                "capability": capability,
+                "contribution_status": contribution.status,
+                "summary": contribution.summary[:2000] or "No advisory summary returned.",
+                "findings": self._bounded_texts(contribution.findings),
+                "recommendations": self._bounded_texts(contribution.recommendations),
+                "limitations": self._bounded_texts(contribution.limitations),
+                "evidence": evidence,
+                "confidence": contribution.confidence,
+                "usage_tokens": usage["usage_tokens"],
+                "provider_calls": usage["provider_calls"],
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        await self.update_agent_status(
+            mission_id=mission_id,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            status="completed",
+            idempotency_key=f"{idempotency_prefix}:completed",
+            correlation_id=correlation_id,
+            director_id=director_id,
+        )
+        return contribution
 
     async def assign_task(
         self,
