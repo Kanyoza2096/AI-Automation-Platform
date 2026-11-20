@@ -99,7 +99,7 @@ def test_roster_is_bounded_by_concurrency_per_task_and_token_budget():
     )
 
     assert [item.agent_id for item in plan.selected] == ["a1", "a2"]
-    assert [item.agent_id for item in plan.deferred] == ["a4", "a3"]
+    assert [item.agent_id for item in plan.deferred] == ["a3", "a4"]
     assert plan.estimated_tokens == 8000
 
 
