@@ -166,9 +166,10 @@ evidence it can actually verify.
 The server-side ingestion route requires two backend-only environment variables:
 
 - `KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET`: a high-entropy secret used to bind the captured text to its tenant and source identity.
-- `KDO_KB_TRUSTED_SOURCE_DOMAINS`: a JSON object mapping exact hostnames to one allowed trust class. Example shape (configure only hosts actually vetted by the operator): `{"who.int":"government","docs.example.org":"official_documentation"}`.
+- `KDO_KB_TRUSTED_SOURCE_DOMAINS`: the primary JSON object mapping exact hostnames to one allowed trust class. Example: `{"who.int":"government"}`.
+- `KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL`: an optional additive JSON object for a separately reviewed source cohort. It is merged without replacing the primary registry; conflicting classifications fail closed. Example: `{"docs.example.org":"official_documentation"}`.
 
-Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. The trust registry must be curated; do not add a domain merely because it appears in a submitted URL.
+Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. Both registries must be curated; do not add a domain merely because it appears in a submitted URL.
 
 
 Migration 187 limits the service-role grants on review cases and sweep state to the read/insert/update operations used by the backend; it does not need delete or truncate authority.
