@@ -530,7 +530,12 @@ class JobStatsService:
             for value in (step.get("error"), step.get("error_code"), step.get("step"))
         ).lower()
         code = str(job.get("last_error_code") or "").upper()
-        if "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
+        if "caller_not_allowed" in evidence or "caller is not allowed" in evidence:
+            category, action = (
+                "gateway_caller_policy",
+                "Verify the internal caller against the deployed LLM_ALLOWED_CALLERS policy; align the caller or narrowly update the allowlist, then rerun validation without bypassing semantic review.",
+            )
+        elif "verified kb source" in evidence or "stable source id" in evidence or "factual evidence gate" in evidence:
             category, action = "evidence_grounding", "Attach a verified knowledge-base source or remove unsupported empirical claims."
         elif (
             "first-person" in evidence
