@@ -150,7 +150,7 @@ def test_knowledge_context_fails_closed_when_repository_is_missing():
     assert exc.value.code == "knowledge_repository_unavailable"
 
 
-def test_knowledge_context_fails_closed_when_search_returns_no_results(monkeypatch):
+def test_knowledge_context_allows_empty_verified_evidence_for_claim_aware_review(monkeypatch):
     import services.knowledge_base as knowledge_base
 
     class EmptyKnowledgeBase:
@@ -165,9 +165,11 @@ def test_knowledge_context_fails_closed_when_search_returns_no_results(monkeypat
 
     monkeypatch.setattr(knowledge_base, "KnowledgeBase", EmptyKnowledgeBase)
     step = KnowledgeContextStep(_brand(), knowledge_repo=object())
-    with pytest.raises(StepFailure) as exc:
-        asyncio.run(step.async_run({"topic": "Kruskal's algorithm"}))
-    assert exc.value.code == "knowledge_evidence_missing"
+    context = {"topic": "Kruskal's algorithm"}
+    evidence = asyncio.run(step.async_run(context))
+    assert evidence == []
+    assert context["knowledge_evidence"] == []
+    assert context["knowledge_context"] == ""
 
 
 def test_knowledge_context_preserves_traceable_source_metadata(monkeypatch):
@@ -464,10 +466,11 @@ def test_knowledge_context_marks_unverified_sources_for_generation(monkeypatch):
     context = {"topic": "A conceptual topic"}
     step = KnowledgeContextStep(_brand(), knowledge_repo=object())
 
-    asyncio.run(step.async_run(context))
+    evidence = asyncio.run(step.async_run(context))
 
-    assert "[source_id=kb-unverified-9;verified=false]" in context["knowledge_context"]
-    assert context["knowledge_evidence"][0]["metadata"].get("verified") is None
+    assert evidence == []
+    assert context["knowledge_context"] == ""
+    assert context["knowledge_evidence"] == []
 
  
 def test_knowledge_prompt_separates_verified_and_unverified_trust_levels():
