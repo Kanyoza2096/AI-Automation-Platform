@@ -172,3 +172,25 @@ async def test_director_rejects_roster_when_no_spawn_is_recommended_but_assignme
             tasks=[_task()],
             adapter_catalogue=_catalogue(),
         )
+
+
+@pytest.mark.asyncio
+async def test_director_does_not_repeat_a_completed_specialist_assignment_in_followup_wave():
+    gateway = FakeGateway(_response())
+    with pytest.raises(SwarmAssessmentError, match="assignment_already_covered"):
+        await assess_swarm_roster(
+            gateway=gateway,
+            workspace_id="workspace-1",
+            mission_id="mission-1",
+            idempotency_prefix="wave-0006",
+            tasks=[_task()],
+            adapter_catalogue=_catalogue(),
+            existing_agents={
+                "agent-previous": {
+                    "task_id": "task-1",
+                    "engine_id": "content_intelligence",
+                    "capability": "research.analyze",
+                    "status": "completed",
+                }
+            },
+        )
