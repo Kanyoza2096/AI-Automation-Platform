@@ -51,3 +51,33 @@ def test_record_snapshot_rejects_ambiguous_record_id():
     }
     with pytest.raises(source.PinnedDatasetError, match="ambiguous"):
         source.extract_record_snapshot([row, row], "01-01-morning")
+
+
+
+def test_record_metadata_uses_existing_hmac_contract_and_requires_explicit_trust_class():
+    rows = [{
+        "entry_id": "01-01-morning",
+        "content_blocks": ["A devotional quotation.", "The devotional text."],
+        "primary_reference": {"raw": "Joshua 5:12", "osis": ["Josh.5.12"]},
+    }]
+    metadata = source.build_attested_record_metadata(
+        rows=rows,
+        record_id="01-01-morning",
+        workspace_id="workspace-1",
+        secret="test-secret",
+        trust_class="publisher_primary",
+    )
+    from services.autonomous_knowledge_evidence_reviewer import (
+        verify_source_snapshot_attestation,
+    )
+
+    assert metadata["source_snapshot_origin"] == "trusted_server_ingestion"
+    assert verify_source_snapshot_attestation(metadata, "workspace-1", "test-secret")
+    with pytest.raises(source.PinnedDatasetError, match="trust_class"):
+        source.build_attested_record_metadata(
+            rows=rows,
+            record_id="01-01-morning",
+            workspace_id="workspace-1",
+            secret="test-secret",
+            trust_class="unreviewed",
+        )
