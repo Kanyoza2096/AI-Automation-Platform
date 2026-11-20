@@ -114,6 +114,14 @@ class MissionSwarmSpawnBody(BaseModel):
     correlation_id: str = Field(..., min_length=8, max_length=128)
 
 
+class MissionAgentExecuteBody(BaseModel):
+    objective: str = Field(..., min_length=1, max_length=4000)
+    inputs: dict = Field(default_factory=dict)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=120)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+    timeout_seconds: float = Field(default=75.0, gt=0, le=180)
+
+
 class MissionTaskRecoveryReviewBody(BaseModel):
     decision: str = Field(..., pattern="^(hold|request_reconciliation)$")
     reason: str = Field(..., min_length=1, max_length=1000)
@@ -516,6 +524,50 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director swarm registration failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission swarm registration could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/agents/{agent_id}/execute")
+    async def execute_mission_agent(
+        mission_id: str,
+        agent_id: str,
+        body: MissionAgentExecuteBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Run one registered advisory specialist; never execute canonical or external actions."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        runtime = _get_mission_runtime()
+        try:
+            contribution = await runtime.execute_agent(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                objective=body.objective,
+                inputs=body.inputs,
+                idempotency_prefix=body.idempotency_prefix,
+                correlation_id=body.correlation_id,
+                timeout_seconds=body.timeout_seconds,
+                director_id=_trusted_actor(request),
+            )
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            agent = (snapshot.state_snapshot.get("agents") or {}).get(agent_id) or {}
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "agent_id": agent_id,
+                "agent": agent,
+                "contribution_status": contribution.status,
+                "execution_started": True,
+                "external_action_authority_granted": False,
+                "canonical_task_state_changed": False,
+            }
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director advisory agent execution failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission advisory agent execution could not be confirmed") from exc
 
     @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/recovery-review")
     async def review_mission_task_recovery(
