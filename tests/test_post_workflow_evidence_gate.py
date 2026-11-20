@@ -54,7 +54,27 @@ def test_metric_claim_without_evidence_is_rejected():
         [],
     )
     assert not ok
-    assert "no retrieved knowledge evidence" in reason
+    assert "verified KB source" in reason
+    assert sources == []
+
+
+def test_reflective_caption_without_evidence_passes_deterministic_claim_gate():
+    ok, reason, sources = validate_caption_evidence(
+        "Take a moment to encourage someone today. A little kindness can brighten an ordinary day.",
+        [],
+    )
+    assert ok
+    assert reason == "no empirical performance claim detected"
+    assert sources == []
+
+
+def test_conceptual_caption_without_evidence_passes_deterministic_claim_gate():
+    ok, reason, sources = validate_caption_evidence(
+        "Kruskal's algorithm builds a spanning tree by considering edges in ascending weight order.",
+        [],
+    )
+    assert ok
+    assert reason == "no empirical performance claim detected"
     assert sources == []
 
 
