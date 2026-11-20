@@ -265,6 +265,48 @@ def test_failed_or_blocked_task_cannot_be_reassigned_without_recovery_proof():
             ))
 
 
+def test_reconciliation_observation_is_system_only_evidence_bound_and_non_authorizing():
+    machine = MissionStateMachine()
+    current = _snapshot()
+    state = dict(current.state_snapshot)
+    state["task_status"] = {"task-a": "blocked"}
+    state["task_assignments"] = {
+        "task-a": {"engine_id": "content_intelligence", "capability": "research.analyze"}
+    }
+    current = MissionRuntimeSnapshot(
+        mission_id=current.mission_id, scope_type=current.scope_type,
+        workspace_id=current.workspace_id, version=current.version,
+        status=current.status, phase=current.phase, task_ids=current.task_ids,
+        state_snapshot=state,
+    )
+    payload = {
+        "attempt_id": "attempt-1",
+        "engine_id": "content_intelligence",
+        "capability": "research.analyze",
+        "status": "unknown",
+        "authoritative": False,
+        "evidence_ref": None,
+    }
+    with pytest.raises(MissionTransitionRejected, match="task_reconciliation_requires_trusted_reconciler"):
+        machine.prepare(current, _command(
+            "task.reconciliation.observed", actor_type="system", actor_id="untrusted_reconciler",
+            task_id="task-a", payload=payload,
+        ))
+    with pytest.raises(MissionTransitionRejected, match="authoritative_reconciliation_evidence_required"):
+        machine.prepare(current, _command(
+            "task.reconciliation.observed", actor_type="system", actor_id="director_recovery_reconciler",
+            task_id="task-a", payload={**payload, "status": "failed_no_side_effects"},
+        ))
+
+    transition = machine.prepare(current, _command(
+        "task.reconciliation.observed", actor_type="system", actor_id="director_recovery_reconciler",
+        task_id="task-a", payload=payload,
+    ))
+    assert transition.next_snapshot.state_snapshot["task_status"]["task-a"] == "blocked"
+    assert transition.next_snapshot.state_snapshot["task_reconciliations"]["task-a"]["status"] == "unknown"
+    assert transition.next_snapshot.state_snapshot["task_reconciliations"]["task-a"]["authoritative"] is False
+
+
 def test_recovery_review_is_operator_only_and_cannot_authorize_reconsideration():
     machine = MissionStateMachine()
     current = _snapshot()
