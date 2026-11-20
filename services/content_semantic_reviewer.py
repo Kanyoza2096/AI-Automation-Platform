@@ -330,10 +330,10 @@ class ContentSemanticReviewer:
             )
         improvements_clean = improvements_clean[:_MAX_IMPROVEMENTS]
 
-        # An empty claims array paired with a high claim_coverage is
-        # internally contradictory: the reviewer cannot have assessed >=90% of
-        # material claims while enumerating none. Treat as needs_review rather
-        # than silently approving.
+        # The claim inventory must distinguish "no factual claims" from an
+        # omitted assessment. Empty claims are valid only when the reviewer
+        # explicitly says there are no material factual claims and reports
+        # complete coverage.
         no_claims_inventory_mismatch = (
             (has_material_factual_claims and not reviewed_claims)
             or (not has_material_factual_claims and bool(reviewed_claims))
