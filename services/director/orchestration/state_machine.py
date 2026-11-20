@@ -102,6 +102,7 @@ class MissionStateMachine:
             "task_assignments": {},
             "engine_progress": {},
             "task_results": {},
+            "task_reconciliations": {},
             "evidence_refs": [],
             "unresolved_disagreements": [],
             "pending_handoffs": {},
@@ -188,6 +189,7 @@ class MissionStateMachine:
         state.setdefault("task_assignments", {})
         state.setdefault("engine_progress", {})
         state.setdefault("task_results", {})
+        state.setdefault("task_reconciliations", {})
         state.setdefault("evidence_refs", [])
         state.setdefault("unresolved_disagreements", [])
         state.setdefault("pending_handoffs", {})
@@ -214,6 +216,10 @@ class MissionStateMachine:
         state["engine_progress"] = progress
         task_results = {key: value for key, value in dict(state["task_results"]).items() if key in task_ids}
         state["task_results"] = task_results
+        task_reconciliations = {
+            key: value for key, value in dict(state["task_reconciliations"]).items() if key in task_ids
+        }
+        state["task_reconciliations"] = task_reconciliations
         unresolved = state["unresolved_disagreements"]
         pending_handoffs = {key: value for key, value in dict(state["pending_handoffs"]).items() if key in task_ids}
         state["pending_handoffs"] = pending_handoffs
@@ -399,6 +405,52 @@ class MissionStateMachine:
                 raise MissionTransitionRejected("task_recovery_decision_not_permitted")
             self._require_text(payload, "reason")
             self._require_text(payload, "assessment_classification")
+            event_task_id = task_id
+            next_phase = "recovery"
+
+        elif event_type == "task.reconciliation.observed":
+            if command.actor_type != "system" or command.actor_id != "director_recovery_reconciler":
+                raise MissionTransitionRejected("task_reconciliation_requires_trusted_reconciler")
+            task_id = command.task_id or self._require_text(payload, "task_id")
+            if task_id not in task_ids:
+                raise MissionTransitionRejected("task_not_in_mission")
+            if task_status.get(task_id) not in {"executing", "failed", "blocked"}:
+                raise MissionTransitionRejected("task_not_in_reconciliation_state")
+            assignment = assignments.get(task_id) or {}
+            if (
+                self._require_text(payload, "engine_id") != assignment.get("engine_id")
+                or self._require_text(payload, "capability") != assignment.get("capability")
+                or not self._require_text(payload, "attempt_id")
+            ):
+                raise MissionTransitionRejected("task_reconciliation_assignment_mismatch")
+            reconciliation_status = self._require_text(payload, "status")
+            if reconciliation_status not in {
+                "not_started", "running", "completed", "failed_no_side_effects", "unknown"
+            }:
+                raise MissionTransitionRejected("task_reconciliation_status_invalid")
+            authoritative = payload.get("authoritative")
+            evidence_ref = str(payload.get("evidence_ref") or "").strip()
+            if not isinstance(authoritative, bool):
+                raise MissionTransitionRejected("task_reconciliation_authority_invalid")
+            if reconciliation_status == "unknown":
+                if authoritative or evidence_ref:
+                    raise MissionTransitionRejected("unknown_reconciliation_cannot_claim_authority")
+            elif not authoritative or not evidence_ref:
+                raise MissionTransitionRejected("authoritative_reconciliation_evidence_required")
+            summary = str(payload.get("summary") or "").strip()
+            completed_at = str(payload.get("completed_at") or "").strip()
+            if reconciliation_status == "completed" and (not summary or not completed_at):
+                raise MissionTransitionRejected("completed_reconciliation_result_required")
+            task_reconciliations[task_id] = {
+                "attempt_id": str(payload["attempt_id"])[:150],
+                "engine_id": str(payload["engine_id"])[:100],
+                "capability": str(payload["capability"])[:120],
+                "status": reconciliation_status,
+                "authoritative": authoritative,
+                "evidence_ref": evidence_ref[:2048] or None,
+                "summary": summary[:5000] or None,
+                "completed_at": completed_at[:64] or None,
+            }
             event_task_id = task_id
             next_phase = "recovery"
 
