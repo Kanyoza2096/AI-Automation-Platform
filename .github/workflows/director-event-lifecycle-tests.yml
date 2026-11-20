@@ -149,6 +149,7 @@ jobs:
             tests/test_director_mission_state_machine.py \
             tests/test_director_mission_runtime.py \
             tests/test_director_mission_graph.py \
+            tests/test_director_swarm_planning.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
             tests/test_director_health_briefing.py \
