@@ -37,6 +37,21 @@ The production review-case inventory contains 854 quarantined cases, with no ver
 
 No record should be batch-approved based only on a URL being present, a generated attribution string, a source label, or a matching topic. These counts describe the review-case snapshot at the time of inspection and must be refreshed before any operational decision.
 
+## Ships & Shrugs handbook row-level provenance assessment (read-only, 2026-11-20)
+
+The 112 production records have been inspected at metadata and sample-content level. All 112 have a `chapter_title` and a source URL, but the URLs are not uniformly chapter-specific:
+- 60 records point to a chapter-level curriculum URL.
+- 52 point only to a handbook/curriculum root or broad section URL.
+- 78 records describe themselves as “original explanatory synthesis” and explicitly “not a verbatim reproduction” (AI Engineering 27, DSA 20, HLD 31).
+- 34 describe themselves as paraphrased/derived from handbook material (AI Engineering 4, DSA 1, HLD 29); all 34 have chapter-level source URLs.
+- A `source_word_count` is populated on only 38 records, so it cannot be treated as a reliable completeness or similarity measure for the cohort.
+
+The public publisher repository confirms that the three handbooks are in `handbook-academy/engineering-handbook` and the repository declares CC BY-SA 4.0. The repo README identifies the HLD, DSA, and AI Engineering websites and states that the books' source text lives in that repository. This verifies publisher/repository identity and the repository's declared license, but not that each production synthesis is a derivative work or that each source claim is accurately supported by the cited chapter.
+
+Disposition: keep all 112 quarantined pending row-level source review. For the 34 explicitly paraphrased rows, verify the cited chapter and check attribution/ShareAlike compliance. For the 78 original-synthesis rows, do not label them CC BY-SA adaptations solely because they share a topic or curriculum URL; verify whether the entry is independently authored or derived from specific chapter expression, and establish evidence support for its factual/technical claims. For the 52 broad-URL records, identify the exact source chapter before snapshot capture. Check for third-party figures, quotations, code, and externally sourced claims inside handbook chapters; the repository-wide license alone does not relicense third-party material.
+
+No production rows, review cases, trust classes, source snapshots, or promotion states were changed. This was a read-only metadata and sample-content inspection.
+
 ## External provenance research (read-only, 2026-11-20)
 ## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
 
