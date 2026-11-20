@@ -650,12 +650,85 @@ def create_app(director: Director):
                 mission_id=mission_id, workspace_id=workspace_id
             )
             agent = (snapshot.state_snapshot.get("agents") or {}).get(agent_id) or {}
+
+            # After each advisory contribution, Director automatically reassesses
+            # the same mission task for a justified follow-up specialist wave.
+            # This does not auto-execute newly spawned agents.
+            follow_up = {"status": "not_assessed", "spawned_agents": [], "rationale": ""}
+            task = director.tasks.get(str(agent.get("task_id") or ""))
+            if task is not None and task.mission_id == mission_id and _task_in_workspace(task, request):
+                try:
+                    from ai.gateway import get_llm_gateway
+                    from .orchestration.director_swarm import (
+                        SwarmAssessmentError,
+                        SwarmAssessmentUnavailable,
+                        assess_swarm_roster,
+                    )
+                    followup_prefix = "follow-" + hashlib.sha256(
+                        f"{mission_id}:{agent_id}:{body.idempotency_prefix}".encode("utf-8")
+                    ).hexdigest()[:20]
+                    assessment = await assess_swarm_roster(
+                        gateway=get_llm_gateway(),
+                        workspace_id=workspace_id,
+                        mission_id=mission_id,
+                        idempotency_prefix=followup_prefix,
+                        tasks=[{
+                            "task_id": task.id,
+                            "description": task.description,
+                            "capability": task.capability,
+                            "sector": getattr(task.sector, "value", str(task.sector)),
+                            "status": getattr(task.status, "value", str(task.status)),
+                            "depends_on": list(task.depends_on or []),
+                            "success_criteria": list(task.success_criteria or []),
+                            "impact_score": task.impact_score,
+                            "mission_priority": task.mission_priority,
+                        }],
+                        adapter_catalogue=runtime.adapters.describe(),
+                        existing_agents=snapshot.state_snapshot.get("agents", {}),
+                    )
+                    if assessment.candidates:
+                        plan, snapshot = await runtime.spawn_swarm(
+                            mission_id=mission_id,
+                            workspace_id=workspace_id,
+                            task_ids=[task.id],
+                            candidates=assessment.candidates,
+                            complexity_score=assessment.complexity_score,
+                            idempotency_prefix=followup_prefix,
+                            correlation_id=body.correlation_id,
+                            director_id=_trusted_actor(request),
+                        )
+                        follow_up = {
+                            "status": "spawned" if plan.selected else "no_capacity",
+                            "complexity_score": assessment.complexity_score,
+                            "rationale": assessment.rationale,
+                            "spawned_agents": [item.agent_id for item in plan.selected],
+                            "deferred_agents": [item.agent_id for item in plan.deferred],
+                            "execution_started": False,
+                        }
+                    else:
+                        follow_up = {
+                            "status": "not_needed",
+                            "complexity_score": assessment.complexity_score,
+                            "rationale": assessment.rationale,
+                            "spawned_agents": [],
+                            "execution_started": False,
+                        }
+                except SwarmAssessmentUnavailable:
+                    follow_up = {"status": "assessment_unavailable", "spawned_agents": [], "execution_started": False}
+                except (SwarmAssessmentError, ValueError, LookupError, PermissionError) as exc:
+                    log.warning("Director follow-up swarm was rejected: %s", str(exc)[:120])
+                    follow_up = {"status": "rejected", "reason": str(exc)[:160], "spawned_agents": [], "execution_started": False}
+                except Exception as exc:
+                    log.warning("Director follow-up swarm assessment failed: %s", type(exc).__name__)
+                    follow_up = {"status": "unavailable", "spawned_agents": [], "execution_started": False}
+
             return {
                 "accepted": True,
                 "mission_id": mission_id,
                 "agent_id": agent_id,
                 "agent": agent,
                 "contribution_status": contribution.status,
+                "follow_up": follow_up,
                 "execution_started": True,
                 "external_action_authority_granted": False,
                 "canonical_task_state_changed": False,
