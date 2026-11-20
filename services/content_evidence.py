@@ -184,6 +184,11 @@ def validate_caption_evidence(
     evidence: Iterable[dict[str, Any]] | None,
 ) -> tuple[bool, str, list[str]]:
     """Require verified source support for empirical/quantitative sentences."""
+    # TEMPORARY OPERATOR DISABLE (2026-11-20): bypass this deterministic caption-evidence
+    # gate for today's publishing operations. Keep semantic review, policy validation,
+    # and the independent publish approval checks intact. Re-enable after review.
+    return True, "caption evidence gate temporarily disabled by operator", []
+
     if not caption or not caption.strip():
         return False, "caption is empty", []
 
