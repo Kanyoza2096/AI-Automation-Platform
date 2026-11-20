@@ -16,6 +16,8 @@ on:
       - feature/director-dynamic-swarm-foundation
     paths:
       - "services/director/orchestration/**"
+      - "services/director/api.py"
+      - "tests/test_director_swarm_assessment.py"
       - "tests/test_director_swarm_planning.py"
       - "tests/test_director_mission_state_machine.py"
       - "tests/test_director_mission_runtime.py"
