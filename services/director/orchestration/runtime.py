@@ -29,6 +29,7 @@ from .state_machine import (
     MissionTransitionRejected,
 )
 from .store import MissionRuntimeStore
+from .swarm_planning import SwarmCandidate, SwarmLimits, SwarmPlan, plan_swarm
 
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,85 @@ class MissionOrchestrationRuntime:
                     extra={"task_id": task_id, "target_status": task_sync["target_status"]},
                 )
         return snapshot
+
+    async def spawn_swarm(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str,
+        task_ids: Sequence[str],
+        candidates: Sequence[SwarmCandidate],
+        complexity_score: float,
+        idempotency_prefix: str,
+        correlation_id: str,
+        limits: SwarmLimits | None = None,
+        director_id: str = "director",
+    ) -> tuple[SwarmPlan, MissionRuntimeSnapshot]:
+        """Plan and durably register a bounded specialist wave under Director control.
+
+        Repeated calls may add specialists during an active mission. Existing
+        agent history, active concurrency, and per-task occupancy reduce the
+        available capacity before the next wave is planned.
+        """
+        current = await self.load_snapshot(mission_id=mission_id, workspace_id=workspace_id)
+        mission_task_ids = set(current.task_ids)
+        requested_task_ids = {str(value).strip() for value in task_ids if str(value).strip()}
+        if not requested_task_ids or not requested_task_ids.issubset(mission_task_ids):
+            raise MissionTransitionRejected("swarm_tasks_outside_mission_scope")
+
+        existing = dict(current.state_snapshot.get("agents") or {})
+        active = [
+            item for item in existing.values()
+            if item.get("status") in {"spawned", "running"}
+        ]
+        base = limits or SwarmLimits()
+        remaining_total = 8 - len(existing)
+        remaining_parallel = 4 - len(active)
+        if remaining_total < 1 or remaining_parallel < 1:
+            raise MissionTransitionRejected("mission_agent_capacity_exhausted")
+
+        occupied_by_task: dict[str, int] = {}
+        for item in active:
+            occupied_by_task[str(item.get("task_id") or "")] = (
+                occupied_by_task.get(str(item.get("task_id") or ""), 0) + 1
+            )
+        available_candidates = [
+            candidate for candidate in candidates
+            if candidate.agent_id not in existing
+            and candidate.task_id in requested_task_ids
+            and occupied_by_task.get(candidate.task_id, 0) < 3
+        ]
+        effective_max = min(base.max_agents, remaining_total, remaining_parallel)
+        effective_limits = SwarmLimits(
+            max_agents=effective_max,
+            max_parallel_agents=min(base.max_parallel_agents, effective_max),
+            max_agents_per_task=min(base.max_agents_per_task, effective_max),
+            max_total_estimated_tokens=base.max_total_estimated_tokens,
+        )
+        plan = plan_swarm(
+            complexity_score=complexity_score,
+            task_ids=sorted(requested_task_ids),
+            candidates=available_candidates,
+            registry=self.adapters,
+            limits=effective_limits,
+        )
+
+        latest = current
+        for candidate in plan.selected:
+            latest = await self.spawn_agent(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=candidate.task_id,
+                agent_id=candidate.agent_id,
+                engine_id=candidate.engine_id,
+                capability=candidate.capability,
+                role=candidate.role,
+                estimated_tokens=candidate.estimated_tokens,
+                idempotency_key=f"{idempotency_prefix}:{candidate.agent_id}",
+                correlation_id=correlation_id,
+                director_id=director_id,
+            )
+        return plan, latest
 
     async def spawn_agent(
         self,
