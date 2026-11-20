@@ -279,3 +279,17 @@ def test_semantic_reviewer_receives_brand_model_audience_and_style_fields():
     assert "Backend engineers maintaining production systems" in prompt
     assert "technical and approachable" in prompt
     assert "avoid generic filler" in prompt
+
+
+
+def test_semantic_reviewer_requires_claim_inventory_when_factual_claims_exist():
+    gateway = FakeGateway(data=_data(
+        has_material_factual_claims=True,
+        claims=[],
+        claim_coverage=1.0,
+    ))
+    result = _review(gateway, evidence=[])
+
+    assert result["approved"] is False
+    assert result["status"] == "needs_review"
+    assert "inconsistent material-claim inventory" in result["reason"]
