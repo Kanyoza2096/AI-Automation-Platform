@@ -25,7 +25,9 @@ def _client():
     return client
 
 
-def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0) -> dict[str, Any]:
+def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspace_id: str | None = None) -> dict[str, Any]:
+    if workspace_id is not None and not str(workspace_id).strip():
+        raise ValueError("workspace_id must be a non-empty authenticated workspace ID")
     client = _client()
     offset = 0
     scanned = 0
@@ -35,9 +37,11 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0) -> dict
         take = min(batch_size, maximum - scanned) if maximum else batch_size
         if take <= 0:
             break
+        query = client.table("knowledge_entries").select("id,content,workspace_id,brand_id,metadata")
+        if workspace_id is not None:
+            query = query.eq("workspace_id", workspace_id)
         result = (
-            client.table("knowledge_entries")
-            .select("id,content,workspace_id,brand_id,metadata")
+            query
             .order("id")
             .range(offset, offset + take - 1)
             .execute()
@@ -72,6 +76,7 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0) -> dict
             break
     return {
         "mode": "apply" if apply else "dry_run",
+        "workspace_scoped": workspace_id is not None,
         "scanned": scanned,
         "counts": dict(counts),
         "warning_counts": dict(warnings),
