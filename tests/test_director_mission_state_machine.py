@@ -430,3 +430,25 @@ def test_agent_spawning_enforces_active_and_per_task_limits():
                 "capability": "research.analyze", "role": "Researcher",
             },
         ))
+
+
+def test_mission_cannot_complete_with_live_agents_and_cancellation_closes_them():
+    machine = MissionStateMachine()
+    current = _advance(machine, _snapshot(), _command(
+        "agent.spawned", task_id="task-a",
+        payload={
+            "agent_id": "agent-live", "task_id": "task-a",
+            "engine_id": "content_intelligence",
+            "capability": "research.analyze", "role": "Researcher",
+        },
+    ))
+    with pytest.raises(MissionTransitionRejected, match="mission_has_active_agents"):
+        machine.prepare(current, _command("mission.completed"))
+
+    cancelled = _advance(machine, current, _command(
+        "mission.cancelled", actor_type="operator", actor_id="operator-1",
+        payload={"reason": "Operator cancelled the mission."},
+    ))
+    assert cancelled.status == "cancelled"
+    assert cancelled.state_snapshot["agents"]["agent-live"]["status"] == "terminated"
+    assert "Mission cancelled" in cancelled.state_snapshot["agents"]["agent-live"]["reason"]
