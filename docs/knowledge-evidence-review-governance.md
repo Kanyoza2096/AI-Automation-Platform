@@ -38,6 +38,20 @@ The production review-case inventory contains 854 quarantined cases, with no ver
 No record should be batch-approved based only on a URL being present, a generated attribution string, a source label, or a matching topic. These counts describe the review-case snapshot at the time of inspection and must be refreshed before any operational decision.
 
 ## External provenance research (read-only, 2026-11-20)
+## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
+
+The 732 production entries were compared against all 732 records in the identified OpenChristianData source JSON. Matching by production date and time-of-day maps every production row to one unique source entry (732/732). This is a row-level identity reconciliation, not a rights approval or evidence promotion.
+
+Content comparison after Unicode normalization, case folding, whitespace normalization, and the known source/production hyphenation normalization yielded:
+- 671/732 exact content matches.
+- 43/732 differ only by one hyphenation character.
+- 11/732 contain an appended next-month calendar list after otherwise matching devotional text.
+- 7/732 require manual content review. These include a substantial November 3 morning text discrepancy, extra or displaced scripture references in other rows, and two additional hyphenation-boundary differences.
+- Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`.
+
+The source record identity is therefore established across the cohort, but the content anomalies must be reviewed and corrected or explicitly dispositioned before promotion. The 11 calendar appendices and 7 manual-review cases must not be silently normalized away. The six missing references and 36 Song-of-Solomon aliases can be reconciled deterministically against the source record, subject to normal review controls.
+
+No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. No bulk approval was performed. The comparison used the public source collection and a read-only production export.
 
 - Spurgeon source lead: [source note](https://github.com/OpenChristianData/open-christian-data/blob/main/sources/devotionals/spurgeons-morning-evening/README.source.md), [selected-data rights and credit notice](https://github.com/OpenChristianData/open-christian-data/blob/main/data/devotionals/spurgeons-morning-evening/README.md), and [source manifest](https://github.com/OpenChristianData/open-christian-data/blob/main/sources/devotionals/spurgeons-morning-evening/lib030.source-manifest-current-closure-20261003-v1.json). The source note identifies the exact CCEL ThML witness and distinguishes historical devotional text from the electronic file/formatting. The selected public scope is qualified to the United States; no worldwide rights conclusion is made. This does not yet prove that every production row is an exact match to that selected scope.
 - Handbook publisher/license lead: [engineering-handbook repository](https://github.com/handbook-academy/engineering-handbook), [repository license](https://github.com/handbook-academy/engineering-handbook/blob/main/LICENSE), [contribution guide](https://github.com/handbook-academy/engineering-handbook/blob/main/CONTRIBUTING.md), and [citation metadata](https://github.com/handbook-academy/engineering-handbook/blob/main/CITATION.cff). The repository documents all three handbook families and CC BY-SA 4.0, but each imported chunk still needs source-chapter mapping and a check for third-party material and required attribution/ShareAlike terms.
