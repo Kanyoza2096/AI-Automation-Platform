@@ -268,3 +268,44 @@ or `api.github.com` to the generic trusted-domain registry. The next gate is
 unit/CI validation, independent source-class and rights review, and a controlled
 record-level comparison against the corresponding KDO legacy entries. No legacy
 entry is changed by this reader alone.
+
+
+## Lightweight knowledge-check mode (replacement path)
+
+The elaborate review-case workflow is now an explicit opt-in compatibility mode.
+Unless `KDO_KB_EVIDENCE_REVIEW_MODE=full` is set, the background reviewer does
+not start and the legacy review submission, decision, promotion, trusted-source
+ingestion, and sweep-trigger write endpoints return HTTP 410. Read-only history
+and backlog endpoints remain available for audit.
+
+Normal single and bulk knowledge ingestion now runs deterministic lightweight
+checks and stores the report at `metadata.kdo_lightweight_review`. The checks
+record the exact content SHA-256, reject empty/oversized/obvious-placeholder
+content for attention, and report missing or malformed HTTPS source URLs,
+stable source IDs, and recognized trust classes. Missing provenance is a
+warning, not a false approval. The report always sets `verified=false`,
+`approval_granted=false`, and `publishing_evidence_authorized=false`.
+
+For historical rows, run:
+
+```bash
+python -m scripts.lightweight_knowledge_review
+```
+
+This scans the knowledge table in bounded pages and is read-only by default.
+Only after inspecting its counts should an operator explicitly pass
+`--apply` to persist the lightweight report on each row. Applying reports
+does not set `metadata.verified`, create review cases, or promote evidence.
+
+The independent publishing evidence gate remains unchanged: empirical and
+quantitative claims still require verified, traceable source material, and
+semantic review continues to assess material factual claims. This lightweight
+check is a content-integrity/provenance inventory, not a source adjudicator,
+copyright clearance, factual certification, or publishing approval. Legacy
+entries that lack adequate source evidence remain usable as general knowledge
+context only where the existing publishing policy permits; they cannot support
+empirical/quantitative claims merely because a lightweight check ran.
+
+To temporarily restore the former case-management workflow for controlled
+diagnostics, set `KDO_KB_EVIDENCE_REVIEW_MODE=full`. Do not enable it in normal
+operation without a deliberate decision.
