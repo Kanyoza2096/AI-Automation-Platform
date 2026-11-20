@@ -511,51 +511,19 @@ class ValidatorStep(Step):
     name = "validator"
 
     def __init__(self, validator: Optional[ContentValidator] = None, config: PipelineConfig = None) -> None:
-        self._validator = validator or ContentValidator()
+        # Automated content-review gate disabled by operator decision.
+        self._validator = None
         self._config = config or PipelineConfig()
 
     async def run_async(self, context: dict[str, Any]) -> Any:
-        caption = context.get("caption", "")
-        topic = context.get("topic", "")
-        brand = context.get("brand")
-
-        content = {
-            "title": context.get("content_result", {}).get("title", topic),
-            "caption": caption,
-            "content_type": context.get("content_type", "social_post"),
-            "hashtags": context.get("content_result", {}).get("hashtags", []),
-            "media_required": True,
+        result = {
+            "status": "disabled",
+            "approved": None,
+            "reason": "automated content validation disabled by operator",
         }
-
-        # FIXED: Validate is now async in ContentValidator v3.0
-        validation_result = self._validator.validate(
-            content=content,
-            brand=brand,
-            platform=context.get("platform", "facebook"),
-            require_media=True,
-        )
-        if asyncio.iscoroutine(validation_result):
-            validation_result = await validation_result
-
-        context["validation_result"] = validation_result
-
-        if validation_result.is_rejected:
-            violations = getattr(validation_result, "violations", [])
-            errors = [v.message for v in violations if v.severity.value == "error"]
-            logger.error("[Stage 6] Validation REJECTED: %s", "; ".join(errors))
-            raise AIValidationError(
-                message=f"Content validation failed: {'; '.join(errors)}",
-                context={"topic": topic},
-            )
-
-        # FIXED: Correct enum comparison
-        if validation_result.status == ValidationStatus.APPROVED_WITH_WARNINGS:
-            warnings = getattr(validation_result, "warnings_count", 0)
-            logger.warning("[Stage 6] Validation passed with %d warnings", warnings)
-        else:
-            logger.info("[Stage 6] Validation passed.")
-
-        return validation_result.to_dict()
+        context["validation_result"] = result
+        context["content_review_status"] = "disabled"
+        return result
 
     def run(self, context: dict[str, Any]) -> Any:
         return asyncio.run(self.run_async(context))
@@ -930,4 +898,3 @@ __all__ = [
     "PublisherStep",
     "AnalyticsStep",
 ]
-
