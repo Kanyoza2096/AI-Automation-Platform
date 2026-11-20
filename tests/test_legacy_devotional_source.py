@@ -21,6 +21,15 @@ def test_pinned_blob_decoder_rejects_wrong_object_identity():
         })
 
 
+
+def test_pinned_blob_decoder_rejects_malformed_base64_even_with_expected_sha():
+    with pytest.raises(source.PinnedDatasetError, match="invalid_blob_base64"):
+        source.decode_pinned_blob_response({
+            "sha": source.BLOB_SHA,
+            "encoding": "base64",
+            "content": "%%%not-base64%%%",
+        })
+
 def test_record_snapshot_is_deterministic_and_bound_to_pinned_record():
     rows = [{
         "entry_id": "01-01-morning",
