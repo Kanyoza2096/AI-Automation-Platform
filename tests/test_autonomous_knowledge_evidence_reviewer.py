@@ -144,15 +144,30 @@ async def test_low_confidence_or_incomplete_coverage_cannot_auto_approve():
     assert result["decision"] == "quarantined"
 
 
-def test_autonomous_review_is_wired_to_submission_and_promotion_is_gated():
+def test_knowledge_ingestion_uses_lightweight_checks_not_case_management():
     source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
-    assert "_run_autonomous_knowledge_evidence_review(" in source
-    assert "_autonomously_review_new_entry(" in source
-    assert "review_status" in source
-    assert "bulk_knowledge_autonomous_review_unavailable" in source
-    assert 'if decision == "approved":' in source
-    assert '"p_actor_id": actor' in source
-    assert '"review_mode": "autonomous"' in source
+    create_start = source.index("async def create_knowledge_entry")
+    create_end = source.index('@router.get("/brands/{brand_id}/knowledge")', create_start)
+    create_route = source[create_start:create_end]
+    bulk_start = source.index("async def bulk_create_knowledge")
+    bulk_end = source.index('@router.get("/knowledge")', bulk_start)
+    bulk_route = source[bulk_start:bulk_end]
+    assert "check_knowledge_entry(" in create_route
+    assert "check_knowledge_entry(" in bulk_route
+    assert "_autonomously_review_new_entry(" not in create_route
+    assert "_autonomously_review_new_entry(" not in bulk_route
+    assert '"kdo_lightweight_review"' in create_route
+    assert '"kdo_lightweight_review"' in bulk_route
+    assert '"verified": True' not in create_route
+    assert '"verified": True' not in bulk_route
+
+
+def test_full_evidence_case_management_is_opt_in_and_disabled_by_default():
+    source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
+    assert 'os.getenv("KDO_KB_EVIDENCE_REVIEW_MODE", "lightweight")' in source
+    assert "def _require_full_evidence_review_mode()" in source
+    assert "_require_full_evidence_review_mode()" in source
+    assert "knowledge_review_scheduler_disabled_in_lightweight_mode" in source
 
 
 def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
