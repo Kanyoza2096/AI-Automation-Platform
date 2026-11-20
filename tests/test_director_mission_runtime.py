@@ -516,7 +516,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
 
 
 @pytest.mark.asyncio
-async def test_native_engine_invocation_timeout_fails_task_without_hanging():
+async def test_native_engine_invocation_timeout_preserves_uncertain_attempt_without_hanging():
     import asyncio
 
     class SlowAdapter(FakeNativeAdapter):
@@ -573,8 +573,10 @@ async def test_native_engine_invocation_timeout_fails_task_without_hanging():
     assert started_event["actor_type"] == "operator"
     assert started_event["actor_id"] == "operator-timeout"
     assert len(slow.calls) == 1
-    assert store.task["status"] == "failed"
-    assert any(event["event_type"] == "task.failed" for event in store.events)
+    assert store.task["status"] == "executing"
+    assert store.row["state_snapshot"]["task_status"][store.task_id] == "executing"
+    assert not any(event["event_type"] == "task.failed" for event in store.events)
+    assert not any(event["event_type"] == "task.completed" for event in store.events)
     with pytest.raises(MissionTaskNotReady, match="canonical_director_approval_not_persisted"):
         await runtime.execute_approved_task(
             mission_id=store.mission_id,
