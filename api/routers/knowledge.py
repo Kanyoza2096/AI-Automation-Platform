@@ -47,6 +47,40 @@ async def run_admin_lightweight_knowledge_review(
             raise HTTPException(status_code=503, detail="Knowledge review could not be completed") from exc
 
 
+@router.post("/admin/knowledge/lightweight-review/apply")
+async def apply_admin_lightweight_knowledge_review(
+    admin=Depends(require_human_workspace_admin),
+):
+    """Persist deterministic check reports for the authenticated workspace only.
+
+    This operation never approves, verifies, creates review cases, or promotes evidence.
+    """
+    workspace_id = str(getattr(admin, "workspace_id", "") or "").strip()
+    if not workspace_id:
+        raise HTTPException(status_code=403, detail="Authenticated workspace is required")
+    if _lightweight_review_lock.locked():
+        raise HTTPException(status_code=409, detail="A lightweight knowledge review is already running")
+    async with _lightweight_review_lock:
+        try:
+            from scripts.lightweight_knowledge_review import run
+            result = await asyncio.to_thread(
+                run, apply=True, batch_size=100, workspace_id=workspace_id
+            )
+            _lightweight_review_logger.info(
+                "admin_lightweight_knowledge_review_apply_finished",
+                extra={"workspace_id": workspace_id, "result": result},
+            )
+            result["complete"] = result.get("write_failed", 0) == 0
+            result["partial_write_warning"] = result.get("write_failed", 0) > 0
+            return _ok(result)
+        except Exception as exc:
+            _lightweight_review_logger.exception(
+                "admin_lightweight_knowledge_review_apply_failed",
+                extra={"workspace_id": workspace_id, "error_class": type(exc).__name__},
+            )
+            raise HTTPException(status_code=503, detail="Knowledge review report writes could not be completed") from exc
+
+
 
 async def _run_review_sweep_background() -> dict | None:
     global _review_sweep_task
