@@ -467,7 +467,7 @@ def create_app(director: Director):
         request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = None,
     ):
-        """Operator-authorized request for the Director to plan/register an advisory swarm wave."""
+        """Operator-authorized submission of a candidate roster for Director validation/registration."""
         await _require_auth(request, credentials, write=True)
         workspace_id = await _require_workspace_mission(request)
         for task_id in body.task_ids:
