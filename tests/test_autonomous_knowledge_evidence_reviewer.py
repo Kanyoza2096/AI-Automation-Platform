@@ -144,15 +144,30 @@ async def test_low_confidence_or_incomplete_coverage_cannot_auto_approve():
     assert result["decision"] == "quarantined"
 
 
-def test_autonomous_review_is_wired_to_submission_and_promotion_is_gated():
+def test_knowledge_ingestion_uses_lightweight_checks_not_case_management():
     source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
-    assert "_run_autonomous_knowledge_evidence_review(" in source
-    assert "_autonomously_review_new_entry(" in source
-    assert "review_status" in source
-    assert "bulk_knowledge_autonomous_review_unavailable" in source
-    assert 'if decision == "approved":' in source
-    assert '"p_actor_id": actor' in source
-    assert '"review_mode": "autonomous"' in source
+    create_start = source.index("async def create_knowledge_entry")
+    create_end = source.index('@router.get("/brands/{brand_id}/knowledge")', create_start)
+    create_route = source[create_start:create_end]
+    bulk_start = source.index("async def bulk_create_knowledge")
+    bulk_end = source.index('@router.get("/knowledge")', bulk_start)
+    bulk_route = source[bulk_start:bulk_end]
+    assert "check_knowledge_entry(" in create_route
+    assert "check_knowledge_entry(" in bulk_route
+    assert "_autonomously_review_new_entry(" not in create_route
+    assert "_autonomously_review_new_entry(" not in bulk_route
+    assert '"kdo_lightweight_review"' in create_route
+    assert '"kdo_lightweight_review"' in bulk_route
+    assert '"verified": True' not in create_route
+    assert '"verified": True' not in bulk_route
+
+
+def test_full_evidence_case_management_is_opt_in_and_disabled_by_default():
+    source = (ROOT / "api" / "routers" / "knowledge.py").read_text()
+    assert 'os.getenv("KDO_KB_EVIDENCE_REVIEW_MODE", "lightweight")' in source
+    assert "def _require_full_evidence_review_mode()" in source
+    assert "_require_full_evidence_review_mode()" in source
+    assert "knowledge_review_scheduler_disabled_in_lightweight_mode" in source
 
 
 def test_trusted_ingestion_uses_server_fetch_and_operator_host_registry():
@@ -238,6 +253,40 @@ def test_trust_class_registry_uses_exact_host_and_allowlisted_values(monkeypatch
     with pytest.raises(ValueError):
         resolve_trusted_source_class("https://attacker.example/who.int", registry)
 
+def test_additional_trusted_source_registry_is_additive_and_exact_host(monkeypatch):
+    import json
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
+
+    monkeypatch.setenv(
+        "KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL",
+        json.dumps({
+            "hld.handbook.academy": "publisher_primary",
+            "ai-eng.handbook.academy": "publisher_primary",
+            "dsa.handbook.academy": "publisher_primary",
+        }),
+    )
+    existing = json.dumps({"who.int": "government"})
+    assert resolve_trusted_source_class("https://who.int/health", existing) == "government"
+    assert resolve_trusted_source_class(
+        "https://hld.handbook.academy/chapter", existing
+    ) == "publisher_primary"
+    with pytest.raises(ValueError):
+        resolve_trusted_source_class("https://sub.hld.handbook.academy/chapter", existing)
+
+
+def test_additional_trusted_source_registry_rejects_conflicting_classification(monkeypatch):
+    import json
+    from services.autonomous_knowledge_evidence_reviewer import resolve_trusted_source_class
+
+    monkeypatch.setenv(
+        "KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL",
+        json.dumps({"who.int": "publisher_primary"}),
+    )
+    with pytest.raises(ValueError, match="conflicting"):
+        resolve_trusted_source_class(
+            "https://who.int/health", json.dumps({"who.int": "government"})
+        )
+
 
 @pytest.mark.asyncio
 async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch):
@@ -274,13 +323,27 @@ async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch
         def table(self, name): return FakeQuery(name)
 
     reviewed = []
+    refreshed_case = {
+        **pending_case,
+        "source_id": "source-recovered-1",
+        "source_url": "https://trusted.example/source",
+        "trust_class": "official_documentation",
+    }
     async def capture(_client, row):
-        return row["metadata"]
+        return {
+            **row["metadata"],
+            "source_snapshot_text": "Trusted captured source text",
+            "source_snapshot_sha256": "snapshot-digest",
+        }
+    def refresh_case(_client, row):
+        assert row["metadata"]["source_snapshot_text"] == "Trusted captured source text"
+        return refreshed_case
     async def review(_client, case, row):
-        reviewed.append((case["id"], row["id"]))
+        reviewed.append((case["id"], case.get("source_url"), row["id"]))
         return "quarantined"
 
     monkeypatch.setattr(sweep, "_capture_trusted_source_snapshot", capture)
+    monkeypatch.setattr(sweep, "_case_for_entry", refresh_case)
     monkeypatch.setattr(sweep, "_review_case", review)
     counters = {
         "scanned": 0, "discovered": 0, "approved": 0,
@@ -289,6 +352,6 @@ async def test_backlog_sweep_drains_pending_cases_before_cursor_scan(monkeypatch
 
     await sweep._drain_pending_review_cases(FakeClient(), 10, counters)
 
-    assert reviewed == [("case-pending", "entry-old")]
+    assert reviewed == [("case-pending", "https://trusted.example/source", "entry-old")]
     assert counters["discovered"] == 1
     assert counters["quarantined"] == 1

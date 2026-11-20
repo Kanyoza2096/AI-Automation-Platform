@@ -1,0 +1,473 @@
+{
+  "description": "Read-only candidate mapping of 52 broad/root Ships & Shrugs knowledge records to exact chapter files in the publisher's handbook repository. This is a source-location worklist, not a claim-support decision or approval.",
+  "source_repository": "handbook-academy/engineering-handbook",
+  "source_commit": "730007f6f254b2e180c952069f4a7cfd4d89a168",
+  "source_hosts": [
+    "hld.handbook.academy",
+    "ai-eng.handbook.academy",
+    "dsa.handbook.academy"
+  ],
+  "mapping_status": "candidate_requires_claim_and_canonical_url_verification",
+  "constraints": [
+    "No canonical website URL is inferred from repository paths.",
+    "No knowledge entry, database row, trust class, approval, or promotion is changed.",
+    "Each candidate path must be checked against the full entry's material claims; broad-topic similarity is not enough.",
+    "CC BY-SA 4.0 attribution and ShareAlike obligations and third-party material must be reviewed separately."
+  ],
+  "records": [
+    {
+      "entry_id": "knowledge.ai-ai-data-privacy.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-9-security-and-governance/04-pii-and-privacy.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-context-budget.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-5-context-engineering/02-compression-and-context-budgets.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-failure-taxonomy.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-8-evaluation-and-observability/00-the-eval-taxonomy.md",
+        "content/ai-eng/part-8-evaluation-and-observability/02-judge-failure-modes.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-human-approval.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-7-agent-engineering/07-human-in-the-loop.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-llm-evaluation-ci.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-8-evaluation-and-observability/04-regression-suites-and-ci-gates.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-model-governance.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-3-prompt-engineering/04-prompt-versioning.md",
+        "content/ai-eng/part-2-working-with-model-apis/05-choosing-models-and-reading-benchmarks.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-model-routing-cost.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-2-working-with-model-apis/06-gateways-and-routing.md",
+        "content/ai-eng/part-10-deployment-and-cost/03-cost-engineering.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-model-serving-latency.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-10-deployment-and-cost/04-latency-engineering.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-multimodal-pipelines.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-11-ai-product/00-ai-ux.md",
+        "content/hld/part-9-ai-ml-system-design/13-multimodal-ai-systems.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-prompt-injection-defense.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-9-security-and-governance/00-prompt-injection.md",
+        "content/ai-eng/part-9-security-and-governance/01-agent-security-and-the-lethal-trifecta.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai-tool-schema-design.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-7-agent-engineering/03-tool-design.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.cost-accounting.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-10-deployment-and-cost/03-cost-engineering.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.data-privacy-lifecycle.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-9-security-and-governance/04-pii-and-privacy.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.eval-dataset-design.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-4-eval-fundamentals/02-your-first-eval-set.md",
+        "content/ai-eng/part-4-eval-fundamentals/03-assertions-and-unit-tests.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.llm-judge-calibration.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-8-evaluation-and-observability/01-llm-as-judge.md",
+        "content/ai-eng/part-8-evaluation-and-observability/02-judge-failure-modes.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.model-api-contracts.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-2-working-with-model-apis/01-streaming.md",
+        "content/ai-eng/part-2-working-with-model-apis/02-structured-outputs.md",
+        "content/ai-eng/part-2-working-with-model-apis/04-errors-retries-fallbacks.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.online-evaluation.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-8-evaluation-and-observability/05-online-evaluation-and-ab-testing.md",
+        "content/ai-eng/part-11-ai-product/03-experimentation.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.prompt-context.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-5-context-engineering/00-context-is-more-than-the-prompt.md",
+        "content/ai-eng/part-3-prompt-engineering/00-anatomy-of-a-production-prompt.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.prompt-injection-boundaries.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-9-security-and-governance/00-prompt-injection.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.ai.rag-retrieval-evaluation.v1",
+      "candidate_paths": [
+        "content/ai-eng/part-6-retrieval-augmented-generation/07-evaluating-retrieval.md",
+        "content/ai-eng/part-8-evaluation-and-observability/03-evaluating-rag-and-agents.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa-union-find-mst.v1",
+      "candidate_paths": [
+        "content/dsa/part-8-graphs/08-union-find.md",
+        "content/dsa/part-8-graphs/11-mst-kruskal.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.binary-search-invariants.v1",
+      "candidate_paths": [
+        "content/dsa/part-2-search-sort/02-binary-search-variants.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.dynamic-programming-state.v1",
+      "candidate_paths": [
+        "content/dsa/part-9-dynamic-programming/00-dp-recursion-to-memo.md",
+        "content/dsa/part-9-dynamic-programming/01-dp-bottom-up-tabulation.md",
+        "content/dsa/part-9-dynamic-programming/02-dp-1d.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.graph-algorithm-selection.v1",
+      "candidate_paths": [
+        "content/dsa/part-8-graphs/00-graph-representation.md",
+        "content/dsa/patterns/P-08-shortest-paths-decision-tree.md",
+        "content/dsa/part-8-graphs/04-topological-sort-kahn.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.graph-traversal.v1",
+      "candidate_paths": [
+        "content/dsa/part-8-graphs/01-bfs.md",
+        "content/dsa/part-8-graphs/02-dfs.md",
+        "content/dsa/patterns/P-07-bfs-vs-dfs-graphs.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.hash-tables.v1",
+      "candidate_paths": [
+        "content/dsa/part-1-linear-data-structures/03-hash-maps.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.hashing-collisions.v1",
+      "candidate_paths": [
+        "content/dsa/part-1-linear-data-structures/04-hash-collisions.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.monotonic-stack.v1",
+      "candidate_paths": [
+        "content/dsa/part-4-stack-queue-patterns/00-monotonic-stack.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.randomized-algorithms.v1",
+      "candidate_paths": [
+        "content/dsa/part-7-recursion-backtracking/06-randomized-algorithms.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.range-query-structures.v1",
+      "candidate_paths": [
+        "content/dsa/part-3-pointers-window-prefix/04-prefix-sums.md",
+        "content/dsa/part-6-trees-heaps/10-segment-tree.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.recursion-backtracking.v1",
+      "candidate_paths": [
+        "content/dsa/part-7-recursion-backtracking/00-recursion-patterns.md",
+        "content/dsa/part-7-recursion-backtracking/01-backtracking-template.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.segment-tree-lazy.v1",
+      "candidate_paths": [
+        "content/dsa/part-6-trees-heaps/10-segment-tree.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.shortest-path-selection.v1",
+      "candidate_paths": [
+        "content/dsa/patterns/P-08-shortest-paths-decision-tree.md",
+        "content/dsa/part-8-graphs/09-dijkstra.md",
+        "content/dsa/part-8-graphs/10-bellman-ford.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.sorting-selection.v1",
+      "candidate_paths": [
+        "content/dsa/part-2-search-sort/03-comparison-sorts-1.md",
+        "content/dsa/part-2-search-sort/07-quickselect.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.tree-traversal-invariants.v1",
+      "candidate_paths": [
+        "content/dsa/part-6-trees-heaps/01-tree-traversals.md",
+        "content/dsa/part-6-trees-heaps/02-morris-traversal.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.trees-heaps.v1",
+      "candidate_paths": [
+        "content/dsa/part-6-trees-heaps/05-binary-search-trees.md",
+        "content/dsa/part-6-trees-heaps/04-heaps-priority-queues.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.dsa.union-find.v1",
+      "candidate_paths": [
+        "content/dsa/part-8-graphs/08-union-find.md",
+        "content/dsa/part-8-graphs/03-connected-components.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld-rate-limiting.v1",
+      "candidate_paths": [
+        "content/hld/part-2-building-blocks/11-rate-limiting.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.api-pagination.v1",
+      "candidate_paths": [
+        "content/hld/part-0-prerequisites/04-api-design-basics.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.btree-lsm-storage.v1",
+      "candidate_paths": [
+        "content/hld/part-4-data-systems/00-storage-engines.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.caching-invalidation.v1",
+      "candidate_paths": [
+        "content/hld/trade-offs/06-cache-strategies.md",
+        "content/hld/part-2-building-blocks/03-caching.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.consensus-quorum.v1",
+      "candidate_paths": [
+        "content/hld/part-3-distributed-systems-theory/00-consensus-protocols.md",
+        "content/hld/part-3-distributed-systems-theory/02-quorums-and-replication.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.distributed-consistency.v1",
+      "candidate_paths": [
+        "content/hld/part-1-core-fundamentals/03-consistency-models.md",
+        "content/hld/part-3-distributed-systems-theory/01-consistency-deep-dive.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.event-driven-delivery.v1",
+      "candidate_paths": [
+        "content/hld/part-5-architecture-patterns/01-event-driven-architecture.md",
+        "content/hld/part-3-distributed-systems-theory/07-idempotency-exactly-once.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.idempotent-command-design.v1",
+      "candidate_paths": [
+        "content/hld/part-3-distributed-systems-theory/07-idempotency-exactly-once.md",
+        "content/hld/part-0-prerequisites/04-api-design-basics.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.multi-region-design.v1",
+      "candidate_paths": [
+        "content/hld/part-5-architecture-patterns/08-multi-region-architecture.md",
+        "content/hld/trade-offs/22-single-vs-multi-region.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.mvcc-isolation.v1",
+      "candidate_paths": [
+        "content/hld/part-0-prerequisites/03-database-fundamentals.md",
+        "content/hld/part-2-building-blocks/04-sql-databases.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.observability-traces.v1",
+      "candidate_paths": [
+        "content/hld/part-6-reliability-and-operations/00-observability.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.saga-compensation.v1",
+      "candidate_paths": [
+        "content/hld/part-3-distributed-systems-theory/06-distributed-transactions.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.schema-evolution.v1",
+      "candidate_paths": [
+        "content/hld/part-5-architecture-patterns/01-event-driven-architecture.md",
+        "content/hld/part-0-prerequisites/04-api-design-basics.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.security-boundaries.v1",
+      "candidate_paths": [
+        "content/hld/part-7-security-at-scale/00-authn-authz.md",
+        "content/hld/part-7-security-at-scale/04-secrets-management.md",
+        "content/hld/part-7-security-at-scale/07-supply-chain-security.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    },
+    {
+      "entry_id": "knowledge.hld.wal-crash-recovery.v1",
+      "candidate_paths": [
+        "content/hld/part-0-prerequisites/03-database-fundamentals.md",
+        "content/hld/part-4-data-systems/00-storage-engines.md"
+      ],
+      "canonical_source_url": null,
+      "claim_support_status": "not_reviewed"
+    }
+  ]
+}

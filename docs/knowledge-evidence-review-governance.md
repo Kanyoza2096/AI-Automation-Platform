@@ -166,9 +166,24 @@ evidence it can actually verify.
 The server-side ingestion route requires two backend-only environment variables:
 
 - `KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET`: a high-entropy secret used to bind the captured text to its tenant and source identity.
-- `KDO_KB_TRUSTED_SOURCE_DOMAINS`: a JSON object mapping exact hostnames to one allowed trust class. Example shape (configure only hosts actually vetted by the operator): `{"who.int":"government","docs.example.org":"official_documentation"}`.
+- `KDO_KB_TRUSTED_SOURCE_DOMAINS`: the primary JSON object mapping exact hostnames to one allowed trust class. Example: `{"who.int":"government"}`.
+- `KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL`: an optional additive JSON object for a separately reviewed source cohort. It is merged without replacing the primary registry; conflicting classifications fail closed. Example: `{"docs.example.org":"official_documentation"}`.
 
-Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. The trust registry must be curated; do not add a domain merely because it appears in a submitted URL.
+Subdomains do not inherit trust. A source is fetched through the existing web-intelligence gateway, with private/local network destinations and redirects rejected. Missing or invalid configuration fails closed. Both registries must be curated; do not add a domain merely because it appears in a submitted URL.
+
+### Recovered Ships & Shrugs source cohort
+
+The current 112-entry Ships & Shrugs backlog contains source URLs on exactly three hosts: `hld.handbook.academy`, `ai-eng.handbook.academy`, and `dsa.handbook.academy`. The publisher's public `handbook-academy/engineering-handbook` repository identifies these handbook families and declares CC BY-SA 4.0. After confirming the deployed source URLs still match this inventory, the additive registry can be configured as:
+
+```json
+{
+  "hld.handbook.academy": "publisher_primary",
+  "ai-eng.handbook.academy": "publisher_primary",
+  "dsa.handbook.academy": "publisher_primary"
+}
+```
+
+This enables server-side capture from the publisher's own handbook sites; it does not itself approve any entry. The autonomous reviewer must still establish claim-to-chapter support. The 52 broad/root URLs still need exact chapter mapping, and attribution/ShareAlike and third-party-material checks remain separate conditions. Do not add `github.com`, `raw.githubusercontent.com`, or `ccel.org` to the registry as a shortcut for the other collections.
 
 
 Migration 187 limits the service-role grants on review cases and sweep state to the read/insert/update operations used by the backend; it does not need delete or truncate authority.
@@ -209,3 +224,88 @@ The endpoint is read-only. It does not create review cases, change knowledge
 metadata, approve sources, or invoke promotion. A reviewer opens the full
 knowledge entry, submits that exact version to the existing review API, records
 a human decision, and invokes promotion separately only after approval.
+
+
+## New Nature in Christ source recovery: pinned dataset identified (read-only, 2026-11-20)
+
+The 732-entry devotional collection is now identified at the publisher-data level. The public repository is `OpenChristianData/open-christian-data`; the inspected repository tree resolves to commit `a09bef70799ca6bea6199e48fa4bd14c1d723a06`. Its dataset file is:
+
+- `data/devotionals/spurgeons-morning-evening/morning-evening.json`
+- Git blob SHA: `bdab95a7791ebe7bdfca5e752ede707b63337d7c`
+- File size: 1,744,607 bytes
+- Parsed record count: 732
+- Record key: `entry_id`, formatted as `MM-DD-morning` or `MM-DD-evening`
+- Row text: `content_blocks[]`; citation metadata: `primary_reference`
+
+A read-only extraction of the Git blob confirmed 732 structured records. Joining the 732 KDO records by their existing `metadata.date` and `metadata.time_of_day` to the dataset's month/day/period keys yields 732 unique record matches. This establishes a deterministic record locator; it does not establish that the production text is identical or that every claim is eligible for approval.
+
+The dataset's own metadata points to the CCEL ThML source at `https://www.ccel.org/ccel/spurgeon/morneve.xml`. The source repository also publishes a retained-source manifest recording 2,136,777 bytes and SHA-256 `3512797ae879d4fdbdcde90e5ebc04299e501658fd8fb6c09977c2e2648ad0a4`. The dataset metadata separately records source hash `fca4507c9843b540331e1d22308f78f8b6a47e9c4f4986680799b94fc04c804a`; these are distinct hash claims and must not be treated as equivalent without reconciliation.
+
+**Rights qualification:** the dataset config says “public domain” and its older notes claim worldwide status, but the current selected-text public notice explicitly limits its disposition to the United States, distinguishes the underlying historical text from CCEL's electronic files/formatting, and does not assert worldwide clearance. Use the current qualified notice and preserve this discrepancy for rights review; do not use the older broad config wording as a rights decision.
+
+**Implementation boundary:** the generic KDO web-intelligence fetch path returns at most 8,000 characters of extracted page text, which cannot capture this 1.7 MB structured dataset or a complete record. Do not add GitHub, raw.githubusercontent.com, or CCEL to the general trusted-host registry as a shortcut. A safe recovery implementation needs a dedicated, pinned-repository/blob adapter that verifies the exact repository, commit/blob identity, response size, JSON schema, and record ID before producing a per-record source snapshot. The resulting row-level snapshot must still pass the existing signed-attestation, claim-support, reviewer, and promotion gates.
+
+Disposition: source dataset and all 732 record keys identified; row-level source adapter, source-hash reconciliation, the 15 text-difference cases, 11 appended-calendar anomalies, and 42 scripture-reference discrepancies remain unresolved. No production entry, review case, source snapshot, trust class, or promotion state was changed by this inspection.
+
+### Pinned devotional dataset reader (implementation status)
+
+`services/legacy_devotional_source.py` provides a read-only reader for the
+New Nature devotional dataset at the exact repository, commit, path, and Git blob
+recorded above. It bounds the GitHub API response, rejects redirects, checks the
+Git blob object ID, validates the dataset envelope and 732 unique record IDs,
+and emits deterministic, bounded record snapshots.
+
+`build_attested_record_metadata` binds one selected record to the existing
+`build_source_snapshot_attestation` HMAC contract. The caller must supply
+an explicit allowed trust class; the reader does not infer one, approve a record,
+write to Supabase, or promote knowledge. The source repository is a dataset
+publisher while the dataset provenance names CCEL as the underlying digitization
+source. That distinction and the applicable rights notice must be reviewed
+before any trust-class configuration or production capture.
+
+The reader is not yet wired into the unattended sweep. Do not add `github.com`
+or `api.github.com` to the generic trusted-domain registry. The next gate is
+unit/CI validation, independent source-class and rights review, and a controlled
+record-level comparison against the corresponding KDO legacy entries. No legacy
+entry is changed by this reader alone.
+
+
+## Lightweight knowledge-check mode (replacement path)
+
+The elaborate review-case workflow is now an explicit opt-in compatibility mode.
+Unless `KDO_KB_EVIDENCE_REVIEW_MODE=full` is set, the background reviewer does
+not start and the legacy review submission, decision, promotion, trusted-source
+ingestion, and sweep-trigger write endpoints return HTTP 410. Read-only history
+and backlog endpoints remain available for audit.
+
+Normal single and bulk knowledge ingestion now runs deterministic lightweight
+checks and stores the report at `metadata.kdo_lightweight_review`. The checks
+record the exact content SHA-256, reject empty/oversized/obvious-placeholder
+content for attention, and report missing or malformed HTTPS source URLs,
+stable source IDs, and recognized trust classes. Missing provenance is a
+warning, not a false approval. The report always sets `verified=false`,
+`approval_granted=false`, and `publishing_evidence_authorized=false`.
+
+For historical rows, run:
+
+```bash
+python -m scripts.lightweight_knowledge_review
+```
+
+This scans the knowledge table in bounded pages and is read-only by default.
+Only after inspecting its counts should an operator explicitly pass
+`--apply` to persist the lightweight report on each row. Applying reports
+does not set `metadata.verified`, create review cases, or promote evidence.
+
+The independent publishing evidence gate remains unchanged: empirical and
+quantitative claims still require verified, traceable source material, and
+semantic review continues to assess material factual claims. This lightweight
+check is a content-integrity/provenance inventory, not a source adjudicator,
+copyright clearance, factual certification, or publishing approval. Legacy
+entries that lack adequate source evidence remain usable as general knowledge
+context only where the existing publishing policy permits; they cannot support
+empirical/quantitative claims merely because a lightweight check ran.
+
+To temporarily restore the former case-management workflow for controlled
+diagnostics, set `KDO_KB_EVIDENCE_REVIEW_MODE=full`. Do not enable it in normal
+operation without a deliberate decision.
