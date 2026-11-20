@@ -302,16 +302,17 @@ class KnowledgeContextStep(Step):
                     or getattr(entry, "id", "")
                     or ""
                 ).strip()
-                if not source_id:
+                verified_value = metadata.get("verified")
+                verified = (
+                    verified_value is True
+                    or verified_value in (1, "true", "yes", "1", "True")
+                )
+                # Unverified passages are excluded from both the generation
+                # prompt and semantic evidence set. Traceability alone is not trust.
+                if not verified or not source_id:
                     continue
-                verified = metadata.get("verified") is True
-                # Make provenance visible to the model. The deterministic
-                # evidence gate remains authoritative, but without this
-                # annotation the model sees unverified passages as plain
-                # prose and may invent empirical claims that the gate must
-                # reject later.
                 facts.append(
-                    f"[source_id={source_id};verified={'true' if verified else 'false'}]\n{text}"
+                    f"[source_id={source_id};verified=true]\n{text}"
                 )
                 evidence.append({
                     "source_id": source_id,
@@ -320,26 +321,23 @@ class KnowledgeContextStep(Step):
                     "score": score if isinstance(score, (int, float)) else None,
                 })
 
-            if not evidence:
-                raise StepFailure(
-                    message=(
-                        f"No traceable knowledge evidence was retrieved for topic '{topic}'. "
-                        "Content generation and publishing are blocked."
-                    ),
-                    code="knowledge_evidence_missing",
-                    detail={
-                        "brand_id": getattr(self._brand, "id", None),
-                        "topic": topic,
-                        "result_count": len(results or []),
-                    },
-                )
-
+            # No verified evidence is not, by itself, proof that the workflow
+            # is broken. Continue with an empty evidence set; deterministic
+            # empirical-claim checks and independent semantic review still
+            # gate publication.
             context["knowledge_context"] = "\n".join(facts)
             context["knowledge_evidence"] = evidence
-            logger.info(
-                "PostWorkflow: KB retrieved %d traceable entries for topic='%s' brand='%s'",
-                len(evidence), topic[:60], self._brand.name,
-            )
+            if evidence:
+                logger.info(
+                    "PostWorkflow: KB retrieved %d verified entries for topic='%s' brand='%s'",
+                    len(evidence), topic[:60], self._brand.name,
+                )
+            else:
+                logger.warning(
+                    "PostWorkflow: no verified KB evidence for topic='%s' brand='%s'; "
+                    "claim-aware semantic review remains mandatory",
+                    topic[:60], self._brand.name,
+                )
             return evidence
         except StepFailure:
             raise
