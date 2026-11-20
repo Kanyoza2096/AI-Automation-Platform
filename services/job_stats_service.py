@@ -427,37 +427,56 @@ class JobStatsService:
                     "error": f"{type(exc).__name__}: {str(exc)[:200]}",
                 }
 
+        # Queue/service health is based on live work that is stuck, not on
+        # terminal FAILED jobs. Failed jobs are immutable historical outcomes;
+        # content-policy failures must not make a functioning worker appear
+        # crashed or trigger infrastructure recovery.
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
+        if stale >= self.HEALTH_UNHEALTHY_STALE or stuck_too_long:
+            queue_status = "unhealthy"
+            queue_reason = (
+                f"active job backlog: stale={stale} active={active_jobs} "
+                f"oldest_active_minutes={oldest_minutes:.0f}"
+            )
+        elif stale >= self.HEALTH_DEGRADED_STALE:
+            queue_status = "degraded"
+            queue_reason = (
+                f"active job backlog growing: stale={stale} active={active_jobs} "
+                f"oldest_active_minutes={oldest_minutes:.0f}"
+            )
+        else:
+            queue_status = "healthy"
+            queue_reason = None
 
-        if (
-            stale >= self.HEALTH_UNHEALTHY_STALE
-            or failed >= self.HEALTH_UNHEALTHY_FAILED
-            or stuck_too_long
-        ):
-            return {
-                "status": "unhealthy",
-                "stats": stats,
-                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
+        # Terminal failures are reported as a separate quality signal. They
+        # remain visible and diagnosable, but do not change process/queue
+        # liveness status or authorize a service restart.
+        if failed >= self.HEALTH_UNHEALTHY_FAILED:
+            quality_status = "unhealthy"
+        elif failed >= self.HEALTH_DEGRADED_FAILED:
+            quality_status = "degraded"
+        else:
+            quality_status = "healthy"
+
+        result = {
+            "status": queue_status,
+            "stats": stats,
+            "queue_health": {
+                "status": queue_status,
+                "stale_jobs": stale,
+                "active_jobs": active_jobs,
+                "oldest_active_minutes": oldest_minutes,
+                **({"reason": queue_reason} if queue_reason else {}),
+            },
+            "content_quality": {
+                "status": quality_status,
+                "failed_jobs": failed,
                 "reason": (
-                    f"job backlog: stale={stale} failed={failed} "
-                    f"active={active_jobs} "
-                    f"oldest_active_minutes={oldest_minutes:.0f}"
+                    f"{failed} terminal jobs failed validation or execution"
+                    if failed else None
                 ),
-            }
-
-        if stale >= self.HEALTH_DEGRADED_STALE or failed >= self.HEALTH_DEGRADED_FAILED:
-            return {
-                "status": "degraded",
-                "stats": stats,
-                **({"failure_intelligence": failure_intelligence} if failure_intelligence is not None else {}),
-                "reason": (
-                    f"job backlog growing: stale={stale} failed={failed} "
-                    f"active={active_jobs} "
-                    f"oldest_active_minutes={oldest_minutes:.0f}"
-                ),
-            }
-
-        result = {"status": "healthy", "stats": stats}
+            },
+        }
         if failure_intelligence is not None:
             result["failure_intelligence"] = failure_intelligence
         return result
