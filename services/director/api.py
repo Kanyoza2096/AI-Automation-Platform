@@ -103,6 +103,10 @@ class MissionTaskRecoveryReviewBody(BaseModel):
     correlation_id: str = Field(..., min_length=8, max_length=128)
 
 
+class MissionTaskReconciliationBody(BaseModel):
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
 class MissionEngineMessageBody(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=100)
     recipient_engine_id: str = Field(..., min_length=1, max_length=100)
@@ -475,6 +479,52 @@ def create_app(director: Director):
         except Exception as exc:
             log.warning("Director mission recovery review failed: %s", type(exc).__name__)
             raise HTTPException(503, "Mission recovery review could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/reconcile")
+    async def reconcile_mission_task_attempt(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskReconciliationBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Inspect and journal exact-attempt reconciliation; never replay execution."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        from .orchestration.runtime import MissionTaskNotReady
+        try:
+            reconciliation = await runtime.reconcile_and_record_task_attempt(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                correlation_id=body.correlation_id,
+            )
+            result = reconciliation.result if isinstance(reconciliation.result, Mapping) else {}
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "attempt_id": reconciliation.attempt_id,
+                "engine_id": reconciliation.engine_id,
+                "status": reconciliation.status,
+                "authoritative": reconciliation.authoritative,
+                "evidence_ref": reconciliation.evidence_ref,
+                "result": {
+                    "summary": str(result.get("summary") or "")[:5000],
+                    "completed_at": str(result.get("completed_at") or "")[:64],
+                },
+                "execution_authority_changed": False,
+            }
+        except (MissionTaskNotReady, ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission attempt reconciliation failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission attempt reconciliation could not be confirmed") from exc
 
     @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/execute")
     async def execute_mission_task(
