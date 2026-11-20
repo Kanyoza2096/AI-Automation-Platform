@@ -57,11 +57,18 @@ def parse_pinned_dataset(raw: bytes) -> list[dict[str, Any]]:
     if _git_blob_sha(raw) != BLOB_SHA:
         raise PinnedDatasetError("git_blob_sha_mismatch")
     try:
-        rows = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PinnedDatasetError("dataset_json_invalid") from exc
-    if not isinstance(rows, list) or len(rows) != 732:
+    if (
+        not isinstance(document, dict)
+        or not isinstance(document.get("meta"), dict)
+        or document["meta"].get("id") != "spurgeons-morning-evening"
+        or not isinstance(document.get("data"), list)
+        or len(document["data"]) != 732
+    ):
         raise PinnedDatasetError("dataset_schema_or_row_count_mismatch")
+    rows = document["data"]
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
