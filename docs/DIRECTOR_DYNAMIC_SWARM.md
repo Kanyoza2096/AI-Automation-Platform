@@ -8,7 +8,7 @@ The Director orchestration runtime now has a bounded, durable agent roster model
 - The model receives only selected mission task summaries, bounded prior agent findings, and the allowlisted native adapter/capability catalogue. Task parameters, credentials, executable handles, and external-action tools are not supplied.
 - The model cannot invent engine IDs, capabilities, or task IDs. The assessment contract validates every assignment against the registry and mission task scope before the existing deterministic planner sees it.
 - The planner still enforces complexity-based target sizing, per-task diversity, active concurrency, total agent count, and estimated token ceilings. Deterministic agent IDs are derived from the caller's idempotency prefix and proposed assignment.
-- Prior completed specialist summaries/findings are included in later assessments so Director can recommend a follow-up wave for unresolved gaps, or explicitly decide that no additional specialists are needed.
+- Prior completed specialist summaries/findings are included in later assessments so Director can recommend a follow-up wave for unresolved gaps, or explicitly decide that no additional specialists are needed. After each specialist contribution is persisted, the agent-execution endpoint automatically triggers this reassessment and registers a justified follow-up wave; duplicate completed/active assignments are rejected.
 - If the LLM gateway is unavailable or returns invalid/unsafe output, assessment fails closed and no agents are spawned.
 - The response includes a concise rationale and provider request metadata for traceability; it explicitly reports that execution and external-action authority were not started or granted.
 
@@ -44,7 +44,7 @@ Registered specialists can now be invoked through the existing native adapter re
 
 ## Deliberate boundary
 
-This increment provides model-driven complexity assessment, bounded roster selection, durable registration, and the ability to reassess completed agent findings for a later specialist wave. Specialist execution remains a separate authenticated advisory endpoint; this assessment endpoint does not automatically execute newly spawned agents. A future increment should add a governed bounded worker loop that executes selected advisory agents and triggers reassessment without exceeding the existing mission caps, plus the dedicated live swarm visualization in Mission Control.
+This increment provides model-driven complexity assessment, bounded roster selection, durable registration, and automatic Director reassessment/spawning after a specialist contribution. Specialist execution remains an authenticated advisory endpoint; newly spawned follow-up agents are not auto-executed. Each follow-up still passes through the same workspace-scoped endpoint and mission budgets. A future increment should add a governed bounded worker loop that executes selected advisory agents and triggers reassessment without exceeding the existing mission caps, plus the dedicated live swarm visualization in Mission Control.
 
 ## Validation
 
