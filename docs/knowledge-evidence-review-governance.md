@@ -246,3 +246,25 @@ The dataset's own metadata points to the CCEL ThML source at `https://www.ccel.o
 **Implementation boundary:** the generic KDO web-intelligence fetch path returns at most 8,000 characters of extracted page text, which cannot capture this 1.7 MB structured dataset or a complete record. Do not add GitHub, raw.githubusercontent.com, or CCEL to the general trusted-host registry as a shortcut. A safe recovery implementation needs a dedicated, pinned-repository/blob adapter that verifies the exact repository, commit/blob identity, response size, JSON schema, and record ID before producing a per-record source snapshot. The resulting row-level snapshot must still pass the existing signed-attestation, claim-support, reviewer, and promotion gates.
 
 Disposition: source dataset and all 732 record keys identified; row-level source adapter, source-hash reconciliation, the 15 text-difference cases, 11 appended-calendar anomalies, and 42 scripture-reference discrepancies remain unresolved. No production entry, review case, source snapshot, trust class, or promotion state was changed by this inspection.
+
+### Pinned devotional dataset reader (implementation status)
+
+`services/legacy_devotional_source.py` provides a read-only reader for the
+New Nature devotional dataset at the exact repository, commit, path, and Git blob
+recorded above. It bounds the GitHub API response, rejects redirects, checks the
+Git blob object ID, validates the dataset envelope and 732 unique record IDs,
+and emits deterministic, bounded record snapshots.
+
+`build_attested_record_metadata` binds one selected record to the existing
+`build_source_snapshot_attestation` HMAC contract. The caller must supply
+an explicit allowed trust class; the reader does not infer one, approve a record,
+write to Supabase, or promote knowledge. The source repository is a dataset
+publisher while the dataset provenance names CCEL as the underlying digitization
+source. That distinction and the applicable rights notice must be reviewed
+before any trust-class configuration or production capture.
+
+The reader is not yet wired into the unattended sweep. Do not add `github.com`
+or `api.github.com` to the generic trusted-domain registry. The next gate is
+unit/CI validation, independent source-class and rights review, and a controlled
+record-level comparison against the corresponding KDO legacy entries. No legacy
+entry is changed by this reader alone.
