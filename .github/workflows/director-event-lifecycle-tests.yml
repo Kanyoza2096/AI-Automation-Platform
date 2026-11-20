@@ -34,7 +34,6 @@ on:
       - "tests/test_director_mission_runtime.py"
       - "tests/test_director_mission_graph.py"
       - "tests/test_director_v2_http_admission.py"
-      - "tests/test_ai_provider_fabric.py"
       - "migrations/175_director_mission_admission_scope_contract.sql"
       - "migrations/176_director_mission_runtime_and_event_journal.sql"
       - "migrations/177_director_mission_journal_privilege_hardening.sql"
@@ -46,19 +45,7 @@ on:
       - "tests/test_director_decision_evidence.py"
       - "tests/test_director_learning_evidence.py"
       - "tests/test_director_capability_audit.py"
-      - "services/director/orchestration/**"
-      - "tests/test_director_native_engine_adapters.py"
-      - "tests/test_director_mission_state_machine.py"
-      - "tests/test_director_mission_runtime.py"
-      - "tests/test_director_mission_graph.py"
-      - "migrations/175_director_mission_admission_scope_contract.sql"
-      - "migrations/176_director_mission_runtime_and_event_journal.sql"
-      - "migrations/177_director_mission_journal_privilege_hardening.sql"
-      - "migrations/178_director_mission_event_task_scope_guard.sql"
-      - "migrations/179_director_mission_runtime_initial_state.sql"
-      - "migrations/180_director_mission_foreign_key_indexes.sql"
       - "api/engine_handoff_evidence.py"
-      - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   push:
@@ -126,6 +113,8 @@ jobs:
           python -m pip install -r requirements.txt pytest
       - name: Compile governed chat route and proposal module
         run: python -m compileall -q api/chat_action_proposals.py api/engine_handoff_evidence.py api/routers/ai_chat.py
+      - name: Verify Director v2 HTTP admission route in isolation
+        run: python -m pytest -q tests/test_director_v2_http_admission.py
       - name: Verify Director event lifecycle and architecture contracts
         run: |
           python -m pytest -q \
