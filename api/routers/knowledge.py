@@ -224,10 +224,7 @@ async def create_knowledge_entry(
             raise HTTPException(status_code=503, detail="Knowledge index unavailable") from e
 
         # add_document is async — await directly.
-        from services.lightweight_knowledge_checks import check_knowledge_entry
         metadata = dict(body.metadata) if isinstance(body.metadata, dict) else {}
-        lightweight_check = check_knowledge_entry(body.content, metadata)
-        metadata["kdo_lightweight_review"] = lightweight_check
         entry = await kb.add_document(
             content=body.content,
             doc_type=body.doc_type,
@@ -235,8 +232,7 @@ async def create_knowledge_entry(
         )
         return _ok({
             "knowledge_entry": entry.model_dump(mode="json"),
-            "lightweight_check": lightweight_check,
-            "review_status": "lightweight_checked",
+            "review_status": "disabled",
         }, 201)
     except HTTPException:
         raise
@@ -423,11 +419,8 @@ async def bulk_create_knowledge(
                 continue
             try:
                 # add_document is async — await directly, do NOT _async_wrap.
-                from services.lightweight_knowledge_checks import check_knowledge_entry
                 item_metadata = item.get("metadata", {})
                 item_metadata = dict(item_metadata) if isinstance(item_metadata, dict) else {}
-                lightweight_check = check_knowledge_entry(content, item_metadata)
-                item_metadata["kdo_lightweight_review"] = lightweight_check
                 entry = await kb.add_document(
                     content=content,
                     doc_type=item.get("doc_type", "text"),
@@ -435,8 +428,7 @@ async def bulk_create_knowledge(
                 )
                 results.append({
                     "id": entry.id, "status": "created",
-                    "review_status": "lightweight_checked",
-                    "lightweight_check": lightweight_check,
+                    "review_status": "disabled",
                 })
             except Exception as e:
                 logger.warning(

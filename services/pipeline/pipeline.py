@@ -573,56 +573,15 @@ class ReviewerStep(Step):
         self._config = config or PipelineConfig()
 
     async def run_async(self, context: dict[str, Any]) -> Any:
-        caption = context.get("caption", "")
-        content_result = context.get("content_result", {})
-        hashtags = content_result.get("hashtags", [])
-        brand = context.get("brand")
-
-        issues: List[str] = []
-        warnings: List[str] = []
-
-        if len(caption.strip()) < self._config.reviewer_min_caption_length:
-            issues.append(f"Caption too short ({len(caption.strip())} chars, minimum {self._config.reviewer_min_caption_length})")
-
-        if not hashtags:
-            warnings.append("No hashtags provided")
-        elif len(hashtags) > self._config.reviewer_max_hashtags:
-            issues.append(f"Too many hashtags ({len(hashtags)}, maximum {self._config.reviewer_max_hashtags})")
-
-        has_cta = any(kw in caption.lower() for kw in self._config.reviewer_cta_keywords)
-        if not has_cta:
-            warnings.append("No call-to-action detected")
-
-        lower_caption = caption.lower()
-        toxic_found = [word for word in self._config.reviewer_toxic_words if word in lower_caption]
-        if toxic_found:
-            issues.append(f"Potentially inappropriate language: {', '.join(toxic_found)}")
-
-        quality_score = max(0, 100 - (20 * len(issues)) - (5 * len(warnings)))
-
-        review_result = {
-            "quality_score": quality_score,
-            "passed": len(issues) == 0,
-            "issues": issues,
-            "warnings": warnings,
-            "caption_length": len(caption.strip()),
-            "hashtag_count": len(hashtags),
-            "has_cta": has_cta,
-            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        # Permanently disabled by the operator. Keep an explicit trace record
+        # without applying automated quality-review blocks.
+        result = {
+            "status": "disabled",
+            "passed": None,
+            "reason": "content reviewer disabled by operator",
         }
-
-        context["review_result"] = review_result
-
-        if quality_score < self._config.reviewer_fail_threshold_score:
-            logger.error("[Stage 7] Review FAILED — score=%d, issues=%s", quality_score, "; ".join(issues))
-            raise AIValidationError(message=f"Content review failed: score={quality_score}", context=review_result)
-
-        if quality_score < self._config.reviewer_warn_threshold_score:
-            logger.warning("[Stage 7] Review passed with low score=%d", quality_score)
-        else:
-            logger.info("[Stage 7] Review passed — score=%d", quality_score)
-
-        return review_result
+        context["review_result"] = result
+        return result
 
     def run(self, context: dict[str, Any]) -> Any:
         return asyncio.run(self.run_async(context))
@@ -645,37 +604,15 @@ class SemanticReviewStep(Step):
         self._semantic_reviewer = semantic_reviewer
 
     async def run_async(self, context: dict[str, Any]) -> Any:
-        brand = context.get("brand")
-        result = await self._semantic_reviewer.review(
-            caption=str(context.get("caption") or ""),
-            topic=str(context.get("topic") or ""),
-            evidence=context.get("knowledge_evidence") or [],
-            brand=brand,
-            platform=str(context.get("platform") or "facebook"),
-        )
-        context["semantic_review"] = result
-        if (
-            not isinstance(result, dict)
-            or result.get("approved") is not True
-            or result.get("status") != "approved"
-        ):
-            status = result.get("status", "invalid") if isinstance(result, dict) else "invalid"
-            reason = result.get("reason", "semantic reviewer returned no decision") if isinstance(result, dict) else "semantic reviewer returned no decision"
-            raise AIValidationError(
-                message=f"Independent semantic review blocked publication (status={status}): {reason}",
-                context={
-                    "topic": context.get("topic"),
-                    "semantic_review_status": status,
-                    "semantic_review_reason": reason,
-                },
-            )
-        return {
-            "status": "approved",
-            "approved": True,
-            "scores": result.get("scores", {}),
-            "supporting_source_ids": result.get("supporting_source_ids", []),
-            "request_id": result.get("request_id"),
+        # Permanently disabled by the operator: do not invoke the semantic
+        # reviewer and do not block publication on evidence adjudication.
+        result = {
+            "status": "disabled",
+            "approved": None,
+            "reason": "semantic review disabled by operator",
         }
+        context["semantic_review"] = result
+        return result
 
     def run(self, context: dict[str, Any]) -> Any:
         raise RuntimeError("SemanticReviewStep must be executed via run_async().")
