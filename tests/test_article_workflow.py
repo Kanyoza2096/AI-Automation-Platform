@@ -30,88 +30,40 @@ def _article_context():
     }
 
 
-def test_article_validation_requires_known_citations_before_review():
+def test_article_validation_bypasses_citation_and_source_checkers():
     class Reviewer:
-        called = False
         async def review(self, **kwargs):
-            self.called = True
-            return {"approved": True, "status": "approved", "reason": "ok"}
-
-    reviewer = Reviewer()
+            raise AssertionError("article reviewer must not be invoked")
     context = _article_context()
-    context["article"]["citations"] = ["not-in-evidence"]
-    with pytest.raises(StepFailure) as exc:
-        asyncio.run(ValidateArticleStep(reviewer).async_run(context))
-    assert exc.value.code == "article_citations_invalid"
-    assert exc.value.detail["invalid_source_ids"] == ["not-in-evidence"]
-    assert exc.value.detail["allowed_source_ids"] == ["kb-1"]
-    assert exc.value.detail["citation_count"] == 1
-    assert exc.value.detail["invalid_citation_count"] == 1
-    assert reviewer.called is False
+    context["article"]["citations"] = ["unknown-source"]
+    result = asyncio.run(ValidateArticleStep(Reviewer()).async_run(context))
+    assert result["approved"] is True
+    assert result["review_status"] == "disabled"
+    assert context["article_review"]["status"] == "disabled"
 
-
-def test_article_validation_requires_independent_full_text_approval():
+def test_article_validation_bypasses_semantic_review():
     class Reviewer:
         async def review(self, **kwargs):
-            assert len(kwargs["body"]) > 1200
-            return {
-                "approved": False,
-                "status": "needs_review",
-                "decision": "needs_review",
-                "reason": "claim support is uncertain",
-                "rationale": "Two claims need stronger evidence.",
-                "evidence_coverage": {
-                    "assessed": 4, "supported": 2, "unsupported": 1,
-                    "uncertain": 1, "supported_rate": 0.5,
-                },
-                "unsupported_claims": [
-                    {"claim": "Claim X", "support_status": "unsupported", "source_ids": [], "rationale": "No evidence"}
-                ],
-                "scores": {
-                    "claim_coverage": 0.95, "brand_relevance": 0.8,
-                    "originality": 0.6, "audience_value": 0.7, "genericity": 0.2,
-                },
-                "request_id": "req-review-123",
-                "provider": "cloudflare",
-                "model": "llama-review",
-            }
+            raise AssertionError("article semantic reviewer must not be invoked")
+    result = asyncio.run(ValidateArticleStep(Reviewer()).async_run(_article_context()))
+    assert result["approved"] is True
+    assert result["review_status"] == "disabled"
 
-    with pytest.raises(StepFailure) as exc:
-        asyncio.run(ValidateArticleStep(Reviewer()).async_run(_article_context()))
-    assert exc.value.code == "article_semantic_review_not_approved"
-    diagnostics = exc.value.detail["review_diagnostics"]
-    assert diagnostics["decision"] == "needs_review"
-    assert diagnostics["evidence_coverage"]["supported_rate"] == 0.5
-    assert diagnostics["unsupported_claims"][0]["claim"] == "Claim X"
-    assert diagnostics["scores"]["brand_relevance"] == 0.8
-    assert diagnostics["model"] == "llama-review"
-    assert diagnostics["request_id"] == "req-review-123"
-
-
-def test_article_validation_passes_only_after_full_article_review():
+def test_article_validation_does_not_invoke_reviewer():
     class Reviewer:
         async def review(self, **kwargs):
-            assert kwargs["title"].startswith("A Practical Guide")
-            assert len(kwargs["body"]) > 1200
-            return {"approved": True, "status": "approved", "reason": "all reviewed claims supported"}
-
+            raise AssertionError("article reviewer must not be invoked")
     context = _article_context()
     result = asyncio.run(ValidateArticleStep(Reviewer()).async_run(context))
     assert result["approved"] is True
-    assert context["article_review"]["status"] == "approved"
+    assert context["article_review"]["status"] == "disabled"
 
-
-def test_article_publish_cannot_run_without_quality_gates():
-    step = PublishArticleStep()
-    with pytest.raises(StepFailure) as exc:
-        asyncio.run(step.async_run({
-            "brand": SimpleNamespace(id="brand-1", workspace_id="ws-1"),
-            "workspace_id": "ws-1",
-            "platform": "website",
-            "article": {"title": "A title", "body": "An article body"},
-        }))
-    assert exc.value.code == "article_publish_quality_gate"
-
+def test_article_publish_step_does_not_require_review_metadata():
+    from pathlib import Path
+    source = Path("workflows/article_workflow.py").read_text(encoding="utf-8")
+    publish = source[source.index("class PublishArticleStep"):source.index("class PreviewArticleStep")]
+    assert "article_publish_quality_gate" not in publish
+    assert "article_publish_review_missing" not in publish
 
 def test_scheduler_routes_metadata_website_brand_to_article_platform():
     brand = SimpleNamespace(platform=None, metadata={"primary_platform": "website"})
@@ -141,28 +93,18 @@ def test_article_workflow_dry_run_excludes_publish_step():
     assert isinstance(workflow._steps[-1], PreviewArticleStep)
 
 
-def test_article_preview_requires_validation_and_independent_review():
+def test_article_preview_requires_only_generated_article():
     from workflows.article_workflow import PreviewArticleStep
-
     context = _article_context()
-    context["article_validation"] = {"approved": True, "citations": ["kb-1"]}
-    context["article_review"] = {
-        "approved": True, "status": "approved", "reason": "all claims supported",
-    }
     result = asyncio.run(PreviewArticleStep().async_run(context))
     assert result["mode"] == "preview_only"
     assert result["publishable"] is False
     assert result["title"] == context["article"]["title"]
-    assert result["citations"] == ["kb-1"]
     assert "publish_result" not in context
-    assert "publish_results" not in context
 
-
-def test_article_preview_fails_closed_without_semantic_review():
+def test_article_preview_does_not_require_semantic_review():
     from workflows.article_workflow import PreviewArticleStep
-
     context = _article_context()
-    context["article_validation"] = {"approved": True, "citations": ["kb-1"]}
-    with pytest.raises(StepFailure) as exc:
-        asyncio.run(PreviewArticleStep().async_run(context))
-    assert exc.value.code == "article_preview_review_missing"
+    result = asyncio.run(PreviewArticleStep().async_run(context))
+    assert result["publishable"] is False
+

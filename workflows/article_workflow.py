@@ -17,9 +17,9 @@ class GenerateArticleStep(Step):
         workspace_id = str(context.get("workspace_id") or getattr(brand, "workspace_id", "") or "").strip()
         topic = str(context.get("topic") or "").strip()
         evidence = context.get("knowledge_evidence")
-        if not workspace_id or not topic or not isinstance(evidence, list) or not evidence:
+        if not workspace_id or not topic:
             raise StepFailure(
-                "Article generation requires a tenant, topic, and traceable evidence",
+                "Article generation requires a tenant and topic",
                 code="article_generation_prerequisites_missing",
             )
         metadata = getattr(brand, "metadata", None)
@@ -99,68 +99,19 @@ class ValidateArticleStep(Step):
         article = context.get("article")
         if not isinstance(article, dict):
             raise StepFailure("Generated article is missing", code="article_missing")
-        title = article.get("title", "")
-        excerpt = article.get("excerpt", "")
-        body = article.get("body", "")
-        if not (10 <= len(title) <= 120):
-            raise StepFailure("Article title must be 10-120 characters", code="article_title_invalid")
-        if not (40 <= len(excerpt) <= 320):
-            raise StepFailure("Article excerpt must be 40-320 characters", code="article_excerpt_invalid")
-        if not (1200 <= len(body) <= 16000):
-            raise StepFailure("Article body must be 1,200-16,000 characters", code="article_body_length_invalid")
-        if re.search(r"(?im)^\s*(?:lorem ipsum|todo:|insert here|[\[{<].*(?:placeholder|replace me))", body):
-            raise StepFailure("Article contains placeholder text", code="article_placeholder_detected")
-        evidence = context.get("knowledge_evidence") or []
-        allowed_ids = {str(item.get("source_id")) for item in evidence if isinstance(item, dict) and item.get("source_id")}
-        citations = article.get("citations")
-        if not isinstance(citations, list) or not citations:
-            raise StepFailure("Article must include source citations", code="article_citations_missing")
-        invalid_citations = [
-            value for value in citations
-            if not isinstance(value, str) or value not in allowed_ids
-        ]
-        if invalid_citations:
-            invalid_source_ids = [
-                value[:200] if isinstance(value, str) else f"<{type(value).__name__}>"
-                for value in invalid_citations[:20]
-            ]
-            raise StepFailure(
-                "Article cites an unknown knowledge source",
-                code="article_citations_invalid",
-                detail={
-                    "invalid_source_ids": invalid_source_ids,
-                    "allowed_source_ids": sorted(allowed_ids)[:50],
-                    "citation_count": len(citations),
-                    "invalid_citation_count": len(invalid_citations),
-                },
-            )
-        reviewer = self._reviewer
-        if reviewer is None:
-            from services.article_semantic_reviewer import ArticleSemanticReviewer
-            reviewer = ArticleSemanticReviewer()
-        review = await reviewer.review(
-            title=title, excerpt=excerpt, body=body,
-            topic=str(context.get("topic") or ""),
-            evidence=evidence, brand=context.get("brand"),
-        )
-        context["article_review"] = review
-        if not isinstance(review, dict) or review.get("approved") is not True or review.get("status") != "approved":
-            raise StepFailure(
-                "Article did not pass independent full-text semantic review",
-                code="article_semantic_review_not_approved",
-                detail={
-                    "reason": str((review or {}).get("reason", "review unavailable"))[:1000],
-                    "review_diagnostics": {
-                        key: review.get(key)
-                        for key in (
-                            "decision", "reason", "rationale", "evidence_coverage",
-                            "unsupported_claims", "uncertain_claims", "claims", "scores", "request_id",
-                            "provider", "model", "status", "approved",
-                        )
-                    } if isinstance(review, dict) else {},
-                },
-            )
-        context["article_validation"] = {"approved": True, "citations": citations}
+        # Operator disable: bypass article length, placeholder, citation/source,
+        # and semantic-review checkers. Preserve only the existence of the
+        # generated article; governed publication remains separate.
+        context["article_review"] = {
+            "status": "disabled",
+            "approved": None,
+            "reason": "article content review checkers disabled by operator",
+        }
+        context["article_validation"] = {
+            "approved": True,
+            "review_status": "disabled",
+            "citations": article.get("citations") if isinstance(article.get("citations"), list) else [],
+        }
         return context["article_validation"]
 
 
@@ -172,11 +123,10 @@ class PublishArticleStep(Step):
 
     async def async_run(self, context: dict[str, Any]) -> dict[str, Any]:
         article = context.get("article") or {}
-        if context.get("article_validation", {}).get("approved") is not True:
-            raise StepFailure("Publishing blocked because article quality gates did not approve", code="article_publish_quality_gate")
-        review = context.get("article_review")
-        if not isinstance(review, dict) or review.get("approved") is not True or review.get("status") != "approved":
-            raise StepFailure("Publishing blocked because full-article review is missing", code="article_publish_review_missing")
+        # Automated article quality, source, citation, and semantic-review
+        # gates are disabled. Keep article presence and governed publish controls.
+        if not isinstance(article, dict) or not str(article.get("body") or "").strip():
+            raise StepFailure("Article body is missing", code="article_missing")
         brand = context.get("brand")
         workspace_id = str(context.get("workspace_id") or getattr(brand, "workspace_id", "") or "").strip()
         brand_id = str(context.get("brand_id") or getattr(brand, "id", "") or "").strip()
@@ -243,16 +193,8 @@ class PreviewArticleStep(Step):
         article = context.get("article")
         validation = context.get("article_validation")
         review = context.get("article_review")
-        if not isinstance(article, dict) or not isinstance(validation, dict) or validation.get("approved") is not True:
-            raise StepFailure(
-                "Article preview requires successful validation",
-                code="article_preview_validation_missing",
-            )
-        if not isinstance(review, dict) or review.get("approved") is not True or review.get("status") != "approved":
-            raise StepFailure(
-                "Article preview requires independent full-text approval",
-                code="article_preview_review_missing",
-            )
+        if not isinstance(article, dict):
+            raise StepFailure("Article preview requires a generated article", code="article_preview_missing")
         evidence = context.get("knowledge_evidence") or []
         preview = {
             "mode": "preview_only",
