@@ -36,7 +36,8 @@ class FakeQuery:
     def execute(self):
         if self.operation == "select":
             start, end = self.range_value
-            return FakeResult(self.client.rows[start:end + 1])
+            rows = [r for r in self.client.rows if all(r.get(k) == v for k, v in self.filters.items())]
+            return FakeResult(rows[start:end + 1])
         row = next((r for r in self.client.rows
                     if all(r.get(k) == v for k, v in self.filters.items())), None)
         if row is None:
