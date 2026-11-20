@@ -15,8 +15,8 @@ _ALLOWED_TRUST_CLASSES = {
     "official_documentation", "publisher_primary",
 }
 _PLACEHOLDER_PATTERNS = (
-    re.compile(r"\\blorem ipsum\\b", re.IGNORECASE),
-    re.compile(r"\\b(?:TODO|TBD|PLACEHOLDER)\\b", re.IGNORECASE),
+    re.compile(r"\blorem ipsum\b", re.IGNORECASE),
+    re.compile(r"\b(?:TODO|TBD|PLACEHOLDER)\b", re.IGNORECASE),
 )
 
 
