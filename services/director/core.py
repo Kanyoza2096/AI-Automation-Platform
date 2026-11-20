@@ -450,6 +450,8 @@ class Director:
         log.info("Director storage: %s", "Supabase" if supabase_client else "In-Memory")
 
         self.interval = max(10, interval)
+        self._mission_approval_reconciliation_pending: set[str] = set()
+        self._mission_approval_reconciliation_scan_pending = False
         self.policy = Policy()
         self.running = False
         self.started = now()
@@ -791,6 +793,10 @@ class Director:
                 if self.last_plan is None or (now() - self.last_plan).total_seconds() >= 1800:
                     await self._build_plan_async()
                 await self._execute_due_async()
+                if self._mission_approval_reconciliation_scan_pending or self._mission_approval_reconciliation_pending:
+                    await self._reconcile_mission_approvals(
+                        include_all=self._mission_approval_reconciliation_scan_pending
+                    )
 
                 if (
                     self._last_detector_run is None
@@ -825,11 +831,132 @@ class Director:
             await asyncio.sleep(15)
         self._drain_events()
 
+    def mark_mission_approval_reconciliation_pending(self, task_id: str) -> None:
+        """Queue a durably approved task for journal repair without granting authority."""
+        value = str(task_id or "").strip()
+        if value:
+            self._mission_approval_reconciliation_pending.add(value)
+
+    async def _reconcile_mission_approvals(self, *, include_all: bool = False) -> dict:
+        """Repair missing approval journal events from canonical approved tasks.
+
+        This never grants approval: it only mirrors already-persisted operator
+        approval into the mission journal. The runtime flag remains the gate.
+        """
+        if (os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "") or "").strip().lower() not in {
+            "1", "true", "yes", "on"
+        }:
+            return {"scanned": 0, "reconciled": 0, "failed": 0, "disabled": True}
+
+        if include_all:
+            # The ordinary Director restore is deliberately platform-scoped.
+            # Reconciliation therefore uses a separate, narrow service-side
+            # query for approved workspace tasks instead of widening that restore.
+            list_approved = getattr(self.store, "list_approved_workspace_tasks", None)
+            if not callable(list_approved):
+                self._mission_approval_reconciliation_scan_pending = True
+                return {"scanned": 0, "reconciled": 0, "failed": 1}
+            try:
+                records = await list_approved(limit=5000)
+                for record in records or []:
+                    raw = record.get("payload", record) if isinstance(record, dict) else record
+                    if isinstance(raw, str):
+                        import json
+                        raw = json.loads(raw)
+                    if not isinstance(record, dict) or not isinstance(raw, dict):
+                        continue
+                    workspace_id = str(record.get("workspace_id") or "")
+                    task_id = str(record.get("id") or raw.get("id") or "")
+                    if (
+                        record.get("scope_type") != "workspace"
+                        or not workspace_id
+                        or raw.get("workspace_id") != workspace_id
+                        or raw.get("id") != task_id
+                        or record.get("status") != Status.APPROVED.value
+                        or raw.get("status") != Status.APPROVED.value
+                    ):
+                        continue
+                    fields = {key: raw[key] for key in Task.__dataclass_fields__ if key in raw}
+                    fields["scope_type"] = "workspace"
+                    fields["sector"] = Sector(fields.get("sector", Sector.SELF.value))
+                    fields["authority"] = Authority(fields.get("authority", Authority.SUGGEST.value))
+                    fields["risk"] = Risk(fields.get("risk", Risk.MEDIUM.value))
+                    fields["status"] = Status(fields.get("status", Status.PLANNED.value))
+                    for key in ("created_at", "executed_at", "approved_at", "evidence_observed_at"):
+                        value = fields.get(key)
+                        if isinstance(value, str) and value:
+                            fields[key] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    task = Task(**fields)
+                    if task.mission_id and task.approved_by and task.approved_at:
+                        self.tasks.setdefault(task.id, task)
+                self._mission_approval_reconciliation_scan_pending = False
+            except Exception as exc:
+                self._mission_approval_reconciliation_scan_pending = True
+                log.warning("Director workspace approval recovery scan deferred: %s", type(exc).__name__)
+                return {"scanned": 0, "reconciled": 0, "failed": 1}
+
+        eligible = {
+            task.id: task for task in self.tasks.values()
+            if task.status == Status.APPROVED
+            and task.workspace_id
+            and task.mission_id
+            and task.approved_by
+            and task.approved_at
+        }
+        # Drop queued IDs that no longer represent a canonical approved task.
+        self._mission_approval_reconciliation_pending.intersection_update(eligible)
+        candidates = [
+            task for task in eligible.values()
+            if include_all or task.id in self._mission_approval_reconciliation_pending
+        ]
+        if not candidates:
+            return {"scanned": 0, "reconciled": 0, "failed": 0}
+
+        try:
+            from .orchestration.runtime import MissionOrchestrationRuntime
+            from .orchestration.store import MissionRuntimeStore
+            from .orchestration.registry_factory import build_default_adapter_registry
+
+            runtime = MissionOrchestrationRuntime(
+                store=MissionRuntimeStore(self.store),
+                adapters=build_default_adapter_registry(director_store=self.store),
+            )
+        except Exception as exc:
+            self._mission_approval_reconciliation_pending.update(task.id for task in candidates)
+            log.warning("Director approval reconciliation unavailable: %s", type(exc).__name__)
+            return {"scanned": len(candidates), "reconciled": 0, "failed": len(candidates)}
+
+        reconciled = failed = 0
+        for task in candidates:
+            try:
+                await runtime.approve_task(
+                    mission_id=task.mission_id,
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    operator_id=str(task.approved_by),
+                    idempotency_key=f"director-task-approval:{task.id}:{task.approved_at.isoformat()}",
+                    correlation_id=str(task.correlation_id or task.id),
+                )
+                self._mission_approval_reconciliation_pending.discard(task.id)
+                reconciled += 1
+            except Exception as exc:
+                self._mission_approval_reconciliation_pending.add(task.id)
+                failed += 1
+                log.warning(
+                    "Director approval journal reconciliation deferred: task=%s error=%s",
+                    task.id,
+                    type(exc).__name__,
+                )
+        summary = {"scanned": len(candidates), "reconciled": reconciled, "failed": failed}
+        log.info("Director approval journal reconciliation: %s", summary)
+        return summary
+
     async def _startup(self) -> None:
         await asyncio.sleep(2)
         try:
             await self._restore_decisions()
             await self._restore_tasks()
+            await self._reconcile_mission_approvals(include_all=True)
             await self._replay_learning_history()
             await self._observe_async()
             await self._build_plan_async()
@@ -1373,6 +1500,31 @@ class Director:
         if verification.get("verdict") != "verified_for_governance_review":
             raise ValueError("strategic_plan_requires_reverification:" + str(verification.get("verdict")))
 
+        source_collaboration_run_id = plan.get("objective", {}).get("source_collaboration_run_id") if isinstance(plan.get("objective"), dict) else None
+        if source_collaboration_run_id is not None and (
+            not isinstance(source_collaboration_run_id, str)
+            or not source_collaboration_run_id.strip()
+            or len(source_collaboration_run_id.strip()) > 128
+        ):
+            raise ValueError("strategic_plan_source_collaboration_run_id_invalid")
+        source_collaboration_run_id = source_collaboration_run_id.strip() if source_collaboration_run_id else None
+        source_provenance = (
+            plan.get("objective", {}).get("source_collaboration_provenance")
+            if isinstance(plan.get("objective"), dict) else None
+        )
+        source_provenance_sha256 = None
+        if source_provenance is not None:
+            if (
+                not isinstance(source_provenance, dict)
+                or source_provenance.get("run_id") != source_collaboration_run_id
+                or source_provenance.get("workspace_id") != workspace_id
+                or not isinstance(source_provenance.get("sha256"), str)
+                or len(source_provenance["sha256"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in source_provenance["sha256"])
+            ):
+                raise ValueError("strategic_plan_source_collaboration_provenance_invalid")
+            source_provenance_sha256 = source_provenance["sha256"]
+
         steps = plan.get("steps")
         if not isinstance(steps, list) or not 1 <= len(steps) <= 12:
             raise ValueError("strategic_plan_step_count_invalid")
@@ -1450,7 +1602,10 @@ class Director:
                 confidence=0.8,
                 reason=("Operator-staged from strategic plan " + str(plan_id) +
                         "; " + str(step.get("rationale") or "Review plan evidence before approval"))[:1000],
-                sources=["strategic_plan:" + str(plan_id), "operator:" + str(actor or "operator")[:100]],
+                sources=(["strategic_plan:" + str(plan_id)]
+                         + (["collaboration_run:" + source_collaboration_run_id] if source_collaboration_run_id else [])
+                         + (["collaboration_provenance_sha256:" + source_provenance_sha256] if source_provenance_sha256 else [])
+                         + ["operator:" + str(actor or "operator")[:100]]),
                 workspace_id=workspace_id,
                 depends_on=dependencies,
                 mission_id=mission_id,
@@ -1471,21 +1626,46 @@ class Director:
         request_fingerprint = hashlib.sha256(json.dumps({
             "workspace_id": workspace_id,
             "plan_id": plan_id,
+            "source_collaboration_run_id": source_collaboration_run_id,
+            "source_collaboration_provenance_sha256": source_provenance_sha256,
             "plan_fingerprint": plan.get("source_context_fingerprint"),
             "step_parameters": step_parameters,
             "task_ids": [task.id for task in tasks],
         }, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
-        persist = getattr(self.store, "stage_mission_admission", None)
-        if not callable(persist):
-            raise RuntimeError("durable_mission_admission_store_unavailable")
-        receipt = await persist(
-            workspace_id=workspace_id,
-            idempotency_key=idempotency_key,
-            plan_id=str(plan_id),
-            mission_id=mission_id,
-            request_fingerprint=request_fingerprint,
-            tasks=persisted_rows,
-        )
+        runtime_v2_enabled = str(
+            os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_V2", "false")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if runtime_v2_enabled:
+            # Feature-gated because production must first receive and verify
+            # migrations 175–180. The v2 RPC atomically creates the legacy
+            # task/admission rows AND the versioned mission/event aggregate.
+            from .orchestration.store import MissionRuntimeStore
+            try:
+                receipt = await MissionRuntimeStore(self.store).admit_workspace_mission(
+                    workspace_id=workspace_id,
+                    idempotency_key=idempotency_key,
+                    plan_id=str(plan_id),
+                    mission_id=mission_id,
+                    request_fingerprint=request_fingerprint,
+                    tasks=persisted_rows,
+                )
+            except Exception as exc:
+                log.exception("Director v2 mission admission failed")
+                raise RuntimeError("durable_mission_runtime_admission_unavailable") from exc
+        else:
+            # Backward-compatible legacy admission remains the default until
+            # the v2 schema and runtime are explicitly enabled per environment.
+            persist = getattr(self.store, "stage_mission_admission", None)
+            if not callable(persist):
+                raise RuntimeError("durable_mission_admission_store_unavailable")
+            receipt = await persist(
+                workspace_id=workspace_id,
+                idempotency_key=idempotency_key,
+                plan_id=str(plan_id),
+                mission_id=mission_id,
+                request_fingerprint=request_fingerprint,
+                tasks=persisted_rows,
+            )
         if not isinstance(receipt, dict):
             raise RuntimeError("mission_admission_persistence_unavailable")
         if receipt.get("error") == "mission_idempotency_conflict":
@@ -1507,6 +1687,8 @@ class Director:
         return {
             "status": "staged_for_approval",
             "plan_id": str(plan_id),
+            "source_collaboration_run_id": source_collaboration_run_id,
+            "source_collaboration_provenance_sha256": source_provenance_sha256,
             "mission_id": mission_id,
             "workspace_id": workspace_id,
             "task_ids": [task.id for task in tasks],
@@ -1517,6 +1699,7 @@ class Director:
             "execution_permitted": False,
             "approval_required": True,
             "governance_required": True,
+            "durable_runtime": "v2" if runtime_v2_enabled else "legacy",
         }
 
     async def verify_strategic_plan(self, plan: dict, max_age_seconds: int = 300) -> dict:
@@ -2426,6 +2609,8 @@ class Director:
         task = self.tasks.get(task_id)
         if task is None:
             raise KeyError(f"Task {task_id} not found")
+        if task.status == Status.APPROVED and task.approved_by == actor:
+            return task
         if task.status not in (Status.APPROVAL, Status.FLAGGED):
             raise ValueError("Task is not awaiting approval")
         task.status = Status.APPROVED

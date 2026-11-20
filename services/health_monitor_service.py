@@ -212,7 +212,7 @@ class HealthMonitorService:
                 logger.exception("Health monitor cycle failed")
 
             try:
-                self._check_daily_summary()
+                await self._check_daily_summary()
             except Exception:
                 logger.exception("Daily summary check failed")
 
@@ -403,22 +403,83 @@ class HealthMonitorService:
             self._last_service_diagnostics = {}
             for name, report in (reports or {}).items():
                 services[name] = self._classify_report(report)
-                if name == "meta_engine":
-                    metadata = getattr(report, "metadata", {}) or {}
-                    diagnostic_keys = (
-                        "snapshot_status",
-                        "engine_states",
-                        "unknown_engines",
-                        "degraded_engines",
-                        "offline_engines",
-                    )
-                    details = {
-                        key: metadata[key]
-                        for key in diagnostic_keys
-                        if isinstance(metadata, dict) and key in metadata
-                    }
-                    if details:
-                        self._last_service_diagnostics[name] = details
+                metadata = getattr(report, "metadata", {}) or {}
+                details = {}
+                if isinstance(metadata, dict):
+                    # Preserve the provider's native verdict alongside the
+                    # monitor's coarse ok/unknown/down projection. In
+                    # particular, JobStatsService reports degraded with
+                    # concrete queue counts and read-only failure categories.
+                    if metadata.get("status") is not None:
+                        details["provider_reported_status"] = str(metadata["status"])[:40]
+                    if name == "meta_engine":
+                        diagnostic_keys = (
+                            "snapshot_status",
+                            "engine_states",
+                            "unknown_engines",
+                            "degraded_engines",
+                            "offline_engines",
+                        )
+                        details.update({
+                            key: metadata[key]
+                            for key in diagnostic_keys
+                            if key in metadata
+                        })
+                    elif name == "job_stats_service":
+                        if metadata.get("reason"):
+                            details["reason"] = str(metadata["reason"])[:300]
+                        if metadata.get("error"):
+                            details["error"] = str(metadata["error"])[:200]
+                        stats = metadata.get("stats")
+                        if isinstance(stats, dict):
+                            counts = stats.get("status_counts")
+                            if isinstance(counts, dict):
+                                details["status_counts"] = {
+                                    str(key)[:40]: int(value)
+                                    for key, value in list(counts.items())[:30]
+                                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                                }
+                            for key in ("active_jobs", "oldest_active_minutes"):
+                                value = stats.get(key)
+                                if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                                    details[key] = value
+                            today = stats.get("today")
+                            if isinstance(today, dict):
+                                details["today"] = {
+                                    str(key)[:40]: int(value)
+                                    for key, value in list(today.items())[:12]
+                                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                                }
+                        failure = metadata.get("failure_intelligence")
+                        if isinstance(failure, dict):
+                            details["failure_intelligence"] = {
+                                "status": str(failure.get("status") or "unknown")[:40],
+                                "total_failed_jobs_inspected": (
+                                    int(failure["total_failed_jobs_inspected"])
+                                    if isinstance(failure.get("total_failed_jobs_inspected"), int)
+                                    and not isinstance(failure.get("total_failed_jobs_inspected"), bool)
+                                    else None
+                                ),
+                                "unclassified_count": (
+                                    int(failure["unclassified_count"])
+                                    if isinstance(failure.get("unclassified_count"), int)
+                                    and not isinstance(failure.get("unclassified_count"), bool)
+                                    else None
+                                ),
+                                "categories": {
+                                    str(category)[:60]: {
+                                        "count": int(value.get("count", 0)),
+                                        "recommended_action": str(value.get("recommended_action") or "")[:180],
+                                    }
+                                    for category, value in list((failure.get("categories") or {}).items())[:12]
+                                    if isinstance(value, dict)
+                                    and isinstance(value.get("count", 0), int)
+                                    and not isinstance(value.get("count", 0), bool)
+                                    and value.get("count", 0) >= 0
+                                } if isinstance(failure.get("categories"), dict) else {},
+                            }
+                if details:
+                    self._last_service_diagnostics[name] = details
         except Exception as exc:
             logger.debug("Health registry check failed: %s", sanitize_error_message(exc))
 
@@ -614,7 +675,7 @@ class HealthMonitorService:
     # DAILY SUMMARY
     # ═══════════════════════════════════════════════════════════════
 
-    def _check_daily_summary(self):
+    async def _check_daily_summary(self):
         now_utc = datetime.now(timezone.utc)
         today_str = now_utc.strftime("%Y-%m-%d")
 
@@ -637,7 +698,7 @@ class HealthMonitorService:
             if self._summary_already_sent_today(today_str):
                 self._last_summary_sent_date = today_str
                 return
-            self._send_daily_summary()
+            await self._send_daily_summary()
             self._mark_summary_sent(today_str)
             self._last_summary_sent_date = today_str
 
@@ -670,30 +731,35 @@ class HealthMonitorService:
         except Exception:
             logger.debug("Daily summary dedup write failed", exc_info=True)
 
-    def _send_daily_summary(self):
+    async def _send_daily_summary(self):
+        """Generate a Director intelligence brief from the latest health evidence."""
         try:
-            services = self._collect_service_health_sync()
-            healthy_count = sum(1 for v in services.values() if v == "ok")
-            total_count = len(services)
-
-            health_lines = []
-            for name, status in services.items():
-                icon = "✅" if status == "ok" else ("⚠️" if status == "unknown" else "❌")
-                health_lines.append(f"• {icon} {name}")
-
-            summary = (
-                f"📊 <b>Daily System Health Report</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💻 <b>Services</b>: {healthy_count}/{total_count} healthy\n\n"
-                f"{chr(10).join(health_lines)}\n\n"
-                f"<i>{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</i>"
+            from services.director.health_briefing import (
+                generate_health_briefing,
+                render_health_briefing,
             )
 
-            # Route through the alert queue so delivery is serialized.
+            services = self._collect_service_health_sync()
+            brief = await generate_health_briefing(
+                services,
+                diagnostics=self._last_service_diagnostics,
+            )
+            summary = render_health_briefing(brief, services)
+
+            # The dispatcher adds the single notification timestamp. Keep the
+            # report itself timestamp-free to avoid duplicate clock lines.
             self._enqueue_alert("alert", summary)
-            logger.info("Daily health summary enqueued.")
+            logger.info(
+                "Director health intelligence brief enqueued",
+                extra={
+                    "event": "director.health_briefing.enqueued",
+                    "mode": brief.get("mode"),
+                    "incident_count": len(brief.get("incidents") or []),
+                    "service_count": len(services),
+                },
+            )
         except Exception:
-            logger.error("Failed to generate daily summary", exc_info=True)
+            logger.exception("Failed to generate Director health intelligence brief")
 
     def _collect_service_health_sync(self) -> Dict[str, str]:
         """Return the last collected snapshot without blocking."""

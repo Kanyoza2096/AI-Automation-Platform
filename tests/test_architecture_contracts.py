@@ -82,3 +82,69 @@ def test_durable_authority_migration_normalizes_execution_tenant_type_and_rpc_si
     assert "user_id = auth.uid()::text" in sql
     assert "claim_publish_outbox(INTEGER, INTEGER)" in sql
     assert "p_lease_seconds < 30 OR p_lease_seconds > 3600" in sql
+
+
+
+def test_director_mission_admission_journals_collaboration_origin():
+    sql = (ROOT / "migrations" / "188_director_mission_admission_provenance.sql").read_text(encoding="utf-8")
+    assert "source_collaboration_run_id TEXT" in sql
+    assert "director_mission_collaboration_provenance_conflict" in sql
+    assert "source_collaboration_run_id', source_collaboration_run_id" in sql
+    assert "'mission.admitted'" in sql
+    assert "source_collaboration_provenance_sha256" in sql
+    assert "director_mission_collaboration_digest_conflict" in sql
+    # Mission admission remains a journal event, not an execution/approval grant.
+    assert "execution_permitted" not in sql
+    assert "task.approved" not in sql
+
+
+def test_strategic_plan_requires_server_verified_collaboration_provenance():
+    api = (ROOT / "services" / "director" / "api.py").read_text(encoding="utf-8")
+    planning = (ROOT / "services" / "director" / "planning.py").read_text(encoding="utf-8")
+    assert '.eq("workspace_id", workspace_id)' in api
+    assert 'source_run.get("status") != "completed"' in api
+    assert 'recommendation.get("status") != "available"' in api
+    assert 'hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()' in api
+    assert 'Source collaboration record changed after strategic-plan creation' in api
+    assert 'provenance.get("sha256") != current_digest' in api
+    assert 'source_collaboration_provenance_required' in planning
+    assert '"source_collaboration_provenance": dict(source_provenance)' in planning
+
+
+def test_verified_collaboration_digest_survives_plan_to_mission_admission():
+    core = (ROOT / "services" / "director" / "core.py").read_text(encoding="utf-8")
+    planning = (ROOT / "services" / "director" / "planning.py").read_text(encoding="utf-8")
+    assert 'source_provenance.get("workspace_id") != workspace_id' in core
+    assert '"source_collaboration_provenance_sha256": source_provenance_sha256' in core
+    assert '"collaboration_provenance_sha256:" + source_provenance_sha256' in core
+    assert '"source_collaboration_provenance": dict(source_provenance)' in planning
+
+
+def test_finalized_collaboration_runs_are_database_immutable():
+    sql = (ROOT / "migrations" / "189_director_collaboration_run_finalization_guard.sql").read_text(encoding="utf-8")
+    assert "BEFORE UPDATE OR DELETE ON public.director_collaboration_runs" in sql
+    assert "OLD.status <> 'running'" in sql
+    assert "director_collaboration_run_finalized_immutable" in sql
+    assert "director_collaboration_run_delete_forbidden" in sql
+    assert "director_collaboration_run_completed_synthesis_unavailable" in sql
+    assert "cardinality(NEW.requested_engines)" in sql
+    assert "NULLIF(btrim(NEW.synthesis), '') IS NULL" in sql
+    assert "director_collaboration_run_identity_immutable" in sql
+    assert "jsonb_typeof(NEW.consultations) IS DISTINCT FROM 'array'" in sql
+    assert "director_collaboration_run_completed_consultations_invalid" in sql
+    assert "SET search_path = pg_catalog, public, pg_temp" in sql
+
+
+
+def test_collaboration_consultations_persist_record_level_evidence_fingerprints():
+    chat = (ROOT / "api" / "routers" / "ai_chat.py").read_text(encoding="utf-8")
+    assert '"evidence_manifest": evidence_manifest' in chat
+    assert '"source_table": table' in chat
+    assert '"record_id": str(record_id) if record_id is not None else None' in chat
+    assert 'record_id = safe_row.get("id") or safe_row.get("event_id")' in chat
+    assert 'or safe_row.get("date")' not in chat
+    assert '"sanitized_snapshot_sha256": hashlib.sha256(canonical_record).hexdigest()' in chat
+    assert '"identity_quality": "stable_record_id" if record_id is not None else "content_fingerprint_only"' in chat
+    assert '"evidence_manifest_scope": "workspace_database_rows_only; platform_runtime_aggregates_not_record_fingerprinted"' in chat
+    assert '"evidence_manifest_sha256": hashlib.sha256(json.dumps(' in chat
+    assert '"evidence_manifest": item["sources"].get("evidence_manifest", [])' in chat

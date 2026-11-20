@@ -40,8 +40,21 @@ def test_collaboration_run_is_partial_when_evidence_source_is_unavailable():
     ]) == "partial"
 
 
-def test_collaboration_run_is_completed_only_when_all_peers_and_sources_complete():
-    assert _collaboration_run_status([
+def test_collaboration_run_is_completed_only_when_all_outputs_are_available():
+    peers = [
         {"status": "completed", "sources": {"partial": False}},
         {"status": "completed", "sources": {"partial": False}},
-    ]) == "completed"
+    ]
+    comparison = {"status": "available"}
+    recommendation = {"status": "available"}
+    assert _collaboration_run_status(peers, comparison, recommendation) == "completed"
+
+
+def test_collaboration_run_is_partial_when_comparison_or_recommendation_is_unavailable():
+    peers = [{"status": "completed", "sources": {"partial": False}}]
+    assert _collaboration_run_status(
+        peers, {"status": "unavailable"}, {"status": "available"}
+    ) == "partial"
+    assert _collaboration_run_status(
+        peers, {"status": "available"}, {"status": "unavailable"}
+    ) == "partial"

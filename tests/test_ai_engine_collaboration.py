@@ -6,6 +6,44 @@ from fastapi import HTTPException
 
 from api.routers import ai_chat
 
+class FakeCollaborationQuery:
+    def __init__(self, db, operation="select", values=None):
+        self.db = db
+        self.operation = operation
+        self.values = values or {}
+
+    def select(self, *_args):
+        self.operation = "select"
+        return self
+
+    def update(self, values):
+        self.operation = "update"
+        self.values = values
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def limit(self, *_args):
+        return self
+
+    def execute(self):
+        if self.operation == "select":
+            return SimpleNamespace(data=[{"evidence_summary": self.db.evidence_summary}])
+        self.db.consultations = self.values.get("consultations", self.db.consultations)
+        self.db.evidence_summary = self.values.get("evidence_summary", self.db.evidence_summary)
+        return SimpleNamespace(data=[])
+
+
+class FakeCollaborationDB:
+    def __init__(self):
+        self.evidence_summary = {}
+        self.consultations = []
+
+    def table(self, _name):
+        return FakeCollaborationQuery(self)
+
+
 
 def test_collaboration_engine_allowlist_is_closed_and_deduplicated():
     assert ai_chat._normalize_collaboration_engines(["guardian", "ai_brain", "guardian"]) == [
@@ -48,15 +86,19 @@ def test_director_collaboration_runs_read_only_consults_then_synthesis(monkeypat
                 request_id=f"request-{len(calls)}",
             )
 
+        async def complete_async_structured(self, *_args, **_kwargs):
+            return SimpleNamespace(ok=False, data=None, provider=None, model=None)
+
     monkeypatch.setattr(ai_chat, "_load_engine_context", fake_context)
-    reply, result, consultations = asyncio.run(
+    db = FakeCollaborationDB()
+    reply, result, consultations, comparison, recommendation = asyncio.run(
         ai_chat._run_engine_collaboration(
-            FakeGateway(), object(), "workspace-a",
-            "Investigate a reliability concern", ["guardian", "ai_brain"]
+            FakeGateway(), db, "workspace-a",
+            "Investigate a reliability concern", ["guardian", "ai_brain"], "run-123"
         )
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 7
     assert calls[0][1]["caller"] == "ai_chat"
     assert calls[1][1]["caller"] == "ai_chat"
     assert calls[2][1]["caller"] == "ai_chat"
@@ -66,6 +108,11 @@ def test_director_collaboration_runs_read_only_consults_then_synthesis(monkeypat
     assert [item["engine"] for item in consultations] == ["guardian", "ai_brain"]
     assert all(item["status"] == "completed" for item in consultations)
     assert result.provider == "test-provider"
+    assert db.evidence_summary["phase"] == "synthesizing"
+    assert len(db.evidence_summary["progress_events"]) >= 5
+    assert db.evidence_summary["progress_events"][-1]["engines"][0]["engine"] == "guardian"
+    assert comparison["status"] == "unavailable"
+    assert recommendation["status"] == "unavailable"
 
 
 def test_collaboration_unavailable_consultation_is_not_a_negative_finding(monkeypatch):
@@ -78,6 +125,9 @@ def test_collaboration_unavailable_consultation_is_not_a_negative_finding(monkey
         }
 
     class FakeGateway:
+        async def complete_async_structured(self, *_args, **_kwargs):
+            return SimpleNamespace(ok=False, data=None, provider=None, model=None)
+
         async def complete_async(self, prompt, **kwargs):
             if kwargs["max_tokens"] == 700:
                 return SimpleNamespace(ok=False, text="", provider=None, model=None)
@@ -87,9 +137,10 @@ def test_collaboration_unavailable_consultation_is_not_a_negative_finding(monkey
             )
 
     monkeypatch.setattr(ai_chat, "_load_engine_context", fake_context)
-    reply, _, consultations = asyncio.run(
+    db = FakeCollaborationDB()
+    reply, _, consultations, _, _ = asyncio.run(
         ai_chat._run_engine_collaboration(
-            FakeGateway(), object(), "workspace-a", "Check security posture", ["guardian"]
+            FakeGateway(), db, "workspace-a", "Check security posture", ["guardian"], "run-456"
         )
     )
     assert consultations[0]["status"] == "unavailable"

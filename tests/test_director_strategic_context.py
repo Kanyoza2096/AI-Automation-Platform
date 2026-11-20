@@ -167,3 +167,51 @@ async def test_plan_exposes_strategic_context_and_keeps_legacy_evidence_context(
     assert plan["strategic_context"]["schema_version"] == "kdo.director.strategic-context.v1"
     assert plan["strategic_context"]["authority"] == "none"
     assert plan["decision_context"] == plan["strategic_context"]["evidence"]
+
+
+
+def test_director_native_adapter_invokes_content_intelligence_with_mission_scope():
+    import asyncio
+    from types import SimpleNamespace
+    from services.director.orchestration.contracts import AdapterRegistry, MissionTaskContext
+    from services.director.orchestration.native_adapters import ContentIntelligenceMissionAdapter
+
+    class FakeEngine:
+        async def analyze(self, topic, **kwargs):
+            assert kwargs["workspace_id"] == "workspace-director-test"
+            return SimpleNamespace(to_dict=lambda: {
+                "mode": "full",
+                "summary": "Research completed from a cited source.",
+                "claims": ["A supported finding."],
+                "recommendations": ["Review the cited source."],
+                "risks": [],
+                "evidence": [{
+                    "fingerprint": "source-1",
+                    "title": "Evidence",
+                    "url": "https://example.com/evidence",
+                    "source": "test",
+                    "snippet": "Verified excerpt",
+                }],
+                "sources_count": 1,
+                "providers": ["test"],
+                "confidence": 0.8,
+                "warnings": [],
+            })
+
+    context = MissionTaskContext(
+        task_id="task-director-test",
+        mission_id="mission-director-test",
+        workspace_id="workspace-director-test",
+        capability="research.analyze",
+        objective="Research a business question",
+        correlation_id="corr-director-test",
+    )
+    registry = AdapterRegistry()
+    registry.register(ContentIntelligenceMissionAdapter(engine=FakeEngine()))
+    result = asyncio.run(registry.invoke("content_intelligence", context))
+
+    assert result.status == "completed"
+    assert result.workspace_id == "workspace-director-test"
+    assert result.evidence[0]["ref"] == "source-1"
+    assert result.authority == "none"
+    assert result.side_effect_class == "external_read_only"

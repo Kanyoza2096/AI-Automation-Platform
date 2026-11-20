@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import hmac
+import hashlib
+import json
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 # FastAPI's dependency injection recognizes starlette.requests.Request.
 # Importing it at module scope (not inside create_app) ensures every
@@ -69,11 +72,73 @@ class StrategicMissionAdmissionBody(BaseModel):
     step_parameters: dict[str, dict] = Field(..., min_length=1, max_length=12)
 class StrategicObjectiveBody(BaseModel):
     objective_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    source_collaboration_run_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     title: str = Field(..., min_length=1, max_length=200)
     description: str = Field(..., min_length=1, max_length=4000)
     success_criteria: list[str] = Field(..., min_length=1, max_length=20)
     constraints: list[str] = Field(default_factory=list, max_length=20)
 
+
+class MissionTaskAssignBody(BaseModel):
+    engine_id: str = Field(..., min_length=1, max_length=100)
+    capability: str = Field(..., min_length=1, max_length=120)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class MissionTaskExecuteBody(BaseModel):
+    engine_id: str = Field(..., min_length=1, max_length=100)
+    objective: str = Field(..., min_length=1, max_length=4000)
+    inputs: dict = Field(default_factory=dict)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+    estimated_tokens: int = Field(default=1800, ge=1, le=20000)
+    timeout_seconds: float = Field(default=75.0, gt=0, le=180)
+
+
+class MissionTaskRecoveryReviewBody(BaseModel):
+    decision: str = Field(..., pattern="^(hold|request_reconciliation)$")
+    reason: str = Field(..., min_length=1, max_length=1000)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class MissionTaskReconciliationBody(BaseModel):
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class MissionEngineMessageBody(BaseModel):
+    task_id: str = Field(..., min_length=1, max_length=100)
+    recipient_engine_id: str = Field(..., min_length=1, max_length=100)
+    question: str = Field(..., min_length=1, max_length=2000)
+    recipient_capability: str = Field(..., min_length=1, max_length=120)
+    context: str = Field(default="", max_length=4000)
+    recipient_inputs: dict = Field(default_factory=dict)
+    message_id: str = Field(..., min_length=8, max_length=128)
+    idempotency_key: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+    round_number: int = Field(..., ge=1, le=3)
+
+
+class MissionEngineAnswerBody(BaseModel):
+    answer_message_id: str = Field(..., min_length=8, max_length=128)
+    idempotency_prefix: str = Field(..., min_length=8, max_length=128)
+    correlation_id: str = Field(..., min_length=8, max_length=128)
+
+
+class ApprovalBody(BaseModel):
+    actor: str = Field(
+        default="admin", min_length=1, max_length=100,
+        pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
+    )
+
+
+class RejectBody(BaseModel):
+    actor: str = Field(
+        default="admin", min_length=1, max_length=100,
+        pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
+    )
+    reason: str = Field(default="", max_length=500)
 
 
 try:
@@ -177,6 +242,17 @@ def create_app(director: Director):
             return str(principal_id)[:100]
         return fallback
 
+    def _require_workspace_task_operator(task, request) -> None:
+        if not getattr(task, "workspace_id", None):
+            return
+        context = getattr(request.state, "request_context", None)
+        if (
+            context is None
+            or getattr(context, "species_privileges", False)
+            or str(getattr(context, "workspace_id", "") or "") != str(task.workspace_id)
+        ):
+            raise HTTPException(403, "A signed human workspace operator is required for task decisions")
+
     def _require_platform_scope(request) -> None:
         """Require a trusted platform identity for shared Director state.
 
@@ -221,6 +297,20 @@ def create_app(director: Director):
                     )
             raise HTTPException(status_code=401, detail="Authentication required")
 
+        # KCPG authenticates with the species service credential, then binds
+        # the actual human actor through the shared, short-lived HMAC envelope.
+        # Never infer the human actor from unsigned X-User headers.
+        if request is not None and any(
+            request.headers.get(name)
+            for name in (
+                "X-KCPG-Context-Timestamp",
+                "X-KCPG-Context-Signature",
+                "X-KCPG-Context-Actor-ID",
+            )
+        ):
+            from core.security.deps import require_auth_context
+            await require_auth_context(request)
+
         if write and request is not None:
             context = getattr(request.state, "request_context", None)
             if context is not None and not getattr(context, "species_privileges", False):
@@ -231,18 +321,343 @@ def create_app(director: Director):
                         detail="Director mutation requires operator role or above",
                     )
 
-    class ApprovalBody(BaseModel):
-        actor: str = Field(
-            default="admin", min_length=1, max_length=100,
-            pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
-        )
+    def _mission_runtime_enabled() -> bool:
+        return (os.getenv("KDO_DIRECTOR_MISSION_RUNTIME_ENABLED", "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-    class RejectBody(BaseModel):
-        actor: str = Field(
-            default="admin", min_length=1, max_length=100,
-            pattern=r"^[a-zA-Z0-9_\-\.\s]+$",
-        )
-        reason: str = Field(default="", max_length=500)
+    def _get_mission_runtime():
+        if not _mission_runtime_enabled():
+            raise HTTPException(404, "Director native mission runtime is disabled")
+        runtime = getattr(app.state, "director_mission_runtime", None)
+        if runtime is not None:
+            return runtime
+        try:
+            from .orchestration.runtime import MissionOrchestrationRuntime
+            from .orchestration.store import MissionRuntimeStore
+            from .orchestration.registry_factory import build_default_adapter_registry
+
+            def _sync_task_state(task_id, status, result, error):
+                task = director.tasks.get(task_id)
+                if task is None:
+                    return
+                task.status = Status(status)
+                if result is not None:
+                    task.result = dict(result)
+                if error is not None:
+                    task.error = str(error)[:2000]
+
+            runtime = MissionOrchestrationRuntime(
+                store=MissionRuntimeStore(director.store),
+                adapters=build_default_adapter_registry(director_store=director.store),
+                task_state_callback=_sync_task_state,
+            )
+            app.state.director_mission_runtime = runtime
+            return runtime
+        except Exception as exc:
+            log.exception("Director native mission runtime initialization failed")
+            raise HTTPException(503, "Director native mission runtime is not ready") from exc
+
+    async def _require_workspace_mission(request):
+        workspace_id = _workspace_id(request)
+        context = getattr(request.state, "request_context", None)
+        # A species service credential alone is not a human workspace actor.
+        # KCPG must provide a signed actor envelope; verify it and replace the
+        # machine context with the trusted user before workspace-scoped work.
+        if context is not None and getattr(context, "species_privileges", False):
+            from core.security.deps import require_auth_context
+            context = await require_auth_context(request)
+            workspace_id = str(getattr(context, "workspace_id", "") or "")
+        if not workspace_id or context is None or getattr(context, "species_privileges", False):
+            raise HTTPException(403, "A trusted workspace identity is required")
+        return workspace_id
+
+    @app.get("/missions/{mission_id}/orchestration/timeline")
+    async def get_mission_orchestration_timeline(
+        mission_id: str,
+        request: Request,
+        limit: int = 100,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials)
+        workspace_id = await _require_workspace_mission(request)
+        if limit < 1 or limit > 200:
+            raise HTTPException(422, "limit must be between 1 and 200")
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            events = await runtime.timeline(
+                mission_id=mission_id, workspace_id=workspace_id, limit=limit
+            )
+            state = snapshot.state_snapshot if isinstance(snapshot.state_snapshot, dict) else {}
+            return {
+                "mission_id": mission_id,
+                "workspace_id": workspace_id,
+                "mission_version": snapshot.version,
+                "mission_status": snapshot.status,
+                "task_assignments": state.get("task_assignments", {}),
+                "engine_progress": state.get("engine_progress", {}),
+                "task_reconciliations": state.get("task_reconciliations", {}),
+                "pending_questions": state.get("pending_questions", {}),
+                "evidence_refs": state.get("evidence_refs", []),
+                "unresolved_disagreements": state.get("unresolved_disagreements", []),
+                "budget": state.get("budget", {}),
+                "events": events,
+            }
+        except Exception as exc:
+            log.warning("Director mission timeline read failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission timeline is temporarily unavailable") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/assign")
+    async def assign_mission_task(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskAssignBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.assign_task(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                engine_id=body.engine_id,
+                capability=body.capability,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+                director_id=_trusted_actor(request),
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "mission_version": snapshot.version, "status": "assigned"}
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission task assignment failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission task assignment could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/recovery-review")
+    async def review_mission_task_recovery(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskRecoveryReviewBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.review_task_recovery(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                operator_id=_trusted_actor(request),
+                decision=body.decision,
+                reason=body.reason,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+            )
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "mission_version": snapshot.version,
+                "decision": body.decision,
+                "execution_authority_changed": False,
+            }
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission recovery review failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission recovery review could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/reconcile")
+    async def reconcile_mission_task_attempt(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskReconciliationBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        """Inspect and journal exact-attempt reconciliation; never replay execution."""
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        from .orchestration.runtime import MissionTaskNotReady
+        try:
+            reconciliation = await runtime.reconcile_and_record_task_attempt(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                correlation_id=body.correlation_id,
+            )
+            result = reconciliation.result if isinstance(reconciliation.result, Mapping) else {}
+            return {
+                "accepted": True,
+                "mission_id": mission_id,
+                "task_id": task_id,
+                "attempt_id": reconciliation.attempt_id,
+                "engine_id": reconciliation.engine_id,
+                "status": reconciliation.status,
+                "authoritative": reconciliation.authoritative,
+                "evidence_ref": reconciliation.evidence_ref,
+                "result": {
+                    "summary": str(result.get("summary") or "")[:5000],
+                    "completed_at": str(result.get("completed_at") or "")[:64],
+                },
+                "execution_authority_changed": False,
+            }
+        except (MissionTaskNotReady, ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission attempt reconciliation failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Mission attempt reconciliation could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/tasks/{task_id}/execute")
+    async def execute_mission_task(
+        mission_id: str,
+        task_id: str,
+        body: MissionTaskExecuteBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        runtime = _get_mission_runtime()
+        from .orchestration.runtime import MissionTaskNotReady
+        try:
+            contribution = await runtime.execute_approved_task(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                engine_id=body.engine_id,
+                objective=body.objective,
+                inputs=body.inputs,
+                idempotency_prefix=body.idempotency_prefix,
+                correlation_id=body.correlation_id,
+                estimated_tokens=body.estimated_tokens,
+                timeout_seconds=body.timeout_seconds,
+                operator_id=_trusted_actor(request),
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "engine_id": contribution.engine_id, "status": contribution.status,
+                    "summary": contribution.summary, "confidence": contribution.confidence,
+                    "evidence": list(contribution.evidence), "limitations": list(contribution.limitations)}
+        except (MissionTaskNotReady, ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director mission task execution failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Native engine execution could not be confirmed") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/messages")
+    async def ask_mission_engine(
+        mission_id: str,
+        body: MissionEngineMessageBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        task = director.tasks.get(body.task_id)
+        if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+            raise HTTPException(404, "Mission task not found")
+        _require_workspace_task_operator(task, request)
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            assignment = (snapshot.state_snapshot.get("task_assignments") or {}).get(body.task_id) or {}
+            actor_engine_id = str(assignment.get("engine_id") or "")
+            if not actor_engine_id:
+                raise HTTPException(409, "Mission task has no assigned source engine")
+            updated = await runtime.ask_engine(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                task_id=body.task_id,
+                actor_engine_id=actor_engine_id,
+                recipient_engine_id=body.recipient_engine_id,
+                question=body.question,
+                message_id=body.message_id,
+                idempotency_key=body.idempotency_key,
+                correlation_id=body.correlation_id,
+                round_number=body.round_number,
+                context=body.context,
+                recipient_capability=body.recipient_capability,
+                recipient_inputs=body.recipient_inputs,
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": body.task_id,
+                    "message_id": body.message_id, "from_engine": actor_engine_id,
+                    "to_engine": body.recipient_engine_id, "round_number": body.round_number,
+                    "mission_version": updated.version, "status": "pending_response"}
+        except HTTPException:
+            raise
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director engine question failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Engine question could not be durably recorded") from exc
+
+    @app.post("/missions/{mission_id}/orchestration/messages/{message_id}/answer")
+    async def answer_mission_engine(
+        mission_id: str,
+        message_id: str,
+        body: MissionEngineAnswerBody,
+        request: Request,
+        credentials: Optional[HTTPAuthorizationCredentials] = None,
+    ):
+        await _require_auth(request, credentials, write=True)
+        workspace_id = await _require_workspace_mission(request)
+        runtime = _get_mission_runtime()
+        try:
+            snapshot = await runtime.load_snapshot(
+                mission_id=mission_id, workspace_id=workspace_id
+            )
+            pending = (snapshot.state_snapshot.get("pending_questions") or {}).get(message_id)
+            if not pending:
+                raise HTTPException(404, "Pending engine question not found")
+            task_id = str(pending.get("task_id") or "")
+            task = director.tasks.get(task_id)
+            if task is None or not _task_in_workspace(task, request) or task.mission_id != mission_id:
+                raise HTTPException(404, "Mission task not found")
+            _require_workspace_task_operator(task, request)
+            contribution = await runtime.answer_engine_question(
+                mission_id=mission_id,
+                workspace_id=workspace_id,
+                question_message_id=message_id,
+                answer_message_id=body.answer_message_id,
+                correlation_id=body.correlation_id,
+                idempotency_prefix=body.idempotency_prefix,
+            )
+            return {"accepted": True, "mission_id": mission_id, "task_id": task_id,
+                    "message_id": body.answer_message_id, "in_reply_to": message_id,
+                    "engine_id": contribution.engine_id, "status": contribution.status,
+                    "summary": contribution.summary, "confidence": contribution.confidence,
+                    "evidence": list(contribution.evidence), "limitations": list(contribution.limitations)}
+        except HTTPException:
+            raise
+        except (ValueError, LookupError, PermissionError) as exc:
+            raise HTTPException(409, str(exc)[:200]) from exc
+        except Exception as exc:
+            log.warning("Director engine answer failed: %s", type(exc).__name__)
+            raise HTTPException(503, "Engine response could not be confirmed") from exc
 
     # ── Core ─────────────────────────────────────────────────────────
 
@@ -365,10 +780,71 @@ def create_app(director: Director):
         """Create a validated advisory plan from a platform objective."""
         await _require_auth(request, credentials, write=True)
         _require_platform_scope(request)
-        try:
-            plan = await director.create_strategic_plan(
-                body.dict(exclude_none=True)
+        objective = body.dict(exclude_none=True)
+        source_run_id = objective.get("source_collaboration_run_id")
+        if source_run_id:
+            workspace_id = _workspace_id(request)
+            if not workspace_id:
+                raise HTTPException(400, "A trusted workspace context is required for collaboration provenance")
+            try:
+                from services.supabase import supabase_service
+                db = supabase_service.service_client
+                if db is None:
+                    raise RuntimeError("persistent collaboration storage unavailable")
+                query = (db.table("director_collaboration_runs")
+                    .select("id,workspace_id,objective,requested_engines,status,consultations,synthesis,evidence_summary,completed_at")
+                    .eq("id", source_run_id)
+                    .eq("workspace_id", workspace_id)
+                    .limit(1))
+                result = await asyncio.to_thread(lambda: query.execute())
+                rows = list(getattr(result, "data", None) or [])
+            except Exception as exc:
+                log.exception("Unable to verify strategic-plan collaboration provenance")
+                raise HTTPException(503, "Collaboration provenance could not be verified") from exc
+            if not rows:
+                raise HTTPException(404, "Source collaboration run not found in this workspace")
+            source_run = rows[0]
+            if source_run.get("status") != "completed" or not source_run.get("completed_at"):
+                raise HTTPException(409, "Only completed collaboration runs can be strategic-plan sources")
+            evidence_summary = source_run.get("evidence_summary")
+            if not isinstance(evidence_summary, dict):
+                raise HTTPException(409, "Source collaboration evidence summary is unavailable")
+            recommendation = evidence_summary.get("recommendation")
+            comparison = evidence_summary.get("comparison")
+            if not isinstance(recommendation, dict) or recommendation.get("status") != "available":
+                raise HTTPException(409, "A completed Director recommendation is required")
+            if not isinstance(comparison, dict) or comparison.get("status") != "available":
+                raise HTTPException(409, "A completed structured collaboration evidence comparison is required")
+            canonical_source = {
+                "schema_version": "kdo.director.collaboration-provenance.v1",
+                "run_id": str(source_run["id"]),
+                "workspace_id": str(source_run["workspace_id"]),
+                "status": source_run["status"],
+                "completed_at": source_run["completed_at"],
+                "objective": source_run.get("objective") or "",
+                "requested_engines": source_run.get("requested_engines") or [],
+                "consultations": source_run.get("consultations") or [],
+                "synthesis": source_run.get("synthesis") or "",
+                "comparison": comparison,
+                "recommendation": recommendation,
+            }
+            canonical_json = json.dumps(
+                canonical_source, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
             )
+            objective["source_collaboration_provenance"] = {
+                "schema_version": canonical_source["schema_version"],
+                "run_id": canonical_source["run_id"],
+                "workspace_id": canonical_source["workspace_id"],
+                "completed_at": canonical_source["completed_at"],
+                "sha256": hashlib.sha256(canonical_json.encode("utf-8")).hexdigest(),
+                "consultation_count": len(canonical_source["consultations"])
+                    if isinstance(canonical_source["consultations"], list) else 0,
+                "evidence_comparison_status": str(comparison.get("status") or "unknown")[:64],
+                "recommendation_status": recommendation["status"],
+            }
+        try:
+            plan = await director.create_strategic_plan(objective)
         except StrategicPlannerUnavailable as exc:
             # Provider failures occur before persistence. Return an explicit
             # no-side-effect retry contract so KCPG can safely reconcile the
@@ -446,6 +922,72 @@ def create_app(director: Director):
         workspace_id = _workspace_id(request)
         if not workspace_id:
             raise HTTPException(400, "A trusted workspace context is required")
+        plan = await director.load_strategic_plan(plan_id)
+        if plan is None:
+            raise HTTPException(404, "Strategic plan not found")
+        plan_objective = plan.get("objective") if isinstance(plan, dict) else None
+        if isinstance(plan_objective, dict):
+            source_run_id = plan_objective.get("source_collaboration_run_id")
+            provenance = plan_objective.get("source_collaboration_provenance")
+        else:
+            source_run_id, provenance = None, None
+        if source_run_id:
+            if not isinstance(provenance, dict):
+                raise HTTPException(409, "Strategic plan collaboration provenance is missing")
+            try:
+                from services.supabase import supabase_service
+                db = supabase_service.service_client
+                if db is None:
+                    raise RuntimeError("persistent collaboration storage unavailable")
+                query = (db.table("director_collaboration_runs")
+                    .select("id,workspace_id,objective,requested_engines,status,consultations,synthesis,evidence_summary,completed_at")
+                    .eq("id", source_run_id)
+                    .eq("workspace_id", workspace_id)
+                    .limit(1))
+                result = await asyncio.to_thread(lambda: query.execute())
+                rows = list(getattr(result, "data", None) or [])
+            except Exception as exc:
+                log.exception("Unable to re-verify collaboration provenance before mission admission")
+                raise HTTPException(503, "Collaboration provenance could not be re-verified") from exc
+            if not rows:
+                raise HTTPException(409, "Source collaboration run is no longer available in this workspace")
+            source_run = rows[0]
+            summary = source_run.get("evidence_summary") or {}
+            comparison = summary.get("comparison") if isinstance(summary, dict) else None
+            recommendation = summary.get("recommendation") if isinstance(summary, dict) else None
+            if (
+                source_run.get("status") != "completed"
+                or not source_run.get("completed_at")
+                or not isinstance(comparison, dict)
+                or comparison.get("status") != "available"
+                or not isinstance(recommendation, dict)
+                or recommendation.get("status") != "available"
+            ):
+                raise HTTPException(409, "Source collaboration run is no longer a complete recommendation")
+            canonical_source = {
+                "schema_version": "kdo.director.collaboration-provenance.v1",
+                "run_id": str(source_run["id"]),
+                "workspace_id": str(source_run["workspace_id"]),
+                "status": source_run["status"],
+                "completed_at": source_run["completed_at"],
+                "objective": source_run.get("objective") or "",
+                "requested_engines": source_run.get("requested_engines") or [],
+                "consultations": source_run.get("consultations") or [],
+                "synthesis": source_run.get("synthesis") or "",
+                "comparison": comparison,
+                "recommendation": recommendation,
+            }
+            canonical_json = json.dumps(
+                canonical_source, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
+            )
+            current_digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+            if (
+                provenance.get("run_id") != str(source_run["id"])
+                or provenance.get("workspace_id") != workspace_id
+                or provenance.get("sha256") != current_digest
+            ):
+                raise HTTPException(409, "Source collaboration record changed after strategic-plan creation")
         try:
             return await director.stage_strategic_mission(
                 plan_id=plan_id,
@@ -600,12 +1142,99 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        if task is not None:
+            _require_workspace_task_operator(task, request)
+        task = director.tasks.get(task_id)
         try:
-            return safe(asdict(director.approve(task_id, _trusted_actor(request, body.actor))))
+            trusted_actor = _trusted_actor(request, body.actor)
+            if (
+                _mission_runtime_enabled()
+                and task is not None
+                and task.mission_id
+                and task.workspace_id
+            ):
+                # Mission task approval is one database transaction: canonical
+                # task status/provenance and the append-only mission event.
+                # Reuse the durable timestamp on a retry rather than creating a
+                # second approval identity.
+                approved_at = (
+                    task.approved_at
+                    if task.status == Status.APPROVED
+                    and task.approved_by == trusted_actor
+                    and task.approved_at is not None
+                    else datetime.now(timezone.utc)
+                )
+                runtime = _get_mission_runtime()
+                await runtime.approve_task(
+                    mission_id=task.mission_id,
+                    workspace_id=task.workspace_id,
+                    task_id=task.id,
+                    operator_id=trusted_actor,
+                    approved_at=approved_at,
+                    idempotency_key=f"director-task-approval:{task.id}:{approved_at.isoformat()}",
+                    correlation_id=task.correlation_id,
+                )
+                # Re-read the canonical row so a retry after an ambiguous RPC
+                # response restores the original committed timestamp, not the
+                # timestamp generated by the retrying HTTP request.
+                canonical = await runtime.store.get_workspace_task(
+                    task_id=task.id,
+                    workspace_id=task.workspace_id,
+                    mission_id=task.mission_id,
+                )
+                canonical_payload = (canonical or {}).get("payload") or {}
+                if (
+                    not canonical
+                    or canonical.get("status") != "approved"
+                    or canonical_payload.get("approved_by") != trusted_actor
+                    or not canonical_payload.get("approved_at")
+                ):
+                    raise RuntimeError("canonical_approval_readback_failed")
+                canonical_approved_at = datetime.fromisoformat(
+                    str(canonical_payload["approved_at"]).replace("Z", "+00:00")
+                )
+                if canonical_approved_at.tzinfo is None:
+                    canonical_approved_at = canonical_approved_at.replace(tzinfo=timezone.utc)
+                # Update process memory only after durable commit and read-back.
+                task.status = Status.APPROVED
+                task.approved_at = canonical_approved_at
+                task.approved_by = trusted_actor
+                return safe(asdict(task))
+
+            # Legacy non-mission tasks retain their established persistence path.
+            previous = (
+                task.status if task is not None else None,
+                task.approved_at if task is not None else None,
+                task.approved_by if task is not None else None,
+            )
+            approved = director.approve(task_id, trusted_actor)
+            try:
+                persisted = await director.store.save_task(approved)
+            except Exception as exc:
+                approved.status, approved.approved_at, approved.approved_by = previous
+                log.error(
+                    "Director task approval persistence raised; retry required: task=%s error=%s",
+                    task_id,
+                    type(exc).__name__,
+                )
+                raise HTTPException(503, "Task approval persistence outcome is uncertain; retry required") from exc
+            if not persisted:
+                approved.status, approved.approved_at, approved.approved_by = previous
+                raise HTTPException(503, "Task approval could not be durably persisted")
+            return safe(asdict(approved))
         except KeyError:
             raise HTTPException(404, "Task not found")
         except ValueError as e:
             raise HTTPException(409, str(e))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.error(
+                "Director task approval failed before acknowledgement: task=%s error=%s",
+                task_id,
+                type(exc).__name__,
+            )
+            raise HTTPException(503, "Task approval was not acknowledged; retry after checking canonical state") from exc
 
     @app.post("/tasks/{task_id}/reject")
     async def reject_task(
@@ -618,8 +1247,60 @@ def create_app(director: Director):
         task = director.tasks.get(task_id)
         if task is not None and not _task_in_workspace(task, request):
             raise HTTPException(404, "Task not found")
+        if task is not None:
+            _require_workspace_task_operator(task, request)
+        task = director.tasks.get(task_id)
+        previous = (
+            task.status if task is not None else None,
+            task.error if task is not None else None,
+        )
         try:
-            return safe(asdict(director.reject(task_id, _trusted_actor(request, body.actor), body.reason)))
+            trusted_actor = _trusted_actor(request, body.actor)
+            if _mission_runtime_enabled() and task is not None and task.mission_id and task.workspace_id:
+                from .orchestration.runtime import MissionTaskNotReady
+                from .orchestration.state_machine import MissionTransitionRejected
+
+                reason = f"Rejected by {trusted_actor}: {body.reason or 'Task rejected by operator'}"[:1000]
+                runtime = _get_mission_runtime()
+                try:
+                    await runtime.cancel_task(
+                        mission_id=task.mission_id,
+                        workspace_id=task.workspace_id,
+                        task_id=task.id,
+                        operator_id=trusted_actor,
+                        reason=reason,
+                        idempotency_key="director-task-cancel:" + hashlib.sha256(
+                            f"{task.id}:{trusted_actor}".encode("utf-8")
+                        ).hexdigest(),
+                        correlation_id=str(task.correlation_id or task.id)[:128],
+                    )
+                except (MissionTaskNotReady, MissionTransitionRejected, ValueError, LookupError) as exc:
+                    raise HTTPException(409, str(exc)[:200]) from exc
+                except Exception as exc:
+                    log.warning("Director mission task cancellation failed: %s", type(exc).__name__)
+                    raise HTTPException(503, "Mission task cancellation could not be confirmed") from exc
+                rejected = director.tasks.get(task_id)
+                if rejected is None:
+                    raise HTTPException(404, "Task not found")
+                canonical = await runtime.store.get_workspace_task(
+                    task_id=task.id,
+                    workspace_id=task.workspace_id,
+                    mission_id=task.mission_id,
+                )
+                if not canonical or canonical.get("status") != "cancelled":
+                    raise HTTPException(503, "Task cancellation is not yet confirmed in canonical storage")
+                # Rebuild the in-memory projection from the durable row so
+                # retries cannot overwrite the original cancellation reason.
+                rejected.status = Status.CANCELLED
+                canonical_payload = canonical.get("payload") if isinstance(canonical.get("payload"), dict) else {}
+                rejected.error = str(canonical_payload.get("error") or "")[:2000]
+                return safe(asdict(rejected))
+
+            rejected = director.reject(task_id, trusted_actor, body.reason)
+            if not await director.store.save_task(rejected):
+                rejected.status, rejected.error = previous
+                raise HTTPException(503, "Task rejection could not be durably persisted")
+            return safe(asdict(rejected))
         except KeyError:
             raise HTTPException(404, "Task not found")
 

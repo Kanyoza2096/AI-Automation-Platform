@@ -40,11 +40,20 @@ def test_intelligence_synthesizes_from_evidence():
         text='''{"summary":"Fact A","angles":["Angle A"],"claims":["Fact A"],"risks":[],"recommendations":["Use evidence"],"confidence":0.9}'''
         mode=type("M",(),{"value":"full"})()
     class LLM:
-        async def complete(self,*a,**k): return Resp()
+        def __init__(self): self.kwargs = None
+        def complete(self, *a, **k):
+            raise AssertionError("Content Intelligence must use the async gateway entrypoint")
+        async def complete_async(self, *a, **kwargs):
+            self.kwargs = kwargs
+            return Resp()
     async def run():
-        r=await ContentIntelligenceEngine(web_gateway=Web(),llm_gateway=LLM()).analyze("topic")
+        llm = LLM()
+        r=await ContentIntelligenceEngine(web_gateway=Web(),llm_gateway=llm).analyze("topic", workspace_id="workspace-a")
         assert r.mode=="full" and r.confidence==0.9 and r.claims==["Fact A"]
         assert r.evidence[0]["snippet"]=="Fact A"
+        assert llm.kwargs["workspace_id"] == "workspace-a"
+        assert llm.kwargs["caller"] == "content_intelligence"
+        assert llm.kwargs["capability"] == "chat"
     asyncio.run(run())
 
 def test_business_automation_condition_decision_delegates_to_condition_engine():

@@ -448,3 +448,17 @@ def test_knowledge_context_marks_unverified_sources_for_generation(monkeypatch):
 
     assert "[source_id=kb-unverified-9;verified=false]" in context["knowledge_context"]
     assert context["knowledge_evidence"][0]["metadata"].get("verified") is None
+
+ 
+def test_knowledge_prompt_separates_verified_and_unverified_trust_levels():
+    from services.prompt_builder import build_knowledge_block
+
+    block = build_knowledge_block(
+        "[source_id=kb-verified;verified=true]\nA verified source statement.\n"
+        "[source_id=kb-imported;verified=false]\nAn imported reference statement."
+    )
+    assert "Explicitly verified passages: 1" in block
+    assert "Unverified or verification-unspecified passages: 1" in block
+    assert "source ID establishes traceability, not trust status" in block
+    assert "must not support empirical, numerical, performance, outcome" in block
+    assert "\\\\n" not in block

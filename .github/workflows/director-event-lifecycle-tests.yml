@@ -1,3 +1,4 @@
+# Manual workflow_dispatch is available for targeted branch certification.
 name: Cross-Subsystem Event Lifecycle Tests
 
 on:
@@ -6,7 +7,11 @@ on:
       - "api/chat_action_proposals.py"
       - "api/routers/ai_chat.py"
       - "tests/test_ai_chat_action_proposals.py"
+      - "tests/test_ai_engine_collaboration.py"
       - "services/director/core.py"
+      - "services/director/health_briefing.py"
+      - "services/health_monitor_service.py"
+      - "tests/test_director_health_briefing.py"
       - "services/director/planning.py"
       - "ai/gateway.py"
       - "services/connectors/cloudflare_ai_adapter.py"
@@ -23,10 +28,34 @@ on:
       - "services/director/models.py"
       - "services/director/analysis.py"
       - "tests/test_director_strategic_context.py"
+      - "services/director/orchestration/**"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - "tests/test_director_mission_graph.py"
+      - "tests/test_ai_provider_fabric.py"
+      - "migrations/175_director_mission_admission_scope_contract.sql"
+      - "migrations/176_director_mission_runtime_and_event_journal.sql"
+      - "migrations/177_director_mission_journal_privilege_hardening.sql"
+      - "migrations/178_director_mission_event_task_scope_guard.sql"
+      - "migrations/179_director_mission_runtime_initial_state.sql"
+      - "migrations/180_director_mission_foreign_key_indexes.sql"
+      - "migrations/181_director_atomic_task_event_sync.sql"
       - "tests/test_director_executive_report_truth.py"
       - "tests/test_director_decision_evidence.py"
       - "tests/test_director_learning_evidence.py"
       - "tests/test_director_capability_audit.py"
+      - "services/director/orchestration/**"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - "tests/test_director_mission_graph.py"
+      - "migrations/175_director_mission_admission_scope_contract.sql"
+      - "migrations/176_director_mission_runtime_and_event_journal.sql"
+      - "migrations/177_director_mission_journal_privilege_hardening.sql"
+      - "migrations/178_director_mission_event_task_scope_guard.sql"
+      - "migrations/179_director_mission_runtime_initial_state.sql"
+      - "migrations/180_director_mission_foreign_key_indexes.sql"
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
@@ -34,6 +63,7 @@ on:
   push:
     branches:
       - staging
+      - feat/director-orchestration-architecture
     paths:
       - "core/shared_event_bus.py"
       - "tests/security/test_shared_event_bus_safety.py"
@@ -57,6 +87,11 @@ on:
       - "api/engine_handoff_evidence.py"
       - "api/routers/ai_chat.py"
       - "tests/test_engine_handoff_evidence.py"
+      - "services/director/orchestration/**"
+      - "tests/test_director_native_engine_adapters.py"
+      - "tests/test_director_mission_state_machine.py"
+      - "tests/test_director_mission_runtime.py"
+      - "tests/test_director_mission_graph.py"
       - ".github/workflows/director-event-lifecycle-tests.yml"
   workflow_dispatch:
 
@@ -75,7 +110,7 @@ jobs:
       - name: Check out source under test
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || 'staging' }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -102,14 +137,20 @@ jobs:
             tests/test_director_strategic_planning.py \
             tests/test_ai_provider_fabric.py \
             tests/test_ai_chat_action_proposals.py \
+            tests/test_ai_engine_collaboration.py \
             tests/test_director_strategic_plan_persistence.py \
             tests/test_director_auth_boundary.py \
             tests/test_director_executive_report_truth.py \
             tests/test_director_decision_evidence.py \
             tests/test_director_learning_evidence.py \
             tests/test_director_capability_audit.py \
+            tests/test_director_native_engine_adapters.py \
+            tests/test_director_mission_state_machine.py \
+            tests/test_director_mission_runtime.py \
+            tests/test_director_mission_graph.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
+            tests/test_director_health_briefing.py \
             tests/test_meta_engine_lifecycle_identity.py \
             tests/test_architecture_contracts.py::test_unified_event_bus_is_composition_root_authority \
             tests/test_architecture_contracts.py::test_unified_event_bus_has_one_instance_across_di_and_legacy_access \

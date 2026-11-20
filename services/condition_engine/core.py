@@ -1079,37 +1079,85 @@ class AutonomousConditionEngine:
     # BRAND HEALTH
     # ═══════════════════════════════════════════════════════════════════════
     
-    def calculate_brand_health(self, brand_id: str) -> Dict[str, Any]:
-        """Calculate brand health."""
-        observations = list(self._observations.get(brand_id, []))
-        if not observations:
-            health = {"score": 50.0, "status": "unknown", "components": {}}
-            self._brand_health[brand_id] = health
-            _publish_event("brand_health_updated", {"brand_id": brand_id, "health_score": health["score"]})
-            return health
-        
-        metrics = ["engagement", "engagement_rate", "click_through_rate"]
-        component_scores = {}
-        
-        for metric in metrics:
-            baseline = self._calculate_baseline(brand_id, metric)
-            trend = self._calculate_trend(brand_id, metric)
-            recent = [self._metric_value(item, metric) for item in observations[-10:]]
-            recent_average = safe_mean(recent)
-            performance = clamp(recent_average / baseline.mean / 2) * 100 if baseline.mean > 0 else 50
-            trend_score = 85 if trend.direction == "rising" else 25 if trend.direction == "falling" else 50
-            component_scores[metric] = {"performance": round(performance, 2), "trend": round(trend_score, 2), "combined": round(performance * 0.6 + trend_score * 0.4, 2)}
-        
-        weights = {"engagement": 0.4, "engagement_rate": 0.3, "click_through_rate": 0.3}
-        overall = sum(component_scores[m]["combined"] * weights[m] for m in metrics)
-        score = round(clamp(overall, 0, 100), 2)
-        status = "healthy" if score >= 80 else "stable" if score >= 60 else "watch" if score >= 40 else "weak" if score >= 20 else "critical"
-        
-        health = {"score": score, "status": status, "components": component_scores, "cluster_insights": self.brand_clusterer.get_cluster_insights(brand_id), "updated_at": iso_now()}
-        self._brand_health[brand_id] = health
-        _publish_event("brand_health_updated", {"brand_id": brand_id, "health_score": score})
+    def calculate_brand_health(
+        self,
+        brand_id: str,
+        *,
+        emit_event: bool = True,
+        workspace_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Calculate a locked, snapshot-based brand health view.
+
+        Mission adapters can request an advisory-only calculation with
+        emit_event=False so a read does not emit a platform-scoped event.
+        """
+        with self._lock:
+            observations = list(self._observations.get(brand_id, []))
+            observation_refs = [
+                {
+                    "ref": f"condition-observation:{item.correlation_id}",
+                    "post_id": item.post_id,
+                    "observed_at": item.timestamp.isoformat() if item.timestamp else None,
+                }
+                for item in observations[-10:]
+                if item.correlation_id
+            ]
+            latest_observed_at = (
+                observations[-1].timestamp.isoformat()
+                if observations and observations[-1].timestamp else None
+            )
+            if not observations:
+                health = {
+                    "score": 50.0,
+                    "status": "unknown",
+                    "components": {},
+                    "observation_count": 0,
+                    "latest_observed_at": None,
+                    "observation_refs": [],
+                }
+                self._brand_health[brand_id] = health
+            else:
+                metrics = ["engagement", "engagement_rate", "click_through_rate"]
+                component_scores = {}
+
+                for metric in metrics:
+                    baseline = self._calculate_baseline(brand_id, metric)
+                    trend = self._calculate_trend(brand_id, metric)
+                    recent = [self._metric_value(item, metric) for item in observations[-10:]]
+                    recent_average = safe_mean(recent)
+                    performance = clamp(recent_average / baseline.mean / 2) * 100 if baseline.mean > 0 else 50
+                    trend_score = 85 if trend.direction == "rising" else 25 if trend.direction == "falling" else 50
+                    component_scores[metric] = {
+                        "performance": round(performance, 2),
+                        "trend": round(trend_score, 2),
+                        "combined": round(performance * 0.6 + trend_score * 0.4, 2),
+                    }
+
+                weights = {"engagement": 0.4, "engagement_rate": 0.3, "click_through_rate": 0.3}
+                overall = sum(component_scores[m]["combined"] * weights[m] for m in metrics)
+                score = round(clamp(overall, 0, 100), 2)
+                status = "healthy" if score >= 80 else "stable" if score >= 60 else "watch" if score >= 40 else "weak" if score >= 20 else "critical"
+
+                health = {
+                    "score": score,
+                    "status": status,
+                    "components": component_scores,
+                    "cluster_insights": self.brand_clusterer.get_cluster_insights(brand_id),
+                    "updated_at": iso_now(),
+                    "observation_count": len(observations),
+                    "latest_observed_at": latest_observed_at,
+                    "observation_refs": observation_refs,
+                }
+                self._brand_health[brand_id] = health
+
+        if emit_event:
+            _publish_event("brand_health_updated", {
+                "brand_id": brand_id,
+                "workspace_id": workspace_id or "platform",
+                "health_score": health["score"],
+            })
         return health
-    
+
     # ═══════════════════════════════════════════════════════════════════════
     # STRATEGY SELECTION
     # ═══════════════════════════════════════════════════════════════════════
