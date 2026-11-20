@@ -27,14 +27,15 @@ Every decision is recorded in the append-only `knowledge_evidence_review_events`
 
 Creating or approving a review case does **not** mutate `knowledge_entries.metadata.verified`. Promotion into the content evidence gate must be a separate, explicit, audited operation that rechecks the current entry content hash and the reviewed source. Until that operation exists and is approved, the existing evidence gate remains authoritative and empirical claims remain blocked without `metadata.verified=true`.
 
-## Initial production triage
+## Initial production triage (read-only inventory, 2026-11-20)
 
-The current affected brands fall into distinct review cohorts:
-- GrowthBridge Virtual: published website service descriptions and a user-approved brand-direction record. These can support bounded brand/service descriptions only after their source snapshots and current website state are checked; they do not prove customer outcomes.
-- Ships & Shrugs: handbook-derived technical explanations with source URLs and attribution notes. Each source curriculum, exact claim, and license/attribution conditions must be checked before approval.
-- Third brand: 732 records with no source type, trust class, source ID, or source URL metadata. These require source recovery or rejection; entry IDs alone are not proof of provenance.
+The production review-case inventory contains 854 quarantined cases, with no verified knowledge entries, no approved review cases, and no promotion events at the time of inspection. The cohorts are:
 
-No record should be batch-approved based only on a URL being present, a generated attribution string, or a matching topic.
+- **GrowthBridge Virtual — 10 cases:** 8 published website-context cases, 1 user-approved brand-direction case, and 1 authenticated website-context snapshot. All 10 lack a source URL. The website-context records carry an untrusted-business-context trust label; the user-approved brand-direction record is not a substitute for a captured public source. These may support bounded brand/service descriptions only after source identity and current context are verified; they do not prove customer outcomes.
+- **Ships & Shrugs — 112 technical knowledge chunks:** 60 HLD handbook entries, 31 AI Engineering Handbook entries, and 21 DSA handbook entries. Source URLs are present across the three handbook domains, but all 112 review cases lack an approved trust class and signed source snapshot. Metadata includes attribution/license statements, including CC BY-SA 4.0 references, but those statements are not independent proof of the source's ownership, exact chapter, or applicable license. Verify each domain, exact source material, and adaptation/attribution conditions before configuring an exact-host trust allowlist.
+- **New Nature in Christ Community — 732 scripture reflections:** the entry metadata contains `source=spurgeon_morneve`, scripture reference, date, theme, and time-of-day fields. It does not contain a canonical source URL, stable source ID, trust class, or signed source snapshot. Recover the original corpus/edition and rights information before assigning source provenance; a scripture reference alone does not establish the source of the devotional commentary.
+
+No record should be batch-approved based only on a URL being present, a generated attribution string, a source label, or a matching topic. These counts describe the review-case snapshot at the time of inspection and must be refreshed before any operational decision.
 
 
 ## API lifecycle
