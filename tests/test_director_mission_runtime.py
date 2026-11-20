@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from services.director.orchestration.state_machine import MissionTransitionRejected
+from services.director.orchestration.swarm_planning import SwarmCandidate, SwarmLimits
 
 from services.director.orchestration import (
     AdapterRegistry,
@@ -1719,3 +1720,55 @@ async def test_runtime_persists_director_spawned_agent_and_rejects_unregistered_
     assert [event["event_type"] for event in store.events] == [
         "agent.spawned", "agent.status.changed", "agent.status.changed"
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_plans_and_adds_dynamic_swarm_waves_with_remaining_capacity():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Research contribution."))
+    registry.register(FakeNativeAdapter("meta_engine", "Independent review.", capability="review.analyze"))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    first_plan, first_snapshot = await runtime.spawn_swarm(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_ids=[store.task_id],
+        complexity_score=0.2,
+        candidates=[
+            SwarmCandidate(
+                agent_id="agent-research",
+                task_id=store.task_id,
+                engine_id="content_intelligence",
+                capability="research.analyze",
+                role="Research specialist",
+            ),
+        ],
+        idempotency_prefix="swarm-wave-1",
+        correlation_id="corr-dynamic-swarm",
+        limits=SwarmLimits(max_agents=4, max_parallel_agents=4),
+    )
+    assert [item.agent_id for item in first_plan.selected] == ["agent-research"]
+    assert first_snapshot.state_snapshot["agents"]["agent-research"]["status"] == "spawned"
+
+    second_plan, second_snapshot = await runtime.spawn_swarm(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_ids=[store.task_id],
+        complexity_score=0.5,
+        candidates=[
+            SwarmCandidate(
+                agent_id="agent-review",
+                task_id=store.task_id,
+                engine_id="meta_engine",
+                capability="review.analyze",
+                role="Independent reviewer",
+            ),
+        ],
+        idempotency_prefix="swarm-wave-2",
+        correlation_id="corr-dynamic-swarm",
+        limits=SwarmLimits(max_agents=4, max_parallel_agents=4),
+    )
+    assert [item.agent_id for item in second_plan.selected] == ["agent-review"]
+    assert set(second_snapshot.state_snapshot["agents"]) == {"agent-research", "agent-review"}
+    assert [event["event_type"] for event in store.events] == ["agent.spawned", "agent.spawned"]
