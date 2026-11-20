@@ -309,3 +309,16 @@ empirical/quantitative claims merely because a lightweight check ran.
 To temporarily restore the former case-management workflow for controlled
 diagnostics, set `KDO_KB_EVIDENCE_REVIEW_MODE=full`. Do not enable it in normal
 operation without a deliberate decision.
+
+
+## Authenticated admin launch for lightweight checks
+
+A human workspace administrator can launch the historical lightweight inventory
+through `POST /api/v1/admin/knowledge/lightweight-review`. The endpoint uses
+the authenticated request context to scope the scan to that administrator's
+workspace; it does not accept a caller-supplied workspace ID. It runs the
+deterministic checker in read-only mode, returns the count summary, rejects
+overlapping runs in the same process, and never writes metadata, creates review
+cases, approves entries, or promotes evidence. It requires no Render Shell,
+cron service, or additional paid worker. The existing script remains available
+for controlled backend execution.
