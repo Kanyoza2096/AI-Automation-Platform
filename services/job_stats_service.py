@@ -492,6 +492,15 @@ class JobStatsService:
                 "execution_mode": "human_review",
                 "requires": ["claim_to_source_mapping", "semantic_validation", "voice_and_policy_validation"],
             },
+            "gateway_caller_policy": {
+                "proposal": "gateway_caller_policy_alignment",
+                "execution_mode": "human_review",
+                "requires": [
+                    "caller_matches_approved_llm_policy",
+                    "policy_configuration_verified",
+                    "semantic_review_gate_preserved",
+                ],
+            },
             "provider_availability": {
                 "proposal": "transient_provider_retry_review",
                 "execution_mode": "retry_candidate" if maximum > 0 and attempts < maximum else "human_review",
