@@ -671,16 +671,8 @@ class PublisherStep(Step):
             raise RuntimeError("Publisher circuit breaker OPEN — too many recent failures")
         
         caption = context.get("caption", "")
-        semantic_review = context.get("semantic_review")
-        if (
-            not isinstance(semantic_review, dict)
-            or semantic_review.get("approved") is not True
-            or semantic_review.get("status") != "approved"
-        ):
-            raise AIValidationError(
-                message="Publisher blocked because independent semantic approval is missing or invalid",
-                context={"brand_id": getattr(self._brand, "id", None)},
-            )
+        # Semantic/evidence review is disabled by operator decision.
+        # Preserve media, authorization, and canonical publish controls below.
 
         media_artifact: MediaArtifact = context.get("media_artifact")
         image_bytes: Optional[bytes] = None
@@ -938,3 +930,4 @@ __all__ = [
     "PublisherStep",
     "AnalyticsStep",
 ]
+
