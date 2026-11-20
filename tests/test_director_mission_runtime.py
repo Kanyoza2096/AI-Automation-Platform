@@ -1772,3 +1772,58 @@ async def test_runtime_plans_and_adds_dynamic_swarm_waves_with_remaining_capacit
     assert [item.agent_id for item in second_plan.selected] == ["agent-review"]
     assert set(second_snapshot.state_snapshot["agents"]) == {"agent-research", "agent-review"}
     assert [event["event_type"] for event in store.events] == ["agent.spawned", "agent.spawned"]
+
+@pytest.mark.asyncio
+async def test_registered_swarm_agent_invokes_native_adapter_and_persists_advisory_contribution():
+    store = MemoryMissionStore()
+    registry = AdapterRegistry()
+    researcher = FakeNativeAdapter(
+        "content_intelligence",
+        "Three evidence-backed findings were collected.",
+    )
+    registry.register(researcher)
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
+
+    await runtime.spawn_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        task_id=store.task_id,
+        agent_id="swarm-researcher-1",
+        engine_id="content_intelligence",
+        capability="research.analyze",
+        role="Evidence researcher",
+        estimated_tokens=500,
+        idempotency_key="swarm-agent-spawn-1",
+        correlation_id="corr-swarm-agent-1",
+    )
+
+    contribution = await runtime.execute_agent(
+        mission_id=store.mission_id,
+        workspace_id=store.workspace_id,
+        agent_id="swarm-researcher-1",
+        objective="Research the admitted mission topic.",
+        inputs={"topic": "Malawi SME digital adoption"},
+        idempotency_prefix="swarm-agent-run-1",
+        correlation_id="corr-swarm-agent-1",
+    )
+
+    agent = store.row["state_snapshot"]["agents"]["swarm-researcher-1"]
+    assert len(researcher.calls) == 1
+    assert researcher.calls[0].workspace_id == store.workspace_id
+    assert researcher.calls[0].task_id == store.task_id
+    assert contribution.authority == "none"
+    assert agent["status"] == "completed"
+    assert agent["contribution"]["status"] == "completed"
+    assert agent["contribution"]["summary"] == contribution.summary
+    assert agent["contribution"]["evidence"][0]["ref"] == "source:content_intelligence"
+    assert agent["contribution"]["usage_tokens"] == 125
+    assert agent["contribution"]["authority"] == "none"
+    assert agent["contribution"]["side_effect_class"] == "advisory_only"
+    assert store.row["state_snapshot"]["budget"]["tokens_used"] == 125
+    assert store.task["status"] == "approval_required"
+    assert [event["event_type"] for event in store.events] == [
+        "agent.spawned",
+        "agent.status.changed",
+        "agent.contribution.recorded",
+        "agent.status.changed",
+    ]
