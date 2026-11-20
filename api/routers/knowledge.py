@@ -51,6 +51,9 @@ async def _periodic_knowledge_review_sweep() -> None:
 
 async def start_knowledge_review_sweep_scheduler() -> None:
     global _review_sweep_scheduler_task
+    if os.getenv("KDO_KB_EVIDENCE_REVIEW_MODE", "lightweight").strip().lower() != "full":
+        _review_sweep_logger.info("knowledge_review_scheduler_disabled_in_lightweight_mode")
+        return
     if not os.getenv("KDO_KB_SOURCE_SNAPSHOT_HMAC_SECRET") or not os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS"):
         _review_sweep_logger.info("knowledge_review_scheduler_not_configured")
         return
@@ -80,6 +83,7 @@ async def stop_knowledge_review_sweep_scheduler() -> None:
 async def trigger_autonomous_knowledge_review_sweep(request: Request):
     """Internal scheduler hook; the sweep runs in a thread using backend credentials."""
     global _review_sweep_task
+    _require_full_evidence_review_mode()
     expected = os.getenv("KDO_KB_REVIEW_SWEEP_TRIGGER_TOKEN", "")
     supplied = request.headers.get("x-kdo-review-sweep-token", "")
     if not expected or not supplied or not hmac.compare_digest(expected, supplied):
@@ -153,29 +157,19 @@ async def create_knowledge_entry(
             raise HTTPException(status_code=503, detail="Knowledge index unavailable") from e
 
         # add_document is async — await directly.
+        from services.lightweight_knowledge_checks import check_knowledge_entry
+        metadata = dict(body.metadata) if isinstance(body.metadata, dict) else {}
+        lightweight_check = check_knowledge_entry(body.content, metadata)
+        metadata["kdo_lightweight_review"] = lightweight_check
         entry = await kb.add_document(
             content=body.content,
             doc_type=body.doc_type,
-            metadata=body.metadata,
+            metadata=metadata,
         )
-        review_case = None
-        try:
-            review_client = _evidence_review_client()
-            if review_client is not None:
-                review_case = await _autonomously_review_new_entry(
-                    entry=entry, brand_id=brand_id,
-                    claim_scope="general_knowledge_support",
-                    client=review_client, knowledge_repo=kb_repo,
-                )
-        except Exception as review_exc:
-            logger.error("knowledge_autonomous_review_unavailable", extra={
-                "brand_id": brand_id, "knowledge_entry_id": entry.id,
-                "error_class": type(review_exc).__name__,
-            })
         return _ok({
             "knowledge_entry": entry.model_dump(mode="json"),
-            "review_case": _evidence_review_payload(review_case) if review_case else None,
-            "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+            "lightweight_check": lightweight_check,
+            "review_status": "lightweight_checked",
         }, 201)
     except HTTPException:
         raise
@@ -362,28 +356,20 @@ async def bulk_create_knowledge(
                 continue
             try:
                 # add_document is async — await directly, do NOT _async_wrap.
+                from services.lightweight_knowledge_checks import check_knowledge_entry
+                item_metadata = item.get("metadata", {})
+                item_metadata = dict(item_metadata) if isinstance(item_metadata, dict) else {}
+                lightweight_check = check_knowledge_entry(content, item_metadata)
+                item_metadata["kdo_lightweight_review"] = lightweight_check
                 entry = await kb.add_document(
                     content=content,
                     doc_type=item.get("doc_type", "text"),
-                    metadata=item.get("metadata", {}),
+                    metadata=item_metadata,
                 )
-                review_case = None
-                try:
-                    review_client = _evidence_review_client()
-                    if review_client is not None:
-                        review_case = await _autonomously_review_new_entry(
-                            entry=entry, brand_id=body.brand_id,
-                            claim_scope="general_knowledge_support",
-                            client=review_client, knowledge_repo=kb_repo,
-                        )
-                except Exception as review_exc:
-                    logger.error("bulk_knowledge_autonomous_review_unavailable", extra={
-                        "brand_id": body.brand_id, "knowledge_entry_id": entry.id,
-                        "error_class": type(review_exc).__name__,
-                    })
                 results.append({
                     "id": entry.id, "status": "created",
-                    "review_status": review_case.get("review_status") if review_case else "review_unavailable",
+                    "review_status": "lightweight_checked",
+                    "lightweight_check": lightweight_check,
                 })
             except Exception as e:
                 logger.warning(
@@ -518,6 +504,15 @@ class EvidenceReviewSubmission(_ReviewBaseModel):
 class TrustedSourceIngestion(_ReviewBaseModel):
     source_url: str = _ReviewField(..., min_length=10, max_length=2048)
     claim_scope: str = _ReviewField(default="empirical_claim_support", min_length=3, max_length=500)
+
+
+def _require_full_evidence_review_mode() -> None:
+    """Keep the legacy case-management workflow dormant unless explicitly opted in."""
+    if os.getenv("KDO_KB_EVIDENCE_REVIEW_MODE", "lightweight").strip().lower() != "full":
+        raise HTTPException(
+            status_code=410,
+            detail="The full evidence-review workflow is disabled; lightweight knowledge checks are active.",
+        )
 
 
 def _trusted_source_class_for_url(source_url: str) -> str:
@@ -762,6 +757,7 @@ async def ingest_trusted_knowledge_source(
     _auth: bool = Depends(require_auth),
 ):
     """Fetch an allowlisted public source server-side, attest its exact text, then review it."""
+    _require_full_evidence_review_mode()
     try:
         workspace_id = await require_workspace_ownership(
             "brand", brand_id, request, request.app.state.container
@@ -878,6 +874,7 @@ async def submit_knowledge_evidence_review(
     _auth: bool = Depends(require_auth),
 ):
     """Submit one exact knowledge-entry version for reusable source review."""
+    _require_full_evidence_review_mode()
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
         actor, _identity = _evidence_review_actor(request, require_human=False)
@@ -1079,6 +1076,7 @@ async def decide_knowledge_evidence_review(
     _auth: bool = Depends(require_auth),
 ):
     """Human exception override for one immutable content version."""
+    _require_full_evidence_review_mode()
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
         actor, _identity = _evidence_review_actor(request, require_human=True)
@@ -1161,6 +1159,7 @@ async def promote_approved_knowledge_evidence(
     _auth: bool = Depends(require_auth),
 ):
     """Promote one approved source through a transactional, audited DB function."""
+    _require_full_evidence_review_mode()
     try:
         await require_workspace_ownership("brand", brand_id, request, request.app.state.container)
         actor, _identity = _evidence_review_actor(request, require_human=True)
