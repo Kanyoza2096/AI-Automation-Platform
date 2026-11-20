@@ -178,3 +178,16 @@ Regression tests were authored for unsupported adapters, exact-identity authorit
 - Native adapter exceptions/timeouts no longer emit `task.failed`. The durable task remains `executing`, preserving the uncertain attempt for reconciliation instead of implying a safe failure.
 - Regression tests were added for operator-only review, forbidden reconsideration, unchanged task authority, and reassignment rejection. Tests are authored but unexecuted because hosted CI quota is exhausted and no local project runtime is available.
 - No production schema/data change, migration, deployment, merge, runtime-flag activation, or CI retry was performed.
+
+
+
+## Phase D follow-up — attempt reconciliation is now exposed and journalled (2026-11-20)
+
+- Added the operator-scoped POST `/missions/{mission_id}/orchestration/tasks/{task_id}/reconcile` endpoint. It requires the authenticated operator role, the trusted workspace context, and a task belonging to the requested workspace mission.
+- The endpoint performs only the exact-attempt adapter status lookup. It never calls the execution adapter and never replays the task.
+- The observed status is appended as `task.reconciliation.observed` by the trusted recovery reconciler identity. The event is bound to the attempt ID, assigned engine, and capability, and carries the authoritative flag plus any evidence reference and bounded completion summary.
+- An `unknown` response may carry diagnostic evidence, but it cannot claim authority. Every non-unknown response must be authoritative and evidence-bound. A completed reconciliation must include a bounded summary and completion timestamp.
+- Reconciliation observations do not change canonical task status, assignment, approval provenance, or execution authority. This remains true for blocked tasks, which are now eligible for exact-attempt inspection.
+- Runtime task-reassignment synchronization now matches the state machine: only `approval_required` and `approved` tasks are eligible. Failed/blocked tasks remain held.
+- Regression coverage was added for the API operator boundary, blocked-attempt lookup/journaling, reconciler identity, evidence requirements, and unchanged task status. These tests are authored but unexecuted because hosted CI quota is exhausted and no local project runtime is available.
+- No production schema/data change, migration, deployment, merge, runtime-flag activation, or CI retry was performed.
