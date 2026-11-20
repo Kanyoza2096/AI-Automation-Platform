@@ -74,47 +74,26 @@ Disposition: the production site origin and eight service slugs are now recovere
 
 ## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
 
-All 732 production rows tagged `source=spurgeon_morneve` were compared with all 732 selected entries in the OpenChristianData source JSON. Matching by production date and morning/evening period maps every row to one source entry (732/732). This establishes source identity, not rights clearance or approval.
+A fresh read-only comparison joined all 732 production entries to the 732-entry OpenChristianData source collection using the production date and morning/evening key. All 732 date/time keys resolve to a unique source record. This is a source-record mapping, not a rights approval or evidence promotion.
 
-The content comparison has two deliberately distinct normalization levels:
-- **Stricter normalized comparison:** 671/732 full-content matches.
-- **Known typographic variants:** 43 additional rows differ by a single hyphenation character; two further rows reconcile only under whitespace/format normalization. These are not approved edits.
-- **Broad whitespace/hyphen-insensitive comparison:** 716/732 full-content matches. This looser comparison is useful for locating likely copies but must not be used by itself as an approval criterion.
-- **11 rows** contain an appended next-month calendar list after otherwise matching devotional text.
-- **7 rows** remain in the manual content/reference review queue. The list below preserves the earlier row-level exception inventory; several involve additional/repeated scripture references or verse-heading/poem/line-break differences.
-- A separate prefix check found 727/732 rows begin with the expected date/period source text under broad normalization. This includes the 11 appended-tail cases; it does not mean those chunks are clean.
+The comparison normalizes Unicode compatibility forms, case, whitespace, and hyphen characters. Eleven production records contain an additional next-month calendar list after the devotional; the list was excluded only for the text-comparison diagnostic and remains an explicit content anomaly. With that appended list excluded, bounded Levenshtein comparison gives:
+- 311 exact normalized text matches.
+- 282 entries at edit distance 1.
+- 95 entries at edit distance 2.
+- 29 entries at edit distance 3.
+- 15 entries at edit distance 4 or greater, requiring manual review.
 
-Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`. A stricter combined test found 675/732 rows with both a broad full-content match and matching date, period, and scripture metadata; the difference reflects content exceptions and metadata exceptions being separate dimensions, not contradictory cohort sizes.
+Edit-distance proximity is diagnostic only. It does not prove that the text is identical, that a difference is harmless, or that a record is eligible for approval. Preserve the source and production versions and inspect differences before any correction or promotion.
 
-Manual-review inventory:
-- Appended calendar text (11): `kb-0d0673d5d0ad`, `kb-269ebb5ce789`, `kb-31132fdd1e56`, `kb-46c246c34e1e`, `kb-571e158131ab`, `kb-59d921bdf421`, `kb-84de63479eac`, `kb-90c7c1f9f28f`, `kb-af8e80dd161f`, `kb-dace93cf124a`, `kb-fa1b79587228`.
-- Other content/reference review (7): `kb-36e7f6fb7cf8`, `kb-78c20f498711`, `kb-911c707a0001`, `kb-9a7e0c28bae8`, `kb-9e8a2a6710ed`, `kb-b95564907ae8`, `kb-bb22c9c5a1af`.
-- The 43 single-hyphen differences and two whitespace/format-only variants are typographic candidates, not approved edits. Retain source comparison evidence and do not rewrite production text without a governed correction.
+The 11 records with appended next-month calendar lists are:
+`kb-0d0673d5d0ad`, `kb-269ebb5ce789`, `kb-31132fdd1e56`, `kb-46c246c34e1e`, `kb-571e158131ab`, `kb-59d921bdf421`, `kb-84de63479eac`, `kb-90c7c1f9f28f`, `kb-af8e80dd161f`, `kb-dace93cf124a`, `kb-fa1b79587228`.
 
-The source release's rights notice explicitly limits its public-domain assessment to the **United States**. It does not establish worldwide clearance. KDO's deployment and user geography may include jurisdictions outside the United States, so this evidence alone is insufficient to approve public redistribution in Malawi or other countries. Obtain jurisdiction-specific rights review or separately documented applicable permission before publication. Continue to exclude CCEL's electronic files, formatting, and modern material; retain the required “sourced via CCEL.org” credit.
+The 15 higher-distance cases requiring manual review are:
+`kb-0e3df22f4aa4`, `kb-0e43fd528a12`, `kb-1532059e2915`, `kb-36e7f6fb7cf8`, `kb-444edf70d9a4`, `kb-78c20f498711`, `kb-911c707a0001`, `kb-9a7e0c28bae8`, `kb-a25cb8ba232b`, `kb-a2914a80e058`, `kb-b95564907ae8`, `kb-bb22c9c5a1af`, `kb-d7739e59f9cb`, `kb-f21efcad03a8`, `kb-f6788623d063`.
 
-No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. No bulk approval was performed.
+Scripture metadata matches the source reference on 690/732 rows. The 42 discrepancies comprise six missing production references, 35 abbreviated `Solomon` references where the source says `Song of Solomon`, and one conflicting reference: production `1 Corinthians 1:2` versus source `Jude 1` (`kb-b95564907ae8`). Do not auto-correct the conflicting reference. The six missing references also require source-backed review before updating metadata.
 
-## External provenance research (read-only, 2026-11-20)
-## Spurgeon production-to-source reconciliation (read-only, 2026-11-20)
-
-The 732 production entries were compared against all 732 records in the identified OpenChristianData source JSON. Matching by production date and time-of-day maps every production row to one unique source entry (732/732). This is a row-level identity reconciliation, not a rights approval or evidence promotion.
-
-Content comparison after Unicode normalization, case folding, whitespace normalization, and the known source/production hyphenation normalization yielded:
-- 671/732 exact content matches.
-- 43/732 differ only by one hyphenation character.
-- 11/732 contain an appended next-month calendar list after otherwise matching devotional text.
-- 7/732 require manual content/reference review. These are primarily citation/formatting discrepancies: two production rows contain additional scripture references absent from the source, one row adds/repeats a verse heading, and several rows need poem/line-break or hyphenation alignment. The November 3 morning row needs manual alignment of the opening quotation and closing poem, but should not be labelled a substantive text mismatch without further review.
-- Scripture metadata matches the source reference on 690/732 rows. The 42 mismatches comprise six missing scripture values and 36 abbreviated `Solomon` references where the source uses `Song of Solomon`.
-
-The manual-review queue is explicitly enumerated:
-- Appended calendar text (11): `kb-0d0673d5d0ad`, `kb-269ebb5ce789`, `kb-31132fdd1e56`, `kb-46c246c34e1e`, `kb-571e158131ab`, `kb-59d921bdf421`, `kb-84de63479eac`, `kb-90c7c1f9f28f`, `kb-af8e80dd161f`, `kb-dace93cf124a`, `kb-fa1b79587228`.
-- Other content/reference review (7): `kb-36e7f6fb7cf8`, `kb-78c20f498711`, `kb-911c707a0001`, `kb-9a7e0c28bae8`, `kb-9e8a2a6710ed`, `kb-b95564907ae8`, `kb-bb22c9c5a1af`.
-- The 43 single-hyphen differences are typographic/hyphenation variants, not approved edits; retain source comparison evidence and do not rewrite production text without a governed correction.
-The source record identity is therefore established across the cohort, but the content anomalies must be reviewed and corrected or explicitly dispositioned before promotion. The 11 calendar appendices and 7 manual-review cases must not be silently normalized away. The six missing references and 36 Song-of-Solomon aliases can be reconciled deterministically against the source record, subject to normal review controls.
-
-No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. No bulk approval was performed. The comparison used the public source collection and a read-only production export.
-
+All 732 review cases remain quarantined in production with no source URL, approved trust class, or signed snapshot at the time of inspection. No production rows, metadata, review cases, trust classes, source URLs, or promotion states were changed. The comparison was read-only.
 - Spurgeon source lead: [source note](https://github.com/OpenChristianData/open-christian-data/blob/main/sources/devotionals/spurgeons-morning-evening/README.source.md), [selected-data rights and credit notice](https://github.com/OpenChristianData/open-christian-data/blob/main/data/devotionals/spurgeons-morning-evening/README.md), and [source manifest](https://github.com/OpenChristianData/open-christian-data/blob/main/sources/devotionals/spurgeons-morning-evening/lib030.source-manifest-current-closure-20261003-v1.json). The source note identifies the exact CCEL ThML witness and distinguishes historical devotional text from the electronic file/formatting. The selected public scope is qualified to the United States; no worldwide rights conclusion is made. This does not yet prove that every production row is an exact match to that selected scope.
 - Handbook publisher/license lead: [engineering-handbook repository](https://github.com/handbook-academy/engineering-handbook), [repository license](https://github.com/handbook-academy/engineering-handbook/blob/main/LICENSE), [contribution guide](https://github.com/handbook-academy/engineering-handbook/blob/main/CONTRIBUTING.md), and [citation metadata](https://github.com/handbook-academy/engineering-handbook/blob/main/CITATION.cff). The repository documents all three handbook families and CC BY-SA 4.0, but each imported chunk still needs source-chapter mapping and a check for third-party material and required attribution/ShareAlike terms.
 - No production database rows were changed, approved, or promoted during this research. No trusted-domain allowlist or secrets were changed.
