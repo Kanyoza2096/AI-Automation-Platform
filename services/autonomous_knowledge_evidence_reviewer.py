@@ -51,12 +51,28 @@ def resolve_trusted_source_class(source_url: str, registry_json: str | None = No
     raw = os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS", "{}") if registry_json is None else registry_json
     try:
         registry = json.loads(raw)
+        # Additive registry lets operators onboard a bounded source cohort
+        # without replacing the existing trusted-domain configuration.
+        additional_raw = os.getenv("KDO_KB_TRUSTED_SOURCE_DOMAINS_ADDITIONAL", "{}")
+        additional = json.loads(additional_raw)
     except (TypeError, ValueError) as exc:
         raise ValueError("Trusted source registry is invalid") from exc
-    if not isinstance(registry, dict):
+    if not isinstance(registry, dict) or not isinstance(additional, dict):
         raise ValueError("Trusted source registry is invalid")
+    normalized_registry = {
+        str(key).lower().rstrip("."): str(value).strip().lower()
+        for key, value in registry.items()
+    }
+    normalized_additional = {
+        str(key).lower().rstrip("."): str(value).strip().lower()
+        for key, value in additional.items()
+    }
+    for configured_host, configured_class in normalized_additional.items():
+        if configured_host in normalized_registry and normalized_registry[configured_host] != configured_class:
+            raise ValueError("Trusted source registries contain a conflicting host classification")
+    normalized_registry.update(normalized_additional)
     host = (urlparse(source_url).hostname or "").lower().rstrip(".")
-    trust_class = str(registry.get(host) or "").strip().lower()
+    trust_class = str(normalized_registry.get(host) or "").strip().lower()
     allowed = {"government", "regulatory", "peer_reviewed", "academic", "official_documentation", "publisher_primary"}
     if trust_class not in allowed:
         raise ValueError("Source host is not in the trusted-source registry")
