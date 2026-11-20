@@ -20,7 +20,7 @@ import hashlib
 import json
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 # FastAPI's dependency injection recognizes starlette.requests.Request.
 # Importing it at module scope (not inside create_app) ensures every
