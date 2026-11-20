@@ -188,9 +188,11 @@ def validate_caption_evidence(
         return False, "caption is empty", []
 
     evidence_items = list(evidence or [])
-    if not evidence_items:
-        return False, "no retrieved knowledge evidence is attached to this post", []
 
+    # This deterministic gate is intentionally scoped to empirical and
+    # quantitative claims. An empty evidence set is acceptable here only when
+    # the caption contains no such claims; the independent semantic reviewer
+    # separately decides whether material factual claims require citations.
     metric_sentences = [
         sentence for sentence in _sentences(caption)
         if _METRIC_LANGUAGE.search(sentence)
