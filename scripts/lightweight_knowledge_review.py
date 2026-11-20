@@ -71,11 +71,15 @@ def run(*, apply: bool = False, batch_size: int = 100, maximum: int = 0, workspa
                 )
                 if row.get("brand_id") is not None:
                     query = query.eq("brand_id", row["brand_id"])
-                saved = query.select("id").execute()
-                if saved.data:
-                    write_confirmed += 1
-                else:
+                try:
+                    saved = query.select("id").execute()
+                    if saved.data:
+                        write_confirmed += 1
+                    else:
+                        write_failed += 1
+                except Exception:
                     write_failed += 1
+                    logger.exception("lightweight_review_report_write_failed", extra={"entry_id": row.get("id")})
             scanned += 1
         offset += len(rows)
         if len(rows) < take or (maximum and scanned >= maximum):
