@@ -11,6 +11,7 @@ the human should approve before the command runs.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from core.unified_bus import UnifiedEventBus
@@ -85,7 +86,6 @@ class HealCommandConsumer:
 
             # Collapse repeated health alerts while an operator reviews the
             # existing governed transaction. This is a per-engine cooldown.
-            import time
             now = time.monotonic()
             last_dispatch = self._last_dispatch_at.get(engine, 0.0)
             if now - last_dispatch < self.HEAL_COMMAND_COOLDOWN_SECONDS:
