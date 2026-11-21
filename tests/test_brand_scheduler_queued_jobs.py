@@ -160,16 +160,25 @@ def test_global_publish_lock_released_before_optional_notifications():
     ]))
     scheduler._emit = Mock()
 
+    def assert_resources_released():
+        assert lock.release.call_count == 1
+        assert semaphore.release.call_count == 1
+
+    job_service = SimpleNamespace(
+        transition=Mock(return_value=job),
+        mark_published=Mock(side_effect=lambda *args, **kwargs: assert_resources_released()),
+    )
+    scheduler._job_service = job_service
+
     def assert_released(*args, **kwargs):
         payload = args[1] if len(args) > 1 else kwargs
         if payload.get("stage") == "Complete":
-            assert lock.release.call_count == 1
-            assert semaphore.release.call_count == 1
+            assert_resources_released()
 
     scheduler._emit_dashboard = Mock(side_effect=assert_released)
     scheduler._notify_webhooks = Mock(side_effect=assert_released)
     scheduler._metrics.record_publish_success = Mock()
 
-    assert scheduler._trigger_workflow(source="manual") is True
-    assert lock.release.call_count == 1
-    assert semaphore.release.call_count == 1
+    assert scheduler._trigger_workflow(source="manual", existing_job=job) is True
+    job_service.mark_published.assert_called_once()
+    assert_resources_released()
