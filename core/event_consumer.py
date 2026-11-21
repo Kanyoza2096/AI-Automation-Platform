@@ -353,12 +353,41 @@ class EventConsumer:
                 supabase_client = getattr(director.store, "supabase", None)
                 if supabase_client is None:
                     raise RuntimeError("platform_recovery_supabase_client_unavailable")
+
+                async def run_failed_job_sweep():
+                    from services.failed_job_sweep import sweep_failed_automation_jobs
+                    from services.job_service import JobService
+
+                    result = await sweep_failed_automation_jobs(
+                        job_service=JobService(supabase_client=supabase_client),
+                        batch_size=25,
+                    )
+                    logger.warning(
+                        "director_failed_job_sweep_result mission_id=%s requeued=%d archived=%d protected=%d",
+                        mission_id,
+                        int(result.get("requeued_count") or 0),
+                        int(result.get("archived_count") or 0),
+                        int(result.get("protected_count") or 0),
+                    )
+                    return result
+
                 registry = AdapterRegistry()
                 registry.register(AutomationJobDiagnosticsMissionAdapter(
                     job_stats_service=JobStatsService(supabase_client=supabase_client)
                 ))
                 runtime = MissionOrchestrationRuntime(store=runtime_store, adapters=registry)
                 current = await runtime.load_snapshot(mission_id=mission_id, workspace_id=None)
+                if current.status in {"completed", "partial", "failed", "cancelled"}:
+                    # Redelivery for an already-finalized cohort must still sweep
+                    # any newly failed jobs, but must not respawn agents into a
+                    # terminal mission (the state machine correctly rejects that).
+                    await run_failed_job_sweep()
+                    logger.info(
+                        "director_recovery_terminal_mission_sweep_only mission_id=%s status=%s",
+                        mission_id,
+                        current.status,
+                    )
+                    return admitted
                 existing_agents = dict(current.state_snapshot.get("agents") or {})
                 candidates = []
                 task_inputs = {}
@@ -462,22 +491,8 @@ class EventConsumer:
                         len(recovery_result.get("rejected") or []),
                     )
 
-                # Sweep the failed-job queue after the diagnostic pass. The RPC
-                # enforces the three-failure cutoff and protects uncertain publishes.
-                from services.failed_job_sweep import sweep_failed_automation_jobs
-                from services.job_service import JobService
-
-                sweep_result = await sweep_failed_automation_jobs(
-                    job_service=JobService(supabase_client=supabase_client),
-                    batch_size=25,
-                )
-                logger.warning(
-                    "director_failed_job_sweep_result mission_id=%s requeued=%d archived=%d protected=%d",
-                    mission_id,
-                    int(sweep_result.get("requeued_count") or 0),
-                    int(sweep_result.get("archived_count") or 0),
-                    int(sweep_result.get("protected_count") or 0),
-                )
+                # Sweep after read-only diagnosis and governed provider recovery.
+                await run_failed_job_sweep()
 
                 # Recovery diagnosis is advisory. Close the mission as
                 # partial once all specialists have finished; canonical tasks
