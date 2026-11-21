@@ -35,3 +35,63 @@ def test_event_consumer_remains_platform_admission_handler_not_job_executor():
     assert "publication_replay_allowed" in handler
     assert "retry_job(" not in handler
     assert "publish_job(" not in handler
+
+
+
+def test_event_consumer_accepts_supabase_jsonb_payload_dict():
+    from core.event_consumer import EventConsumer
+
+    consumer = EventConsumer()
+    received = []
+    processed = []
+    consumer._handle_director_job_recovery_request = (
+        lambda payload: received.append(payload) or True
+    )
+    consumer._mark_processed = lambda event_id: processed.append(event_id)
+
+    payload = {
+        "trigger": "automation_job_failure_threshold",
+        "recovery_mode": "bounded_advisory_sweep",
+        "automatic_retry": False,
+        "publication_replay_allowed": False,
+        "correlation_id": "job-recovery-jsonb-test",
+        "failed_jobs": 9,
+    }
+    consumer._process_event({
+        "id": "event-jsonb-test",
+        "event_name": "director.automation_job_recovery.requested",
+        "payload": payload,
+        "source_service": "job_stats_service",
+    })
+
+    assert received == [payload]
+    assert processed == ["event-jsonb-test"]
+
+
+def test_event_consumer_still_accepts_legacy_json_string_payload():
+    from core.event_consumer import EventConsumer
+    import json
+
+    consumer = EventConsumer()
+    received = []
+    consumer._handle_director_job_recovery_request = (
+        lambda payload: received.append(payload) or True
+    )
+    consumer._mark_processed = lambda _event_id: None
+
+    payload = {
+        "trigger": "automation_job_failure_threshold",
+        "recovery_mode": "bounded_advisory_sweep",
+        "automatic_retry": False,
+        "publication_replay_allowed": False,
+        "correlation_id": "job-recovery-string-test",
+        "failed_jobs": 9,
+    }
+    consumer._process_event({
+        "id": "event-string-test",
+        "event_name": "director.automation_job_recovery.requested",
+        "payload": json.dumps(payload),
+        "source_service": "job_stats_service",
+    })
+
+    assert received == [payload]
