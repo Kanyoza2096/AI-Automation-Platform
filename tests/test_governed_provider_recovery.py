@@ -1,6 +1,5 @@
-from types import SimpleNamespace
+import asyncio\nfrom types import SimpleNamespace
 
-import pytest
 
 from services import governed_provider_recovery as recovery
 
@@ -41,7 +40,7 @@ class FakeGateway:
 
 
 @pytest.mark.asyncio
-async def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
+def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
     monkeypatch.setattr(
         "ai.gateway.get_llm_gateway",
         lambda: FakeGateway({
@@ -53,7 +52,7 @@ async def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
     )
     service = FakeJobService()
 
-    result = await recovery.recover_provider_availability_jobs(
+    result = asyncio.run(recovery.recover_provider_availability_jobs(
         job_ids=["job-1"],
         recovery_key_prefix="event-1",
         job_service=service,
@@ -64,7 +63,7 @@ async def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkeypatch):
+def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkeypatch):
     monkeypatch.setattr(
         "ai.gateway.get_llm_gateway",
         lambda: FakeGateway({
@@ -96,7 +95,7 @@ async def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkey
 
 
 @pytest.mark.asyncio
-async def test_empty_candidate_set_does_not_probe_or_call_database(monkeypatch):
+def test_empty_candidate_set_does_not_probe_or_call_database(monkeypatch):
     def fail_if_called():
         raise AssertionError("provider probe must not run for an empty set")
 
