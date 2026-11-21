@@ -5,6 +5,8 @@ on:
     branches: [staging, feat/platform-recovery-mission-admission]
     paths:
       - "services/job_stats_service.py"
+      - "services/governed_provider_recovery.py"
+      - "tests/test_governed_provider_recovery.py"
       - "tests/test_job_stats_service_health_identity.py"
       - "tests/test_job_stats_failure_samples.py"
       - ".github/workflows/job-stats-failure-intelligence.yml"
@@ -27,6 +29,6 @@ jobs:
       - name: Install test dependency
         run: python -m pip install --disable-pip-version-check pytest
       - name: Compile JobStatsService
-        run: python -m py_compile services/job_stats_service.py
+        run: python -m py_compile services/job_stats_service.py services/governed_provider_recovery.py
       - name: Run JobStatsService regression tests
-        run: python -m pytest -q tests/test_job_stats_service_health_identity.py tests/test_job_stats_failure_samples.py
+        run: python -m pytest -q tests/test_job_stats_service_health_identity.py tests/test_job_stats_failure_samples.py tests/test_governed_provider_recovery.py
