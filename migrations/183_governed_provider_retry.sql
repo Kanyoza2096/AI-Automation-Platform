@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS automation_job_recovery_audit (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE automation_job_recovery_audit ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON automation_job_recovery_audit FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON automation_job_recovery_audit FROM PUBLIC, anon, authenticated;\nREVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON automation_job_recovery_audit FROM service_role;
 GRANT SELECT, INSERT ON automation_job_recovery_audit TO service_role;
 GRANT USAGE, SELECT ON SEQUENCE automation_job_recovery_audit_id_seq TO service_role;
 
