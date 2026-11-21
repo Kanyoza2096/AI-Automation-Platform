@@ -192,8 +192,8 @@ class EventConsumer:
         """Idempotently admit an advisory platform recovery mission.
 
         This stage never retries/quarantines jobs and never replays publication.
-        The admitted task records are approval_required; specialist execution is
-        a separate Director-controlled stage.
+        Admitted diagnosis tasks remain approval_required; Director may run only
+        their separate read-only advisory specialists, never task execution actions.
         """
         if (
             payload.get("trigger") != "automation_job_failure_threshold"
