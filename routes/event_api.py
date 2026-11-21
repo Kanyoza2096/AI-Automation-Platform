@@ -460,6 +460,45 @@ async def get_event_topology(_auth=Depends(_require_auth)):
     }
 
 
+class FailedJobSweepRequest(BaseModel):
+    """Bounded operator request for the governed failed-job sweep."""
+
+    batch_size: int = Field(default=25, ge=1, le=100)
+
+
+@router.post("/recovery/sweep")
+async def sweep_failed_jobs(
+    request: Request,
+    data: FailedJobSweepRequest,
+    _auth=Depends(_require_auth),
+    _species=Depends(require_platform_or_species_privileges),
+):
+    """Run the existing service-role sweep without waiting for the alert threshold.
+
+    The RPC remains the sole authority for eligibility, retry limits, archival,
+    and publication-evidence protection. This endpoint only exposes a
+    platform-authenticated operator entry point to that governed operation.
+    """
+    container = getattr(request.app.state, "container", None)
+    supabase_service = getattr(container, "supabase_service", None)
+    supabase_client = getattr(supabase_service, "client", None)
+    if supabase_client is None:
+        raise HTTPException(503, "Service-role database client unavailable")
+
+    try:
+        from services.failed_job_sweep import sweep_failed_automation_jobs
+        from services.job_service import JobService
+
+        result = await sweep_failed_automation_jobs(
+            job_service=JobService(supabase_client=supabase_client),
+            batch_size=data.batch_size,
+        )
+        return {"ok": True, "sweep": result}
+    except Exception:
+        logger.exception("Operator-triggered failed-job sweep failed")
+        raise HTTPException(503, "Failed-job sweep could not be completed")
+
+
 @router.post("/publish")
 async def publish_event(data: PublishEventRequest, _auth=Depends(_require_auth), _species=Depends(require_platform_or_species_privileges)):
     bus = await _get_event_bus()
