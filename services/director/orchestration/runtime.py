@@ -1337,6 +1337,60 @@ class MissionOrchestrationRuntime:
             payload={"disagreement_id": disagreement_id, "resolution": resolution[:4000]},
         )
 
+    async def finalize_advisory_mission(
+        self,
+        *,
+        mission_id: str,
+        workspace_id: str | None,
+        idempotency_key: str,
+        correlation_id: str,
+    ) -> MissionRuntimeSnapshot:
+        """Close a read-only advisory mission without approving its canonical tasks.
+
+        Recovery diagnosis tasks intentionally remain approval_required. Once
+        every specialist is terminal and collaboration has no outstanding
+        questions/disagreements, the Director records a partial outcome for
+        human review rather than falsely marking those tasks verified.
+        """
+        current = await self.load_snapshot(
+            mission_id=mission_id, workspace_id=workspace_id
+        )
+        if current.status in {"completed", "partial", "failed", "cancelled"}:
+            return current
+        if current.scope_type != "platform":
+            raise MissionTransitionRejected("advisory_finalization_requires_platform_scope")
+        state = dict(current.state_snapshot or {})
+        agents = dict(state.get("agents") or {})
+        if any(
+            (agent or {}).get("status") not in {"completed", "failed", "terminated"}
+            for agent in agents.values()
+        ):
+            raise MissionTransitionRejected("advisory_mission_has_active_agents")
+        if (
+            state.get("unresolved_disagreements")
+            or state.get("pending_handoffs")
+            or state.get("pending_questions")
+        ):
+            raise MissionTransitionRejected("advisory_mission_has_unresolved_collaboration")
+        task_status = dict(state.get("task_status") or {})
+        if any(task_status.get(task_id, "approval_required") != "approval_required"
+               for task_id in current.task_ids):
+            raise MissionTransitionRejected("advisory_mission_task_authority_changed")
+        return await self._commit(
+            current,
+            event_type="mission.partial",
+            idempotency_key=idempotency_key,
+            actor_type="director",
+            actor_id="director",
+            correlation_id=correlation_id,
+            payload={
+                "reason": (
+                    "Read-only diagnosis completed. Canonical recovery tasks remain "
+                    "approval_required for separate governed human review."
+                )
+            },
+        )
+
     async def complete_mission(
         self,
         *,
