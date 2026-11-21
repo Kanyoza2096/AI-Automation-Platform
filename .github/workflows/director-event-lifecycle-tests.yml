@@ -43,6 +43,7 @@ on:
       - "tests/test_director_native_engine_adapters.py"
       - "tests/test_director_mission_state_machine.py"
       - "tests/test_director_mission_runtime.py"
+      - "tests/test_director_advisory_mission_finalization.py"
       - "tests/test_director_mission_graph.py"
       - "tests/test_director_swarm_planning.py"
       - "tests/test_ai_provider_fabric.py"
@@ -159,6 +160,7 @@ jobs:
             tests/test_director_native_engine_adapters.py \
             tests/test_director_mission_state_machine.py \
             tests/test_director_mission_runtime.py \
+            tests/test_director_advisory_mission_finalization.py \
             tests/test_director_mission_graph.py \
             tests/test_director_swarm_planning.py \
             tests/test_event_consumer_platform_recovery.py \
