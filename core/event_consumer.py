@@ -344,8 +344,38 @@ class EventConsumer:
                         estimated_tokens=300,
                     ))
 
-                # At most four agents per wave, with a hard mission ceiling of eight.
+                # Execute any previously admitted-but-not-started specialist
+                # on event redelivery, without creating duplicate agent records.
                 prefix_digest = hashlib.sha256(correlation_id.encode("utf-8")).hexdigest()[:16]
+
+                async def execute_spawned(snapshot, wave_index):
+                    agents = dict(snapshot.state_snapshot.get("agents") or {})
+                    for agent_id, agent in agents.items():
+                        task_id = str((agent or {}).get("task_id") or "")
+                        if (agent or {}).get("status") != "spawned" or task_id not in task_inputs:
+                            continue
+                        try:
+                            await runtime.execute_agent(
+                                mission_id=mission_id,
+                                workspace_id=None,
+                                agent_id=agent_id,
+                                objective=(
+                                    "Refresh read-only evidence for this automation-job failure category. "
+                                    "Identify current failed job IDs, likely common causes, and safe next "
+                                    "checks. Do not retry, quarantine, publish, or replay any job."
+                                ),
+                                inputs=task_inputs[task_id],
+                                idempotency_prefix=f"jr-{prefix_digest}-{wave_index}-{agent_id[-8:]}",
+                                correlation_id=correlation_id,
+                                timeout_seconds=20,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "director_platform_recovery_specialist_failed mission_id=%s agent_id=%s",
+                                mission_id, agent_id,
+                            )
+
+                await execute_spawned(current, 0)
                 wave = 0
                 while candidates and wave < 2:
                     batch, candidates = candidates[:4], candidates[4:]
@@ -359,31 +389,7 @@ class EventConsumer:
                         correlation_id=correlation_id,
                     )
                     snapshot = await runtime.load_snapshot(mission_id=mission_id, workspace_id=None)
-                    agents = dict(snapshot.state_snapshot.get("agents") or {})
-                    for candidate in batch:
-                        agent = agents.get(candidate.agent_id) or {}
-                        if agent.get("status") != "spawned":
-                            continue
-                        try:
-                            await runtime.execute_agent(
-                                mission_id=mission_id,
-                                workspace_id=None,
-                                agent_id=candidate.agent_id,
-                                objective=(
-                                    "Refresh read-only evidence for this automation-job failure category. "
-                                    "Identify current failed job IDs, likely common causes, and safe next "
-                                    "checks. Do not retry, quarantine, publish, or replay any job."
-                                ),
-                                inputs=task_inputs[candidate.task_id],
-                                idempotency_prefix=f"jr-{prefix_digest}-{wave}-{candidate.agent_id[-8:]}",
-                                correlation_id=correlation_id,
-                                timeout_seconds=20,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "director_platform_recovery_specialist_failed mission_id=%s agent_id=%s",
-                                mission_id, candidate.agent_id,
-                            )
+                    await execute_spawned(snapshot, wave + 1)
                     wave += 1
 
                 logger.warning(
