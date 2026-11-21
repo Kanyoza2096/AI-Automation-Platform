@@ -23,7 +23,7 @@ def _bind_verified_gateway_human_context(request: Request, machine_ctx: RequestC
     """Bind a short-lived KCPG HMAC actor envelope to a service-authenticated request."""
     if not getattr(machine_ctx, "species_privileges", False):
         return None
-    names = {"timestamp": "x-kcpg-context-timestamp", "request_id": "x-kcpg-context-request-id", "workspace_id": "x-kcpg-context-workspace-id", "actor_id": "x-kcpg-context-actor-id", "actor_role": "x-kcpg-context-actor-role", "signature": "x-kcpg-context-signature"}
+    names = {"timestamp": "x-kcpg-context-timestamp", "request_id": "x-kcpg-context-request-id", "workspace_id": "x-kcpg-context-workspace-id", "actor_id": "x-kcpg-context-actor-id", "actor_role": "x-kcpg-context-actor-role", "platform_role": "x-kcpg-context-platform-role", "signature": "x-kcpg-context-signature"}
     values = {key: request.headers.get(header) for key, header in names.items()}
     present = [value is not None for value in values.values()]
     if not any(present):
@@ -50,11 +50,17 @@ def _bind_verified_gateway_human_context(request: Request, machine_ctx: RequestC
     selected_workspace = str(request.headers.get("X-Workspace-ID") or "").strip()
     if not selected_workspace or selected_workspace != workspace_id:
         raise HTTPException(status_code=403, detail="kcpg_context_workspace_mismatch")
-    canonical = "|".join((values["timestamp"], request_id, workspace_id, actor_id, actor_role))
+    platform_role = str(values["platform_role"] or "").strip().lower()
+    if platform_role not in {"", "super_admin"}:
+        raise HTTPException(status_code=403, detail="invalid_kcpg_context_platform_role")
+    # Accept the previous signed envelope only when the new platform-role header
+    # is absent; new Gateways always sign the explicit (possibly empty) claim.
+    canonical_parts = (values["timestamp"], request_id, workspace_id, actor_id, actor_role)
+    canonical = "|".join(canonical_parts + (platform_role,)) if values["platform_role"] is not None else "|".join(canonical_parts)
     expected = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, str(values["signature"])):
         raise HTTPException(status_code=403, detail="invalid_kcpg_context_signature")
-    ctx = RequestContext(principal_id=actor_id, workspace_id=workspace_id, role=actor_role, permissions=(), principal_type="human", auth_method="supabase_jwt", correlation_id=request_id or correlation, metadata={"authority_source": "verified_kcpg_hmac"})
+    ctx = RequestContext(principal_id=actor_id, workspace_id=workspace_id, role=actor_role, permissions=(), platform_role=platform_role, platform_permissions=(), principal_type="human", auth_method="supabase_jwt", correlation_id=request_id or correlation, metadata={"authority_source": "verified_kcpg_hmac", "platform_role_source": "verified_kcpg_hmac" if platform_role else None})
     request.state.request_context = ctx
     from core.request_context import set_request_context
     set_request_context(ctx)
