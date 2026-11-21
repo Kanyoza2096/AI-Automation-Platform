@@ -115,6 +115,41 @@ class MissionRuntimeStore:
         )
         return self._payload(response)
 
+    async def admit_platform_recovery_mission(
+        self,
+        *,
+        idempotency_key: str,
+        mission_id: str,
+        request_fingerprint: str,
+        correlation_id: str,
+        tasks: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Atomically admit a platform recovery mission without a workspace or plan.
+
+        Tasks are created as platform-scoped approval_required records. This
+        admission grants no authority to retry jobs or replay publication.
+        """
+        if not idempotency_key or not mission_id or not correlation_id:
+            raise ValueError("platform_recovery_admission_identity_required")
+        if len(request_fingerprint) != 64:
+            raise ValueError("request_fingerprint_must_be_sha256_hex")
+        if not 1 <= len(tasks) <= 12:
+            raise ValueError("platform_recovery_task_count_out_of_range")
+        params = {
+            "p_idempotency_key": idempotency_key,
+            "p_mission_id": mission_id,
+            "p_request_fingerprint": request_fingerprint,
+            "p_correlation_id": correlation_id,
+            "p_tasks": safe(list(tasks)),
+        }
+        response = await self._execute(
+            "stage platform Director recovery mission",
+            lambda: self._store.supabase.rpc(
+                "stage_director_platform_recovery_mission", params
+            ).execute(),
+        )
+        return self._payload(response)
+
     async def append_event(self, event: MissionEventWrite) -> dict[str, Any] | None:
         """Append one durable event and atomically advance mission version/state."""
         params = {

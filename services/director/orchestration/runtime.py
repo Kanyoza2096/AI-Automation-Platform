@@ -64,17 +64,19 @@ class MissionOrchestrationRuntime:
         self.default_timeout_seconds = float(default_timeout_seconds)
 
     async def load_snapshot(
-        self, *, mission_id: str, workspace_id: str
+        self, *, mission_id: str, workspace_id: str | None = None
     ) -> MissionRuntimeSnapshot:
+        """Load an explicitly scoped mission; None means platform, never a guessed workspace."""
+        scope_type = "workspace" if workspace_id is not None else "platform"
         row = await self.store.get_mission(
             mission_id=mission_id,
-            scope_type="workspace",
+            scope_type=scope_type,
             workspace_id=workspace_id,
         )
         if not row:
-            raise MissionRuntimeNotFound("workspace_mission_not_found")
-        if row.get("scope_type") != "workspace" or row.get("workspace_id") != workspace_id:
-            raise MissionRuntimeNotFound("workspace_mission_not_found")
+            raise MissionRuntimeNotFound(f"{scope_type}_mission_not_found")
+        if row.get("scope_type") != scope_type or row.get("workspace_id") != workspace_id:
+            raise MissionRuntimeNotFound(f"{scope_type}_mission_not_found")
         return MissionRuntimeSnapshot.from_row(row)
 
     async def _commit(
@@ -167,7 +169,7 @@ class MissionOrchestrationRuntime:
         self,
         *,
         mission_id: str,
-        workspace_id: str,
+        workspace_id: str | None,
         task_ids: Sequence[str],
         candidates: Sequence[SwarmCandidate],
         complexity_score: float,
@@ -273,7 +275,7 @@ class MissionOrchestrationRuntime:
         self,
         *,
         mission_id: str,
-        workspace_id: str,
+        workspace_id: str | None,
         task_id: str,
         agent_id: str,
         engine_id: str,
@@ -318,7 +320,7 @@ class MissionOrchestrationRuntime:
         self,
         *,
         mission_id: str,
-        workspace_id: str,
+        workspace_id: str | None,
         agent_id: str,
         status: str,
         idempotency_key: str,
@@ -352,7 +354,7 @@ class MissionOrchestrationRuntime:
         self,
         *,
         mission_id: str,
-        workspace_id: str,
+        workspace_id: str | None,
         agent_id: str,
         objective: str,
         inputs: Mapping[str, Any],
@@ -405,6 +407,7 @@ class MissionOrchestrationRuntime:
             task_id=task_id,
             mission_id=mission_id,
             workspace_id=workspace_id,
+            scope_type=current.scope_type,
             capability=capability,
             objective=str(objective or "").strip()[:4000],
             inputs=self._bounded_input_mapping(inputs),

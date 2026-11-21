@@ -330,7 +330,9 @@ async def test_meta_engine_adapter_uses_fresh_read_only_snapshot_and_marks_stale
 @pytest.mark.asyncio
 async def test_atomic_approval_failure_leaves_task_and_mission_journal_unchanged():
     store = MemoryMissionStore()
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
     await runtime.assign_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
@@ -499,7 +501,7 @@ async def test_native_engine_execution_requires_persisted_approval_and_records_f
         correlation_id="corr-runtime-1",
     )
     assert store.task["status"] == "verified"
-    assert [status for _, status in task_state_changes] == ["executing", "completed", "verified"]
+    assert [status for _, status in task_state_changes] == ["approved", "executing", "completed", "verified"]
     completed = await runtime.complete_mission(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
@@ -963,7 +965,9 @@ async def test_runtime_refuses_to_cancel_task_after_execution_has_started():
 @pytest.mark.asyncio
 async def test_atomic_approval_retry_rejects_durable_timestamp_provenance_mismatch():
     store = MemoryMissionStore()
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
     await runtime.assign_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
@@ -1020,7 +1024,9 @@ async def test_approval_retry_fails_closed_on_canonical_journal_disagreement(
     corruption, expected_error
 ):
     store = MemoryMissionStore()
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
     await runtime.assign_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
@@ -1080,7 +1086,9 @@ async def test_approval_retry_fails_closed_on_canonical_journal_disagreement(
 @pytest.mark.asyncio
 async def test_concurrent_approvals_for_one_task_commit_exactly_one_operator_decision():
     store = MemoryMissionStore()
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
     await runtime.assign_task(
         mission_id=store.mission_id,
         workspace_id=store.workspace_id,
@@ -1385,7 +1393,9 @@ async def test_runtime_recovery_assessment_is_read_only_and_never_dispatches():
     before_task = copy.deepcopy(store.task)
     before_row = copy.deepcopy(store.row)
     before_events = copy.deepcopy(store.events)
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
 
     result = await runtime.assess_task_recovery(
         mission_id=store.mission_id,
@@ -1576,7 +1586,9 @@ async def test_operator_recovery_review_is_audited_and_does_not_change_task_auth
             "capability": "research.analyze",
         },
     })
-    runtime = MissionOrchestrationRuntime(store=store, adapters=AdapterRegistry())
+    registry = AdapterRegistry()
+    registry.register(FakeNativeAdapter("content_intelligence", "Test adapter result."))
+    runtime = MissionOrchestrationRuntime(store=store, adapters=registry)
     before_task = copy.deepcopy(store.task)
     snapshot = await runtime.review_task_recovery(
         mission_id=store.mission_id, workspace_id=store.workspace_id, task_id=store.task_id,

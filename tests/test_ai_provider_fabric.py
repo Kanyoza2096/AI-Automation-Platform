@@ -785,6 +785,7 @@ def test_director_mission_state_machine_requires_governed_approval_and_verificat
     snapshot = approved.next_snapshot
     started = machine.prepare(snapshot, command(
         "task.started", actor_type="director", actor_id="director", key="start-1",
+        payload={"attempt_id": "attempt-1", "engine_id": "content_intelligence", "capability": "research.analyze"},
     ))
     snapshot = started.next_snapshot
     completed = machine.prepare(snapshot, command(
