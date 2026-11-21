@@ -38,7 +38,7 @@ DECLARE
     v_has_generation BOOLEAN;
     v_has_publish BOOLEAN;
 BEGIN
-    IF auth.role() <> 'service_role' THEN
+    IF COALESCE(auth.jwt() ->> 'role', '') <> 'service_role' THEN
         RAISE EXCEPTION 'service_role_required' USING ERRCODE = '42501';
     END IF;
     IF COALESCE(BTRIM(p_job_id), '') = ''
