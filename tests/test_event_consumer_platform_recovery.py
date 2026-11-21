@@ -50,11 +50,32 @@ def _patch_recovery_dependencies(monkeypatch):
     import services.director.orchestration.store as store_module
     import services.job_stats_service as stats_module
 
-    state = {"admissions": [], "spawn_calls": [], "execution_calls": [], "finalizations": []}
+    state = {"admissions": [], "spawn_calls": [], "execution_calls": [], "finalizations": [], "sweeps": []}
     agents_by_mission = {}
 
+    class FakeRPC:
+        def __init__(self, name, params):
+            self.name = name
+            self.params = params
+
+        def execute(self):
+            return SimpleNamespace(data=[{
+                "status": "completed",
+                "requeued": [],
+                "archived_and_removed": [],
+                "protected_for_publish_reconciliation": [],
+                "requeued_count": 0,
+                "archived_count": 0,
+                "protected_count": 0,
+            }])
+
+    class FakeSupabaseClient:
+        def rpc(self, name, params):
+            state["sweeps"].append((name, params))
+            return FakeRPC(name, params)
+
     class FakeDirectorStore:
-        supabase = object()
+        supabase = FakeSupabaseClient()
 
     director = SimpleNamespace(store=FakeDirectorStore())
 
@@ -143,6 +164,8 @@ def test_recovery_event_admits_and_executes_bounded_platform_specialists(monkeyp
     assert len(set(state["execution_calls"])) == 5
     assert all(call["mission_id"] for call in state["spawn_calls"])
     assert len(state["finalizations"]) == 1
+    assert len(state["sweeps"]) == 1
+    assert state["sweeps"][0] == ("sweep_failed_automation_jobs", {"p_batch_size": 25})
 
 
 def test_recovery_event_redelivery_does_not_duplicate_completed_specialists(monkeypatch):
@@ -175,6 +198,7 @@ def test_recovery_event_redelivery_does_not_duplicate_completed_specialists(monk
         for candidate_id in call["candidate_ids"]
     ]
     assert second_agent_ids == first_agent_ids
+    assert len(state["sweeps"]) == 2
 
 
 def test_recovery_event_rejects_unrecognized_failure_categories(monkeypatch):
