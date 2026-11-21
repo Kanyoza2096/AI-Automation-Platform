@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -32,7 +33,12 @@ class AutomationJobDiagnosticsMissionAdapter:
 
         category = context.inputs.get("failure_category")
         requested_ids = context.inputs.get("job_ids", [])
-        if not isinstance(category, str) or not category.strip() or len(category) > 120:
+        allowed_categories = {
+            "caption_quality", "voice_compliance", "evidence_grounding",
+            "semantic_validation", "gateway_caller_policy",
+            "provider_availability", "unclassified",
+        }
+        if not isinstance(category, str) or category not in allowed_categories:
             raise ValueError("automation_job_failure_category_required")
         if not isinstance(requested_ids, list) or len(requested_ids) > 20:
             raise ValueError("automation_job_diagnostic_job_ids_invalid")
@@ -111,10 +117,14 @@ class AutomationJobDiagnosticsMissionAdapter:
             f"{len(current_ids)} current job identifiers are available for bounded reconciliation.",
         ]
         for sample in samples:
-            job_id = str(sample.get("job_id") or "")[:128]
-            error_code = str(sample.get("last_error_code") or "not_recorded")[:80]
+            job_id = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(sample.get("job_id") or ""))[:128]
+            error_code = re.sub(
+                r"[^A-Za-z0-9_.:-]", "_",
+                str(sample.get("last_error_code") or "not_recorded"),
+            )[:80]
             steps = [
-                str(value)[:80] for value in (sample.get("failed_steps") or [])[:5]
+                re.sub(r"[^A-Za-z0-9_.:-]", "_", value)[:60]
+                for value in (sample.get("failed_steps") or [])[:5]
                 if isinstance(value, str) and value.strip()
             ]
             findings.append(
