@@ -162,6 +162,7 @@ jobs:
             tests/test_event_consumer_platform_recovery.py \
             tests/test_platform_automation_job_diagnostics_adapter.py \
             tests/test_job_stats_failure_samples.py \
+            tests/test_governed_provider_recovery.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
             tests/test_director_health_briefing.py \
