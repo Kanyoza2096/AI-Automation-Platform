@@ -947,6 +947,560 @@ class ContentEngine:
         # voice, opener, slop, or word-count heuristics.
         return True, "caption quality checker disabled by operator"
 
+    async def generate_post(
+        self,
+        brand=None,
+        ai_profile=None,
+        topic: Optional[str] = None,
+        base_prompt: Optional[str] = None,
+    ) -> dict:
+        started = time.monotonic()
+        brand_id = self._brand_id(brand)
+        brand_name = self._brand_name(brand)
+        selected_topic = str(topic or "").strip()
+        category = "general"
+
+        try:
+            selected_topic, category = self._select_topic(brand=brand, topic=topic)
+            logger.info(
+                "Pipeline start: brand='%s' topic='%s' category='%s'",
+                brand_name, selected_topic[:100], category,
+            )
+            await self._emit_dashboard_event("ai_decision", {
+                "stage": "topic_selected",
+                "topic": selected_topic,
+                "category": category,
+                "brand_id": brand_id,
+                "brand_name": brand_name,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            last_used_axis = await self._get_last_used_axis(brand_id)
+            axis_used: Optional[str] = None
+
+            if self._prefers_free_form(brand, ai_profile):
+                logger.info(
+                    "Pipeline: '%s' opts into free-form caption — prose-first",
+                    brand_name,
+                )
+                prompt_prose = self._build_prompt(
+                    brand=brand,
+                    ai_profile=ai_profile,
+                    topic=selected_topic,
+                    base_prompt=base_prompt,
+                    structured=False,
+                    last_used_axis=last_used_axis,
+                )
+                axis_used = self._axis_from_builder()
+                if prompt_prose:
+                    text_body, intel_mode = self._llm_generate_text(
+                        prompt_prose,
+                        workspace_id=str(brand_id or "platform"),
+                    )
+                    if text_body:
+                        result = await self._handle_unstructured_content(
+                            caption=str(text_body),
+                            topic=selected_topic,
+                            category=category,
+                            brand=brand,
+                            brand_id=brand_id,
+                            brand_name=brand_name,
+                            started=started,
+                        )
+                        if isinstance(result, dict) and result.get("publishable"):
+                            await self._record_used_axis(brand_id, axis_used)
+                        if isinstance(result, dict):
+                            result["intelligence_mode"] = intel_mode
+                            result["degraded"] = (
+                                intel_mode != "full" or result.get("degraded", False)
+                            )
+                        return result
+                    logger.warning(
+                        "Prose-first path failed for '%s' — falling back to structured",
+                        brand_name,
+                    )
+
+            prompt_structured = self._build_prompt(
+                brand=brand,
+                ai_profile=ai_profile,
+                topic=selected_topic,
+                base_prompt=base_prompt,
+                structured=True,
+                last_used_axis=last_used_axis,
+            )
+            axis_used = self._axis_from_builder()
+            if not prompt_structured:
+                raise ValueError("Prompt construction returned an empty prompt")
+
+            await self._emit_dashboard_event("ai_decision", {
+                "stage": "content_generation_started",
+                "topic": selected_topic,
+                "category": category,
+                "brand_id": brand_id,
+                "brand_name": brand_name,
+                "path": "structured_json",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            post = await self._generate_structured_content(
+                topic=selected_topic,
+                prompt=prompt_structured,
+                workspace_id=str(brand_id or "platform"),
+            )
+
+            if post is None:
+                logger.warning(
+                    "Structured generation failed for topic='%s' — trying prose gateway",
+                    selected_topic,
+                )
+                prompt_prose = self._build_prompt(
+                    brand=brand,
+                    ai_profile=ai_profile,
+                    topic=selected_topic,
+                    base_prompt=base_prompt,
+                    structured=False,
+                    last_used_axis=last_used_axis,
+                )
+                axis_used = self._axis_from_builder()
+                text_body, intel_mode = self._llm_generate_text(
+                    prompt_prose, workspace_id=str(brand_id or "platform"),
+                )
+                if text_body:
+                    result = await self._handle_unstructured_content(
+                        caption=str(text_body),
+                        topic=selected_topic,
+                        category=category,
+                        brand=brand,
+                        brand_id=brand_id,
+                        brand_name=brand_name,
+                        started=started,
+                    )
+                    if isinstance(result, dict) and result.get("publishable"):
+                        await self._record_used_axis(brand_id, axis_used)
+                    if isinstance(result, dict):
+                        result["intelligence_mode"] = intel_mode
+                        result["degraded"] = (
+                            intel_mode != "full" or result.get("degraded", False)
+                        )
+                    return result
+
+                logger.error(
+                    "Content engine FAILED: no usable content from either "
+                    "gateway path for topic='%s' brand='%s' mode='%s'",
+                    selected_topic[:80], brand_name, intel_mode,
+                )
+                return self._failed_generation_result(
+                    topic=selected_topic,
+                    category=category,
+                    brand_id=brand_id,
+                    brand_name=brand_name,
+                    started=started,
+                    reason="no_usable_content_from_gateway",
+                )
+
+            # ── Structured path succeeded ──
+            caption = self._caption_builder.build(post, category, brand=brand)
+            if not caption:
+                caption = (
+                    getattr(post, "caption", None)
+                    or getattr(post, "title", None)
+                    or selected_topic
+                )
+            caption = str(caption).strip()
+
+            ok, reason = self._validate_caption_quality(caption)
+            if not ok:
+                logger.warning(
+                    "Structured caption rejected by quality gate: reason=%s "
+                    "brand='%s' topic='%s'",
+                    reason, brand_name, selected_topic[:80],
+                )
+                return self._failed_generation_result(
+                    topic=selected_topic,
+                    category=category,
+                    brand_id=brand_id,
+                    brand_name=brand_name,
+                    started=started,
+                    reason=f"caption_quality: {reason}",
+                    caption=caption,
+                )
+
+            await self._record_used_axis(brand_id, axis_used)
+
+            strategy = self._resolve_visual_strategy(post, brand=brand)
+            logger.info(
+                "Visual strategy selected: strategy='%s' theme='%s' brand='%s'",
+                strategy.value, self._theme_value(post), brand_name,
+            )
+            await self._emit_dashboard_event("ai_decision", {
+                "stage": "visual_strategy_selected",
+                "strategy": strategy.value,
+                "theme": self._theme_value(post),
+                "topic": selected_topic,
+                "brand_id": brand_id,
+                "brand_name": brand_name,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            media_artifact = await self._render_image(
+                post=post, topic=selected_topic, brand=brand, strategy=strategy,
+            )
+
+            elapsed_ms = (time.monotonic() - started) * 1000
+            publishable = bool(media_artifact and media_artifact.is_publishable)
+            if media_artifact and media_artifact.status == MediaStatus.RENDER_FAILED:
+                publishable = False
+            metrics.record_ai("content_engine", "generate_post", elapsed_ms, publishable)
+
+            media_status = (
+                media_artifact.status.value
+                if media_artifact else MediaStatus.RENDER_FAILED.value
+            )
+            await self._emit_dashboard_event("ai_decision", {
+                "stage": "pipeline_complete" if publishable else "render_failed",
+                "topic": selected_topic,
+                "category": category,
+                "theme": self._theme_value(post),
+                "visual_strategy": strategy.value,
+                "media_status": media_status,
+                "artifact_id": media_artifact.artifact_id if media_artifact else None,
+                "brand_id": brand_id,
+                "brand_name": brand_name,
+                "duration_ms": round(elapsed_ms, 2),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+            return {
+                "caption": caption,
+                "image_bytes": (
+                    media_artifact.bytes
+                    if (media_artifact and media_artifact.has_bytes) else None
+                ),
+                "media_artifact": media_artifact,
+                "topic": selected_topic,
+                "category": category,
+                "theme": self._theme_value(post),
+                "visual_strategy": strategy.value,
+                "publishable": publishable,
+                "degraded": not publishable,
+                "media_status": media_status,
+            }
+
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            logger.error(
+                "Post generation crashed: brand='%s' error=%s",
+                brand_name, exc, exc_info=True,
+            )
+            metrics.record_ai("content_engine", "generate_post", elapsed_ms, False)
+            return self._failed_generation_result(
+                topic=selected_topic,
+                category=category,
+                brand_id=brand_id,
+                brand_name=brand_name,
+                started=started,
+                reason=str(exc),
+            )
+
+    # ═══════════════════════════════════════════════════════════════
+    # UNSTRUCTURED CONTENT
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _handle_unstructured_content(
+        self,
+        caption: str,
+        topic: str,
+        category: str,
+        brand,
+        brand_id: str,
+        brand_name: str,
+        started: float,
+    ) -> dict:
+        ok, reason = self._validate_caption_quality(caption)
+        if not ok:
+            logger.warning(
+                "Caption rejected by quality gate: reason=%s brand='%s' topic='%s'",
+                reason, brand_name, topic[:80],
+            )
+            return self._failed_generation_result(
+                topic=topic,
+                category=category,
+                brand_id=brand_id,
+                brand_name=brand_name,
+                started=started,
+                reason=f"caption_quality: {reason}",
+                caption=caption,
+            )
+
+        try:
+            image_bytes = await self._generate_ai_image(
+                topic=topic, caption=caption, brand=brand,
+            )
+            if image_bytes:
+                artifact = MediaArtifact.ready(
+                    image_bytes=image_bytes,
+                    content_type="image/png",
+                    source="image_engine",
+                    topic=topic,
+                    brand_id=brand_id,
+                )
+                return {
+                    "caption": caption,
+                    "image_bytes": image_bytes,
+                    "media_artifact": artifact,
+                    "topic": topic,
+                    "category": category,
+                    "theme": "ai",
+                    "visual_strategy": VisualStrategy.AI_IMAGE.value,
+                    "publishable": artifact.is_publishable,
+                    "degraded": False,
+                    "media_status": artifact.status.value,
+                }
+        except Exception as exc:
+            logger.warning("Unstructured-content visual generation failed: %s", exc)
+        return self._failed_generation_result(
+            topic=topic,
+            category=category,
+            brand_id=brand_id,
+            brand_name=brand_name,
+            started=started,
+            reason="Unstructured AI content could not be rendered",
+            caption=caption,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # RENDERING
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _render_image(
+        self,
+        post: TechPost,
+        topic: str,
+        brand=None,
+        strategy: VisualStrategy = VisualStrategy.AUTO,
+    ) -> MediaArtifact:
+        brand_id = self._brand_id(brand)
+        brand_name = self._brand_name(brand)
+        caption = CaptionBuilder.build(post, self._theme_value(post), brand=brand)
+
+        if strategy == VisualStrategy.AUTO:
+            strategy = self._resolve_visual_strategy(post, brand=brand)
+
+        if strategy == VisualStrategy.AI_IMAGE:
+            try:
+                image_bytes = await self._generate_ai_image(
+                    topic=topic, caption=caption, brand=brand, post=post,
+                )
+                if image_bytes:
+                    return MediaArtifact.ready(
+                        image_bytes=image_bytes,
+                        content_type="image/png",
+                        source="image_engine",
+                        topic=topic,
+                        brand_id=brand_id,
+                    )
+            except Exception as exc:
+                logger.warning("AI image strategy failed: brand='%s' error=%s", brand_name, exc)
+
+        try:
+            from services.card_renderer import card_renderer
+            loop = asyncio.get_event_loop()
+            image_bytes = await loop.run_in_executor(
+                None, card_renderer.render, post, brand,
+            )
+            if image_bytes:
+                return MediaArtifact.ready(
+                    image_bytes=image_bytes,
+                    content_type="image/png",
+                    source="pillow",
+                    topic=topic,
+                    brand_id=brand_id,
+                )
+        except Exception as exc:
+            logger.warning("CardRenderer failed: brand='%s' error=%s", brand_name, exc)
+
+        try:
+            from core.render_queue import get_render_queue, RenderTask
+            from services.card_renderer import card_renderer
+            post_dict = post.model_dump(mode="json") if hasattr(post, "model_dump") else {}
+            post_dict.update({
+                "brand_name": brand_name,
+                "brand_hashtags": getattr(brand, "formatted_hashtags", "") if brand else "",
+                "brand_colors": (getattr(brand, "colors", None) or {}) if brand else {},
+                "brand_metadata": (getattr(brand, "metadata", None) or {}) if brand else {},
+                "visual_strategy": strategy.value,
+            })
+            html = ""
+            try:
+                html = card_renderer.render_html_only(post, brand=brand) or ""
+            except Exception:
+                pass
+            task = RenderTask(
+                brand_id=brand_id, caption=caption, html=html,
+                topic=topic, post_dict=post_dict,
+            )
+            queue = get_render_queue()
+            task_id = queue.enqueue_render(task)
+            result = queue.wait_for_render(task_id, timeout=60)
+            if result:
+                image_bytes = getattr(result, "image_bytes", None)
+                if image_bytes and len(image_bytes) > 0:
+                    return MediaArtifact.ready(
+                        image_bytes=image_bytes,
+                        content_type=getattr(result, "content_type", None) or "image/png",
+                        width=getattr(result, "width", None) or 1080,
+                        height=getattr(result, "height", None) or 1080,
+                        source="render_queue",
+                        topic=topic,
+                        brand_id=brand_id,
+                        task_id=str(task_id),
+                        render_time_ms=getattr(result, "render_time_ms", None),
+                    )
+                image_url = getattr(result, "image_url", None) or getattr(result, "url", None)
+                if image_url:
+                    return MediaArtifact.ready(
+                        media_url=str(image_url),
+                        content_type=getattr(result, "content_type", None) or "image/png",
+                        width=getattr(result, "width", None) or 1080,
+                        height=getattr(result, "height", None) or 1080,
+                        source="render_queue",
+                        topic=topic,
+                        brand_id=brand_id,
+                        task_id=str(task_id),
+                        render_time_ms=getattr(result, "render_time_ms", None),
+                    )
+        except Exception as exc:
+            logger.warning("RenderQueue failed: brand='%s' error=%s", brand_name, exc)
+
+        try:
+            image_bytes = await self._generate_ai_image(
+                topic=topic, caption=caption, brand=brand, post=post,
+            )
+            if image_bytes:
+                return MediaArtifact.ready(
+                    image_bytes=image_bytes,
+                    content_type="image/png",
+                    source="image_engine",
+                    topic=topic,
+                    brand_id=brand_id,
+                )
+        except Exception as exc:
+            logger.warning("ImageEngine fallback failed: brand='%s' error=%s", brand_name, exc)
+
+        logger.error(
+            "RENDER_FAILED: all visual strategies exhausted. brand='%s' topic='%s'",
+            brand_name, topic[:60],
+        )
+        return MediaArtifact.failed(
+            error="All rendering methods exhausted: CardRenderer, RenderQueue, ImageEngine",
+            error_code="RENDER_FAILED",
+            source=str(strategy.value),
+            topic=topic,
+            brand_id=brand_id,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # AI IMAGE ENGINE
+    # ═══════════════════════════════════════════════════════════════
+
+    async def _generate_ai_image(
+        self, topic: str, caption: str, brand=None, post: Optional[TechPost] = None,
+    ) -> Optional[bytes]:
+        from services.image_engine import generate_best_image
+        from services.prompt_builder import prompt_builder # v15.9.2 Import
+        
+        # v15.9.2 - Use dedicated visual prompt to prevent abstract topics
+        # from generating generic images (e.g. drawing a robot for "RAG").
+        visual_prompt = prompt_builder.build_image_prompt(topic, brand)
+        
+        theme = self._theme_value(post) if post else "ai"
+        brand_name = self._brand_name(brand)
+        loop = asyncio.get_event_loop()
+        
+        return await loop.run_in_executor(
+            None, generate_best_image, visual_prompt,
+            f"{caption[:500]} | Brand: {brand_name}", theme,
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # FAILURE RESULT
+    # ═══════════════════════════════════════════════════════════════
+
+    def _failed_generation_result(
+        self,
+        topic: str,
+        category: str,
+        brand_id: str,
+        brand_name: str,
+        started: float,
+        reason: str,
+        caption: str = "",
+    ) -> dict:
+        elapsed_ms = (time.monotonic() - started) * 1000
+        logger.error(
+            "CONTENT_PIPELINE_FAILED: brand='%s' topic='%s' reason=%s",
+            brand_name, topic[:80], reason,
+        )
+        artifact = MediaArtifact.failed(
+            error=reason,
+            error_code="CONTENT_PIPELINE_FAILED",
+            source="content_engine",
+            topic=topic,
+            brand_id=brand_id,
+            render_time_ms=elapsed_ms,
+        )
+        return {
+            "caption": caption,
+            "image_bytes": None,
+            "media_artifact": artifact,
+            "topic": topic,
+            "category": category,
+            "theme": None,
+            "visual_strategy": None,
+            "publishable": False,
+            "degraded": True,
+            "media_status": artifact.status.value,
+            "error_code": "CONTENT_PIPELINE_FAILED",
+            "error": reason,
+        }
+
+    # ═══════════════════════════════════════════════════════════════
+    # FAILURE RESULT — RETIRED FALLBACK
+    # ═══════════════════════════════════════════════════════════════
+
+    def get_fallback_post(self, topic: str = "", category: str = "", brand_id: str = "default") -> dict:
+        """Retired in v15.3. See docstring in the source tree."""
+        raise RuntimeError(
+            "get_fallback_post was removed in v15.3. Generation failures must "
+            "surface to the caller for DeadLetterQueue capture, not be masked "
+            "by hardcoded content. See services/scheduler/brand_scheduler.py "
+            "for the retry path."
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # LEGACY API
+    # ═══════════════════════════════════════════════════════════════
+
+    async def generate_post_legacy(self, topic: Optional[str] = None) -> dict:
+        try:
+            from models.brand import Brand
+            from models.ai_profile import AIProfile
+            default_brand = Brand.default()
+            default_profile = AIProfile.default()
+            return await self.generate_post(
+                brand=default_brand, ai_profile=default_profile, topic=topic,
+            )
+        except Exception as exc:
+            logger.warning("Default brand/profile initialization failed: %s", exc)
+            raise RuntimeError(
+                f"Legacy post generation failed for topic={topic!r}: {exc}"
+            ) from exc
+
+    # ═══════════════════════════════════════════════════════════════
+    # HELPERS
+    # ═══════════════════════════════════════════════════════════════
+
+
     @staticmethod
     def _theme_value(post: Optional[TechPost]) -> str:
         if not post:
