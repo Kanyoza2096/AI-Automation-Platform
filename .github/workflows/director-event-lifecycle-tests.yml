@@ -29,6 +29,12 @@ on:
       - "services/director/analysis.py"
       - "tests/test_director_strategic_context.py"
       - "services/director/orchestration/**"
+      - "core/event_consumer.py"
+      - "services/job_stats_service.py"
+      - "tests/test_event_consumer_platform_recovery.py"
+      - "tests/test_platform_automation_job_diagnostics_adapter.py"
+      - "tests/test_job_stats_failure_samples.py"
+      - "migrations/182_platform_director_recovery_mission_admission.sql"
       - "tests/test_director_native_engine_adapters.py"
       - "tests/test_director_mission_state_machine.py"
       - "tests/test_director_mission_runtime.py"
@@ -150,6 +156,9 @@ jobs:
             tests/test_director_mission_runtime.py \
             tests/test_director_mission_graph.py \
             tests/test_director_swarm_planning.py \
+            tests/test_event_consumer_platform_recovery.py \
+            tests/test_platform_automation_job_diagnostics_adapter.py \
+            tests/test_job_stats_failure_samples.py \
             tests/test_engine_handoff_evidence.py \
             tests/test_engine_truth.py \
             tests/test_director_health_briefing.py \
