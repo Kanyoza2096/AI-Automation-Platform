@@ -25,7 +25,8 @@ def _bind_verified_gateway_human_context(request: Request, machine_ctx: RequestC
         return None
     names = {"timestamp": "x-kcpg-context-timestamp", "request_id": "x-kcpg-context-request-id", "workspace_id": "x-kcpg-context-workspace-id", "actor_id": "x-kcpg-context-actor-id", "actor_role": "x-kcpg-context-actor-role", "platform_role": "x-kcpg-context-platform-role", "signature": "x-kcpg-context-signature"}
     values = {key: request.headers.get(header) for key, header in names.items()}
-    present = [value is not None for value in values.values()]
+    required_values = [values[key] for key in ("timestamp", "request_id", "workspace_id", "actor_id", "actor_role", "signature")]
+    present = [value is not None for value in required_values]
     if not any(present):
         return None
     if not all(present):
