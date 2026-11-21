@@ -37,6 +37,7 @@ DECLARE
     v_steps JSONB;
     v_has_generation BOOLEAN;
     v_has_publish BOOLEAN;
+    v_failed_provider TEXT;
 BEGIN
     IF COALESCE(auth.jwt() ->> 'role', '') <> 'service_role' THEN
         RAISE EXCEPTION 'service_role_required' USING ERRCODE = '42501';
@@ -69,6 +70,18 @@ BEGIN
      FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'recovery_job_not_found'; END IF;
 
+    -- A concurrent replay may have committed while this call waited for the row lock.
+    SELECT * INTO v_existing
+      FROM automation_job_recovery_audit
+     WHERE recovery_key = p_recovery_key;
+    IF FOUND THEN
+        IF v_existing.job_id <> p_job_id OR v_existing.action <> 'provider_retry_queued' THEN
+            RAISE EXCEPTION 'recovery_idempotency_conflict';
+        END IF;
+        RETURN jsonb_build_object('status','replayed','job_id',v_existing.job_id,
+            'attempt_count',v_existing.new_attempt_count,'recovery_key',v_existing.recovery_key);
+    END IF;
+
     IF v_job.status <> 'FAILED'
        OR v_job.last_error_code <> 'AI_PROVIDER_UNAVAILABLE'
        OR v_job.attempt_count >= v_job.max_attempts
@@ -83,10 +96,14 @@ BEGIN
       COALESCE(bool_or(lower(COALESCE(step->>'step','') || ' ' || COALESCE(step->>'step_name',''))
           ~ '(generate|generation|llm)'), false),
       COALESCE(bool_or(lower(COALESCE(step->>'step','') || ' ' || COALESCE(step->>'step_name',''))
-          ~ '(publish|publishing|action_kernel|social_api)'), false)
-      INTO v_has_generation, v_has_publish
+          ~ '(publish|publishing|action_kernel|social_api)'), false),
+      MAX(NULLIF(BTRIM(COALESCE(step->>'provider','')), ''))
+      INTO v_has_generation, v_has_publish, v_failed_provider
       FROM jsonb_array_elements(v_steps) AS step;
     IF NOT v_has_generation OR v_has_publish
+       OR (v_failed_provider IS NOT NULL AND
+           lower(v_failed_provider) NOT LIKE '%' || lower(p_provider) || '%'
+           AND lower(p_provider) NOT LIKE '%' || lower(v_failed_provider) || '%')
        OR v_job.result ? 'publish_result'
        OR v_job.result ? 'publish_action'
        OR v_job.result ? 'platform_post_id'
