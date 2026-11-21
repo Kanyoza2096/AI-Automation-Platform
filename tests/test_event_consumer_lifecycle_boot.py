@@ -95,3 +95,11 @@ def test_event_consumer_still_accepts_legacy_json_string_payload():
     })
 
     assert received == [payload]
+
+
+
+def test_event_consumer_polling_excludes_stale_event_backlog():
+    consumer = (ROOT / "core/event_consumer.py").read_text(encoding="utf-8")
+
+    assert "MAX_EVENT_AGE_HOURS = 24" in consumer
+    assert '.gte("created_at", event_cutoff)' in consumer
