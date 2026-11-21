@@ -404,6 +404,35 @@ class EventConsumer:
                     await execute_spawned(snapshot, wave + 1)
                     wave += 1
 
+                # The specialist remains read-only. A separate governed executor
+                # may queue only allowlisted provider-availability jobs after a
+                # fresh live gateway probe and a transactional DB recheck.
+                provider_job_ids = list(dict.fromkeys(
+                    job_id
+                    for task_input in task_inputs.values()
+                    if task_input.get("failure_category") == "provider_availability"
+                    for job_id in task_input.get("job_ids", [])
+                ))[:8]
+                if provider_job_ids:
+                    from services.governed_provider_recovery import (
+                        recover_provider_availability_jobs,
+                    )
+                    from services.job_service import JobService
+
+                    recovery_result = await recover_provider_availability_jobs(
+                        job_ids=provider_job_ids,
+                        recovery_key_prefix=correlation_id,
+                        job_service=JobService(supabase_client=supabase_client),
+                        max_jobs=8,
+                    )
+                    logger.warning(
+                        "director_governed_provider_recovery_result mission_id=%s status=%s queued=%d rejected=%d",
+                        mission_id,
+                        recovery_result.get("status"),
+                        len(recovery_result.get("queued") or []),
+                        len(recovery_result.get("rejected") or []),
+                    )
+
                 logger.warning(
                     "director_platform_recovery_specialists_dispatched mission_id=%s admitted_tasks=%d spawned_candidates=%d correlation_id=%s",
                     mission_id, len(tasks), min(8, len(tasks)), correlation_id,
