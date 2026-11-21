@@ -863,9 +863,20 @@ def test_already_approved_retry_rechecks_canonical_persistence_before_journaling
         return True
     d.store.save_task = save_task
 
+    class RuntimeStore:
+        async def get_workspace_task(self, **kwargs):
+            return {
+                "status": "approved",
+                "payload": {
+                    "approved_by": "trusted-user-123",
+                    "approved_at": task.approved_at.isoformat(),
+                },
+            }
+
     class Runtime:
         def __init__(self):
             self.calls = []
+            self.store = RuntimeStore()
         async def approve_task(self, **kwargs):
             self.calls.append(kwargs)
             return None
@@ -889,9 +900,7 @@ def test_already_approved_retry_rechecks_canonical_persistence_before_journaling
         json={"actor": "untrusted-body-actor"},
     )
     assert response.status_code == 200
-    assert len(saves) == 1
-    assert saves[0][0] == Status.APPROVED
-    assert saves[0][1] == "trusted-user-123"
+    assert saves == []
     assert len(runtime.calls) == 1
 
 
@@ -923,8 +932,13 @@ def test_already_approved_retry_does_not_journal_when_canonical_save_is_unacknow
         return False
     d.store.save_task = save_task
 
+    class RuntimeStore:
+        async def get_workspace_task(self, **kwargs):
+            return None
+
     class Runtime:
         calls = 0
+        store = RuntimeStore()
         async def approve_task(self, **kwargs):
             self.calls += 1
             return None
@@ -948,8 +962,8 @@ def test_already_approved_retry_does_not_journal_when_canonical_save_is_unacknow
         json={"actor": "untrusted-body-actor"},
     )
     assert response.status_code == 503
-    assert saves == [task.id]
-    assert runtime.calls == 0
+    assert saves == []
+    assert runtime.calls == 1
     assert task.status == Status.APPROVED
 
 
@@ -984,9 +998,20 @@ def test_concurrent_same_actor_approval_retries_each_acknowledge_canonical_store
         return True
     d.store.save_task = save_task
 
+    class RuntimeStore:
+        async def get_workspace_task(self, **kwargs):
+            return {
+                "status": "approved",
+                "payload": {
+                    "approved_by": "trusted-user-123",
+                    "approved_at": task.approved_at.isoformat(),
+                },
+            }
+
     class Runtime:
         def __init__(self):
             self.calls = []
+            self.store = RuntimeStore()
         async def approve_task(self, **kwargs):
             self.calls.append(kwargs)
             return None
@@ -1016,7 +1041,7 @@ def test_concurrent_same_actor_approval_retries_each_acknowledge_canonical_store
         responses = list(pool.map(lambda _: submit_approval(), range(2)))
 
     assert [response.status_code for response in responses] == [200, 200]
-    assert saves == [task.id, task.id]
+    assert saves == []
     assert len(runtime.calls) == 2
 
 
