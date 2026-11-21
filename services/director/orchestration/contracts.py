@@ -20,7 +20,7 @@ def _utcnow() -> datetime:
 class MissionTaskContext:
     task_id: str
     mission_id: str
-    workspace_id: str
+    workspace_id: str | None
     capability: str
     objective: str
     inputs: Mapping[str, Any] = field(default_factory=dict)
@@ -28,9 +28,16 @@ class MissionTaskContext:
     correlation_id: str = ""
     attempt_id: str = ""
     timeout_seconds: float | None = None
+    scope_type: str = "workspace"
 
     def __post_init__(self) -> None:
-        for name in ("task_id", "mission_id", "workspace_id", "capability", "objective"):
+        if self.scope_type not in {"workspace", "platform"}:
+            raise ValueError("invalid_task_context_scope")
+        if self.scope_type == "workspace" and not str(self.workspace_id or "").strip():
+            raise ValueError("workspace_task_context_requires_workspace_id")
+        if self.scope_type == "platform" and self.workspace_id is not None:
+            raise ValueError("platform_task_context_cannot_have_workspace_id")
+        for name in ("task_id", "mission_id", "capability", "objective"):
             value = str(getattr(self, name) or "").strip()
             if not value:
                 raise ValueError(f"{name}_required")
@@ -52,7 +59,7 @@ class EngineContribution:
     capability: str
     task_id: str
     mission_id: str
-    workspace_id: str
+    workspace_id: str | None
     status: str
     summary: str
     findings: Sequence[str] = field(default_factory=tuple)
@@ -66,8 +73,15 @@ class EngineContribution:
     finished_at: datetime = field(default_factory=_utcnow)
     authority: str = "none"
     side_effect_class: str = "read_only"
+    scope_type: str = "workspace"
 
     def __post_init__(self) -> None:
+        if self.scope_type not in {"workspace", "platform"}:
+            raise ValueError("invalid_contribution_scope")
+        if self.scope_type == "workspace" and not str(self.workspace_id or "").strip():
+            raise ValueError("workspace_contribution_requires_workspace_id")
+        if self.scope_type == "platform" and self.workspace_id is not None:
+            raise ValueError("platform_contribution_cannot_have_workspace_id")
         if self.status not in {"completed", "partial", "unavailable", "failed"}:
             raise ValueError("invalid_contribution_status")
         if self.authority != "none":
@@ -85,18 +99,25 @@ class ExecutionAttemptReference:
     capability: str
     task_id: str
     mission_id: str
-    workspace_id: str
+    workspace_id: str | None
     correlation_id: str
+    scope_type: str = "workspace"
 
     def __post_init__(self) -> None:
         for name in (
             "attempt_id", "engine_id", "capability", "task_id",
-            "mission_id", "workspace_id", "correlation_id",
+            "mission_id", "correlation_id",
         ):
             value = str(getattr(self, name) or "").strip()
             if not value:
                 raise ValueError(f"execution_attempt_{name}_required")
             object.__setattr__(self, name, value)
+        if self.scope_type not in {"workspace", "platform"}:
+            raise ValueError("invalid_execution_attempt_scope")
+        if self.scope_type == "workspace" and not str(self.workspace_id or "").strip():
+            raise ValueError("workspace_execution_attempt_requires_workspace_id")
+        if self.scope_type == "platform" and self.workspace_id is not None:
+            raise ValueError("platform_execution_attempt_cannot_have_workspace_id")
 
 
 @dataclass(frozen=True)
@@ -266,6 +287,7 @@ class AdapterRegistry:
             or result.task_id != context.task_id
             or result.mission_id != context.mission_id
             or result.workspace_id != context.workspace_id
+            or result.scope_type != context.scope_type
         ):
             raise ValueError("native_adapter_result_identity_mismatch")
         if result.authority != "none":
