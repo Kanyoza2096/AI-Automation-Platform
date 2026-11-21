@@ -1701,6 +1701,14 @@ class BrandScheduler:
             )
             result = self._execute_workflow(workflow, wf_kwargs)
 
+            # The provider-facing workflow has returned: no external publish
+            # operation remains inside this scheduler critical section. Release
+            # the global lock before durable state transitions and event delivery,
+            # which may be slow or unavailable. A confirmed provider receipt is
+            # still persisted below, and uncertain outcomes remain reconciliation-
+            # protected rather than being blindly retried.
+            _release_publish_resources()
+
             context_platform = (
                 wf_kwargs.get("platform")
                 or getattr(self.brand, "platform", "facebook")
