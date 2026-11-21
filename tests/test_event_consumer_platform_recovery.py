@@ -1,4 +1,3 @@
-import asyncio
 from types import SimpleNamespace
 
 from core.event_consumer import EventConsumer
@@ -152,6 +151,8 @@ def test_recovery_event_redelivery_does_not_duplicate_completed_specialists(monk
     assert len(state["execution_calls"]) == first_execution_count
     assert len(state["spawn_calls"]) == first_spawn_count
     assert len(state["admissions"]) == 2
+    assert state["admissions"][0]["idempotency_key"] == state["admissions"][1]["idempotency_key"]
+    assert state["admissions"][0]["request_fingerprint"] == state["admissions"][1]["request_fingerprint"]
 
 
 def test_recovery_event_rejects_unrecognized_failure_categories(monkeypatch):
