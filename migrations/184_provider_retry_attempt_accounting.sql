@@ -82,8 +82,8 @@ BEGIN
       MAX(NULLIF(BTRIM(COALESCE(step->>'provider','')), ''))
       INTO v_has_generation, v_has_publish, v_failed_provider
       FROM jsonb_array_elements(v_steps) AS step;
-    IF NOT v_has_generation OR v_has_publish
-       OR (v_failed_provider IS NOT NULL AND
+    IF NOT v_has_generation OR v_has_publish OR v_failed_provider IS NULL
+       OR (
            lower(v_failed_provider) NOT LIKE '%' || lower(p_provider) || '%'
            AND lower(p_provider) NOT LIKE '%' || lower(v_failed_provider) || '%')
        OR v_job.result ? 'publish_result'
