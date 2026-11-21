@@ -49,6 +49,11 @@ def test_platform_job_diagnostics_returns_fresh_read_only_evidence():
                     {"job_id": "job-2", "recommended_action": "inspect_provider"},
                     {"job_id": "job-3", "recommended_action": "ignore"},
                 ],
+                "failure_samples": [
+                    {"job_id": "job-1", "last_error_code": "AI_PROVIDER_UNAVAILABLE", "failed_steps": ["generate"], "attempt_count": 2, "max_attempts": 3},
+                    {"job_id": "job-2", "last_error_code": "AI_PROVIDER_UNAVAILABLE", "failed_steps": ["render"], "attempt_count": 1, "max_attempts": 3},
+                    {"job_id": "job-3", "last_error_code": "IGNORE_ME", "failed_steps": ["publish"], "attempt_count": 1, "max_attempts": 3},
+                ],
             }
         },
     })
@@ -65,6 +70,9 @@ def test_platform_job_diagnostics_returns_fresh_read_only_evidence():
     assert result.source_metadata["automatic_retry"] is False
     assert result.source_metadata["publication_replay_allowed"] is False
     assert result.source_metadata["inspected_job_ids"] == ["job-1", "job-2"]
+    assert any("AI_PROVIDER_UNAVAILABLE" in item for item in result.findings)
+    assert any("generate" in item for item in result.findings)
+    assert not any("IGNORE_ME" in item for item in result.findings)
     assert all("retry" not in item.lower() for item in result.findings)
 
 
