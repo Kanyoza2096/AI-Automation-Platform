@@ -1579,6 +1579,16 @@ class BrandScheduler:
         publish_started = time.monotonic()
         automation_job: Optional[AutomationJob] = existing_job
         idempotency_key: Optional[str] = getattr(existing_job, "idempotency_key", None)
+        publish_resources_released = False
+
+        def _release_publish_resources() -> None:
+            """Release this pipeline's local slot and owner-token lock once."""
+            nonlocal publish_resources_released
+            if publish_resources_released:
+                return
+            publish_resources_released = True
+            self._publish_semaphore.release()
+            self._distributed_lock.release()
 
         try:
             if not self._job_service:
@@ -1766,6 +1776,11 @@ class BrandScheduler:
                             self.brand.name, job_id, e,
                         )
 
+                # The provider receipt and durable job state are now recorded.
+                # Do not let dashboard/webhook delivery hold every other brand
+                # behind the global publishing mutex.
+                _release_publish_resources()
+
                 self._posts_published += 1
                 self._metrics.record_publish_success(duration_ms)
                 self._pipeline_status = {
@@ -1824,6 +1839,9 @@ class BrandScheduler:
                     "status": "queued", "current_step": "outbox", "progress": 90,
                     "topic": topic, "platforms": [], "job_id": job_id,
                 }
+                # Durable outbox handoff completes this scheduler's work; the
+                # outbox worker owns subsequent provider delivery/reconciliation.
+                _release_publish_resources()
                 self._emit("scheduler.workflow_queued", {
                     "brand_id": self.brand.id, "job_id": job_id, "topic": topic,
                 })
@@ -1864,6 +1882,9 @@ class BrandScheduler:
                         workspace_id=getattr(self.brand, "workspace_id", None),
                     )
 
+                # Failure state and any retry handoff have been persisted.
+                # Release before nonessential logging/return-path work.
+                _release_publish_resources()
                 retry_note = ("provider cooldown opened; retry suppressed" if provider_outage else ("queued for retry" if retryable else "terminal validation failure; retry suppressed"))
                 logger.warning(
                     "[%s] job=%s FAILED — steps=%s evidence=%s (%s)",
@@ -1919,8 +1940,9 @@ class BrandScheduler:
             )
             return False
         finally:
-            self._publish_semaphore.release()
-            self._distributed_lock.release()
+            # Covers early returns and exceptions; safe after an earlier
+            # terminal-boundary release because the helper is idempotent.
+            _release_publish_resources()
 
     def _trigger_news(self) -> None:
         logger.warning(
