@@ -126,6 +126,8 @@ class JobStatsService:
     # surfaces. A healthy queue can have a handful of in-flight failures;
     # a stuck queue has dozens.
     HEALTH_DEGRADED_STALE = 5
+    # Dispatch a Director recovery sweep one job before the degraded boundary.
+    HEALTH_RECOVERY_DISPATCH_FAILED = 9
     HEALTH_DEGRADED_FAILED = 10
     HEALTH_UNHEALTHY_STALE = 20
     HEALTH_UNHEALTHY_FAILED = 50
@@ -144,6 +146,11 @@ class JobStatsService:
         # or overwrite one another's failure state.
         self._error_state = threading.local()
         self._last_error = None
+        # One early-warning dispatch per threshold episode. Reset only after
+        # the failed-job count falls below the trigger, preventing health-probe
+        # fan-out while still allowing a later independent recovery episode.
+        self._recovery_dispatch_lock = threading.Lock()
+        self._recovery_dispatch_active = False
 
         # v4.1: Shared client with semaphore
         self._shared_client: Optional[SharedSupabaseClient] = None
@@ -355,6 +362,84 @@ class JobStatsService:
         full_stats = self.get_stats(brand_id=brand_id)
         return full_stats.get("status_counts", {})
 
+    def _request_director_job_recovery(self, failed: int, failure_intelligence: dict | None) -> None:
+        """Send one bounded, advisory recovery request to the Director.
+
+        This is a dispatch signal only: it never mutates/retries automation jobs.
+        The Director/recovery consumer must inspect the evidence and use the
+        canonical governed job path for any approved retry.
+        """
+        if failed < self.HEALTH_RECOVERY_DISPATCH_FAILED:
+            with self._recovery_dispatch_lock:
+                self._recovery_dispatch_active = False
+            return
+
+        with self._recovery_dispatch_lock:
+            if self._recovery_dispatch_active:
+                return
+            self._recovery_dispatch_active = True
+
+        bus = self._event_bus
+        publisher = getattr(bus, "publish", None) if bus is not None else None
+        if not callable(publisher):
+            logger.warning(
+                "automation_job_recovery_threshold_reached_without_event_bus failed=%d",
+                failed,
+            )
+            return
+
+        correlation_id = f"job-recovery-{uuid.uuid4().hex}"
+        payload = {
+            "trigger": "automation_job_failure_threshold",
+            "failed_jobs": int(failed),
+            "dispatch_threshold": self.HEALTH_RECOVERY_DISPATCH_FAILED,
+            "degraded_threshold": self.HEALTH_DEGRADED_FAILED,
+            "requested_by": "job_stats_service",
+            "recovery_mode": "bounded_advisory_sweep",
+            "automatic_retry": False,
+            "publication_replay_allowed": False,
+            "failure_intelligence": failure_intelligence or {
+                "status": "unavailable",
+                "reason": "failure_intelligence_not_available",
+            },
+            "correlation_id": correlation_id,
+        }
+
+        async def publish_request():
+            await publisher(
+                "director.automation_job_recovery.requested",
+                payload,
+                source="job_stats_service",
+                workspace_id="platform",
+                correlation_id=correlation_id,
+            )
+
+        try:
+            try:
+                current_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                current_loop = None
+            bus_loop = getattr(bus, "_loop", None)
+            target_loop = bus_loop if bus_loop is not None else current_loop
+            if target_loop is None or not target_loop.is_running():
+                raise RuntimeError("event_bus_owner_loop_unavailable")
+            if current_loop is target_loop:
+                target_loop.create_task(publish_request())
+            else:
+                asyncio.run_coroutine_threadsafe(publish_request(), target_loop)
+            logger.warning(
+                "director_automation_job_recovery_requested failed=%d threshold=%d correlation_id=%s",
+                failed,
+                self.HEALTH_RECOVERY_DISPATCH_FAILED,
+                correlation_id,
+            )
+        except Exception:
+            # Permit a later health probe to retry the dispatch if transport
+            # was unavailable; do not suppress the service-health result.
+            with self._recovery_dispatch_lock:
+                self._recovery_dispatch_active = False
+            logger.exception("director_automation_job_recovery_dispatch_failed")
+
     def health_check(self) -> dict:
         """Derive status from the stats, not from the query's success alone.
 
@@ -428,6 +513,7 @@ class JobStatsService:
                 }
 
         stuck_too_long = oldest_minutes >= self.HEALTH_UNHEALTHY_OLDEST_MINUTES
+        self._request_director_job_recovery(failed, failure_intelligence)
 
         if (
             stale >= self.HEALTH_UNHEALTHY_STALE
