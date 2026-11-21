@@ -135,7 +135,7 @@ class AutomationJobDiagnosticsMissionAdapter:
             source_metadata={
                 "failed_job_count": count,
                 "inspected_job_ids": current_ids[:20],
-                "recovery_proposals": proposals,
+                "recovery_proposal_count": len(proposals),
                 "automatic_retry": False,
                 "publication_replay_allowed": False,
                 "read_only": True,
