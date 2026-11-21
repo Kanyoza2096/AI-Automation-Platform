@@ -134,3 +134,42 @@ def test_workflow_is_not_executed_when_job_transition_to_running_fails():
     ) is False
     service.transition.assert_called_once()
     scheduler._container.resolve.assert_not_called()
+
+def test_global_publish_lock_released_before_optional_notifications():
+    job = make_job()
+    scheduler, _ = make_scheduler([job])
+    lock = SimpleNamespace(
+        acquire=Mock(return_value=True),
+        release=Mock(),
+        is_degraded_local=False,
+    )
+    semaphore = SimpleNamespace(
+        acquire=Mock(return_value=True),
+        release=Mock(),
+    )
+    scheduler._distributed_lock = lock
+    scheduler._publish_semaphore = semaphore
+    scheduler._container = Mock()
+    scheduler._container.resolve.return_value = lambda **kwargs: object()
+    scheduler._execute_workflow = Mock(return_value=SimpleNamespace(steps=[
+        SimpleNamespace(step_name="select_topic", ok=True, output={"topic": "Test"}),
+        SimpleNamespace(
+            step_name="publish", ok=True,
+            output={"ok": True, "status": "published", "post_id": "provider-post-1"},
+        ),
+    ]))
+    scheduler._emit = Mock()
+
+    def assert_released(*args, **kwargs):
+        payload = args[1] if len(args) > 1 else kwargs
+        if payload.get("stage") == "Complete":
+            assert lock.release.call_count == 1
+            assert semaphore.release.call_count == 1
+
+    scheduler._emit_dashboard = Mock(side_effect=assert_released)
+    scheduler._notify_webhooks = Mock(side_effect=assert_released)
+    scheduler._metrics.record_publish_success = Mock()
+
+    assert scheduler._trigger_workflow(source="manual") is True
+    assert lock.release.call_count == 1
+    assert semaphore.release.call_count == 1
