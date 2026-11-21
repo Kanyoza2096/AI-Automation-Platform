@@ -27,7 +27,7 @@ def _context(**overrides):
         "capability": "automation.jobs.diagnose",
         "objective": "Diagnose the timeout failure category.",
         "inputs": {
-            "failure_category": "provider_timeout",
+            "failure_category": "provider_availability",
             "job_ids": ["job-1", "job-2"],
         },
         "correlation_id": "recovery-correlation-1",
@@ -41,7 +41,7 @@ def test_platform_job_diagnostics_returns_fresh_read_only_evidence():
     stats = FakeJobStats({
         "status": "available",
         "categories": {
-            "provider_timeout": {
+            "provider_availability": {
                 "count": 2,
                 "job_ids": ["job-1", "job-2", "job-3"],
                 "recovery_proposals": [
