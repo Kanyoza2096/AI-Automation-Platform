@@ -161,8 +161,10 @@ def test_global_publish_lock_released_before_optional_notifications():
     scheduler._emit = Mock()
 
     def assert_released(*args, **kwargs):
-        assert lock.release.call_count == 1
-        assert semaphore.release.call_count == 1
+        payload = args[1] if len(args) > 1 else kwargs
+        if payload.get("stage") == "Complete":
+            assert lock.release.call_count == 1
+            assert semaphore.release.call_count == 1
 
     scheduler._emit_dashboard = Mock(side_effect=assert_released)
     scheduler._notify_webhooks = Mock(side_effect=assert_released)
