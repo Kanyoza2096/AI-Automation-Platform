@@ -220,13 +220,25 @@ class EventConsumer:
             return True
 
         try:
+            allowed_categories = {
+                "caption_quality", "voice_compliance", "evidence_grounding",
+                "semantic_validation", "gateway_caller_policy",
+                "provider_availability", "unclassified",
+            }
             ranked = sorted(
                 (
-                    (str(name), item)
+                    (name, item)
                     for name, item in categories.items()
-                    if isinstance(item, dict) and int(item.get("count") or 0) > 0
+                    if (
+                        isinstance(name, str)
+                        and name in allowed_categories
+                        and isinstance(item, dict)
+                        and isinstance(item.get("count"), int)
+                        and not isinstance(item.get("count"), bool)
+                        and item["count"] > 0
+                    )
                 ),
-                key=lambda pair: (-int(pair[1].get("count") or 0), pair[0]),
+                key=lambda pair: (-pair[1]["count"], pair[0]),
             )[:8]
             if not ranked:
                 return True
