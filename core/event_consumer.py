@@ -21,6 +21,7 @@ import time
 import asyncio
 import inspect
 import uuid
+import hashlib
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional
@@ -165,14 +166,151 @@ class EventConsumer:
         elif event_name == "heal_command":
             if not self._handle_heal_command(payload):
                 logger.warning("heal_command retained for retry event_id=%s", event_id)
-                try:
-                    self.supabase.table("events").update({"claimed_by": None, "claimed_at": None}).eq("id", event_id).eq("claimed_by", self._consumer_id).execute()
-                except Exception:
-                    pass
+                self._release_event_claim(event_id)
+                return
+
+        elif event_name == "director.automation_job_recovery.requested":
+            if not self._handle_director_job_recovery_request(payload):
+                logger.warning("Director job recovery request retained for retry event_id=%s", event_id)
+                self._release_event_claim(event_id)
                 return
 
         # Mark as processed only after the handler has accepted the event.
         self._mark_processed(event_id)
+
+    def _release_event_claim(self, event_id: Any) -> None:
+        """Release a failed handler claim so the durable event can be retried."""
+        try:
+            self.supabase.table("events").update({
+                "claimed_by": None,
+                "claimed_at": None,
+            }).eq("id", event_id).eq("claimed_by", self._consumer_id).execute()
+        except Exception:
+            logger.exception("Failed to release event claim id=%s", event_id)
+
+    def _handle_director_job_recovery_request(self, payload: Dict[str, Any]) -> bool:
+        """Idempotently admit an advisory platform recovery mission.
+
+        This stage never retries/quarantines jobs and never replays publication.
+        The admitted task records are approval_required; specialist execution is
+        a separate Director-controlled stage.
+        """
+        if (
+            payload.get("trigger") != "automation_job_failure_threshold"
+            or payload.get("recovery_mode") != "bounded_advisory_sweep"
+            or payload.get("automatic_retry") is not False
+            or payload.get("publication_replay_allowed") is not False
+        ):
+            logger.error("Rejecting malformed or unsafe Director recovery request")
+            return True
+
+        correlation_id = str(payload.get("correlation_id") or "").strip()
+        failed_jobs = payload.get("failed_jobs")
+        if not correlation_id or isinstance(failed_jobs, bool) or not isinstance(failed_jobs, int) or failed_jobs < 9:
+            logger.error("Rejecting Director recovery request with invalid identity/threshold")
+            return True
+
+        intelligence = payload.get("failure_intelligence")
+        if not isinstance(intelligence, dict) or intelligence.get("status") != "available":
+            logger.warning("Director recovery admission deferred: failure intelligence unavailable")
+            return False
+        categories = intelligence.get("categories")
+        if not isinstance(categories, dict) or not categories:
+            logger.info("Director recovery request accepted with no classified failed jobs")
+            return True
+
+        try:
+            ranked = sorted(
+                (
+                    (str(name), item)
+                    for name, item in categories.items()
+                    if isinstance(item, dict) and int(item.get("count") or 0) > 0
+                ),
+                key=lambda pair: (-int(pair[1].get("count") or 0), pair[0]),
+            )[:12]
+            if not ranked:
+                return True
+
+            namespace = uuid.UUID("c7c2e8c2-0b8a-4c17-8a10-40ef8c8fcb13")
+            mission_id = str(uuid.uuid5(namespace, f"automation-job-recovery:{correlation_id}"))
+            idempotency_key = f"job-recovery:{correlation_id}"[:160]
+            tasks = []
+            for category, details in ranked:
+                task_id = str(uuid.uuid5(namespace, f"{mission_id}:{category}"))
+                title = f"Diagnose failed automation jobs: {category}"[:180]
+                task_payload = {
+                    "id": task_id,
+                    "mission_id": mission_id,
+                    "scope_type": "platform",
+                    "workspace_id": None,
+                    "status": "approval_required",
+                    "title": title,
+                    "description": (
+                        "Read-only diagnosis of failed automation jobs in this failure category. "
+                        "Return evidence and recommendations only; do not retry, quarantine, publish, "
+                        "or replay any job."
+                    ),
+                    "task_type": "automation_job_failure_diagnosis",
+                    "failure_category": category[:120],
+                    "failed_job_count": min(int(details.get("count") or 0), 500),
+                    "job_ids": [
+                        str(value)[:128]
+                        for value in (details.get("job_ids") or [])[:20]
+                        if isinstance(value, (str, int)) and str(value).strip()
+                    ],
+                    "recovery_proposals": [
+                        item for item in (details.get("recovery_proposals") or [])[:20]
+                        if isinstance(item, dict)
+                    ],
+                    "automatic_retry": False,
+                    "publication_replay_allowed": False,
+                }
+                tasks.append({
+                    "id": task_id,
+                    "workspace_id": None,
+                    "scope_type": "platform",
+                    "status": "approval_required",
+                    "payload": task_payload,
+                })
+
+            canonical = json.dumps({
+                "mission_id": mission_id,
+                "correlation_id": correlation_id,
+                "tasks": tasks,
+                "automatic_retry": False,
+                "publication_replay_allowed": False,
+            }, sort_keys=True, separators=(",", ":"))
+            fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+            async def admit():
+                from services.director import get_director
+                from services.director.orchestration.store import MissionRuntimeStore
+
+                director = await get_director()
+                if director is None or getattr(director, "store", None) is None:
+                    raise RuntimeError("director_runtime_unavailable")
+                runtime_store = MissionRuntimeStore(director.store)
+                return await runtime_store.admit_platform_recovery_mission(
+                    idempotency_key=idempotency_key,
+                    mission_id=mission_id,
+                    request_fingerprint=fingerprint,
+                    correlation_id=correlation_id,
+                    tasks=tasks,
+                )
+
+            result = asyncio.run(admit())
+            if not isinstance(result, dict) or result.get("error"):
+                logger.error("Platform recovery mission admission rejected: %s", result)
+                return False
+            logger.warning(
+                "director_platform_recovery_mission_admitted mission_id=%s tasks=%d replayed=%s correlation_id=%s",
+                result.get("mission_id"), len(result.get("task_ids") or []),
+                bool(result.get("replayed")), correlation_id,
+            )
+            return True
+        except Exception:
+            logger.exception("Director platform recovery mission admission failed")
+            return False
 
     def _handle_backup_failure(self, payload: Dict[str, Any]) -> None:
         """Backup failed — track and escalate if repeated."""
