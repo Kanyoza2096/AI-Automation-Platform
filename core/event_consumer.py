@@ -227,7 +227,7 @@ class EventConsumer:
                     if isinstance(item, dict) and int(item.get("count") or 0) > 0
                 ),
                 key=lambda pair: (-int(pair[1].get("count") or 0), pair[0]),
-            )[:12]
+            )[:8]
             if not ranked:
                 return True
 
@@ -282,25 +282,119 @@ class EventConsumer:
             }, sort_keys=True, separators=(",", ":"))
             fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-            async def admit():
+            async def admit_and_dispatch():
                 from services.director import get_director
                 from services.director.orchestration.store import MissionRuntimeStore
+                from services.director.orchestration.runtime import MissionOrchestrationRuntime
+                from services.director.orchestration.contracts import AdapterRegistry
+                from services.director.orchestration.swarm_planning import SwarmCandidate
+                from services.director.orchestration.automation_job_diagnostics_adapter import (
+                    AutomationJobDiagnosticsMissionAdapter,
+                )
+                from services.job_stats_service import JobStatsService
 
                 director = await get_director()
                 if director is None or getattr(director, "store", None) is None:
                     raise RuntimeError("director_runtime_unavailable")
                 runtime_store = MissionRuntimeStore(director.store)
-                return await runtime_store.admit_platform_recovery_mission(
+                admitted = await runtime_store.admit_platform_recovery_mission(
                     idempotency_key=idempotency_key,
                     mission_id=mission_id,
                     request_fingerprint=fingerprint,
                     correlation_id=correlation_id,
                     tasks=tasks,
                 )
+                if not isinstance(admitted, dict) or admitted.get("error"):
+                    return admitted
 
-            result = asyncio.run(admit())
+                # Platform-only runtime: no synthetic workspace and no
+                # workspace-bound adapters.
+                supabase_client = getattr(director.store, "supabase", None)
+                if supabase_client is None:
+                    raise RuntimeError("platform_recovery_supabase_client_unavailable")
+                registry = AdapterRegistry()
+                registry.register(AutomationJobDiagnosticsMissionAdapter(
+                    job_stats_service=JobStatsService(supabase_client=supabase_client)
+                ))
+                runtime = MissionOrchestrationRuntime(store=runtime_store, adapters=registry)
+                current = await runtime.load_snapshot(mission_id=mission_id, workspace_id=None)
+                existing_agents = dict(current.state_snapshot.get("agents") or {})
+                candidates = []
+                task_inputs = {}
+                for index, task in enumerate(tasks):
+                    payload_data = task.get("payload") or {}
+                    task_id = str(task.get("id") or "")
+                    identity = hashlib.sha256(
+                        f"{correlation_id}|{task_id}".encode("utf-8")
+                    ).hexdigest()
+                    agent_id = f"jobdiag-{identity[:20]}"
+                    task_inputs[task_id] = {
+                        "failure_category": payload_data.get("failure_category"),
+                        "job_ids": payload_data.get("job_ids") or [],
+                    }
+                    if agent_id in existing_agents:
+                        continue
+                    candidates.append(SwarmCandidate(
+                        agent_id=agent_id,
+                        task_id=task_id,
+                        engine_id="automation_job_diagnostics",
+                        capability="automation.jobs.diagnose",
+                        role="read-only-failure-diagnostician",
+                        priority=max(0, 100 - index),
+                        estimated_tokens=300,
+                    ))
+
+                # At most four agents per wave, with a hard mission ceiling of eight.
+                prefix_digest = hashlib.sha256(correlation_id.encode("utf-8")).hexdigest()[:16]
+                wave = 0
+                while candidates and wave < 2:
+                    batch, candidates = candidates[:4], candidates[4:]
+                    await runtime.spawn_swarm(
+                        mission_id=mission_id,
+                        workspace_id=None,
+                        task_ids=[item.task_id for item in batch],
+                        candidates=batch,
+                        complexity_score=min(1.0, max(0.125, len(batch) / 8)),
+                        idempotency_prefix=f"jr-{prefix_digest}-{wave}",
+                        correlation_id=correlation_id,
+                    )
+                    snapshot = await runtime.load_snapshot(mission_id=mission_id, workspace_id=None)
+                    agents = dict(snapshot.state_snapshot.get("agents") or {})
+                    for candidate in batch:
+                        agent = agents.get(candidate.agent_id) or {}
+                        if agent.get("status") != "spawned":
+                            continue
+                        try:
+                            await runtime.execute_agent(
+                                mission_id=mission_id,
+                                workspace_id=None,
+                                agent_id=candidate.agent_id,
+                                objective=(
+                                    "Refresh read-only evidence for this automation-job failure category. "
+                                    "Identify current failed job IDs, likely common causes, and safe next "
+                                    "checks. Do not retry, quarantine, publish, or replay any job."
+                                ),
+                                inputs=task_inputs[candidate.task_id],
+                                idempotency_prefix=f"jr-{prefix_digest}-{wave}-{candidate.agent_id[-8:]}",
+                                correlation_id=correlation_id,
+                                timeout_seconds=20,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "director_platform_recovery_specialist_failed mission_id=%s agent_id=%s",
+                                mission_id, candidate.agent_id,
+                            )
+                    wave += 1
+
+                logger.warning(
+                    "director_platform_recovery_specialists_dispatched mission_id=%s admitted_tasks=%d spawned_candidates=%d correlation_id=%s",
+                    mission_id, len(tasks), min(8, len(tasks)), correlation_id,
+                )
+                return admitted
+
+            result = asyncio.run(admit_and_dispatch())
             if not isinstance(result, dict) or result.get("error"):
-                logger.error("Platform recovery mission admission rejected: %s", result)
+                logger.error("Platform recovery mission admission/dispatch rejected: %s", result)
                 return False
             logger.warning(
                 "director_platform_recovery_mission_admitted mission_id=%s tasks=%d replayed=%s correlation_id=%s",
