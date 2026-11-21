@@ -1,5 +1,5 @@
-import asyncio\nfrom types import SimpleNamespace
-
+import asyncio
+from types import SimpleNamespace
 
 from services import governed_provider_recovery as recovery
 
@@ -39,7 +39,6 @@ class FakeGateway:
         return self.result
 
 
-@pytest.mark.asyncio
 def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
     monkeypatch.setattr(
         "ai.gateway.get_llm_gateway",
@@ -51,18 +50,15 @@ def test_provider_probe_failure_defers_without_mutating_jobs(monkeypatch):
         }),
     )
     service = FakeJobService()
-
     result = asyncio.run(recovery.recover_provider_availability_jobs(
         job_ids=["job-1"],
         recovery_key_prefix="event-1",
         job_service=service,
-    )
-
+    ))
     assert result["status"] == "deferred"
     assert service.client.calls == []
 
 
-@pytest.mark.asyncio
 def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkeypatch):
     monkeypatch.setattr(
         "ai.gateway.get_llm_gateway",
@@ -74,14 +70,12 @@ def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkeypatch)
         }),
     )
     service = FakeJobService()
-
-    result = await recovery.recover_provider_availability_jobs(
+    result = asyncio.run(recovery.recover_provider_availability_jobs(
         job_ids=["job-1", "job-2", "job-1"] + [f"job-{i}" for i in range(3, 15)],
         recovery_key_prefix="correlation-1",
         job_service=service,
         max_jobs=8,
-    )
-
+    ))
     assert result["status"] == "completed"
     assert len(result["queued"]) == 8
     assert len(service.client.calls) == 8
@@ -94,19 +88,16 @@ def test_successful_probe_uses_bounded_governed_rpc_and_stable_keys(monkeypatch)
     assert len(params["p_recovery_key"]) == 64
 
 
-@pytest.mark.asyncio
 def test_empty_candidate_set_does_not_probe_or_call_database(monkeypatch):
     def fail_if_called():
         raise AssertionError("provider probe must not run for an empty set")
 
     monkeypatch.setattr(recovery, "_probe_provider_recovery", fail_if_called)
     service = FakeJobService()
-
-    result = await recovery.recover_provider_availability_jobs(
+    result = asyncio.run(recovery.recover_provider_availability_jobs(
         job_ids=[],
         recovery_key_prefix="event-empty",
         job_service=service,
-    )
-
+    ))
     assert result == {"status": "no_candidates", "queued": [], "rejected": []}
     assert service.client.calls == []
