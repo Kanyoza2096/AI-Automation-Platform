@@ -1344,10 +1344,24 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("knowledge review sweep scheduler failed to start")
 
+    # Failed-job recovery is independent of the Director's degradation threshold.
+    # The existing transactional RPC enforces retry/archive and publication-safety rules.
+    try:
+        from services.failed_job_sweep_scheduler import start_failed_job_sweep_scheduler
+        await start_failed_job_sweep_scheduler()
+    except Exception:
+        logger.exception("autonomous failed-job sweep scheduler failed to start")
+
     # ── YIELD: hand control to the application ──
     try:
         yield
     finally:
+        try:
+            from services.failed_job_sweep_scheduler import stop_failed_job_sweep_scheduler
+            await stop_failed_job_sweep_scheduler()
+        except Exception:
+            logger.exception("autonomous failed-job sweep scheduler failed to stop")
+
         try:
             from api.routers.knowledge import stop_knowledge_review_sweep_scheduler
             await stop_knowledge_review_sweep_scheduler()
