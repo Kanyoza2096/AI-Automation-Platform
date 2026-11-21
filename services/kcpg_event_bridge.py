@@ -127,8 +127,23 @@ class KCPGEventBridge:
             return
 
         payload = event_data.get("payload") if isinstance(event_data.get("payload"), dict) else {}
-        workspace_id = payload.get("workspace_id") or payload.get("workspaceId")
+        # UnifiedEventBus carries trusted scope on the event envelope. Most
+        # tenant events also mirror it into payload, but platform-scoped
+        # Director requests intentionally keep their payload tenant-neutral.
+        # Prefer the explicit payload value for backwards compatibility, then
+        # fall back to the trusted envelope field rather than dropping the
+        # platform event before it reaches KCPG.
+        workspace_id = (
+            payload.get("workspace_id")
+            or payload.get("workspaceId")
+            or event_data.get("workspace_id")
+            or event_data.get("workspaceId")
+        )
         if not workspace_id:
+            logger.debug(
+                "KCPG event bridge skipped event without trusted workspace scope event=%s",
+                event_data.get("event_name") or event_data.get("event_type"),
+            )
             return
 
         event_id = event_data.get("event_id") or payload.get("event_id")
