@@ -462,6 +462,23 @@ class EventConsumer:
                         len(recovery_result.get("rejected") or []),
                     )
 
+                # Sweep the failed-job queue after the diagnostic pass. The RPC
+                # enforces the three-failure cutoff and protects uncertain publishes.
+                from services.failed_job_sweep import sweep_failed_automation_jobs
+                from services.job_service import JobService
+
+                sweep_result = await sweep_failed_automation_jobs(
+                    job_service=JobService(supabase_client=supabase_client),
+                    batch_size=25,
+                )
+                logger.warning(
+                    "director_failed_job_sweep_result mission_id=%s requeued=%d archived=%d protected=%d",
+                    mission_id,
+                    int(sweep_result.get("requeued_count") or 0),
+                    int(sweep_result.get("archived_count") or 0),
+                    int(sweep_result.get("protected_count") or 0),
+                )
+
                 # Recovery diagnosis is advisory. Close the mission as
                 # partial once all specialists have finished; canonical tasks
                 # deliberately remain approval_required for governed review.
