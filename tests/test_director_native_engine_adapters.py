@@ -29,7 +29,7 @@ def _context(**overrides):
 
 
 def test_mission_task_context_requires_workspace_and_identity():
-    with pytest.raises(ValueError, match="workspace_id_required"):
+    with pytest.raises(ValueError, match="workspace_task_context_requires_workspace_id"):
         MissionTaskContext(
             task_id="task-1", mission_id="mission-1", workspace_id="",
             capability="research.analyze", objective="Research",
