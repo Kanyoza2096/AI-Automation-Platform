@@ -9,6 +9,7 @@ ALTER TABLE automation_job_recovery_audit
 CREATE TABLE IF NOT EXISTS automation_job_recovery_archive (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id TEXT NOT NULL UNIQUE,
+    idempotency_key TEXT NOT NULL UNIQUE,
     workspace_id TEXT,
     brand_id TEXT,
     attempt_count INTEGER NOT NULL,
@@ -78,10 +79,10 @@ BEGIN
 
         IF v_job.attempt_count >= 3 THEN
             INSERT INTO automation_job_recovery_archive (
-                job_id, workspace_id, brand_id, attempt_count, max_attempts,
+                job_id, idempotency_key, workspace_id, brand_id, attempt_count, max_attempts,
                 last_error_code, last_error, archived_job
             ) VALUES (
-                v_job.job_id, v_job.workspace_id, v_job.brand_id,
+                v_job.job_id, v_job.idempotency_key, v_job.workspace_id, v_job.brand_id,
                 v_job.attempt_count, v_job.max_attempts, v_job.last_error_code,
                 v_job.last_error, to_jsonb(v_job)
             )
@@ -117,3 +118,29 @@ REVOKE ALL ON FUNCTION sweep_failed_automation_jobs(INTEGER)
     FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION sweep_failed_automation_jobs(INTEGER)
     TO service_role;
+
+
+-- Preserve the one-job/one-publication idempotency contract after the live row
+-- is removed: an archived key must never be recreated by a scheduler or caller.
+CREATE OR REPLACE FUNCTION prevent_archived_automation_job_recreation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM automation_job_recovery_archive
+         WHERE idempotency_key = NEW.idempotency_key
+    ) THEN
+        RAISE EXCEPTION 'automation_job_previously_archived'
+            USING ERRCODE = '23505';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_prevent_archived_automation_job_recreation
+    ON automation_jobs;
+CREATE TRIGGER trg_prevent_archived_automation_job_recreation
+    BEFORE INSERT ON automation_jobs
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_archived_automation_job_recreation();
