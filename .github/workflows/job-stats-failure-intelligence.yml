@@ -2,7 +2,7 @@ name: Job Stats Failure Intelligence Tests
 
 on:
   pull_request:
-    branches: [staging, feat/platform-recovery-mission-admission]
+    branches: [staging, feat/platform-recovery-mission-admission, feat/platform-recovery-specialist-execution]
     paths:
       - "services/job_stats_service.py"
       - "services/governed_provider_recovery.py"
