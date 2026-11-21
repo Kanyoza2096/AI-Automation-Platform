@@ -94,6 +94,14 @@ class AutomationJobDiagnosticsMissionAdapter:
                 or str(item.get("job_id") or "") in requested_ids
             )
         ][:20]
+        samples = [
+            item for item in (details.get("failure_samples") or [])
+            if isinstance(item, dict)
+            and (
+                not requested_ids
+                or str(item.get("job_id") or "") in requested_ids
+            )
+        ][:8]
         digest = hashlib.sha256(
             (category + "|" + "|".join(sorted(current_ids))).encode("utf-8")
         ).hexdigest()[:24]
@@ -102,13 +110,28 @@ class AutomationJobDiagnosticsMissionAdapter:
             f"Fresh snapshot reports {count} failed jobs in category '{category}'.",
             f"{len(current_ids)} current job identifiers are available for bounded reconciliation.",
         ]
+        for sample in samples:
+            job_id = str(sample.get("job_id") or "")[:128]
+            error_code = str(sample.get("last_error_code") or "not_recorded")[:80]
+            steps = [
+                str(value)[:80] for value in (sample.get("failed_steps") or [])[:5]
+                if isinstance(value, str) and value.strip()
+            ]
+            findings.append(
+                f"Job {job_id}: error_code={error_code}; failed_steps={', '.join(steps) or 'not_recorded'}."
+            )
         recommendations = [
             "Re-read each candidate's canonical status and attempt history before any retry decision.",
             "Keep permanent failures quarantined and preserve the original failure evidence.",
         ]
+        recommended_action = details.get("recommended_action")
+        if isinstance(recommended_action, str) and recommended_action.strip():
+            recommendations.append(
+                "Read-only category guidance: " + recommended_action.strip()[:300]
+            )
         if proposals:
             recommendations.append(
-                "Treat the stored recovery proposals as advisory hints only; they do not authorize a retry."
+                "Stored recovery proposals are advisory hints only; they do not authorize a retry."
             )
 
         return EngineContribution(
