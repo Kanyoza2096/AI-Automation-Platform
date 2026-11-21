@@ -257,8 +257,24 @@ class EventConsumer:
                 return True
 
             namespace = uuid.UUID("c7c2e8c2-0b8a-4c17-8a10-40ef8c8fcb13")
-            mission_id = str(uuid.uuid5(namespace, f"automation-job-recovery:{correlation_id}"))
-            idempotency_key = f"job-recovery:{correlation_id}"[:160]
+            # Correlation IDs identify deliveries, not failure episodes. Build a
+            # stable cohort identity from the actual failed job IDs so repeated
+            # threshold probes/restarts cannot create parallel missions.
+            cohort_job_ids = sorted({
+                str(job_id)[:128]
+                for details in categories.values()
+                if isinstance(details, dict)
+                for job_id in (details.get("job_ids") or [])
+                if isinstance(job_id, (str, int)) and str(job_id).strip()
+            })
+            if not cohort_job_ids:
+                logger.warning("Director recovery admission deferred: no failed job identities")
+                return False
+            cohort_digest = hashlib.sha256(
+                json.dumps(cohort_job_ids, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            mission_id = str(uuid.uuid5(namespace, f"automation-job-recovery-cohort:{cohort_digest}"))
+            idempotency_key = f"job-recovery-cohort:{cohort_digest}"[:160]
             tasks = []
             for category, details in ranked:
                 task_id = str(uuid.uuid5(namespace, f"{mission_id}:{category}"))
@@ -300,7 +316,7 @@ class EventConsumer:
 
             canonical = json.dumps({
                 "mission_id": mission_id,
-                "correlation_id": correlation_id,
+                "cohort_job_ids": cohort_job_ids,
                 "tasks": tasks,
                 "automatic_retry": False,
                 "publication_replay_allowed": False,
@@ -350,7 +366,7 @@ class EventConsumer:
                     payload_data = task.get("payload") or {}
                     task_id = str(task.get("id") or "")
                     identity = hashlib.sha256(
-                        f"{correlation_id}|{task_id}".encode("utf-8")
+                        f"{mission_id}|{task_id}".encode("utf-8")
                     ).hexdigest()
                     agent_id = f"jobdiag-{identity[:20]}"
                     task_inputs[task_id] = {
@@ -446,9 +462,18 @@ class EventConsumer:
                         len(recovery_result.get("rejected") or []),
                     )
 
+                # Recovery diagnosis is advisory. Close the mission as
+                # partial once all specialists have finished; canonical tasks
+                # deliberately remain approval_required for governed review.
+                finalized = await runtime.finalize_advisory_mission(
+                    mission_id=mission_id,
+                    workspace_id=None,
+                    idempotency_key=f"advisory-diagnosis-complete:{mission_id}",
+                    correlation_id=correlation_id,
+                )
                 logger.warning(
-                    "director_platform_recovery_specialists_dispatched mission_id=%s admitted_tasks=%d spawned_candidates=%d correlation_id=%s",
-                    mission_id, len(tasks), min(8, len(tasks)), correlation_id,
+                    "director_platform_recovery_specialists_dispatched mission_id=%s admitted_tasks=%d spawned_candidates=%d status=%s correlation_id=%s",
+                    mission_id, len(tasks), min(8, len(tasks)), finalized.status, correlation_id,
                 )
                 return admitted
 

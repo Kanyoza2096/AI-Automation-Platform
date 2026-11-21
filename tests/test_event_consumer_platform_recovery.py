@@ -50,7 +50,7 @@ def _patch_recovery_dependencies(monkeypatch):
     import services.director.orchestration.store as store_module
     import services.job_stats_service as stats_module
 
-    state = {"admissions": [], "spawn_calls": [], "execution_calls": []}
+    state = {"admissions": [], "spawn_calls": [], "execution_calls": [], "finalizations": []}
     agents_by_mission = {}
 
     class FakeDirectorStore:
@@ -109,6 +109,12 @@ def _patch_recovery_dependencies(monkeypatch):
             self.agents[agent_id]["status"] = "completed"
             return None
 
+        async def finalize_advisory_mission(self, *, mission_id, workspace_id,
+                                            idempotency_key, correlation_id):
+            assert workspace_id is None
+            state["finalizations"].append(mission_id)
+            return SimpleNamespace(status="partial")
+
     class FakeJobStatsService:
         def __init__(self, *, supabase_client):
             assert supabase_client is director.store.supabase
@@ -136,6 +142,7 @@ def test_recovery_event_admits_and_executes_bounded_platform_specialists(monkeyp
     assert len(state["execution_calls"]) == 5
     assert len(set(state["execution_calls"])) == 5
     assert all(call["mission_id"] for call in state["spawn_calls"])
+    assert len(state["finalizations"]) == 1
 
 
 def test_recovery_event_redelivery_does_not_duplicate_completed_specialists(monkeypatch):
@@ -146,13 +153,28 @@ def test_recovery_event_redelivery_does_not_duplicate_completed_specialists(monk
     assert consumer._handle_director_job_recovery_request(payload) is True
     first_execution_count = len(state["execution_calls"])
     first_spawn_count = len(state["spawn_calls"])
+    first_mission_id = state["admissions"][0]["mission_id"]
+    first_agent_ids = [
+        candidate_id for call in state["spawn_calls"]
+        for candidate_id in call["candidate_ids"]
+    ]
 
+    # A new delivery/correlation for the same failed-job cohort must map to
+    # the same mission and agent identities.
+    payload = dict(payload)
+    payload["correlation_id"] = "job-recovery-another-delivery"
     assert consumer._handle_director_job_recovery_request(payload) is True
     assert len(state["execution_calls"]) == first_execution_count
     assert len(state["spawn_calls"]) == first_spawn_count
     assert len(state["admissions"]) == 2
     assert state["admissions"][0]["idempotency_key"] == state["admissions"][1]["idempotency_key"]
     assert state["admissions"][0]["request_fingerprint"] == state["admissions"][1]["request_fingerprint"]
+    assert state["admissions"][0]["mission_id"] == state["admissions"][1]["mission_id"] == first_mission_id
+    second_agent_ids = [
+        candidate_id for call in state["spawn_calls"]
+        for candidate_id in call["candidate_ids"]
+    ]
+    assert second_agent_ids == first_agent_ids
 
 
 def test_recovery_event_rejects_unrecognized_failure_categories(monkeypatch):
