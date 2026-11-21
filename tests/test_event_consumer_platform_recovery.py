@@ -44,7 +44,7 @@ def _recovery_payload(categories=None, *, status="available"):
     }
 
 
-def _patch_recovery_dependencies(monkeypatch):
+def _patch_recovery_dependencies(monkeypatch, *, mission_status="running"):
     import services.director as director_package
     import services.director.orchestration.runtime as runtime_module
     import services.director.orchestration.store as store_module
@@ -102,7 +102,7 @@ def _patch_recovery_dependencies(monkeypatch):
         async def load_snapshot(self, *, mission_id, workspace_id):
             assert workspace_id is None
             self.agents = agents_by_mission.setdefault(mission_id, {})
-            return SimpleNamespace(state_snapshot={"agents": dict(self.agents)})
+            return SimpleNamespace(status=mission_status, state_snapshot={"agents": dict(self.agents)})
 
         async def spawn_swarm(self, *, mission_id, workspace_id, task_ids, candidates,
                               complexity_score, idempotency_prefix, correlation_id):
@@ -226,3 +226,18 @@ def test_recovery_event_defers_when_failure_intelligence_is_unavailable(monkeypa
     assert accepted is False
     assert state["admissions"] == []
     assert state["spawn_calls"] == []
+
+
+
+def test_terminal_recovery_redelivery_sweeps_without_respawning_agents(monkeypatch):
+    state = _patch_recovery_dependencies(monkeypatch, mission_status="partial")
+    consumer = EventConsumer()
+
+    accepted = consumer._handle_director_job_recovery_request(_recovery_payload())
+
+    assert accepted is True
+    assert len(state["sweeps"]) == 1
+    assert state["sweeps"][0] == ("sweep_failed_automation_jobs", {"p_batch_size": 25})
+    assert state["spawn_calls"] == []
+    assert state["execution_calls"] == []
+    assert state["finalizations"] == []
