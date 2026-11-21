@@ -125,9 +125,16 @@ class EventConsumer:
         event_id = event.get("id")
         source = event.get("source_service", "unknown")
 
-        try:
-            payload = json.loads(event.get("payload", "{}"))
-        except json.JSONDecodeError:
+        raw_payload = event.get("payload", {})
+        if isinstance(raw_payload, dict):
+            # Supabase JSONB columns are already decoded by the client.
+            payload = raw_payload
+        elif isinstance(raw_payload, str):
+            try:
+                payload = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                payload = {}
+        else:
             payload = {}
 
         # Track for correlation
