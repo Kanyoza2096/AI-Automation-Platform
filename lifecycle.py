@@ -752,6 +752,13 @@ def _build_boot_sequence(app, container: ServiceContainer) -> list[BootStep]:
             action=partial(_boot_job_stats_service, container),
         ))
         steps.append(BootStep(
+            name="EventConsumer",
+            phase=BootPhase.CORE,
+            action=partial(_boot_event_consumer, container),
+            rollback=partial(_stop_event_consumer, container),
+            critical=False,
+        ))
+        steps.append(BootStep(
             name="RenderQueue",
             phase=BootPhase.CORE,
             action=partial(_boot_render_queue, container),
@@ -1407,6 +1414,70 @@ async def _boot_job_stats_service(container: ServiceContainer) -> None:
     await health_registry.register(service)
     container.register_instance(type(service), service)
     logger.info("JobStatsService ready and database-wired.")
+
+
+async def _boot_event_consumer(container: ServiceContainer) -> None:
+    """Start the durable event-table consumer used by Director recovery admission."""
+    from core.event_consumer import init_event_consumer
+    from core.unified_bus import UnifiedEventBus
+    from services.supabase import get_service_client_from_settings
+
+    client = await _run_in_thread(get_service_client_from_settings)
+    if client is None:
+        raise RuntimeError("EventConsumer requires the service-role Supabase client")
+
+    unified_bus = container.try_resolve(UnifiedEventBus)
+    if unified_bus is None:
+        raise RuntimeError("EventConsumer requires the canonical UnifiedEventBus")
+
+    class _ThreadSafeEventBusPublisher:
+        """Synchronous publisher facade for EventConsumer's polling thread."""
+
+        def __init__(self, bus):
+            self._bus = bus
+            self._loop = getattr(bus, "_loop", None)
+
+        def publish(self, event, payload=None, source="event_consumer", **kwargs):
+            import asyncio
+            loop = self._loop
+            if loop is None or not loop.is_running():
+                raise RuntimeError("unified_event_bus_loop_unavailable")
+            event_payload = payload if isinstance(payload, dict) else {}
+            workspace_id = (
+                kwargs.get("workspace_id")
+                or event_payload.get("workspace_id")
+                or (event_payload.get("_nerve") or {}).get("workspace_id")
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                self._bus.publish(
+                    str(event),
+                    event_payload,
+                    source=source,
+                    workspace_id=workspace_id,
+                    correlation_id=kwargs.get("correlation_id"),
+                ),
+                loop,
+            )
+            return future.result(timeout=10)
+
+    publisher = _ThreadSafeEventBusPublisher(unified_bus)
+    consumer = init_event_consumer(
+        shared_bus=publisher,
+        supabase_client=client,
+    )
+    container.register_instance(type(consumer), consumer)
+    await shutdown_registry.register(
+        "EventConsumer", consumer.stop, timeout_seconds=5.0
+    )
+    logger.info("EventConsumer started (durable events-table polling enabled).")
+
+
+async def _stop_event_consumer(container: ServiceContainer) -> None:
+    from core.event_consumer import get_event_consumer
+
+    consumer = get_event_consumer()
+    if consumer is not None:
+        consumer.stop()
 
 
 async def _boot_render_queue(container: ServiceContainer) -> None:

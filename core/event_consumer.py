@@ -40,6 +40,7 @@ class EventConsumer:
     CRITICAL_ALERT_COOLDOWN = 1800  # 30 min between critical alerts
     EVENT_FLOOD_THRESHOLD = 50      # Max events per minute per service
     CORRELATION_WINDOW = 300        # 5 min window for correlation
+    MAX_EVENT_AGE_HOURS = 24       # Reactive consumer must not drain stale history
 
     def __init__(self, shared_bus=None, supabase_client=None):
         self.shared_bus = shared_bus
@@ -98,10 +99,15 @@ class EventConsumer:
             # uses `event_type`; the legacy consumer used the removed
             # `shared_event_bus`/`event_name` contract and therefore silently
             # missed every cross-process event.
-            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            now = datetime.now(timezone.utc)
+            cutoff = (now - timedelta(minutes=5)).isoformat()
+            event_cutoff = (
+                now - timedelta(hours=self.MAX_EVENT_AGE_HOURS)
+            ).isoformat()
             result = self.supabase.table("events") \
                 .select("*") \
                 .eq("processed", False) \
+                .gte("created_at", event_cutoff) \
                 .or_(f"claimed_at.is.null,claimed_at.lt.{cutoff}") \
                 .order("created_at") \
                 .limit(100) \
@@ -125,9 +131,16 @@ class EventConsumer:
         event_id = event.get("id")
         source = event.get("source_service", "unknown")
 
-        try:
-            payload = json.loads(event.get("payload", "{}"))
-        except json.JSONDecodeError:
+        raw_payload = event.get("payload", {})
+        if isinstance(raw_payload, dict):
+            # Supabase JSONB columns are already decoded by the client.
+            payload = raw_payload
+        elif isinstance(raw_payload, str):
+            try:
+                payload = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                payload = {}
+        else:
             payload = {}
 
         # Track for correlation

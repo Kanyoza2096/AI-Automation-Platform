@@ -30,6 +30,8 @@ on:
       - "tests/test_director_strategic_context.py"
       - "services/director/orchestration/**"
       - "core/event_consumer.py"
+      - "lifecycle.py"
+      - "tests/test_event_consumer_lifecycle_boot.py"
       - "services/job_stats_service.py"
       - "tests/test_event_consumer_platform_recovery.py"
       - "tests/test_platform_automation_job_diagnostics_adapter.py"
@@ -160,6 +162,7 @@ jobs:
             tests/test_director_mission_graph.py \
             tests/test_director_swarm_planning.py \
             tests/test_event_consumer_platform_recovery.py \
+            tests/test_event_consumer_lifecycle_boot.py \
             tests/test_platform_automation_job_diagnostics_adapter.py \
             tests/test_job_stats_failure_samples.py \
             tests/test_governed_provider_recovery.py \
