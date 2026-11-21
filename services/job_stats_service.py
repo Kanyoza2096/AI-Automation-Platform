@@ -383,6 +383,8 @@ class JobStatsService:
         bus = self._event_bus
         publisher = getattr(bus, "publish", None) if bus is not None else None
         if not callable(publisher):
+            with self._recovery_dispatch_lock:
+                self._recovery_dispatch_active = False
             logger.warning(
                 "automation_job_recovery_threshold_reached_without_event_bus failed=%d",
                 failed,
