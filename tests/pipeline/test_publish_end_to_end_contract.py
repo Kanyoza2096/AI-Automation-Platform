@@ -52,6 +52,17 @@ def test_internal_publish_decision_is_bounded_to_low_risk_and_trusted_triggers()
     assert d.workspace_id == "ws-safe"
     assert d.metadata["trigger_source"] == "manual"
 
+    retry = issue_internal_publish_decision(
+        workspace_id="ws-safe",
+        source="queued_retry",
+        risk_level="low",
+        brand_id="brand-1",
+        platform="facebook",
+    )
+    assert retry.approved is True
+    assert retry.workspace_id == "ws-safe"
+    assert retry.metadata["trigger_source"] == "queued_retry"
+
     with pytest.raises(DecisionGateError):
         issue_internal_publish_decision(
             workspace_id="ws-safe", source="manual", risk_level="high"

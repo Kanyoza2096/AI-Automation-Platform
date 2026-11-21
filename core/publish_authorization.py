@@ -133,7 +133,7 @@ def issue_internal_publish_decision(
             f"Automatic publish authorization is limited to low risk; got '{risk}'"
         )
     trigger = (source or "workflow").strip().lower()
-    allowed = {"manual", "scheduled", "workflow", "outbox", "dead_letter_retry"}
+    allowed = {"manual", "scheduled", "workflow", "outbox", "dead_letter_retry", "queued_retry"}
     if trigger not in allowed:
         raise DecisionGateError(f"Untrusted publish trigger source: {source}")
     return decision_gate.issue(
