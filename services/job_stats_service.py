@@ -673,6 +673,7 @@ class JobStatsService:
                 "recommended_action": item["recommended_action"],
                 "job_ids": [],
                 "recovery_proposals": [],
+                "failure_samples": [],
             })
             bucket["count"] += 1
             if item.get("job_id") and len(bucket["job_ids"]) < 20:
@@ -681,6 +682,14 @@ class JobStatsService:
                 bucket["recovery_proposals"].append({
                     "job_id": item.get("job_id"),
                     **item["recovery_policy"],
+                })
+            if len(bucket["failure_samples"]) < 20:
+                bucket["failure_samples"].append({
+                    "job_id": item.get("job_id"),
+                    "last_error_code": item.get("last_error_code"),
+                    "failed_steps": list(item.get("failed_steps") or [])[:10],
+                    "attempt_count": item.get("attempt_count"),
+                    "max_attempts": item.get("max_attempts"),
                 })
         return {
             "status": "available",
