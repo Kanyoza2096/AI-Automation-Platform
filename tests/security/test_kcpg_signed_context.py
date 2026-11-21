@@ -109,3 +109,17 @@ def test_unrecognized_signed_platform_role_is_rejected(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _bind_verified_gateway_human_context(FakeRequest(headers), machine_context(), "req-test-1")
     assert exc.value.status_code == 403
+
+
+def test_legacy_signed_context_without_platform_role_remains_workspace_scoped(monkeypatch):
+    secret = "test-kcpg-context-secret-that-is-long-enough"
+    monkeypatch.setenv("KCPG_CONTEXT_SIGNING_SECRET", secret)
+    headers = signed_headers(secret)
+    headers.pop("x-kcpg-context-platform-role")
+    timestamp = headers["x-kcpg-context-timestamp"]
+    canonical = "|".join((timestamp, headers["x-kcpg-context-request-id"], headers["x-kcpg-context-workspace-id"], headers["x-kcpg-context-actor-id"], headers["x-kcpg-context-actor-role"]))
+    headers["x-kcpg-context-signature"] = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    result = _bind_verified_gateway_human_context(FakeRequest(headers), machine_context(), "req-test-1")
+    assert result is not None
+    assert result.platform_role == ""
+    assert result.has_permission("platform:control_plane:access") is False
