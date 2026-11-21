@@ -18,10 +18,10 @@ class FakeRequest:
         self.state = SimpleNamespace()
 
 
-def signed_headers(secret, workspace="ws-test", actor="owner-1", role="owner", age_ms=0):
+def signed_headers(secret, workspace="ws-test", actor="owner-1", role="owner", age_ms=0, platform_role=""):
     timestamp = str(int(time.time() * 1000) - age_ms)
     request_id = "req-test-1"
-    canonical = "|".join((timestamp, request_id, workspace, actor, role))
+    canonical = "|".join((timestamp, request_id, workspace, actor, role, platform_role))
     signature = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
     return {
         "x-kcpg-context-timestamp": timestamp,
@@ -29,6 +29,7 @@ def signed_headers(secret, workspace="ws-test", actor="owner-1", role="owner", a
         "x-kcpg-context-workspace-id": workspace,
         "x-kcpg-context-actor-id": actor,
         "x-kcpg-context-actor-role": role,
+        "x-kcpg-context-platform-role": platform_role,
         "x-kcpg-context-signature": signature,
         "X-Workspace-ID": workspace,
     }
@@ -88,3 +89,37 @@ def test_non_species_identity_cannot_be_overridden(monkeypatch):
     human = RequestContext(principal_id="human-1", workspace_id="ws-test", role="owner", principal_type="human", auth_method="supabase_jwt")
     result = _bind_verified_gateway_human_context(FakeRequest(signed_headers(secret)), human, "")
     assert result is None
+
+
+def test_valid_signed_platform_super_admin_context_preserves_platform_grant(monkeypatch):
+    secret = "test-kcpg-context-secret-that-is-long-enough"
+    monkeypatch.setenv("KCPG_CONTEXT_SIGNING_SECRET", secret)
+    request = FakeRequest(signed_headers(secret, platform_role="super_admin"))
+    result = _bind_verified_gateway_human_context(request, machine_context(), "req-test-1")
+    assert result is not None
+    assert result.platform_role == "super_admin"
+    assert result.has_permission("platform:control_plane:access") is True
+    assert result.workspace_id == "ws-test"
+
+
+def test_unrecognized_signed_platform_role_is_rejected(monkeypatch):
+    secret = "test-kcpg-context-secret-that-is-long-enough"
+    monkeypatch.setenv("KCPG_CONTEXT_SIGNING_SECRET", secret)
+    headers = signed_headers(secret, platform_role="platform_admin")
+    with pytest.raises(HTTPException) as exc:
+        _bind_verified_gateway_human_context(FakeRequest(headers), machine_context(), "req-test-1")
+    assert exc.value.status_code == 403
+
+
+def test_legacy_signed_context_without_platform_role_remains_workspace_scoped(monkeypatch):
+    secret = "test-kcpg-context-secret-that-is-long-enough"
+    monkeypatch.setenv("KCPG_CONTEXT_SIGNING_SECRET", secret)
+    headers = signed_headers(secret)
+    headers.pop("x-kcpg-context-platform-role")
+    timestamp = headers["x-kcpg-context-timestamp"]
+    canonical = "|".join((timestamp, headers["x-kcpg-context-request-id"], headers["x-kcpg-context-workspace-id"], headers["x-kcpg-context-actor-id"], headers["x-kcpg-context-actor-role"]))
+    headers["x-kcpg-context-signature"] = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    result = _bind_verified_gateway_human_context(FakeRequest(headers), machine_context(), "req-test-1")
+    assert result is not None
+    assert result.platform_role == ""
+    assert result.has_permission("platform:control_plane:access") is False
